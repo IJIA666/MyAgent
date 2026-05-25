@@ -1,0 +1,214 @@
+name: game-dev
+version: 1
+description: Game development workflow - proposal → game-specs → design → tasks
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Game feature proposal outlining the change
+    template: proposal.md
+    instruction: |
+      Create the proposal document that establishes WHY this game change is needed.
+
+      Sections:
+      - **Why**: 1-2 sentences on the player experience gap or improvement opportunity.
+        What makes this worth building? Why now?
+      - **What Changes**: Bullet list of changes. Be specific about new mechanics,
+        systems, content, or modifications. Mark breaking changes with **BREAKING**.
+      - **Core Mechanics**: Identify which game mechanics/systems will be created or modified:
+        - **New Mechanics**: List mechanics being introduced. Each becomes a new
+          `specs/<name>/spec.md`. Use kebab-case names (e.g., `player-movement`,
+          `combat-system`, `inventory`).
+        - **Modified Mechanics**: List existing mechanics whose RULES or BEHAVIOR
+          are changing. Only include if the mechanic's spec-level design changes.
+          Check `openspec/specs/` for existing spec names. Leave empty if no changes.
+      - **Impact**: Affected systems, platforms, performance targets, asset requirements.
+
+      IMPORTANT: The Core Mechanics section is critical. It creates the contract between
+      proposal and specs phases. Each mechanic listed here will need a corresponding
+      spec file describing its rules, parameters, and player interactions.
+
+      Keep it concise (1-2 pages). Focus on the player experience and motivation,
+      not implementation details - those belong in design.md.
+    requires: []
+
+  - id: specs
+    generates: "specs/**/*.md"
+    description: Game mechanic specifications with rules, parameters, and interactions
+    template: spec.md
+    instruction: |
+      Create game mechanic specification files that define WHAT a mechanic does
+      and HOW it behaves from the player's perspective.
+
+      Create one spec file per mechanic listed in the proposal's Core Mechanics section.
+      - New mechanics: use the exact kebab-case name from the proposal (specs/<mechanic>/spec.md).
+      - Modified mechanics: use the existing spec folder name when creating the delta spec.
+
+      Delta operations (use ## headers):
+      - **ADDED Mechanics**: New game mechanics or systems
+      - **MODIFIED Mechanics**: Changed rules or behavior - MUST include full updated content
+      - **REMOVED Mechanics**: Deprecated mechanics - MUST include **Reason** and **Migration**
+      - **RENAMED Mechanics**: Name changes only - use FROM:/TO: format
+
+      Each mechanic spec MUST include:
+
+      ### Mechanic: <name>
+      One paragraph describing the mechanic's purpose and player-facing behavior.
+
+      #### Rules
+      Quantitative rules and parameters that govern this mechanic. Use concrete numbers.
+      - Movement speed: 5 units/second
+      - Jump height: 3 units
+      - Cooldown: 2 seconds
+      - Damage formula: base_damage * multiplier - defense
+
+      #### Player Interaction
+      How the player interacts with this mechanic:
+      - **Input**: What the player does (key press, mouse click, gesture)
+      - **Response**: What happens immediately (animation, sound, state change)
+      - **Feedback**: How the player knows it worked (visual effect, UI update, sound)
+
+      #### States
+      What states this mechanic can be in and transitions between them.
+      Format: State A → [trigger] → State B
+      - Idle → [jump input] → Jumping
+      - Jumping → [peak reached] → Falling
+      - Falling → [ground contact] → Idle
+
+      #### Edge Cases
+      Boundary conditions and special situations:
+      - What happens at world boundaries?
+      - What happens when two mechanics conflict?
+      - What happens under extreme input (rapid clicking, simultaneous keys)?
+
+      MODIFIED mechanics workflow:
+      1. Locate the existing mechanic in openspec/specs/<mechanic>/spec.md
+      2. Copy the ENTIRE mechanic block
+      3. Paste under `## MODIFIED Mechanics` and edit to reflect new behavior
+      4. Ensure header text matches exactly
+
+      Specs should be testable where possible - each rule is a potential test case,
+      each state transition can be verified.
+    requires:
+      - proposal
+
+  - id: design
+    generates: design.md
+    description: Technical design for game implementation
+    template: design.md
+    instruction: |
+      Create the design document that explains HOW to implement the game change.
+
+      When to include design.md (create only if any apply):
+      - New rendering or physics requirements
+      - New entity types or component architecture changes
+      - External dependency (game engine plugin, asset pipeline tool)
+      - Performance-sensitive systems (particle effects, AI, networking)
+      - Complex state management (save system, multiplayer sync)
+
+      Sections:
+      - **Context**: Current game state, target platform(s), engine/framework,
+        existing systems this change interacts with
+      - **Goals / Non-Goals**: What this design achieves and explicitly excludes
+      - **Architecture**: Entity/component structure, scene organization,
+        system dependencies. Describe how new code fits into the existing game loop.
+      - **Rendering**: Visual implementation approach - sprites, shaders, particles,
+        animation system. Skip if no visual changes.
+      - **Physics / Collision**: Collision layers, physics parameters, spatial
+        partitioning. Skip if no physics changes.
+      - **Input**: Input mapping, input buffering, platform-specific considerations.
+        Skip if no input changes.
+      - **Audio**: Sound triggers, music transitions, spatial audio. Skip if no
+        audio changes.
+      - **Performance**: Frame budget allocation, target FPS, known bottlenecks,
+        optimization strategy. Always include for real-time systems.
+      - **Decisions**: Key technical choices with rationale (why X over Y?).
+        Include alternatives considered.
+      - **Risks / Trade-offs**: Known limitations, things that could go wrong.
+        Format: [Risk] → Mitigation
+
+      Focus on architecture and approach. Reference the proposal for motivation
+      and specs for mechanic rules. Good design docs explain the "why" behind
+      technical decisions.
+    requires:
+      - proposal
+
+  - id: tasks
+    generates: tasks.md
+    description: Implementation checklist with trackable tasks
+    template: tasks.md
+    instruction: |
+      Create the task list that breaks down the game implementation work.
+
+      **IMPORTANT: Follow the template below exactly.** The apply phase parses
+      checkbox format to track progress. Tasks not using `- [ ]` won't be tracked.
+
+      Guidelines:
+      - Group related tasks under ## numbered headings
+      - Each task MUST be a checkbox: `- [ ] X.Y Task description`
+      - Tasks should be small enough to complete in one session
+      - Order tasks by dependency (what must be done first?)
+      - After each task group, add an automated checkpoint for verification
+      - Consider a prototyping group first for core mechanic feel verification
+
+      Checkpoint rules:
+      - Use HTML comment syntax: `<!-- checkpoint: <command> -->`
+      - Place after the last task in a group, before the next ## heading
+      - Command must return exit code 0 on success
+      - Game-specific checkpoint examples:
+        - Build verification: `npm run build`, `dotnet build`, `cargo build`
+        - Unit tests for game logic: `npm test`, `dotnet test`
+        - Lint/type check: `npx tsc --noEmit`, `cargo clippy`
+      - Visual/interactive verification cannot be automated; use checkpoints
+        for buildability and logic correctness only
+
+      Recommended task group ordering for games:
+      1. Asset & infrastructure setup (project structure, dependencies)
+      2. Core mechanic prototype (minimal playable version)
+      3. Full mechanic implementation (complete rules and states)
+      4. Visual polish (animations, effects, UI)
+      5. Audio integration
+      6. Edge cases and balancing
+
+      Example:
+      ```
+      ## 1. Project Setup
+
+      - [ ] 1.1 Initialize project structure
+      - [ ] 1.2 Add game framework dependencies
+
+      <!-- checkpoint: npm run build -->
+
+      ## 2. Core Mechanic Prototype
+
+      - [ ] 2.1 Implement basic player entity and movement
+      - [ ] 2.2 Add placeholder collision detection
+      - [ ] 2.3 Wire up input handling
+
+      <!-- checkpoint: npm run build && npm test -->
+
+      ## 3. Full Implementation
+
+      - [ ] 3.1 Implement complete movement rules per spec
+      - [ ] 3.2 Add state machine for player states
+      - [ ] 3.3 Write tests for state transitions and edge cases
+
+      <!-- checkpoint: npm test -->
+      ```
+
+      Reference specs for mechanic rules, design for architecture approach.
+      Each task should be verifiable - you know when it's done.
+    requires:
+      - specs
+      - design
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md
+  instruction: |
+    Read context files, work through pending tasks, mark complete as you go.
+    When encountering a `<!-- checkpoint: <command> -->` marker, execute the
+    specified command. If exit code is 0, continue. If non-zero, stop immediately
+    and report the failure with full error output.
+    Pause if you hit blockers or need clarification.
+    For game development: after completing visual/interactive tasks, briefly
+    describe the expected visual result so the user can verify manually if needed.

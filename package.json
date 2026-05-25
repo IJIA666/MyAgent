@@ -1,0 +1,23 @@
+{
+  "name": "my-simple-agent",
+  "version": "1.0.0",
+  "description": "A minimal TypeScript-based Agent with sandboxed file tools and REPL session management.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "node --disable-warning=DEP0040 --import tsx src/index.ts",
+    "dev": "node --disable-warning=DEP0040 --import tsx src/index.ts"
+  },
+  "keywords": [],
+  "author": "wangjia",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "16.4.5",
+    "openai": "4.52.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.11.24",
+    "tsx": "4.7.1",
+    "typescript": "5.3.3"
+  }
+}
