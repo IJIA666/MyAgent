@@ -3,133 +3,135 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { SessionManager } from './session.js';
 
-// 集中定义 ANSI 控制台颜色代码，打造高品质的高级终端视效
+/**
+ * 定义 ANSI 终端颜色常量，用于区分不同状态输出的展示层级。
+ */
 const COLOR_RESET = '\x1b[0m';
-const COLOR_CYAN = '\x1b[36m';   // 用户提示符使用青色
-const COLOR_MAGENTA = '\x1b[35m';// Agent 自然回复使用洋红色
-const COLOR_YELLOW = '\x1b[33m'; // Tools 工具运行状态使用黄色
-const COLOR_GRAY = '\x1b[90m';   // 思考过程回显使用灰色
-const COLOR_RED = '\x1b[31m';    // 错误信息回显使用红色
-const COLOR_GREEN = '\x1b[32m';  // 欢迎界面及成功状态使用绿色
+const COLOR_CYAN = '\x1b[36m';
+const COLOR_MAGENTA = '\x1b[35m';
+const COLOR_YELLOW = '\x1b[33m';
+const COLOR_GRAY = '\x1b[90m';
+const COLOR_RED = '\x1b[31m';
+const COLOR_GREEN = '\x1b[32m';
 
 /**
- * 自动检测并初始化本地开发环境所需的最小配置。
- * 若检测到本地缺少 .env 配置文件，将自动基于 .env.example 复制一份，
- * 引导用户配置其专有的大模型 API Key。
+ * 检查并初始化环境变量配置。
+ * 当 .env 文件缺失时，通过复制 .env.example 提供默认配置模板，确保基础运行环境的完备性。
  */
 function ensureDotEnvExists(): void {
   const envPath = path.resolve('.env');
   const examplePath = path.resolve('.env.example');
 
-  // 如果 .env 不存在且 .env.example 存在，自动为其生成
+  // 环境变量补全逻辑
   if (!fs.existsSync(envPath) && fs.existsSync(examplePath)) {
-    console.log(`${COLOR_YELLOW}[系统] 检测到缺少 .env 配置文件。正在从 .env.example 自动复制生成...${COLOR_RESET}`);
+    console.log(`${COLOR_YELLOW}[系统] 缺少 .env 配置文件，正在从模板复制生成。${COLOR_RESET}`);
     fs.copyFileSync(examplePath, envPath);
-    console.log(`${COLOR_GREEN}[系统] 成功创建 ".env" 配置文件。如果需要，请在文件中更新您的大模型 API Key。${COLOR_RESET}\n`);
+    console.log(`${COLOR_GREEN}[系统] .env 文件创建完毕，请按需调整内部参数。${COLOR_RESET}\n`);
   }
 }
 
 /**
- * 极简 Agent 命令行主控入口函数。
- * 负责组装会话管理器、初始化控制台 readline REPL 接口，
- * 并提供打字机级的高颜值纯中文状态回显。
+ * 系统主入口点。
+ * 负责初始化环境、加载会话管理器（SessionManager），并建立基于 Readline 的 REPL 交互循环。
  */
 async function main() {
   console.clear();
 
-  // 1. 确保环境变量配置文件就绪
+  // 1. 初始化环境变量
   ensureDotEnvExists();
 
   const workspaceRoot = path.resolve(process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd());
 
-  // 2. 打印极具仪式感和高品质的终端欢迎横幅（全中文呈现）
+  // 2. 打印系统启动与配置信息
   console.log(`${COLOR_GREEN}====================================================`);
-  console.log(`🤖  欢迎使用 IJIA Agent`);
-  console.log(`🏠  授权工作区根目录：${workspaceRoot}`);
-  console.log(`⚙️   模型与 API 端点均通过本地 .env 进行动态配置`);
+  console.log(`[系统] IJIA Agent 启动完成`);
+  console.log(`[配置] 授权工作区目录：${workspaceRoot}`);
+  console.log(`[配置] 接口端点与模型配置已加载`);
   console.log(`====================================================${COLOR_RESET}`);
-  console.log(`${COLOR_GRAY}输入 "exit" 或 "quit" 可随时退出会话。\n${COLOR_RESET}`);
+  console.log(`${COLOR_GRAY}系统就绪，输入 "exit" 退出当前会话。\n${COLOR_RESET}`);
 
-  // 3. 实例化会话管理器
+  // 3. 实例化核心会话组件
   let session: SessionManager;
   try {
     session = new SessionManager();
-  } catch (initError: any) {
-    console.log(`${COLOR_RED}[错误] 初始化会话管理器失败：${initError.message}${COLOR_RESET}`);
+  } catch (initError: unknown) {
+    const errorMsg = initError instanceof Error ? initError.message : String(initError);
+    console.log(`${COLOR_RED}[错误] 初始化会话管理器失败：${errorMsg}${COLOR_RESET}`);
     process.exit(1);
   }
 
-  // 4. 创建 readline 接口以捕获终端标准输入输出
+  // 4. 配置并启动终端交互接口
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     prompt: `${COLOR_CYAN}用户 > ${COLOR_RESET}`
   });
 
-  // 触发第一轮输入提示符
+  // 首次渲染输入提示符
   rl.prompt();
 
-  // 5. 监听输入流的行输入事件，展开多轮交互 REPL 循环
+  // 5. 事件监听器设定：处理用户输入并展开多轮交互
   rl.on('line', async (line) => {
     const input = line.trim();
 
-    // 如果用户输入退出指令，优雅清理并结束进程
+    // 解析退出指令，提供安全终止流程
     if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
-      console.log(`\n${COLOR_GREEN}[系统] 正在关闭会话。再见！${COLOR_RESET}`);
+      console.log(`\n${COLOR_GREEN}[系统] 进程正在终止，结束会话。${COLOR_RESET}`);
       rl.close();
       process.exit(0);
     }
 
-    // 忽略空白行输入
+    // 规避无意义交互触发
     if (!input) {
       rl.prompt();
       return;
     }
 
-    // 将用户输入加入内存会话历史中
+    // 推进会话状态，记录用户侧输入记录
     session.addUserMessage(input);
 
     try {
-      // 触发 Agent 思考-行动大轮转逻辑，注入精细化状态显示回调
+      // 发起大模型推理请求，并注册状态回调函数以向上层暴露执行生命周期
       const agentReply = await session.chat((status) => {
         switch (status.type) {
           case 'thinking':
-            // 灰度回显思考状态
-            process.stdout.write(`${COLOR_GRAY}[智能体] 正在思考中...${COLOR_RESET}\r`);
+            // 反馈推理等待状态
+            process.stdout.write(`${COLOR_GRAY}[处理] 正在分析请求...${COLOR_RESET}\r`);
             break;
           case 'tool_call':
-            // 擦除之前的思考提示，并高亮打印当前的工具调用信息
+            // 暴露工具调用细节
             process.stdout.write(' '.repeat(60) + '\r');
-            console.log(`${COLOR_YELLOW}⚙️  [智能体动作] ${status.detail}${COLOR_RESET}`);
+            console.log(`${COLOR_YELLOW}[调度] ${status.detail}${COLOR_RESET}`);
             break;
           case 'tool_response':
-            // 灰度回显工具操作反馈
-            console.log(`${COLOR_GRAY}📥 [智能体沙箱] ${status.detail}${COLOR_RESET}`);
+            // 暴露工具执行后的数据状态
+            console.log(`${COLOR_GRAY}[反馈] ${status.detail}${COLOR_RESET}`);
             break;
           case 'error':
-            // 红色回显报错信息（如沙箱拦截警报）
-            console.log(`${COLOR_RED}⚠️  [智能体警报] ${status.detail}${COLOR_RESET}`);
+            // 暴露非致命性异常日志（主要针对沙箱访问阻断的内部修正阶段）
+            console.log(`${COLOR_RED}[异常] ${status.detail}${COLOR_RESET}`);
             break;
         }
       });
 
-      // 清除多余行，并以高品味洋红色输出 Agent 的最终回复文本
+      // 推理完成，向标准输出提交最终文本响应结果
       process.stdout.write(' '.repeat(60) + '\r');
-      console.log(`\n${COLOR_MAGENTA}智能体 >${COLOR_RESET} ${agentReply}\n`);
+      console.log(`\n${COLOR_MAGENTA}系统响应 >${COLOR_RESET} ${agentReply}\n`);
 
-    } catch (error: any) {
-      // 捕获 API 级或网络等全局不可抗力错误，友好输出
+    } catch (error: unknown) {
+      // 兜底捕获并暴露全局致命级错误（例如网络阻断）
+      const errorMsg = error instanceof Error ? error.message : String(error);
       process.stdout.write(' '.repeat(60) + '\r');
-      console.log(`\n${COLOR_RED}⚠️  [智能体错误] ${error.message}${COLOR_RESET}\n`);
+      console.log(`\n${COLOR_RED}[系统故障] ${errorMsg}${COLOR_RESET}\n`);
     }
 
-    // 继续下一轮对话循环
+    // 恢复控制权以接纳下一轮指令
     rl.prompt();
   });
 
-  // 监听 Ctrl+C 等终端退出信号
+  // 挂载进程强制中断事件处理
   rl.on('SIGINT', () => {
-    console.log(`\n${COLOR_GREEN}[系统] 正在关闭会话。再见！${COLOR_RESET}`);
+    console.log(`\n${COLOR_GREEN}[系统] 收到中断信号，程序退出。${COLOR_RESET}`);
     rl.close();
     process.exit(0);
   });

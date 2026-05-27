@@ -6,7 +6,8 @@
   "main": "src/index.ts",
   "scripts": {
     "start": "node --disable-warning=DEP0040 --import tsx src/index.ts",
-    "dev": "node --disable-warning=DEP0040 --import tsx src/index.ts"
+    "dev": "node --disable-warning=DEP0040 --import tsx src/index.ts",
+    "lint": "eslint ."
   },
   "keywords": [],
   "author": "wangjia",
@@ -16,8 +17,11 @@
     "openai": "4.52.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "20.11.24",
+    "eslint": "^10.4.0",
     "tsx": "4.7.1",
-    "typescript": "5.3.3"
+    "typescript": "5.3.3",
+    "typescript-eslint": "^8.60.0"
   }
 }

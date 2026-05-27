@@ -2,119 +2,114 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 /**
- * 获取经过环境变量或本地配置指定的授权工作区根目录。
- * 默认使用当前进程的运行目录（process.cwd()）。
+ * 提取运行时所预设的合法根路径。
+ * 默认退化策略为直接采用当前进程工作目录。
  */
 const rawWorkspaceDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
 
 /**
- * 将授权工作区根目录解析为规范化绝对物理路径，以作基准比对。
+ * 对提取出的基准路径进行正规化处理，生成绝对物理地址以作基准度量参照物。
  */
 const authorizedDir = path.resolve(rawWorkspaceDir);
 
 /**
- * 绝对路径物理防护沙箱校验函数。
- * 该函数负责对大模型或用户输入的相对路径或绝对路径进行统一解析，
- * 并应用严格的前缀比对算法，彻底拦截和阻断任何路径跨越与目录遍历（Path Traversal）安全威胁。
+ * 路径沙箱保护机制核心校验器。
+ * 对给定的文件路径进行解析与规范化处理，并依据受限边界进行硬隔离判定，
+ * 从根本上杜绝潜在的路径遍历（Path Traversal）安全渗透风险。
  * 
- * @param targetPath 输入的文件路径（可能是相对路径如 'demo.txt' 或恶意遍历路径如 '../../windows/win.ini'）
- * @returns 经过安全核验后的本地绝对物理路径
- * @throws 当检测到路径跨越授权根目录时，抛出明确的越权阻断 Error 异常
+ * @param targetPath 具有潜在风险的入参目标文件或目录路径
+ * @returns 脱敏与清洗完毕的安全物理绝对路径
+ * @throws 当路径试图打破授权保护区时抛出拒绝访问的异常错误
  */
 export function secureResolvePath(targetPath: string): string {
-  // 1. 将目标路径物理结合到授权基准根目录，并解析出规范化的绝对物理路径
-  // path.resolve 会自动消除 '.'、'..' 以及双斜杠等所有相对偏移量
+  // 基于安全边界生成规范化的拼接结果，该策略将隐性消除全部的偏移量标识（如 '..'）
   const resolvedPath = path.resolve(authorizedDir, targetPath);
   
-  // 2. 判断解析后的绝对物理路径是否以授权的绝对物理路径前缀开头
-  // 从而彻底阻断越过基准授权范围的一切读取或修改行为
+  // 以字符串前缀匹配进行强边界制约，阻止逃逸
   if (!resolvedPath.startsWith(authorizedDir)) {
     throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区的安全防护边界。`);
   }
   
-  // 3. 安全校验通过，返回绝对文件系统路径以供本地操作
+  // 认证放行
   return resolvedPath;
 }
 
 /**
- * 读取授权目录下的指定文本文件内容。
+ * 文件读取适配封装组件。
  * 
- * @param targetPath 目标文件的路径（支持相对授权工作区根目录的相对路径）
- * @returns 文件的文本内容（UTF-8 编码）
- * @throws 路径越权或文件不存在时抛出相应错误
+ * @param targetPath 请求读取的数据节点路径
+ * @returns 解析得到的纯文本数据集
  */
 export function readFileTool(targetPath: string): string {
-  // 运行绝对物理路径沙箱核算
+  // 获取已脱敏的请求资源定位符
   const safePath = secureResolvePath(targetPath);
   
-  // 判断目标文件是否在物理磁盘上真实存在
+  // 检查目标资产的存在性
   if (!fs.existsSync(safePath)) {
     throw new Error(`未找到文件："${targetPath}"`);
   }
   
-  // 判断该路径是否是普通文本文件，防止对目录进行读取报错
+  // 实施资产类别约束（规避将目录资源视作标准文件而引发的读取层级瘫痪）
   if (fs.statSync(safePath).isDirectory()) {
     throw new Error(`路径 "${targetPath}" 是一个目录，不能作为普通文本文件进行读取。`);
   }
   
-  // 读取并返回文件文本
+  // 输出序列化文件流
   return fs.readFileSync(safePath, 'utf-8');
 }
 
 /**
- * 向授权工作区目录下的指定文件写入文本内容。
- * 如果文件不存在则自动创建，如果已存在则自动覆盖其原有内容。
- * 同时自动根据文件深度按需递归创建其缺失的父级目录。
+ * 文件变更适配封装组件。
+ * 提供幂等的更新体验：新建不存在的节点、全量覆盖已存在的节点，并保障父目录结构的完整性。
  * 
- * @param targetPath 目标写入文件的路径
- * @param content 要写入的文本内容
- * @returns 写入成功的状态报告字符串
- * @throws 路径越权或物理写入失败时抛出错误
+ * @param targetPath 计划落盘的数据节点路径
+ * @param content 带持久化要求的负载文本内容
+ * @returns 更新操作确认标识
  */
 export function writeFileTool(targetPath: string, content: string): string {
-  // 运行绝对物理路径沙箱核算
+  // 获取已脱敏的请求资源定位符
   const safePath = secureResolvePath(targetPath);
   
-  // 获取父级目录的绝对物理路径，自动为其递归创建可能缺失的各个层级
+  // 对目录链条进行检查与前置构建
   const parentDir = path.dirname(safePath);
   if (!fs.existsSync(parentDir)) {
     fs.mkdirSync(parentDir, { recursive: true });
   }
   
-  // 执行本地磁盘物理文件写入
+  // 将变动执行至存储设备
   fs.writeFileSync(safePath, content, 'utf-8');
   
-  return `成功将文本内容写入文件 "${targetPath}"。`;
+  return `写入执行成功："${targetPath}"。`;
 }
 
 /**
- * 列出授权工作区目录下指定文件夹内的所有文件及子目录名称。
+ * 目录查询检索组件。
+ * 提供获取授权沙箱内指定目录浅层列表清单的能力。
  * 
- * @param targetPath 目标文件夹路径，默认为 '.'（即工作区根目录）
- * @returns 目录下所有直接子项的名称数组
- * @throws 路径越权或目录不存在时抛出错误
+ * @param targetPath 指定查询层级的节点坐标
+ * @returns 包含各子元素名称的有序集合
  */
 export function listFilesTool(targetPath: string = '.'): string[] {
-  // 运行绝对物理路径沙箱核算
+  // 获取已脱敏的请求资源定位符
   const safePath = secureResolvePath(targetPath);
   
-  // 校验目标文件夹在物理磁盘上是否存在
+  // 检查目标资产的存在性
   if (!fs.existsSync(safePath)) {
     throw new Error(`未找到文件夹："${targetPath}"`);
   }
   
-  // 校验该路径是否为合法的目录结构
+  // 实施资产类别约束（阻止面向单文件发起的无效检索请求）
   if (!fs.statSync(safePath).isDirectory()) {
     throw new Error(`路径 "${targetPath}" 是一个文件，不能作为文件夹列出。`);
   }
   
-  // 读取并返回该目录下所有子文件与子文件夹的名称
+  // 输出资源清单
   return fs.readdirSync(safePath);
 }
 
 /**
- * 集中导出大语言模型 API（兼容 OpenAI / DeepSeek）标准的 tools 工具描述定义数组。
- * 所有工具名称、参数以及说明文档已全面实现中文本地化，完美支撑极简化中文 Agent 开发。
+ * 基于 OpenAI Function Calling 协议构建的工具集。
+ * 此契约用于支撑大模型推理侧了解本地可调度能力及其边界限制。
  */
 export const toolsDefinition = [
   {
