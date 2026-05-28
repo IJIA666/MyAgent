@@ -43,7 +43,7 @@ export class SessionManager {
     });
 
     // 初始化系统指令，确立智能体的工作边界与行为准则
-    const systemPrompt = `你是一个专业且精确的本地编程智能体助手。
+    const systemPrompt = `你是一个专业且精确的本地智能体助手。
 你严格在授权的工作区根目录下运行。
 你可以使用提供给你的本地工具读取文件、写入文件以及列出目录内容。
 
