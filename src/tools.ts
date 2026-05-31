@@ -1,5 +1,6 @@
-import * as path from 'path';
-import * as fs from 'fs';
+import { resolve, dirname } from 'path';
+import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
+import { McpToolManager } from './mcp-client.js';
 
 /**
  * 提取运行时所预设的合法根路径。
@@ -10,7 +11,7 @@ const rawWorkspaceDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
 /**
  * 对提取出的基准路径进行正规化处理，生成绝对物理地址以作基准度量参照物。
  */
-const authorizedDir = path.resolve(rawWorkspaceDir);
+const authorizedDir = resolve(rawWorkspaceDir);
 
 /**
  * 路径沙箱保护机制核心校验器。
@@ -23,13 +24,13 @@ const authorizedDir = path.resolve(rawWorkspaceDir);
  */
 export function secureResolvePath(targetPath: string): string {
   // 基于安全边界生成规范化的拼接结果，该策略将隐性消除全部的偏移量标识（如 '..'）
-  const resolvedPath = path.resolve(authorizedDir, targetPath);
-  
+  const resolvedPath = resolve(authorizedDir, targetPath);
+
   // 以字符串前缀匹配进行强边界制约，阻止逃逸
   if (!resolvedPath.startsWith(authorizedDir)) {
     throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区的安全防护边界。`);
   }
-  
+
   // 认证放行
   return resolvedPath;
 }
@@ -43,19 +44,19 @@ export function secureResolvePath(targetPath: string): string {
 export function readFileTool(targetPath: string): string {
   // 获取已脱敏的请求资源定位符
   const safePath = secureResolvePath(targetPath);
-  
+
   // 检查目标资产的存在性
-  if (!fs.existsSync(safePath)) {
+  if (!existsSync(safePath)) {
     throw new Error(`未找到文件："${targetPath}"`);
   }
-  
+
   // 实施资产类别约束（规避将目录资源视作标准文件而引发的读取层级瘫痪）
-  if (fs.statSync(safePath).isDirectory()) {
+  if (statSync(safePath).isDirectory()) {
     throw new Error(`路径 "${targetPath}" 是一个目录，不能作为普通文本文件进行读取。`);
   }
-  
+
   // 输出序列化文件流
-  return fs.readFileSync(safePath, 'utf-8');
+  return readFileSync(safePath, 'utf-8');
 }
 
 /**
@@ -69,16 +70,16 @@ export function readFileTool(targetPath: string): string {
 export function writeFileTool(targetPath: string, content: string): string {
   // 获取已脱敏的请求资源定位符
   const safePath = secureResolvePath(targetPath);
-  
+
   // 对目录链条进行检查与前置构建
-  const parentDir = path.dirname(safePath);
-  if (!fs.existsSync(parentDir)) {
-    fs.mkdirSync(parentDir, { recursive: true });
+  const parentDir = dirname(safePath);
+  if (!existsSync(parentDir)) {
+    mkdirSync(parentDir, { recursive: true });
   }
-  
+
   // 将变动执行至存储设备
-  fs.writeFileSync(safePath, content, 'utf-8');
-  
+  writeFileSync(safePath, content, 'utf-8');
+
   return `写入执行成功："${targetPath}"。`;
 }
 
@@ -92,19 +93,19 @@ export function writeFileTool(targetPath: string, content: string): string {
 export function listFilesTool(targetPath: string = '.'): string[] {
   // 获取已脱敏的请求资源定位符
   const safePath = secureResolvePath(targetPath);
-  
+
   // 检查目标资产的存在性
-  if (!fs.existsSync(safePath)) {
+  if (!existsSync(safePath)) {
     throw new Error(`未找到文件夹："${targetPath}"`);
   }
-  
+
   // 实施资产类别约束（阻止面向单文件发起的无效检索请求）
-  if (!fs.statSync(safePath).isDirectory()) {
+  if (!statSync(safePath).isDirectory()) {
     throw new Error(`路径 "${targetPath}" 是一个文件，不能作为文件夹列出。`);
   }
-  
+
   // 输出资源清单
-  return fs.readdirSync(safePath);
+  return readdirSync(safePath);
 }
 
 /**
@@ -167,3 +168,19 @@ export const toolsDefinition = [
     }
   }
 ];
+
+/**
+ * 动态合并本地静态原生工具与远端 MCP 动态工具
+ */
+export async function getAllTools(mcpManager?: McpToolManager) {
+  const localTools = [...toolsDefinition] as Record<string, unknown>[];
+
+  if (mcpManager) {
+    const mcpTools = await mcpManager.getMcpTools();
+    // 追加 MCP 获取的外部工具
+    return localTools.concat(mcpTools);
+  }
+
+  return localTools;
+}
+

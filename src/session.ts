@@ -1,14 +1,16 @@
 import { OpenAI } from 'openai';
-import * as dotenv from 'dotenv';
+import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
+import { config as dotenvConfig } from 'dotenv';
 import {
   readFileTool,
   writeFileTool,
   listFilesTool,
-  toolsDefinition
+  getAllTools
 } from './tools.js';
+import { McpToolManager } from './mcp-client.js';
 
 // 初始化环境变量
-dotenv.config();
+dotenvConfig();
 
 /**
  * 会话管理与模型交互调度中心。
@@ -23,14 +25,18 @@ export class SessionManager {
   // 动态指定的模型名称
   private modelName: string;
   // 对话历史数据结构，用于维护时序上下文
-  private messageHistory: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+  private messageHistory: ChatCompletionMessageParam[] = [];
   // 工具调用的最大允许层级深度，防止模型内部异常导致死循环
   private maxIterations = 10;
+
+  // MCP 客户端管理器
+  private mcpManager?: McpToolManager;
 
   /**
    * 实例初始化。设定基础配置与工作准则。
    */
-  constructor() {
+  constructor(mcpManager?: McpToolManager) {
+    this.mcpManager = mcpManager;
     // 聚合模型配置项以保证基础可用性
     const apiKey = process.env.DEEPSEEK_API_KEY || 'sk-0b10b9092f5f48188c8b27195f6ba464';
     const baseURL = process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com';
@@ -72,7 +78,7 @@ export class SessionManager {
   /**
    * 输出当前关联的上下文状态数据（不含深拷贝保护机制）。
    */
-  public getHistory(): OpenAI.Chat.ChatCompletionMessageParam[] {
+  public getHistory(): ChatCompletionMessageParam[] {
     return this.messageHistory;
   }
 
@@ -98,11 +104,13 @@ export class SessionManager {
       }
 
       try {
+        const allTools = await getAllTools(this.mcpManager);
+
         // 构建请求模型并拉起远端调用
         const response = await this.client.chat.completions.create({
           model: this.modelName,
           messages: this.messageHistory,
-          tools: toolsDefinition as OpenAI.Chat.ChatCompletionTool[],
+          tools: allTools as unknown as ChatCompletionTool[],
           tool_choice: 'auto',
           max_tokens: 4096,            // 设立容量上限以约束资源开销
           user: 'local-terminal-user'  // 申明访问主体以配合服务端侧的安全风控策略
@@ -154,7 +162,13 @@ export class SessionManager {
                   toolResult = JSON.stringify(listFilesTool(functionArgs.targetPath || '.'));
                   break;
                 default:
-                  throw new Error(`未知的工具名称："${functionName}"`);
+                  if (this.mcpManager) {
+                    // 如果存在外部 MCP 管理器，则尝试转发调用
+                    const mcpResult = await this.mcpManager.callMcpTool(functionName, functionArgs);
+                    toolResult = JSON.stringify(mcpResult);
+                  } else {
+                    throw new Error(`未知的工具名称："${functionName}"`);
+                  }
               }
             } catch (toolError: unknown) {
               // 针对应用层异常进行无害化处理，并组装错误详情以供模型重算修正

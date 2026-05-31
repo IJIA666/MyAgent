@@ -1,7 +1,7 @@
 {
   "name": "my-simple-agent",
   "version": "1.0.0",
-  "description": "A minimal TypeScript-based Agent with sandboxed file tools and REPL session management.",
+  "description": "一个基于 TypeScript 的极简 Agent，具备沙箱化文件工具与 REPL 会话管理能力。",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
@@ -13,6 +13,7 @@
   "author": "wangjia",
   "license": "MIT",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "16.4.5",
     "openai": "4.52.0"
   },

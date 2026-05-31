@@ -1,7 +1,8 @@
-import * as readline from 'readline';
-import * as path from 'path';
-import * as fs from 'fs';
+import { createInterface } from 'readline';
+import { resolve } from 'path';
+import { existsSync, copyFileSync } from 'fs';
 import { SessionManager } from './session.js';
+import { McpToolManager } from './mcp-client.js';
 
 /**
  * 定义 ANSI 终端颜色常量，用于区分不同状态输出的展示层级。
@@ -18,29 +19,42 @@ const COLOR_GREEN = '\x1b[32m';
  * 检查并初始化环境变量配置。
  * 当 .env 文件缺失时，通过复制 .env.example 提供默认配置模板，确保基础运行环境的完备性。
  */
-function ensureDotEnvExists(): void {
-  const envPath = path.resolve('.env');
-  const examplePath = path.resolve('.env.example');
+function ensureConfigFilesExist(): void {
+  const envPath = resolve('.env');
+  const envExamplePath = resolve('.env.example');
 
   // 环境变量补全逻辑
-  if (!fs.existsSync(envPath) && fs.existsSync(examplePath)) {
+  if (!existsSync(envPath) && existsSync(envExamplePath)) {
     console.log(`${COLOR_YELLOW}[系统] 缺少 .env 配置文件，正在从模板复制生成。${COLOR_RESET}`);
-    fs.copyFileSync(examplePath, envPath);
+    copyFileSync(envExamplePath, envPath);
     console.log(`${COLOR_GREEN}[系统] .env 文件创建完毕，请按需调整内部参数。${COLOR_RESET}\n`);
+  }
+
+  const mcpConfigPath = resolve('mcp_config.json');
+  const mcpExamplePath = resolve('mcp_config.example.json');
+
+  // MCP 配置补全逻辑
+  if (!existsSync(mcpConfigPath) && existsSync(mcpExamplePath)) {
+    console.log(`${COLOR_YELLOW}[系统] 缺少 mcp_config.json 配置文件，正在从模板复制生成。${COLOR_RESET}`);
+    copyFileSync(mcpExamplePath, mcpConfigPath);
+    console.log(`${COLOR_GREEN}[系统] mcp_config.json 文件创建完毕，若需开启 MCP 请按需配置。${COLOR_RESET}\n`);
   }
 }
 
 /**
- * 系统主入口点。
  * 负责初始化环境、加载会话管理器（SessionManager），并建立基于 Readline 的 REPL 交互循环。
  */
 async function main() {
   console.clear();
 
-  // 1. 初始化环境变量
-  ensureDotEnvExists();
+  // 1. 初始化环境变量和配置
+  ensureConfigFilesExist();
 
-  const workspaceRoot = path.resolve(process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd());
+  // 重新加载环境变量，确保新建的 .env 能被正确读取（因为 session.js 中的顶层 dotenv 可能在文件创建前就执行了）
+  const { config } = await import('dotenv');
+  config();
+
+  const workspaceRoot = resolve(process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd());
 
   // 2. 打印系统启动与配置信息
   console.log(`${COLOR_GREEN}====================================================`);
@@ -53,7 +67,13 @@ async function main() {
   // 3. 实例化核心会话组件
   let session: SessionManager;
   try {
-    session = new SessionManager();
+    const mcpManager = new McpToolManager();
+
+    // 加载外部 MCP Server 配置并建立连接
+    // 加载外部 MCP Server 配置并建立连接（自动支持多环境配置合并）
+    await mcpManager.connectConfig();
+
+    session = new SessionManager(mcpManager);
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);
     console.log(`${COLOR_RED}[错误] 初始化会话管理器失败：${errorMsg}${COLOR_RESET}`);
@@ -61,7 +81,7 @@ async function main() {
   }
 
   // 4. 配置并启动终端交互接口
-  const rl = readline.createInterface({
+  const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
     prompt: `${COLOR_CYAN}用户 > ${COLOR_RESET}`
