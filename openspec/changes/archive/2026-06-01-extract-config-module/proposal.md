@@ -11,11 +11,13 @@
 - `index.ts` 移除 `ensureConfigFilesExist()` 和手动 `dotenv` 加载，改为调用 `loadConfig()` 并注入依赖
 - `mcp_config.example.json` 的 API Key 值改为 `${TAVILY_API_KEY}` 占位符格式
 - `.gitignore` 新增 `mcp_config.json` 忽略规则
+- 引入 **MCP 子进程环境隔离机制**，使用严格白名单替代全量 `process.env` 继承，防止敏感凭据泄露
 
 ## 业务能力
 
 ### 新增业务能力
 - `config-management`: 统一配置管理能力——提供集中式的配置加载、校验、环境变量插值和类型安全的配置对象导出
+- `config-management`: MCP 子进程环境隔离——通过基础变量白名单、强制注入项和自定义变量合并，实现安全的进程级环境隔离
 
 ### 修改业务能力
 - `simple-agent-core`: "动态模型配置切换"需求的实现方式发生变化——从各模块自行读取 `process.env` 改为由 `config.ts` 统一加载后通过依赖注入传递

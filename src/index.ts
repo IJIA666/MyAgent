@@ -1,8 +1,8 @@
 import { createInterface } from 'readline';
-import { resolve } from 'path';
-import { existsSync, copyFileSync } from 'fs';
 import { SessionManager } from './session.js';
 import { McpToolManager } from './mcp-client.js';
+import { loadConfig } from './config.js';
+import { initWorkspace } from './tools.js';
 
 /**
  * 定义 ANSI 终端颜色常量，用于区分不同状态输出的展示层级。
@@ -16,71 +16,43 @@ const COLOR_RED = '\x1b[31m';
 const COLOR_GREEN = '\x1b[32m';
 
 /**
- * 检查并初始化环境变量配置。
- * 当 .env 文件缺失时，通过复制 .env.example 提供默认配置模板，确保基础运行环境的完备性。
- */
-function ensureConfigFilesExist(): void {
-  const envPath = resolve('.env');
-  const envExamplePath = resolve('.env.example');
-
-  // 环境变量补全逻辑
-  if (!existsSync(envPath) && existsSync(envExamplePath)) {
-    console.log(`${COLOR_YELLOW}[系统] 缺少 .env 配置文件，正在从模板复制生成。${COLOR_RESET}`);
-    copyFileSync(envExamplePath, envPath);
-    console.log(`${COLOR_GREEN}[系统] .env 文件创建完毕，请按需调整内部参数。${COLOR_RESET}\n`);
-  }
-
-  const mcpConfigPath = resolve('mcp_config.json');
-  const mcpExamplePath = resolve('mcp_config.example.json');
-
-  // MCP 配置补全逻辑
-  if (!existsSync(mcpConfigPath) && existsSync(mcpExamplePath)) {
-    console.log(`${COLOR_YELLOW}[系统] 缺少 mcp_config.json 配置文件，正在从模板复制生成。${COLOR_RESET}`);
-    copyFileSync(mcpExamplePath, mcpConfigPath);
-    console.log(`${COLOR_GREEN}[系统] mcp_config.json 文件创建完毕，若需开启 MCP 请按需配置。${COLOR_RESET}\n`);
-  }
-}
-
-/**
  * 负责初始化环境、加载会话管理器（SessionManager），并建立基于 Readline 的 REPL 交互循环。
  */
 async function main() {
   console.clear();
 
-  // 1. 初始化环境变量和配置
-  ensureConfigFilesExist();
+  // 1. 统一加载全部配置（文件引导 → dotenv → 必填校验 → MCP 加载 → 冻结）
+  const appConfig = loadConfig();
 
-  // 重新加载环境变量，确保新建的 .env 能被正确读取（因为 session.js 中的顶层 dotenv 可能在文件创建前就执行了）
-  const { config } = await import('dotenv');
-  config();
+  // 2. 初始化工作区沙箱路径
+  initWorkspace(appConfig.workspace);
 
-  const workspaceRoot = resolve(process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd());
-
-  // 2. 打印系统启动与配置信息
+  // 3. 打印系统启动与配置信息
   console.log(`${COLOR_GREEN}====================================================`);
   console.log(`[系统] IJIA Agent 启动完成`);
-  console.log(`[配置] 授权工作区目录：${workspaceRoot}`);
-  console.log(`[配置] 接口端点与模型配置已加载`);
+  console.log(`[配置] 授权工作区目录：${appConfig.workspace}`);
+  console.log(`[配置] 模型：${appConfig.llm.model}`);
+  console.log(`[配置] 接口端点：${appConfig.llm.baseUrl}`);
   console.log(`====================================================${COLOR_RESET}`);
   console.log(`${COLOR_GRAY}系统就绪，输入 "exit" 退出当前会话。\n${COLOR_RESET}`);
 
-  // 3. 实例化核心会话组件
+  // 4. 实例化核心会话组件
   let session: SessionManager;
   try {
-    const mcpManager = new McpToolManager();
+    // 通过依赖注入传递已加载的配置
+    const mcpManager = new McpToolManager(appConfig.mcp);
 
-    // 加载外部 MCP Server 配置并建立连接
-    // 加载外部 MCP Server 配置并建立连接（自动支持多环境配置合并）
-    await mcpManager.connectConfig();
+    // 连接所有已配置的 MCP Server
+    await mcpManager.connectAll();
 
-    session = new SessionManager(mcpManager);
+    session = new SessionManager(appConfig.llm, mcpManager);
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);
     console.log(`${COLOR_RED}[错误] 初始化会话管理器失败：${errorMsg}${COLOR_RESET}`);
     process.exit(1);
   }
 
-  // 4. 配置并启动终端交互接口
+  // 5. 配置并启动终端交互接口
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -90,7 +62,7 @@ async function main() {
   // 首次渲染输入提示符
   rl.prompt();
 
-  // 5. 事件监听器设定：处理用户输入并展开多轮交互
+  // 6. 事件监听器设定：处理用户输入并展开多轮交互
   rl.on('line', async (line) => {
     const input = line.trim();
 

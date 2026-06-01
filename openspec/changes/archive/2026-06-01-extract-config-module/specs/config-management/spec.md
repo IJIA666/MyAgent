@@ -45,3 +45,16 @@
 #### 场景: SessionManager 通过构造参数获取模型配置
 - **WHEN** `index.ts` 实例化 `SessionManager` 时传入 `LlmConfig` 对象
 - **THEN** `SessionManager` 内部必须使用该参数中的 `apiKey`、`baseUrl`、`model` 初始化 OpenAI 客户端，其源码中不得出现 `process.env` 读取语句
+
+## ADDED Requirements
+
+### Requirement: MCP 子进程环境隔离机制
+系统必须（MUST）对拉起的 MCP 子进程实施严格的环境变量"白名单"（Whitelist）过滤机制。在启动 MCP Server 时，绝不允许透传宿主机的完整 `process.env`（防止泄露敏感的 API Keys 或系统凭据）。
+配置模块必须仅传递：
+1. **基础白名单变量**（如 `PATH`, `HOME`, `USERPROFILE`, `TEMP` 等维持进程运转的必需项）。
+2. **强制注入变量**（如解决 Windows 编码异常的 `PYTHONIOENCODING=utf-8` 和 `PYTHONUTF8=1`）。
+3. **用户自定义变量**（从 `mcp_config.json` 显式指定的变量）。
+
+#### 场景: 启动 MCP 子进程时不泄露系统环境变量
+- **WHEN** `McpToolManager` 调用 `buildSubprocessEnv(config.env)` 构造子进程环境变量并拉起 MCP Server
+- **THEN** 传递给子进程的最终 `env` 对象中，不得包含系统中存在但未在白名单中的变量（如 `DEEPSEEK_API_KEY`），必须包含操作系统运行所需的 `PATH` 以及显式定义的 `TAVILY_API_KEY`。

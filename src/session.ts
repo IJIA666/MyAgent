@@ -1,6 +1,5 @@
 import { OpenAI } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
-import { config as dotenvConfig } from 'dotenv';
 import {
   readFileTool,
   writeFileTool,
@@ -8,9 +7,7 @@ import {
   getAllTools
 } from './tools.js';
 import { McpToolManager } from './mcp-client.js';
-
-// 初始化环境变量
-dotenvConfig();
+import { LlmConfig } from './config.js';
 
 /**
  * 会话管理与模型交互调度中心。
@@ -33,19 +30,19 @@ export class SessionManager {
   private mcpManager?: McpToolManager;
 
   /**
-   * 实例初始化。设定基础配置与工作准则。
+   * 实例初始化。通过依赖注入接收模型配置，不读取 process.env。
+   *
+   * @param llmConfig 大语言模型连接配置（由 config.ts 统一加载）
+   * @param mcpManager 可选的 MCP 客户端管理器
    */
-  constructor(mcpManager?: McpToolManager) {
+  constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager) {
     this.mcpManager = mcpManager;
-    // 聚合模型配置项以保证基础可用性
-    const apiKey = process.env.DEEPSEEK_API_KEY || 'sk-0b10b9092f5f48188c8b27195f6ba464';
-    const baseURL = process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com';
-    this.modelName = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+    this.modelName = llmConfig.model;
 
     // 初始化客户端
     this.client = new OpenAI({
-      apiKey: apiKey,
-      baseURL: baseURL
+      apiKey: llmConfig.apiKey,
+      baseURL: llmConfig.baseUrl
     });
 
     // 初始化系统指令，确立智能体的工作边界与行为准则

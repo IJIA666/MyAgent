@@ -3,15 +3,20 @@ import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, readdirSy
 import { McpToolManager } from './mcp-client.js';
 
 /**
- * 提取运行时所预设的合法根路径。
- * 默认退化策略为直接采用当前进程工作目录。
+ * 授权工作区的绝对路径。
+ * 通过 initWorkspace() 延迟初始化，不在模块加载阶段读取 process.env。
  */
-const rawWorkspaceDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+let authorizedDir: string | null = null;
 
 /**
- * 对提取出的基准路径进行正规化处理，生成绝对物理地址以作基准度量参照物。
+ * 初始化授权工作区路径。
+ * 在应用启动阶段由 index.ts 调用一次，后续不再变更。
+ *
+ * @param rootDir 已 resolve 的工作区绝对路径
  */
-const authorizedDir = resolve(rawWorkspaceDir);
+export function initWorkspace(rootDir: string): void {
+  authorizedDir = resolve(rootDir);
+}
 
 /**
  * 路径沙箱保护机制核心校验器。
@@ -20,9 +25,14 @@ const authorizedDir = resolve(rawWorkspaceDir);
  * 
  * @param targetPath 具有潜在风险的入参目标文件或目录路径
  * @returns 脱敏与清洗完毕的安全物理绝对路径
- * @throws 当路径试图打破授权保护区时抛出拒绝访问的异常错误
+ * @throws 当工作区未初始化或路径试图打破授权保护区时抛出错误
  */
 export function secureResolvePath(targetPath: string): string {
+  // 防护检查：确保工作区已通过 initWorkspace() 完成初始化
+  if (authorizedDir === null) {
+    throw new Error('工作区尚未初始化。请确保在使用文件工具前调用 initWorkspace()。');
+  }
+
   // 基于安全边界生成规范化的拼接结果，该策略将隐性消除全部的偏移量标识（如 '..'）
   const resolvedPath = resolve(authorizedDir, targetPath);
 

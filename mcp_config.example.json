@@ -7,7 +7,7 @@
         "tavily-mcp"
       ],
       "env": {
-        "TAVILY_API_KEY": "YOUR_API_KEY_HERE"
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
       }
     }
   }

@@ -55,8 +55,41 @@
 
 当前 `session.ts` 中 API Key 的硬编码默认值是安全隐患（会被提交到版本库）。改为必填校验后，用户漏配时能立即发现，而非在运行时出现难以排查的 API 调用失败。
 
+### 决策 6：MCP 子进程环境变量继承策略——白名单 vs 黑名单 vs 全量继承
+
+**选择：白名单过滤（参照 hermes-agent 方案）**
+
+调研了 4 个标杆项目的实际做法：
+
+| 项目 | 策略 | 做法 | 安全性 | 兼容性 |
+|------|------|------|--------|--------|
+| tinypace-ai-desktop | 全量继承 + 平台增强 | `...process.env` 全量透传，额外补齐 Python 编码和 Windows 系统变量 | 低 | 高 |
+| claude-code | 全量继承 + 黑名单脱敏 | `...process.env` 后遍历删除敏感凭证（`ANTHROPIC_API_KEY` 等 20+ 项） | 中 | 高 |
+| openclaw | 纯净映射 | 只传递配置文件中显式声明的 `env` 字段，不继承宿主环境 | 高 | 低 |
+| hermes-agent | 严格白名单 | 只允许 `PATH`、`HOME`、`XDG_*` 等基础系统变量通过，再合并用户自定义 `env` | 高 | 中 |
+
+选择白名单方案的理由：
+- 本项目作为 Agent 系统，MCP 子进程可能执行第三方代码，环境隔离是安全底线
+- 白名单的维护成本远低于黑名单（只需列出 10 个左右的系统必要变量，而黑名单需要不断追加新出现的敏感 Key）
+- 用户仍可通过 `mcp_config.json` 的 `env` 字段显式传递所需变量，灵活性不受限
+
+实现方式：在 `config.ts` 中新增 `buildSubprocessEnv(userEnv?)` 函数，内部维护一个 `SAFE_ENV_WHITELIST` 常量数组（包含 `PATH`、`PATHEXT`、`HOME`、`USERPROFILE`、`APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP`、`SystemRoot`、`LANG`、`LC_ALL` 等跨平台基础变量）。同时强制注入 `PYTHONIOENCODING=utf-8` 和 `PYTHONUTF8=1` 以解决 Windows 下 Python MCP 服务器的编码问题（参照 tinypace-ai-desktop 的实践经验）。
+
+### 决策 7：配置优先级约定
+
+**选择：建立明确的三层优先级体系**
+
+参照 Spring Boot 的外部化配置优先级思路，为本项目确立如下配置覆盖规则（后者覆盖前者）：
+
+1. **`config.ts` 内置默认值**（最低优先级）：如白名单系统变量、Python 编码设置等
+2. **`.env` 文件中的环境变量**：通过 `dotenv` 加载，包含 API Key 等敏感配置
+3. **`mcp_config.json` 中的 `env` 字段**（最高优先级）：用户针对特定 MCP 服务器的显式配置
+
+这保证了用户在 `mcp_config.json` 中的显式声明永远有效，同时系统能提供合理的默认运行环境。
+
 ## 风险与权衡
 
 - **模块顶层求值消除** → `tools.ts` 中 `authorizedDir` 从模块常量改为延迟初始化，增加了"未初始化就调用"的可能性。通过在 `secureResolvePath()` 中加入防护检查来缓解。
 - **构造函数签名变更** → `SessionManager` 和 `McpToolManager` 的构造函数参数发生 breaking change。当前无外部消费者，风险可控。
 - **`mcp_config.json` 加入 `.gitignore`** → 新用户 clone 后没有此文件，需要从 example 复制。通过 `config.ts` 中的文件引导逻辑（自动从模板复制）来处理。
+- **白名单过于严格** → 某些 MCP 服务器可能依赖白名单之外的环境变量（如 `HTTP_PROXY`、`NODE_EXTRA_CA_CERTS` 等）。通过在 `mcp_config.json` 的 `env` 字段中显式配置来解决。后续如果发现常见遗漏，再扩充白名单即可。

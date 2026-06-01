@@ -20,11 +20,11 @@
 - **THEN** 文件工具处理器必须立刻拦截此操作，不得触发任何底层读写 API，并向大模型返回 “Access Denied: Path is outside the authorized directory” 的错误回显，以确保本地系统安全。
 
 ### Requirement: 动态模型配置切换
-系统必须（MUST）支持通过外部 `.env` 环境变量或集中配置文件 `config.json` 加载 `DEEPSEEK_API_KEY`、`DEEPSEEK_API_URL` 以及 `DEEPSEEK_MODEL`，使系统在启动和请求时动态调用对应的大语言模型。
+系统必须（MUST）支持通过外部 `.env` 环境变量加载 `DEEPSEEK_API_KEY`、`DEEPSEEK_API_URL` 以及 `DEEPSEEK_MODEL`，使系统在启动时动态调用对应的大语言模型。配置的加载必须由独立的配置管理模块（`config.ts`）统一完成，会话管理模块（`session.ts`）通过构造函数参数接收已加载的配置值，不得自行读取 `process.env` 或包含硬编码的默认 API Key。
 
 #### Scenario: 动态更改模型名称并生效
 - **WHEN** 用户在 `.env` 配置文件中将模型名称变量更改为兼容的另一个模型，并重新运行 Agent
-- **THEN** 系统的 API 请求客户端在发起会话时，必须自动使用并传递修改后的模型名称。
+- **THEN** 系统的 API 请求客户端在发起会话时，必须自动使用并传递修改后的模型名称
 
 ### Requirement: 交互式命令行 REPL 循环
 系统必须（MUST）基于 Node.js 原生的 `readline` 模块提供交互式的命令行对话循环。界面应能够清晰区分用户输入区与大模型回显区，且在发生 Tools 工具调用时，必须将工具调用的名称、参数及执行状态清晰打印在终端，使用户掌握 Agent 的行为。
