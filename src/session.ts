@@ -19,8 +19,12 @@ import { LlmConfig } from './config.js';
 export class SessionManager {
   // OpenAI SDK 客户端实例
   private client: OpenAI;
+  // 当前激活的大语言模型配置
+  private llmConfig: LlmConfig;
   // 动态指定的模型名称
   private modelName: string;
+  // 运行时的额外模型参数配置（如思考等级）
+  private modelOptions?: Record<string, unknown>;
   // 对话历史数据结构，用于维护时序上下文
   private messageHistory: ChatCompletionMessageParam[] = [];
   // 工具调用的最大允许层级深度，防止模型内部异常导致死循环
@@ -37,7 +41,10 @@ export class SessionManager {
    */
   constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager) {
     this.mcpManager = mcpManager;
+    this.llmConfig = llmConfig;
     this.modelName = llmConfig.model;
+    // 默认可以从外部传入或保留空
+    this.modelOptions = {};
 
     // 初始化客户端
     this.client = new OpenAI({
@@ -81,6 +88,28 @@ export class SessionManager {
   }
 
   /**
+   * 获取当前激活的模型名称。
+   */
+  public getModelName(): string {
+    return this.modelName;
+  }
+
+  /**
+   * 动态切换当前会话的大模型配置，复用已有的 messageHistory。
+   * @param newConfig 新的大语言模型配置
+   * @param options 额外的运行时交互配置（如思考等级等）
+   */
+  public switchModel(newConfig: LlmConfig, options?: Record<string, unknown>): void {
+    this.llmConfig = newConfig;
+    this.modelName = newConfig.model;
+    this.modelOptions = options;
+    this.client = new OpenAI({
+      apiKey: newConfig.apiKey,
+      baseURL: newConfig.baseUrl
+    });
+  }
+
+  /**
    * 处理单次对话请求的完整生命周期。
    * 采用 ReAct（Reasoning and Acting）架构设计，允许模型进行多次往返的工具请求与状态回溯，直至其推理出最终的自然语言结果。
    * 
@@ -106,7 +135,6 @@ export class SessionManager {
         const allTools = await getAllTools(this.mcpManager);
 
         // 构建请求模型并拉起远端调用
-        // @ts-expect-error 绕过 OpenAI SDK 对扩展字段的类型检查
         const stream = await this.client.chat.completions.create({
           model: this.modelName,
           messages: this.messageHistory,
@@ -114,10 +142,7 @@ export class SessionManager {
           tool_choice: 'auto',
           max_tokens: 4096,
           stream: true,
-          reasoning_effort: "high",
-          extra_body: {
-            thinking: { type: "enabled" }
-          }
+          ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions) : {})
         });
 
         let fullContent = '';

@@ -3,6 +3,7 @@ import { SessionManager } from './session.js';
 import { McpToolManager } from './mcp-client.js';
 import { loadConfig } from './config.js';
 import { initWorkspace } from './tools.js';
+import { dispatchCommand } from './command.js';
 
 /**
  * 定义 ANSI 终端颜色常量，用于区分不同状态输出的展示层级。
@@ -53,74 +54,97 @@ async function main() {
   }
 
   // 5. 配置并启动终端交互接口
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: `${COLOR_CYAN}用户 > ${COLOR_RESET}`
-  });
+  let rl: ReturnType<typeof createInterface>;
 
-  // 首次渲染输入提示符
-  rl.prompt();
+  const initRl = () => {
+    rl = createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
 
-  // 6. 事件监听器设定：处理用户输入并展开多轮交互
-  rl.on('line', async (line) => {
-    const input = line.trim();
+    const updatePrompt = () => {
+      rl.setPrompt(`${COLOR_CYAN}用户 [${session.getModelName()}] > ${COLOR_RESET}`);
+    };
 
-    // 解析退出指令，提供安全终止流程
-    if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
-      console.log(`\n${COLOR_GREEN}[系统] 进程正在终止，结束会话。${COLOR_RESET}`);
+    // 首次渲染输入提示符
+    updatePrompt();
+    rl.prompt();
+
+    // 6. 事件监听器设定：处理用户输入并展开多轮交互
+    rl.on('line', async (line) => {
+      const input = line.trim();
+
+      // 解析退出指令，提供安全终止流程
+      if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
+        console.log(`\n${COLOR_GREEN}[系统] 进程正在终止，结束会话。${COLOR_RESET}`);
+        rl.close();
+        process.exit(0);
+      }
+
+      // 规避无意义交互触发
+      if (!input) {
+        rl.prompt();
+        return;
+      }
+
+      // 拦截 Slash Command，委托给独立路由模块处理
+      if (input.startsWith('/')) {
+        // 彻底关闭并解绑原有的 readline 监听，将 stdin 让渡给 @clack/prompts
+        rl.close();
+        try {
+          await dispatchCommand(input, { session, rl });
+        } finally {
+          // 执行完毕后，重新初始化 REPL 并接管终端
+          initRl();
+        }
+        return;
+      }
+
+      // 推进会话状态，记录用户侧输入记录
+      session.addUserMessage(input);
+
+      try {
+        // 发起大模型推理请求，并注册状态回调函数以向上层暴露执行生命周期
+        await session.chat((status) => {
+          switch (status.type) {
+            case 'thinking':
+              // 移除了旧版的非流式等待提示，由于 session.ts 已负责真正的流式渲染
+              break;
+            case 'tool_call':
+              console.log(`${COLOR_YELLOW}[调度参数] ${status.detail}${COLOR_RESET}`);
+              break;
+            case 'tool_response':
+              console.log(`${COLOR_GRAY}[反馈] ${status.detail}${COLOR_RESET}`);
+              break;
+            case 'error':
+              console.log(`${COLOR_RED}[异常] ${status.detail}${COLOR_RESET}`);
+              break;
+          }
+        });
+
+        // 推理完成，向标准输出提交最终文本响应结果（新起一行避免拥挤）
+        console.log(`\n\n${COLOR_MAGENTA}系统响应 >${COLOR_RESET} 完毕。\n`);
+
+      } catch (error: unknown) {
+        // 兜底捕获并暴露全局致命级错误（例如网络阻断）
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        process.stdout.write(' '.repeat(60) + '\r');
+        console.log(`\n${COLOR_RED}[系统故障] ${errorMsg}${COLOR_RESET}\n`);
+      }
+
+      // 恢复控制权以接纳下一轮指令
+      rl.prompt();
+    });
+
+    // 挂载进程强制中断事件处理
+    rl.on('SIGINT', () => {
+      console.log(`\n${COLOR_GREEN}[系统] 收到中断信号，程序退出。${COLOR_RESET}`);
       rl.close();
       process.exit(0);
-    }
+    });
+  };
 
-    // 规避无意义交互触发
-    if (!input) {
-      rl.prompt();
-      return;
-    }
-
-    // 推进会话状态，记录用户侧输入记录
-    session.addUserMessage(input);
-
-    try {
-      // 发起大模型推理请求，并注册状态回调函数以向上层暴露执行生命周期
-      await session.chat((status) => {
-        switch (status.type) {
-          case 'thinking':
-            // 移除了旧版的非流式等待提示，由于 session.ts 已负责真正的流式渲染
-            break;
-          case 'tool_call':
-            console.log(`${COLOR_YELLOW}[调度参数] ${status.detail}${COLOR_RESET}`);
-            break;
-          case 'tool_response':
-            console.log(`${COLOR_GRAY}[反馈] ${status.detail}${COLOR_RESET}`);
-            break;
-          case 'error':
-            console.log(`${COLOR_RED}[异常] ${status.detail}${COLOR_RESET}`);
-            break;
-        }
-      });
-
-      // 推理完成，向标准输出提交最终文本响应结果（新起一行避免拥挤）
-      console.log(`\n\n${COLOR_MAGENTA}系统响应 >${COLOR_RESET} 完毕。\n`);
-
-    } catch (error: unknown) {
-      // 兜底捕获并暴露全局致命级错误（例如网络阻断）
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      process.stdout.write(' '.repeat(60) + '\r');
-      console.log(`\n${COLOR_RED}[系统故障] ${errorMsg}${COLOR_RESET}\n`);
-    }
-
-    // 恢复控制权以接纳下一轮指令
-    rl.prompt();
-  });
-
-  // 挂载进程强制中断事件处理
-  rl.on('SIGINT', () => {
-    console.log(`\n${COLOR_GREEN}[系统] 收到中断信号，程序退出。${COLOR_RESET}`);
-    rl.close();
-    process.exit(0);
-  });
+  initRl();
 }
 
 // 启动主程序

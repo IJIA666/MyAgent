@@ -7,6 +7,56 @@ import { config as dotenvConfig } from 'dotenv';
 // ============================================================================
 
 /**
+ * 大语言模型特化配置档案。
+ */
+export interface ModelProfile {
+  id: string;
+  envKeyName: string;
+  envUrlName?: string;
+  defaultBaseUrl: string;
+  defaultModel: string;
+  /** 构建额外 Payload 的钩子函数，支持接收运行时交互传递的参数 */
+  buildExtraPayload?: (options?: Record<string, unknown>) => Record<string, unknown>;
+}
+
+export const BUILTIN_MODELS: Record<string, ModelProfile> = {
+  'deepseek-v4-flash': {
+    id: 'deepseek-v4-flash',
+    envKeyName: 'DEEPSEEK_API_KEY',
+    envUrlName: 'DEEPSEEK_API_URL',
+    defaultBaseUrl: 'https://api.deepseek.com',
+    defaultModel: 'deepseek-v4-flash',
+    buildExtraPayload: (options?: Record<string, unknown>) => {
+      const effort = options?.reasoning_effort || process.env.DEEPSEEK_REASONING_EFFORT || 'high';
+      if (effort === 'disabled') {
+        return {};
+      }
+      return {
+        thinking: { type: "enabled" },
+        reasoning_effort: effort
+      };
+    }
+  },
+  'deepseek-v4-pro': {
+    id: 'deepseek-v4-pro',
+    envKeyName: 'DEEPSEEK_API_KEY',
+    envUrlName: 'DEEPSEEK_API_URL',
+    defaultBaseUrl: 'https://api.deepseek.com',
+    defaultModel: 'deepseek-v4-pro',
+    buildExtraPayload: (options?: Record<string, unknown>) => {
+      const effort = options?.reasoning_effort || process.env.DEEPSEEK_REASONING_EFFORT || 'high';
+      if (effort === 'disabled') {
+        return {};
+      }
+      return {
+        thinking: { type: "enabled" },
+        reasoning_effort: effort
+      };
+    }
+  }
+};
+
+/**
  * 大语言模型连接配置。
  * 包含 API 认证凭据、接口地址和模型标识。
  */
@@ -17,6 +67,8 @@ export interface LlmConfig {
   baseUrl: string;
   /** 目标模型名称（如 deepseek-chat、deepseek-v4-flash） */
   model: string;
+  /** 关联的模型特征档案 */
+  profile: ModelProfile;
 }
 
 /**
@@ -206,6 +258,27 @@ export function loadMcpConfig(): McpConfig {
 }
 
 /**
+ * 根据模型 ID 动态构建大语言模型连接配置。
+ * @param id 模型在 BUILTIN_MODELS 中的 ID
+ */
+export function getModelConfig(id: string): LlmConfig {
+  const profile = BUILTIN_MODELS[id];
+  if (!profile) {
+    throw new Error(`未知的模型 ID: ${id}`);
+  }
+  const apiKey = process.env[profile.envKeyName];
+  if (!apiKey || apiKey.trim() === '') {
+    throw new Error(`缺失模型 ${id} 的 API Key: 请在 .env 中配置 ${profile.envKeyName}`);
+  }
+  let baseUrl = profile.defaultBaseUrl;
+  if (profile.envUrlName && process.env[profile.envUrlName]) {
+    baseUrl = process.env[profile.envUrlName]!;
+  }
+  const model = profile.defaultModel;
+  return { apiKey, baseUrl, model, profile };
+}
+
+/**
  * 应用配置加载主入口。
  * 按序执行：文件引导 → dotenv 加载 → 必填校验 → MCP 加载 → 对象冻结。
  *
@@ -219,9 +292,9 @@ export function loadConfig(): AppConfig {
   dotenvConfig();
 
   // 3. 必填环境变量校验（fail-fast）
-  const apiKey = requireEnv('DEEPSEEK_API_KEY');
-  const baseUrl = requireEnv('DEEPSEEK_API_URL');
-  const model = requireEnv('DEEPSEEK_MODEL');
+  // 默认使用 deepseek-v4-flash
+  const defaultModelId = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+  const llm = getModelConfig(defaultModelId);
 
   // 4. 工作区路径解析
   const workspace = resolve(process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd());
@@ -231,7 +304,7 @@ export function loadConfig(): AppConfig {
 
   // 6. 组装配置对象
   const config: AppConfig = {
-    llm: { apiKey, baseUrl, model },
+    llm,
     workspace,
     mcp,
   };

@@ -13,6 +13,7 @@
   "author": "wangjia",
   "license": "MIT",
   "dependencies": {
+    "@clack/prompts": "^1.5.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "16.4.5",
     "openai": "4.52.0"
