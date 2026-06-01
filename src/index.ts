@@ -84,31 +84,25 @@ async function main() {
 
     try {
       // 发起大模型推理请求，并注册状态回调函数以向上层暴露执行生命周期
-      const agentReply = await session.chat((status) => {
+      await session.chat((status) => {
         switch (status.type) {
           case 'thinking':
-            // 反馈推理等待状态
-            process.stdout.write(`${COLOR_GRAY}[处理] 正在分析请求...${COLOR_RESET}\r`);
+            // 移除了旧版的非流式等待提示，由于 session.ts 已负责真正的流式渲染
             break;
           case 'tool_call':
-            // 暴露工具调用细节
-            process.stdout.write(' '.repeat(60) + '\r');
-            console.log(`${COLOR_YELLOW}[调度] ${status.detail}${COLOR_RESET}`);
+            console.log(`${COLOR_YELLOW}[调度参数] ${status.detail}${COLOR_RESET}`);
             break;
           case 'tool_response':
-            // 暴露工具执行后的数据状态
             console.log(`${COLOR_GRAY}[反馈] ${status.detail}${COLOR_RESET}`);
             break;
           case 'error':
-            // 暴露非致命性异常日志（主要针对沙箱访问阻断的内部修正阶段）
             console.log(`${COLOR_RED}[异常] ${status.detail}${COLOR_RESET}`);
             break;
         }
       });
 
-      // 推理完成，向标准输出提交最终文本响应结果
-      process.stdout.write(' '.repeat(60) + '\r');
-      console.log(`\n${COLOR_MAGENTA}系统响应 >${COLOR_RESET} ${agentReply}\n`);
+      // 推理完成，向标准输出提交最终文本响应结果（新起一行避免拥挤）
+      console.log(`\n\n${COLOR_MAGENTA}系统响应 >${COLOR_RESET} 完毕。\n`);
 
     } catch (error: unknown) {
       // 兜底捕获并暴露全局致命级错误（例如网络阻断）

@@ -53,7 +53,8 @@ export class SessionManager {
 **极其重要的指令：**
 1. 所有文件操作都必须严格限制在授权的工作区目录下。你的工具集会自动执行此项校验，一旦你尝试越权操作外部目录，工具将返回拒绝访问的错误。
 2. 如果工具在运行过程中返回错误（例如文件未找到、路径越权等），请分析错误原因并优雅地向用户解释，或者在修正参数后重新尝试调用。
-3. 请直接、专业且精准地回答用户问题，避免冗余的客套话或占位信息。`;
+3. 请直接、专业且精准地回答用户问题，避免冗余的客套话或占位信息。
+4. 【语言强制】你必须始终使用简体中文进行思考（内部逻辑和推理链）以及最终回复，仅在必要时保留英文的专业术语或代码片段。`;
 
     this.messageHistory.push({
       role: 'system',
@@ -89,6 +90,11 @@ export class SessionManager {
   public async chat(
     onStatusUpdate?: (status: { type: 'thinking' | 'tool_call' | 'tool_response' | 'error'; detail?: string }) => void
   ): Promise<string> {
+    const COLOR_RESET = '\x1b[0m';
+    const COLOR_GRAY = '\x1b[90m';
+    const COLOR_CYAN = '\x1b[36m';
+    const COLOR_RED = '\x1b[31m';
+
     // 初始化计数器，用于监控和限制模型响应轮次的数量
     let iteration = 0;
 
@@ -96,36 +102,103 @@ export class SessionManager {
     while (iteration < this.maxIterations) {
       iteration++;
 
-      if (onStatusUpdate) {
-        onStatusUpdate({ type: 'thinking' });
-      }
-
       try {
         const allTools = await getAllTools(this.mcpManager);
 
         // 构建请求模型并拉起远端调用
-        const response = await this.client.chat.completions.create({
+        // @ts-expect-error 绕过 OpenAI SDK 对扩展字段的类型检查
+        const stream = await this.client.chat.completions.create({
           model: this.modelName,
           messages: this.messageHistory,
           tools: allTools as unknown as ChatCompletionTool[],
           tool_choice: 'auto',
-          max_tokens: 4096,            // 设立容量上限以约束资源开销
-          user: 'local-terminal-user'  // 申明访问主体以配合服务端侧的安全风控策略
+          max_tokens: 4096,
+          stream: true,
+          reasoning_effort: "high",
+          extra_body: {
+            thinking: { type: "enabled" }
+          }
         });
 
-        const choice = response.choices[0];
-        const assistantMessage = choice.message;
+        let fullContent = '';
+        let fullReasoning = '';
+        interface PartialToolCall {
+          id: string;
+          type: string;
+          function: { name: string; arguments: string };
+        }
+        const accumulatedToolCalls: PartialToolCall[] = [];
+        let hasPrintedReasoning = false;
+        let hasPrintedContent = false;
 
+        for await (const chunk of stream) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const delta = chunk.choices[0]?.delta as any;
+          if (!delta) continue;
+
+          // 1. 处理思考内容
+          if (delta.reasoning_content) {
+            if (!hasPrintedReasoning) {
+              process.stdout.write(`\n${COLOR_GRAY}[思考过程]\n`);
+              hasPrintedReasoning = true;
+            }
+            process.stdout.write(`${COLOR_GRAY}${delta.reasoning_content}${COLOR_RESET}`);
+            fullReasoning += delta.reasoning_content;
+          }
+
+          // 2. 处理正式回复
+          if (delta.content) {
+            if (!hasPrintedContent) {
+              if (hasPrintedReasoning) {
+                process.stdout.write('\n\n'); // 思考结束后空行
+              }
+              hasPrintedContent = true;
+            }
+            process.stdout.write(delta.content);
+            fullContent += delta.content;
+          }
+
+          // 3. 处理工具碎片
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const index = tc.index;
+              if (!accumulatedToolCalls[index]) {
+                accumulatedToolCalls[index] = {
+                  id: tc.id || '',
+                  type: 'function',
+                  function: { name: tc.function?.name || '', arguments: '' }
+                };
+              }
+              if (tc.id) accumulatedToolCalls[index].id = tc.id;
+              if (tc.function?.name) accumulatedToolCalls[index].function.name += tc.function.name;
+              if (tc.function?.arguments) accumulatedToolCalls[index].function.arguments += tc.function.arguments;
+            }
+          }
+        }
+
+        // 构建上下文
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const assistantMessage: any = {
+          role: 'assistant',
+          content: fullContent || null,
+        };
+        if (fullReasoning) {
+          assistantMessage.reasoning_content = fullReasoning;
+        }
+        if (accumulatedToolCalls.length > 0) {
+          assistantMessage.tool_calls = accumulatedToolCalls;
+        }
         // 留存当前节点的推理快照（此步骤为 OpenAI Tool Calling 规范的强制要求，不可遗漏）
         this.messageHistory.push(assistantMessage);
 
         // 检测是否存在后续动作调度需要处理
-        if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
-
+        if (accumulatedToolCalls.length > 0) {
           // 处理当前批次的并发工具集指令
-          for (const toolCall of assistantMessage.tool_calls) {
+          for (const toolCall of accumulatedToolCalls) {
             const functionName = toolCall.function.name;
             let functionArgs: { targetPath?: string; content?: string;[key: string]: unknown } = {};
+
+            process.stdout.write(`\n\n${COLOR_CYAN}[⚡ 正在调用本地工具 "${functionName}"]${COLOR_RESET}\n`);
 
             try {
               // 剥离并反序列化参数载体数据
@@ -133,14 +206,14 @@ export class SessionManager {
             } catch (parseError: unknown) {
               const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
               if (onStatusUpdate) {
-                onStatusUpdate({ type: 'error', detail: `解析工具参数失败：${errorMsg}` });
+                onStatusUpdate({ type: 'error', detail: `\n${COLOR_RED}解析工具参数失败：${errorMsg}${COLOR_RESET}` });
               }
             }
 
             if (onStatusUpdate) {
               onStatusUpdate({
                 type: 'tool_call',
-                detail: `正在调用本地工具 "${functionName}"，参数：${JSON.stringify(functionArgs)}`
+                detail: `参数：${JSON.stringify(functionArgs)}`
               });
             }
 
@@ -172,7 +245,7 @@ export class SessionManager {
               const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
               toolResult = `错误：${errorMsg}`;
               if (onStatusUpdate) {
-                onStatusUpdate({ type: 'error', detail: `工具执行失败：${errorMsg}` });
+                onStatusUpdate({ type: 'error', detail: `\n${COLOR_RED}工具执行失败：${errorMsg}${COLOR_RESET}` });
               }
             }
 
@@ -190,13 +263,12 @@ export class SessionManager {
               content: toolResult
             });
           }
-
+          
           // 当期动作已全量完成，重置流转节点以索取下一轮研判分析
           continue;
-
         } else {
           // 不存在尚未落地的指令，提取最终态正文
-          return assistantMessage.content || '';
+          return fullContent;
         }
 
       } catch (apiError: unknown) {
