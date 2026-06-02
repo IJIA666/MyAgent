@@ -104,23 +104,40 @@ async function main() {
       session.addUserMessage(input);
 
       try {
-        // 发起大模型推理请求，并注册状态回调函数以向上层暴露执行生命周期
-        await session.chat((status) => {
-          switch (status.type) {
+        // 发起大模型推理请求，并消费产生的事件流
+        let hasPrintedReasoning = false;
+        let hasPrintedContent = false;
+
+        for await (const event of session.chat()) {
+          switch (event.type) {
             case 'thinking':
-              // 移除了旧版的非流式等待提示，由于 session.ts 已负责真正的流式渲染
+              if (!hasPrintedReasoning) {
+                process.stdout.write(`\n${COLOR_GRAY}[思考过程]\n`);
+                hasPrintedReasoning = true;
+              }
+              process.stdout.write(`${COLOR_GRAY}${event.content}${COLOR_RESET}`);
               break;
-            case 'tool_call':
-              console.log(`${COLOR_YELLOW}[调度参数] ${status.detail}${COLOR_RESET}`);
+            case 'content':
+              if (!hasPrintedContent) {
+                if (hasPrintedReasoning) {
+                  process.stdout.write('\n\n'); // 思考结束后空行
+                }
+                hasPrintedContent = true;
+              }
+              process.stdout.write(event.content);
               break;
-            case 'tool_response':
-              console.log(`${COLOR_GRAY}[反馈] ${status.detail}${COLOR_RESET}`);
+            case 'tool_call_start':
+              process.stdout.write(`\n\n${COLOR_CYAN}[⚡ 正在调用工具 "${event.functionName}"]${COLOR_RESET}\n`);
+              console.log(`${COLOR_YELLOW}[调度参数] ${JSON.stringify(event.functionArgs)}${COLOR_RESET}`);
+              break;
+            case 'tool_call_result':
+              console.log(`${COLOR_GRAY}[反馈] 工具 "${event.functionName}" 执行完毕，返回了 ${event.result.length} 字节的数据。${COLOR_RESET}`);
               break;
             case 'error':
-              console.log(`${COLOR_RED}[异常] ${status.detail}${COLOR_RESET}`);
+              console.log(`${COLOR_RED}[异常] ${event.message}${COLOR_RESET}`);
               break;
           }
-        });
+        }
 
         // 推理完成，向标准输出提交最终文本响应结果（新起一行避免拥挤）
         console.log(`\n\n${COLOR_MAGENTA}系统响应 >${COLOR_RESET} 完毕。\n`);

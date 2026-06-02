@@ -4,14 +4,18 @@ import { SessionManager } from './session.js';
 import { getModelConfig, BUILTIN_MODELS } from './config.js';
 import { updateEnvVariable } from './utils/env.js';
 
+// 定义终端输出颜色常量
 const COLOR_RESET = '\x1b[0m';
 const COLOR_YELLOW = '\x1b[33m';
 const COLOR_RED = '\x1b[31m';
 const COLOR_GREEN = '\x1b[32m';
 
+/**
+ * 命令执行上下文接口，包含当前会话状态和交互界面
+ */
 export interface CommandContext {
-  session: SessionManager;
-  rl: Interface;
+  session: SessionManager; // 当前活跃的会话管理器实例
+  rl: Interface;           // 绑定的 readline 交互接口
 }
 
 /**
@@ -21,38 +25,54 @@ export interface CommandContext {
  * @param context 命令执行上下文
  */
 export async function dispatchCommand(input: string, context: CommandContext): Promise<void> {
+  // 解析命令和参数
   const parts = input.trim().split(' ');
   const command = parts[0].toLowerCase();
   const args = parts.slice(1);
 
+  // 路由分发到对应的处理逻辑
   switch (command) {
     case '/model':
+      // 处理模型切换命令
       await handleModelCommand(args, context);
       break;
     case '/help':
+      // 处理帮助信息打印
       handleHelpCommand();
       break;
     default:
+      // 未知命令处理
       console.log(`${COLOR_RED}[错误] 未知的系统指令: ${command}，输入 /help 查看帮助。${COLOR_RESET}`);
   }
 }
 
+/**
+ * 处理大语言模型切换与配置向导逻辑。
+ * 提供交互式的终端 UI 供用户选择模型和推理思考等级。
+ *
+ * @param args 命令行附带的参数数组
+ * @param context 命令执行上下文
+ */
 async function handleModelCommand(args: string[], context: CommandContext): Promise<void> {
 
   console.log();
   p.intro(`${COLOR_YELLOW}模型配置向导${COLOR_RESET}`);
 
+  // 组装内置模型选项供用户选择
   const modelOptions = Object.keys(BUILTIN_MODELS).map(id => ({
     value: id,
     label: id
   }));
 
+  // 发起模型选择交互提示
   const modelSelect = await p.select({
     message: '请选择目标大模型:',
     options: modelOptions,
+    // 若参数中指定了合法模型 ID，则设为初始默认选项
     initialValue: args[0] && BUILTIN_MODELS[args[0]] ? args[0] : undefined
   });
 
+  // 检查用户是否取消了选择操作
   if (p.isCancel(modelSelect)) {
     p.cancel('已取消模型切换。');
     return;
@@ -60,6 +80,7 @@ async function handleModelCommand(args: string[], context: CommandContext): Prom
 
   const targetModelId = modelSelect as string;
 
+  // 发起思考等级选项的交互提示
   const reasoningSelect = await p.select({
     message: '请选择思考等级 (Reasoning Effort):',
     options: [
@@ -77,6 +98,7 @@ async function handleModelCommand(args: string[], context: CommandContext): Prom
 
   const reasoningEffort = reasoningSelect as string;
 
+  // 询问用户是否需要将变更固化到环境变量配置中
   const saveDefault = await p.confirm({
     message: '是否将此模型设为全局默认配置？(保存至 .env)',
     initialValue: false
@@ -88,21 +110,29 @@ async function handleModelCommand(args: string[], context: CommandContext): Prom
   }
 
   try {
+    // 拉取选定模型的详细配置
     const newConfig = getModelConfig(targetModelId);
+    // 动态刷新当前会话底层的模型实例及其推理参数
     context.session.switchModel(newConfig, { reasoning_effort: reasoningEffort });
 
+    // 如需保存默认，则更新本地的 .env 文件
     if (saveDefault) {
       updateEnvVariable('DEEPSEEK_MODEL', targetModelId);
       updateEnvVariable('DEEPSEEK_REASONING_EFFORT', reasoningEffort);
     }
 
+    // 打印成功提示
     p.outro(`${COLOR_GREEN}配置已生效！当前激活模型：${targetModelId}${COLOR_RESET}`);
   } catch (e: unknown) {
+    // 捕获异常并予以呈现
     const msg = e instanceof Error ? e.message : String(e);
     p.outro(`${COLOR_RED}模型切换失败: ${msg}${COLOR_RESET}`);
   }
 }
 
+/**
+ * 打印系统层级命令的帮助菜单信息。
+ */
 function handleHelpCommand(): void {
   console.log(`\n${COLOR_GREEN}可用指令列表:${COLOR_RESET}`);
   console.log(`  ${COLOR_YELLOW}/model <id>${COLOR_RESET} - 动态切换当前会话的大语言模型`);

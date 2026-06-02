@@ -1,8 +1,15 @@
 import { OpenAI } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
-import { LocalFileSystemMcpServer } from './virtual-mcp.js';
 import { McpToolManager } from './mcp-client.js';
+import { ToolRegistry } from './toolRegistry.js';
 import { LlmConfig } from './config.js';
+
+export type AgentEvent =
+  | { type: 'thinking'; content: string }
+  | { type: 'content'; content: string }
+  | { type: 'tool_call_start'; functionName: string; functionArgs: Record<string, unknown> }
+  | { type: 'tool_call_result'; functionName: string; result: string }
+  | { type: 'error'; message: string; cause?: unknown };
 
 /**
  * 会话管理与模型交互调度中心。
@@ -25,10 +32,8 @@ export class SessionManager {
   // 工具调用的最大允许层级深度，防止模型内部异常导致死循环
   private maxIterations = 10;
 
-  // 虚拟 MCP 客户端（内置工具层）
-  private localMcpServer: LocalFileSystemMcpServer;
-  // MCP 客户端管理器
-  private mcpManager?: McpToolManager;
+  // 统一的工具注册表
+  private toolRegistry: ToolRegistry;
 
   /**
    * 实例初始化。通过依赖注入接收模型配置，不读取 process.env。
@@ -37,8 +42,7 @@ export class SessionManager {
    * @param mcpManager 可选的 MCP 客户端管理器
    */
   constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager) {
-    this.mcpManager = mcpManager;
-    this.localMcpServer = new LocalFileSystemMcpServer();
+    this.toolRegistry = new ToolRegistry(mcpManager);
     this.llmConfig = llmConfig;
     this.modelName = llmConfig.model;
     // 默认可以从外部传入或保留空
@@ -110,18 +114,10 @@ export class SessionManager {
   /**
    * 处理单次对话请求的完整生命周期。
    * 采用 ReAct（Reasoning and Acting）架构设计，允许模型进行多次往返的工具请求与状态回溯，直至其推理出最终的自然语言结果。
-   * 
-   * @param onStatusUpdate 生命周期事件回调订阅器，用于向接入层暴露内部执行进度
-   * @returns 模型所计算出的最终文本响应负载
+   *
+   * @returns 抛出 AgentEvent 流，由外部消费者负责呈现。
    */
-  public async chat(
-    onStatusUpdate?: (status: { type: 'thinking' | 'tool_call' | 'tool_response' | 'error'; detail?: string }) => void
-  ): Promise<string> {
-    const COLOR_RESET = '\x1b[0m';
-    const COLOR_GRAY = '\x1b[90m';
-    const COLOR_CYAN = '\x1b[36m';
-    const COLOR_RED = '\x1b[31m';
-
+  public async *chat(): AsyncGenerator<AgentEvent, void, unknown> {
     // 初始化计数器，用于监控和限制模型响应轮次的数量
     let iteration = 0;
 
@@ -130,12 +126,7 @@ export class SessionManager {
       iteration++;
 
       try {
-        const localTools = await this.localMcpServer.getTools();
-        let allTools = [...localTools];
-        if (this.mcpManager) {
-          const mcpTools = await this.mcpManager.getMcpTools();
-          allTools = allTools.concat(mcpTools);
-        }
+        const allTools = await this.toolRegistry.getTools();
 
         // 构建请求模型并拉起远端调用
         const stream = await this.client.chat.completions.create({
@@ -152,37 +143,34 @@ export class SessionManager {
         let fullReasoning = '';
         interface PartialToolCall {
           id: string;
-          type: string;
+          type: 'function';
           function: { name: string; arguments: string };
         }
         const accumulatedToolCalls: PartialToolCall[] = [];
-        let hasPrintedReasoning = false;
-        let hasPrintedContent = false;
+
+        interface DeepSeekDelta {
+          content?: string | null;
+          reasoning_content?: string | null;
+          tool_calls?: Array<{
+            index: number;
+            id?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        }
 
         for await (const chunk of stream) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const delta = chunk.choices[0]?.delta as any;
+          const delta = chunk.choices[0]?.delta as DeepSeekDelta | undefined;
           if (!delta) continue;
 
           // 1. 处理思考内容
           if (delta.reasoning_content) {
-            if (!hasPrintedReasoning) {
-              process.stdout.write(`\n${COLOR_GRAY}[思考过程]\n`);
-              hasPrintedReasoning = true;
-            }
-            process.stdout.write(`${COLOR_GRAY}${delta.reasoning_content}${COLOR_RESET}`);
+            yield { type: 'thinking', content: delta.reasoning_content };
             fullReasoning += delta.reasoning_content;
           }
 
           // 2. 处理正式回复
           if (delta.content) {
-            if (!hasPrintedContent) {
-              if (hasPrintedReasoning) {
-                process.stdout.write('\n\n'); // 思考结束后空行
-              }
-              hasPrintedContent = true;
-            }
-            process.stdout.write(delta.content);
+            yield { type: 'content', content: delta.content };
             fullContent += delta.content;
           }
 
@@ -205,8 +193,14 @@ export class SessionManager {
         }
 
         // 构建上下文
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const assistantMessage: any = {
+        type DeepSeekAssistantMessage = ChatCompletionMessageParam & {
+          role: 'assistant';
+          content: string | null;
+          reasoning_content?: string;
+          tool_calls?: typeof accumulatedToolCalls;
+        };
+
+        const assistantMessage: DeepSeekAssistantMessage = {
           role: 'assistant',
           content: fullContent || null,
         };
@@ -226,60 +220,30 @@ export class SessionManager {
             const functionName = toolCall.function.name;
             let functionArgs: { targetPath?: string; content?: string;[key: string]: unknown } = {};
 
-            process.stdout.write(`\n\n${COLOR_CYAN}[⚡ 正在调用本地工具 "${functionName}"]${COLOR_RESET}\n`);
-
             try {
               // 剥离并反序列化参数载体数据
               functionArgs = JSON.parse(toolCall.function.arguments) as { targetPath?: string; content?: string;[key: string]: unknown };
             } catch (parseError: unknown) {
               const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
-              if (onStatusUpdate) {
-                onStatusUpdate({ type: 'error', detail: `\n${COLOR_RED}解析工具参数失败：${errorMsg}${COLOR_RESET}` });
-              }
+              yield { type: 'error', message: `解析工具参数失败：${errorMsg}`, cause: parseError };
             }
 
-            if (onStatusUpdate) {
-              onStatusUpdate({
-                type: 'tool_call',
-                detail: `参数：${JSON.stringify(functionArgs)}`
-              });
-            }
+            yield { type: 'tool_call_start', functionName, functionArgs };
 
             let toolResult = '';
 
             try {
-              // 统一通过 MCP 接口调用（本地或远端）
-              const localToolsDef = await this.localMcpServer.getTools();
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const isLocalTool = localToolsDef.some((t: any) => t.function?.name === functionName);
-
-              if (isLocalTool) {
-                const mcpResult = await this.localMcpServer.callTool({
-                  name: functionName,
-                  arguments: functionArgs
-                });
-                toolResult = JSON.stringify(mcpResult);
-              } else if (this.mcpManager) {
-                const mcpResult = await this.mcpManager.callMcpTool(functionName, functionArgs);
-                toolResult = JSON.stringify(mcpResult);
-              } else {
-                throw new Error(`未知的工具名称："${functionName}"`);
-              }
+              // 统一通过 ToolRegistry 接口调用
+              const mcpResult = await this.toolRegistry.callTool(functionName, functionArgs);
+              toolResult = JSON.stringify(mcpResult);
             } catch (toolError: unknown) {
               // 针对应用层异常进行无害化处理，并组装错误详情以供模型重算修正
               const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
               toolResult = `错误：${errorMsg}`;
-              if (onStatusUpdate) {
-                onStatusUpdate({ type: 'error', detail: `\n${COLOR_RED}工具执行失败：${errorMsg}${COLOR_RESET}` });
-              }
+              yield { type: 'error', message: `工具执行失败：${errorMsg}`, cause: toolError };
             }
 
-            if (onStatusUpdate) {
-              onStatusUpdate({
-                type: 'tool_response',
-                detail: `工具 "${functionName}" 执行完毕，返回了 ${toolResult.length} 字节的数据。`
-              });
-            }
+            yield { type: 'tool_call_result', functionName, result: toolResult };
 
             // 将执行反馈上卷至状态空间中
             this.messageHistory.push({
@@ -292,17 +256,15 @@ export class SessionManager {
           // 当期动作已全量完成，重置流转节点以索取下一轮研判分析
           continue;
         } else {
-          // 不存在尚未落地的指令，提取最终态正文
-          return fullContent;
+          // 不存在尚未落地的指令，退出生成器
+          return;
         }
 
       } catch (apiError: unknown) {
         // 捕获请求侧灾难性崩溃异常并做进一步抛出，带有原始异常的 cause 以便溯源
         const errorMsg = apiError instanceof Error ? apiError.message : String(apiError);
         const fullErrorMsg = `模型接口调度失败：${errorMsg}`;
-        if (onStatusUpdate) {
-          onStatusUpdate({ type: 'error', detail: fullErrorMsg });
-        }
+        yield { type: 'error', message: fullErrorMsg, cause: apiError };
         // 抛出封装后的错误对象，同时附带底层的 apiError，满足 preserve-caught-error 规则要求
         throw new Error(fullErrorMsg, { cause: apiError });
       }
