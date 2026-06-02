@@ -3,6 +3,7 @@ import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/reso
 import { McpToolManager, ToolRegistry } from '../action/index.js';
 import { LlmConfig } from '../config/index.js';
 import { buildSystemPrompt } from './prompts.js';
+import { AgentTracer } from './tracer.js';
 
 export type AgentEvent =
   | { type: 'thinking'; content: string }
@@ -35,6 +36,9 @@ export class SessionManager {
   // 统一的工具注册表
   private toolRegistry: ToolRegistry;
 
+  // 交互追踪记录仪
+  private tracer: AgentTracer;
+
   /**
    * 实例初始化。通过依赖注入接收模型配置，不读取 process.env。
    *
@@ -47,6 +51,8 @@ export class SessionManager {
     this.modelName = llmConfig.model;
     // 默认可以从外部传入或保留空
     this.modelOptions = {};
+
+    this.tracer = new AgentTracer(process.cwd(), Date.now().toString());
 
     // 初始化客户端
     this.client = new OpenAI({
@@ -121,6 +127,7 @@ export class SessionManager {
         const allTools = await this.toolRegistry.getTools();
 
         // 构建请求模型并拉起远端调用
+        const snapshotContext = [...this.messageHistory]; // 捕获当前发送给大模型的上下文快照
         const stream = await this.client.chat.completions.create({
           model: this.modelName,
           messages: this.messageHistory,
@@ -174,7 +181,7 @@ export class SessionManager {
                 accumulatedToolCalls[index] = {
                   id: tc.id || '',
                   type: 'function',
-                  function: { name: tc.function?.name || '', arguments: '' }
+                  function: { name: '', arguments: '' }
                 };
               }
               if (tc.id) accumulatedToolCalls[index].id = tc.id;
@@ -205,10 +212,16 @@ export class SessionManager {
         // 留存当前节点的推理快照（此步骤为 OpenAI Tool Calling 规范的强制要求，不可遗漏）
         this.messageHistory.push(assistantMessage);
 
+        const recordToolCalls: Array<{name: string, arguments: string, result?: string, error?: string}> = accumulatedToolCalls.map(tc => ({
+          name: tc.function.name,
+          arguments: tc.function.arguments
+        }));
+
         // 检测是否存在后续动作调度需要处理
         if (accumulatedToolCalls.length > 0) {
           // 处理当前批次的并发工具集指令
-          for (const toolCall of accumulatedToolCalls) {
+          for (let i = 0; i < accumulatedToolCalls.length; i++) {
+            const toolCall = accumulatedToolCalls[i];
             const functionName = toolCall.function.name;
             let functionArgs: { targetPath?: string; content?: string;[key: string]: unknown } = {};
 
@@ -217,6 +230,7 @@ export class SessionManager {
               functionArgs = JSON.parse(toolCall.function.arguments) as { targetPath?: string; content?: string;[key: string]: unknown };
             } catch (parseError: unknown) {
               const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
+              recordToolCalls[i].error = `解析参数失败：${errorMsg}`;
               yield { type: 'error', message: `解析工具参数失败：${errorMsg}`, cause: parseError };
             }
 
@@ -228,10 +242,12 @@ export class SessionManager {
               // 统一通过 ToolRegistry 接口调用
               const mcpResult = await this.toolRegistry.callTool(functionName, functionArgs);
               toolResult = JSON.stringify(mcpResult);
+              recordToolCalls[i].result = toolResult;
             } catch (toolError: unknown) {
               // 针对应用层异常进行无害化处理，并组装错误详情以供模型重算修正
               const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
               toolResult = `错误：${errorMsg}`;
+              recordToolCalls[i].error = errorMsg;
               yield { type: 'error', message: `工具执行失败：${errorMsg}`, cause: toolError };
             }
 
@@ -245,10 +261,29 @@ export class SessionManager {
             });
           }
           
+          // 当前批次工具流转完毕，落盘本次带有工具执行结果的交互日志
+          this.tracer.logInteraction({
+            timestamp: new Date().toISOString(),
+            iteration,
+            context: snapshotContext,
+            reasoning: fullReasoning,
+            content: fullContent,
+            tool_calls: recordToolCalls
+          });
+
           // 当期动作已全量完成，重置流转节点以索取下一轮研判分析
           continue;
         } else {
-          // 不存在尚未落地的指令，退出生成器
+          // 不存在尚未落地的指令，直接落盘本次纯文本回复的交互日志
+          this.tracer.logInteraction({
+            timestamp: new Date().toISOString(),
+            iteration,
+            context: snapshotContext,
+            reasoning: fullReasoning,
+            content: fullContent
+          });
+
+          // 退出生成器
           return;
         }
 

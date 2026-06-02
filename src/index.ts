@@ -24,6 +24,7 @@ async function main() {
 [配置] 接口端点：${appConfig.llm.baseUrl}
 ====================================================`;
   console.log(theme.success(banner));
+  console.log(theme.info('[监控] 交互追踪仪 (Tracer) 已就绪，快照将实时落盘。'));
   console.log(theme.dim('系统就绪，输入 "exit" 退出当前会话。\n'));
 
   // 4. 实例化核心会话组件
