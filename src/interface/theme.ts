@@ -33,9 +33,14 @@ export const theme = {
   info: (text: string) => `${COLOR_CYAN}${text}${COLOR_RESET}`,
 
   /**
-   * 过渡态、强调、警告（黄色）
+   * 过渡态、强调（黄色）
    */
   highlight: (text: string) => `${COLOR_YELLOW}${text}${COLOR_RESET}`,
+
+  /**
+   * 警告、回退提示（黄色）
+   */
+  warning: (text: string) => `${COLOR_YELLOW}${text}${COLOR_RESET}`,
 
   /**
    * 系统响应边界（洋红色）

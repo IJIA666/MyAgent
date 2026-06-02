@@ -9,6 +9,41 @@ import { dispatchCommand } from './command.js';
 import { theme } from './theme.js';
 
 /**
+ * 清屏并重新渲染当前生效的会话上下文。
+ * 用于回滚操作后，彻底抹除终端上被丢弃的多余对话残留。
+ */
+export function redrawHistory(session: SessionManager) {
+  console.clear();
+  console.log(theme.dim('--- 时间旅行完成，当前剩余的有效记忆 ---'));
+  
+  const history = session.getHistory();
+  for (const msg of history) {
+    if (msg.role === 'system') continue;
+    
+    if (msg.role === 'user') {
+      console.log(`\n${theme.info(`用户 [${session.getModelName()}] > `)}${msg.content}`);
+    } else if (msg.role === 'assistant') {
+      // Any 强转是为了兼容提取本地存储时的隐藏属性
+      const anyMsg = msg as any;
+      if (anyMsg.reasoning_content) {
+        console.log(`\n${theme.dim('[思考过程]')}\n${theme.dim(anyMsg.reasoning_content)}`);
+      }
+      if (msg.content) {
+        console.log(`\n${msg.content}`);
+      }
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        for (const tc of msg.tool_calls) {
+          console.log(`\n${theme.info(`[⚡ 工具调用记录: "${tc.function.name}"]`)}`);
+        }
+      }
+    } else if (msg.role === 'tool') {
+      console.log(theme.dim(`[反馈] 工具执行完毕。`));
+    }
+  }
+  console.log(`\n${theme.divider('以上为当前状态 >')} 随时准备继续\n`);
+}
+
+/**
  * 初始化并启动基于 readline 的 REPL（交互式解释器）主循环。
  * 将控制台的按行输入转化为对 SessionManager 的多轮对话驱动。
  * 
@@ -17,6 +52,39 @@ import { theme } from './theme.js';
 export function startCli(session: SessionManager) {
   // 定义 readline 接口实例变量，留作闭包内复用
   let rl: ReturnType<typeof createInterface>;
+  let isGenerating = false;
+  let lastEscapeTime = 0;
+
+  // 挂载全局按键监听以实现双击 ESC 快捷键
+  process.stdin.on('keypress', (str, key) => {
+    if (key && key.name === 'escape') {
+      const now = Date.now();
+      if (now - lastEscapeTime < 500) {
+        // 触发双击 ESC
+        if (isGenerating) {
+          session.abort();
+        } else {
+          // 清除当前输入行的残留
+          process.stdout.write('\r' + ' '.repeat(50) + '\r');
+          if (rl) {
+            rl.question(theme.highlight('\n[系统] 确定要撤销上一轮对话吗？(y/N) > '), (answer) => {
+              if (answer.toLowerCase() === 'y') {
+                session.rollback(1);
+                // 执行清屏与历史重绘，让被回退的内容真正从终端消失
+                redrawHistory(session);
+              } else {
+                console.log(theme.dim('[系统] 已取消回滚。'));
+              }
+              rl.prompt();
+            });
+          }
+        }
+        lastEscapeTime = 0;
+      } else {
+        lastEscapeTime = now;
+      }
+    }
+  });
 
   /**
    * 内部工厂方法：用于初始化或重置终端监听器。
@@ -73,6 +141,7 @@ export function startCli(session: SessionManager) {
       // 4. 正式推进会话状态：将有效文本推送至大脑层维护的历史记忆中
       session.addUserMessage(input);
 
+      isGenerating = true;
       try {
         // 标记位：用于控制打印流时的换行排版逻辑
         let hasPrintedReasoning = false;
@@ -126,6 +195,8 @@ export function startCli(session: SessionManager) {
         // 使用回车符清理行残留数据，保证错误信息绝对醒目
         process.stdout.write(' '.repeat(60) + '\r');
         console.log(`\n${theme.error(`[系统故障] ${errorMsg}`)}\n`);
+      } finally {
+        isGenerating = false;
       }
 
       // 释放锁并恢复终端控制权，接纳下一轮全新指令

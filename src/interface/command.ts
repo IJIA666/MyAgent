@@ -4,6 +4,7 @@ import { SessionManager } from '../brain/index.js';
 import { getModelConfig, BUILTIN_MODELS } from '../config/index.js';
 import { updateEnvVariable } from '../utils/env.js';
 import { theme } from './theme.js';
+import { redrawHistory } from './cli.js';
 
 /**
  * 命令执行上下文接口，包含当前会话状态和交互界面
@@ -30,6 +31,10 @@ export async function dispatchCommand(input: string, context: CommandContext): P
     case '/model':
       // 处理模型切换命令
       await handleModelCommand(args, context);
+      break;
+    case '/rollback':
+      // 处理内存上下文回滚命令
+      handleRollbackCommand(args, context);
       break;
     case '/help':
       // 处理帮助信息打印
@@ -126,11 +131,39 @@ async function handleModelCommand(args: string[], context: CommandContext): Prom
 }
 
 /**
+ * 处理回滚命令，丢弃指定轮次的历史记忆上下文。
+ * 
+ * @param args 命令行附带的参数数组
+ * @param context 命令执行上下文
+ */
+function handleRollbackCommand(args: string[], context: CommandContext): void {
+  // 默认回滚 1 轮
+  let turns = 1;
+  if (args.length > 0) {
+    const parsed = parseInt(args[0], 10);
+    if (!isNaN(parsed) && parsed > 0) {
+      turns = parsed;
+    } else {
+      console.log(theme.error('[错误] 请输入有效的正整数作为回滚轮数（如：/rollback 2）。'));
+      return;
+    }
+  }
+
+  context.session.rollback(turns);
+  
+  // 执行清屏并重绘剩下的有效记忆，抹除被回退对话在终端的显示
+  redrawHistory(context.session);
+}
+
+/**
  * 打印系统层级命令的帮助菜单信息。
  */
 function handleHelpCommand(): void {
   console.log(`\n${theme.success('可用指令列表:')}`);
   console.log(`  ${theme.highlight('/model <id>')} - 动态切换当前会话的大语言模型`);
-  console.log(`  ${theme.highlight('/help')}       - 显示此帮助信息`);
-  console.log(`  ${theme.highlight('exit / quit')} - 退出程序\n`);
+  console.log(`  ${theme.highlight('/rollback [N]')} - 回滚前 N 轮历史上下文记忆（默认 1 轮）`);
+  console.log(`  ${theme.highlight('/help')}         - 显示此帮助信息`);
+  console.log(`  ${theme.highlight('exit / quit')}   - 退出程序`);
+  console.log(`\n${theme.success('快捷键支持:')}`);
+  console.log(`  ${theme.highlight('双击 ESC')} - [生成中] 中断响应流；[空闲时] 单步回滚上一轮对话\n`);
 }

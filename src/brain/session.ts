@@ -32,6 +32,8 @@ export class SessionManager {
   private messageHistory: ChatCompletionMessageParam[] = [];
   // 工具调用的最大允许层级深度，防止模型内部异常导致死循环
   private maxIterations = 10;
+  // 控制流中断器，用于拦截生成与网络请求
+  private abortController: AbortController | null = null;
 
   // 统一的工具注册表
   private toolRegistry: ToolRegistry;
@@ -110,6 +112,42 @@ export class SessionManager {
   }
 
   /**
+   * 中断当前正在进行的大模型推理流或网络请求。
+   */
+  public abort(): void {
+    if (this.abortController) {
+      this.abortController.abort(new Error('APIUserAbortError'));
+      this.abortController = null;
+    }
+  }
+
+  /**
+   * 执行上下文记忆截断（Context Rollback），安全丢弃最近数轮对话。
+   * @param turns 需要丢弃的交互轮次（一轮包含 user 消息及随后的所有 assistant/tool 消息）
+   * @returns 返回被弹栈丢弃的历史消息数组（按原本对话顺序排列）
+   */
+  public rollback(turns: number): ChatCompletionMessageParam[] {
+    if (turns <= 0) return [];
+    
+    let poppedTurns = 0;
+    const dropped: ChatCompletionMessageParam[] = [];
+
+    // 始终保留 index 0 的 system 消息
+    while (this.messageHistory.length > 1 && poppedTurns < turns) {
+      const lastMsg = this.messageHistory.pop();
+      if (lastMsg) {
+        dropped.push(lastMsg);
+        if (lastMsg.role === 'user') {
+          // 遇到 user 角色说明该用户的提问及关联的回答已全部剥离，算作完整的一轮撤回
+          poppedTurns++;
+        }
+      }
+    }
+
+    return dropped.reverse();
+  }
+
+  /**
    * 处理单次对话请求的完整生命周期。
    * 采用 ReAct（Reasoning and Acting）架构设计，允许模型进行多次往返的工具请求与状态回溯，直至其推理出最终的自然语言结果。
    *
@@ -126,6 +164,9 @@ export class SessionManager {
       try {
         const allTools = await this.toolRegistry.getTools();
 
+        // 每次发请求前重新生成中止器
+        this.abortController = new AbortController();
+
         // 构建请求模型并拉起远端调用
         const snapshotContext = [...this.messageHistory]; // 捕获当前发送给大模型的上下文快照
         const stream = await this.client.chat.completions.create({
@@ -136,7 +177,7 @@ export class SessionManager {
           max_tokens: this.llmConfig.maxTokens,
           stream: true,
           ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions) : {})
-        });
+        }, { signal: this.abortController.signal });
 
         let fullContent = '';
         let fullReasoning = '';
@@ -290,10 +331,19 @@ export class SessionManager {
       } catch (apiError: unknown) {
         // 捕获请求侧灾难性崩溃异常并做进一步抛出，带有原始异常的 cause 以便溯源
         const errorMsg = apiError instanceof Error ? apiError.message : String(apiError);
+
+        // 如果是用户主动打断信号，则安全重置流转，并不作致死异常抛出
+        if (errorMsg.includes('APIUserAbortError') || errorMsg.includes('abort') || (apiError instanceof Error && apiError.name === 'AbortError')) {
+          yield { type: 'error', message: '已收到中断指令，强行终止推理生成。' };
+          return;
+        }
+
         const fullErrorMsg = `模型接口调度失败：${errorMsg}`;
         yield { type: 'error', message: fullErrorMsg, cause: apiError };
         // 抛出封装后的错误对象，同时附带底层的 apiError，满足 preserve-caught-error 规则要求
         throw new Error(fullErrorMsg, { cause: apiError });
+      } finally {
+        this.abortController = null;
       }
     }
 
