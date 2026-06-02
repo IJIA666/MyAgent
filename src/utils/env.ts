@@ -41,3 +41,54 @@ export function updateEnvVariable(key: string, value: string): void {
 
   fs.writeFileSync(envPath, envContent, 'utf8');
 }
+
+/**
+ * 读取必填环境变量，缺失时抛出包含变量名的明确错误。
+ * 实现 fail-fast 策略，阻止在缺少关键配置时继续启动。
+ *
+ * @param name 环境变量名称
+ * @returns 环境变量的值
+ * @throws 当环境变量未设置或为空字符串时
+ */
+export function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value || value.trim() === '') {
+    throw new Error(
+      `必填环境变量 "${name}" 未设置。请在 .env 文件中配置该变量后重新启动。`
+    );
+  }
+  return value.trim();
+}
+
+/**
+ * 递归扫描配置值，将 ${VAR} 格式的占位符替换为 process.env 中的实际值。
+ * 若对应的环境变量不存在，保留占位符原文不做替换。
+ *
+ * @param value 待处理的配置值（支持字符串、对象、数组的递归处理）
+ * @returns 完成插值替换后的配置值
+ */
+export function interpolateEnvVars(value: unknown): unknown {
+  if (typeof value === 'string') {
+    // 匹配 ${VAR_NAME} 格式的占位符
+    return value.replace(/\$\{([^}]+)}/g, (original, varName: string) => {
+      const envValue = process.env[varName];
+      // 环境变量存在则替换，不存在则保留原文
+      return envValue !== undefined ? envValue : original;
+    });
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(item => interpolateEnvVars(item));
+  }
+
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      result[key] = interpolateEnvVars(val);
+    }
+    return result;
+  }
+
+  // 数值、布尔值等原始类型直接返回
+  return value;
+}

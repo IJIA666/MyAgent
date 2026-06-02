@@ -1,7 +1,7 @@
 import { createInterface } from 'readline';
 import { SessionManager } from './session.js';
 import { McpToolManager } from './mcp-client.js';
-import { loadConfig } from './config.js';
+import { loadConfig } from './config/index.js';
 import { initWorkspace } from './tools.js';
 import { dispatchCommand } from './command.js';
 

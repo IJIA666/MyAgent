@@ -1,7 +1,7 @@
 import { Interface } from 'readline';
 import * as p from '@clack/prompts';
 import { SessionManager } from './session.js';
-import { getModelConfig, BUILTIN_MODELS } from './config.js';
+import { getModelConfig, BUILTIN_MODELS } from './config/index.js';
 import { updateEnvVariable } from './utils/env.js';
 
 // 定义终端输出颜色常量
