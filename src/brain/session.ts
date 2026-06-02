@@ -1,8 +1,7 @@
 import { OpenAI } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
-import { McpToolManager } from './mcp-client.js';
-import { ToolRegistry } from './toolRegistry.js';
-import { LlmConfig } from './config/index.js';
+import { McpToolManager, ToolRegistry } from '../action/index.js';
+import { LlmConfig } from '../config/index.js';
 
 export type AgentEvent =
   | { type: 'thinking'; content: string }

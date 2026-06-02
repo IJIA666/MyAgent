@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { McpConfig, McpServerEntry, buildSubprocessEnv } from './config/index.js';
+import { McpConfig, McpServerEntry, buildSubprocessEnv } from '../config/index.js';
 
 /**
  * MCP (Model Context Protocol) 客户端管理类。
