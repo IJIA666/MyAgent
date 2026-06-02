@@ -23,10 +23,10 @@ export function redrawHistory(session: SessionManager) {
     if (msg.role === 'user') {
       console.log(`\n${theme.info(`用户 [${session.getModelName()}] > `)}${msg.content}`);
     } else if (msg.role === 'assistant') {
-      // Any 强转是为了兼容提取本地存储时的隐藏属性
-      const anyMsg = msg as any;
-      if (anyMsg.reasoning_content) {
-        console.log(`\n${theme.dim('[思考过程]')}\n${theme.dim(anyMsg.reasoning_content)}`);
+      // 强转是为了兼容提取本地存储时的隐藏属性（例如 DeepSeek 特有的 reasoning_content）
+      const customMsg = msg as unknown as { reasoning_content?: string };
+      if (customMsg.reasoning_content) {
+        console.log(`\n${theme.dim('[思考过程]')}\n${theme.dim(customMsg.reasoning_content)}`);
       }
       if (msg.content) {
         console.log(`\n${msg.content}`);
@@ -91,9 +91,19 @@ export function startCli(session: SessionManager) {
    * 当切出至其他交互模式（如 Slash Command）结束后，需要调用此方法重新接管 stdin。
    */
   const initRl = () => {
+    const completer = (line: string) => {
+      if (line.startsWith('/')) {
+        const commands = ['/model', '/rollback', '/help', '/history', '/resume'];
+        const hits = commands.filter((c) => c.startsWith(line));
+        return [hits.length ? hits : [], line];
+      }
+      return [[], line];
+    };
+
     rl = createInterface({
       input: process.stdin,
-      output: process.stdout
+      output: process.stdout,
+      completer: completer
     });
 
     /**

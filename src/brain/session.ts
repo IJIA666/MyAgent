@@ -4,6 +4,8 @@ import { McpToolManager, ToolRegistry } from '../action/index.js';
 import { LlmConfig } from '../config/index.js';
 import { buildSystemPrompt } from './prompts.js';
 import { AgentTracer } from './tracer.js';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 export type AgentEvent =
   | { type: 'thinking'; content: string }
@@ -41,6 +43,9 @@ export class SessionManager {
   // 交互追踪记录仪
   private tracer: AgentTracer;
 
+  // 当前会话的唯一标识
+  private sessionId: string;
+
   /**
    * 实例初始化。通过依赖注入接收模型配置，不读取 process.env。
    *
@@ -54,7 +59,8 @@ export class SessionManager {
     // 默认可以从外部传入或保留空
     this.modelOptions = {};
 
-    this.tracer = new AgentTracer(process.cwd(), Date.now().toString());
+    this.sessionId = Date.now().toString();
+    this.tracer = new AgentTracer(process.cwd(), this.sessionId);
 
     // 初始化客户端
     this.client = new OpenAI({
@@ -94,6 +100,47 @@ export class SessionManager {
    */
   public getModelName(): string {
     return this.modelName;
+  }
+
+  /**
+   * 获取当前会话唯一标识。
+   */
+  public getSessionId(): string {
+    return this.sessionId;
+  }
+
+  /**
+   * 将当前上下文静默序列化落盘到工作区文件
+   */
+  public async saveState(): Promise<void> {
+    try {
+      const dir = path.join(process.cwd(), '.myagent/sessions');
+      await fs.mkdir(dir, { recursive: true });
+      const file = path.join(dir, `${this.sessionId}.json`);
+      // 写入纯净的历史快照
+      await fs.writeFile(file, JSON.stringify(this.messageHistory, null, 2), 'utf-8');
+    } catch {
+      // 捕获并吞掉异常，静默落盘失败不应阻断核心流程
+    }
+  }
+
+  /**
+   * 恢复指定的会话持久化数据覆盖当前内存上下文
+   */
+  public async loadState(targetSessionId: string): Promise<boolean> {
+    try {
+      const file = path.join(process.cwd(), '.myagent/sessions', `${targetSessionId}.json`);
+      const data = await fs.readFile(file, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) {
+        this.messageHistory = parsed;
+        this.sessionId = targetSessionId;
+        return true;
+      }
+    } catch {
+      // 忽略文件不存在或解析失败
+    }
+    return false;
   }
 
   /**
@@ -143,6 +190,9 @@ export class SessionManager {
         }
       }
     }
+
+    // 执行静默落盘
+    this.saveState().catch(() => {});
 
     return dropped.reverse();
   }
@@ -324,6 +374,9 @@ export class SessionManager {
             content: fullContent
           });
 
+          // 静默落盘最新上下文状态
+          await this.saveState();
+
           // 退出生成器
           return;
         }
@@ -335,6 +388,8 @@ export class SessionManager {
         // 如果是用户主动打断信号，则安全重置流转，并不作致死异常抛出
         if (errorMsg.includes('APIUserAbortError') || errorMsg.includes('abort') || (apiError instanceof Error && apiError.name === 'AbortError')) {
           yield { type: 'error', message: '已收到中断指令，强行终止推理生成。' };
+          // 中断时也要将当前截断的状态落盘
+          await this.saveState();
           return;
         }
 

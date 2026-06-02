@@ -5,6 +5,8 @@ import { getModelConfig, BUILTIN_MODELS } from '../config/index.js';
 import { updateEnvVariable } from '../utils/env.js';
 import { theme } from './theme.js';
 import { redrawHistory } from './cli.js';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 /**
  * 命令执行上下文接口，包含当前会话状态和交互界面
@@ -35,6 +37,14 @@ export async function dispatchCommand(input: string, context: CommandContext): P
     case '/rollback':
       // 处理内存上下文回滚命令
       handleRollbackCommand(args, context);
+      break;
+    case '/history':
+      // 查看历史会话记录
+      await handleHistoryCommand();
+      break;
+    case '/resume':
+      // 恢复指定的历史会话
+      await handleResumeCommand(args, context);
       break;
     case '/help':
       // 处理帮助信息打印
@@ -162,8 +172,63 @@ function handleHelpCommand(): void {
   console.log(`\n${theme.success('可用指令列表:')}`);
   console.log(`  ${theme.highlight('/model <id>')} - 动态切换当前会话的大语言模型`);
   console.log(`  ${theme.highlight('/rollback [N]')} - 回滚前 N 轮历史上下文记忆（默认 1 轮）`);
+  console.log(`  ${theme.highlight('/history')}      - 查看保存的历史会话列表`);
+  console.log(`  ${theme.highlight('/resume <id>')}  - 恢复指定的历史会话上下文`);
   console.log(`  ${theme.highlight('/help')}         - 显示此帮助信息`);
   console.log(`  ${theme.highlight('exit / quit')}   - 退出程序`);
   console.log(`\n${theme.success('快捷键支持:')}`);
   console.log(`  ${theme.highlight('双击 ESC')} - [生成中] 中断响应流；[空闲时] 单步回滚上一轮对话\n`);
+}
+
+/**
+ * 扫描并打印所有持久化的历史会话文件列表，按修改时间倒序排列。
+ */
+async function handleHistoryCommand(): Promise<void> {
+  const dir = path.join(process.cwd(), '.myagent/sessions');
+  try {
+    const files = await fs.readdir(dir);
+    const jsonFiles = files.filter(f => f.endsWith('.json'));
+    if (jsonFiles.length === 0) {
+      console.log(theme.info('[系统] 暂无任何历史会话记录。'));
+      return;
+    }
+    
+    console.log(`\n${theme.success('历史会话列表:')}`);
+    
+    // 获取文件的修改时间并排序
+    const fileStats = await Promise.all(jsonFiles.map(async file => {
+      const stats = await fs.stat(path.join(dir, file));
+      return { file, mtime: stats.mtimeMs, mtimeDate: stats.mtime };
+    }));
+    
+    fileStats.sort((a, b) => b.mtime - a.mtime);
+    
+    for (const fsObj of fileStats) {
+      const id = fsObj.file.replace('.json', '');
+      const dateStr = fsObj.mtimeDate.toLocaleString();
+      console.log(`  ${theme.highlight(id)}  -  ${theme.dim(dateStr)}`);
+    }
+    console.log(`\n使用 ${theme.highlight('/resume <id>')} 恢复指定的会话。\n`);
+  } catch {
+    console.log(theme.info('[系统] 暂无任何历史会话记录。'));
+  }
+}
+
+/**
+ * 读取指定的会话配置文件并覆盖当前内存的 messageHistory。
+ */
+async function handleResumeCommand(args: string[], context: CommandContext): Promise<void> {
+  if (args.length === 0) {
+    console.log(theme.error('[错误] 请提供要恢复的会话 ID，例如：/resume 171717171717'));
+    return;
+  }
+  const id = args[0];
+  const success = await context.session.loadState(id);
+  if (success) {
+    console.log(theme.success(`[系统] 成功恢复历史会话: ${id}`));
+    // 清屏并打印已恢复的历史，重建终端心智模型
+    redrawHistory(context.session);
+  } else {
+    console.log(theme.error(`[错误] 恢复失败，找不到该会话或记录文件已损坏: ${id}`));
+  }
 }
