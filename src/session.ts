@@ -140,7 +140,7 @@ export class SessionManager {
           messages: this.messageHistory,
           tools: allTools as unknown as ChatCompletionTool[],
           tool_choice: 'auto',
-          max_tokens: 4096,
+          max_tokens: this.llmConfig.maxTokens,
           stream: true,
           ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions) : {})
         });

@@ -69,6 +69,8 @@ export interface LlmConfig {
   model: string;
   /** 关联的模型特征档案 */
   profile: ModelProfile;
+  /** 最大 Token 输出限制 */
+  maxTokens: number;
 }
 
 /**
@@ -275,7 +277,8 @@ export function getModelConfig(id: string): LlmConfig {
     baseUrl = process.env[profile.envUrlName]!;
   }
   const model = profile.defaultModel;
-  return { apiKey, baseUrl, model, profile };
+  const maxTokens = parseInt(process.env.DEEPSEEK_MAX_TOKENS || '4096', 10);
+  return { apiKey, baseUrl, model, profile, maxTokens };
 }
 
 /**

@@ -9,6 +9,8 @@
 - 在 `session.ts` 中实现流式分块解析器，能够实时提取并隔离 `reasoning_content`（思考内容）、`content`（正式回复）和 `tool_calls`（工具调用参数）。
 - 在多轮工具调用时，按官方规范修复 `messageHistory` 的拼装机制，强制带上上一轮的 `reasoning_content` 字段。
 - 优化终端打印机制：用灰色字体实时打印思考过程，用高亮格式实时展示工具调用事件，并用正常格式输出最终对话。
+- 将原来硬编码在 `session.ts` 中的深度思考控制参数（如 `max_tokens`, `extra_body`）抽离到外层 `config.ts`，支持基于环境变量的 `ModelProfile` 动态切换，以兼容其他大模型体系。
+- 注入语言约束 System Prompt，解决复杂推理链自动退化为外语的问题。
 
 ## 业务能力
 

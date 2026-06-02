@@ -11,13 +11,7 @@
 
 **方案**：在 `this.client.chat.completions.create` 中设置 `stream: true`。同时，为激活 DeepSeek-V4-Flash 的思考能力，使用 OpenAI Node SDK 提供的扩展能力，通过 `extra_body` 参数直接注入自定义字段，绕过 SDK 强类型校验。
 
-```typescript
-reasoning_effort: "high",
-// @ts-ignore
-extra_body: {
-  thinking: { type: "enabled" }
-}
-```
+*【Amend 修正】*：早先的硬编码方案在多模型扩展中显得脆弱。现在改为在 `config.ts` 中抽象出 `ModelProfile` 接口和 `BUILTIN_MODELS` 映射表，通过 `buildExtraPayload` 钩子动态读取 `DEEPSEEK_REASONING_EFFORT`。若该变量为 `disabled` 则直接返回空对象以切断附加参数注入，彻底解除 `session.ts` 与模型独占参数的硬耦合。同时将 `max_tokens` 同步抽离。
 
 ### 决策 2：流式状态机与解析器
 
@@ -68,3 +62,8 @@ this.messageHistory.push(assistantMessage);
 - 工具调用提示：`\x1b[36m`（青色）+ 闪电符号 ⚡
 - 正常回复：`\x1b[0m`（重置颜色）
 UI 的输出直接散落在 `session.ts` 的解析循环中，采用 `process.stdout.write` 以支持不换行输出。
+
+### 决策 5：系统提示词（System Prompt）注入防语言降级 *【Amend 追加】*
+
+**背景**：自带原生 CoT (Chain-of-Thought) 能力的大模型，在遇到复杂的英文名词时往往会自动回落至使用英文推理。
+**方案**：修改 `session.ts`，在原有的三条安全边界指令后方追加第 4 条“语言强制”指令，直接规范大模型将整个推演逻辑和最终反馈牢牢锚定在简体中文，以消除外语推理造成的心智落差。

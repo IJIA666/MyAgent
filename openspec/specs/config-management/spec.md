@@ -65,3 +65,10 @@
 #### 场景: 启动 MCP 子进程时不泄露系统环境变量
 - **WHEN** `McpToolManager` 调用 `buildSubprocessEnv(config.env)` 构造子进程环境变量并拉起 MCP Server
 - **THEN** 传递给子进程的最终 `env` 对象中，不得包含系统中存在但未在白名单中的变量（如 `DEEPSEEK_API_KEY`），必须包含操作系统运行所需的 `PATH` 以及显式定义的 `TAVILY_API_KEY`。
+
+### Requirement: 配置的持久化写入
+系统必须（MUST）提供将关键运行时配置（如用户指定的全局默认模型名及思考等级）持久化回 `.env` 文件的能力。此操作必须（MUST）采用基于正则表达式的非破坏性替换策略，以确保原有 `.env` 文件中的注释、空白行等人工排版结构不受损害。如果待修改的键不存在，系统应当将其追加至文件末尾。
+
+#### Scenario: 安全覆盖默认模型配置
+- **WHEN** 用户在模型向导中选择了将 `deepseek-v4-pro` 设为默认配置并触发保存
+- **THEN** 系统必须读取 `.env` 文本，使用正则进行局部行替换（包括 `DEEPSEEK_MODEL` 和 `DEEPSEEK_REASONING_EFFORT`），修改后的 `.env` 文件必须原样保留其它全部注释与非目标键值。
