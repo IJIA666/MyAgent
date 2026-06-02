@@ -3,12 +3,7 @@ import * as p from '@clack/prompts';
 import { SessionManager } from '../brain/index.js';
 import { getModelConfig, BUILTIN_MODELS } from '../config/index.js';
 import { updateEnvVariable } from '../utils/env.js';
-
-// 定义终端输出颜色常量
-const COLOR_RESET = '\x1b[0m';
-const COLOR_YELLOW = '\x1b[33m';
-const COLOR_RED = '\x1b[31m';
-const COLOR_GREEN = '\x1b[32m';
+import { theme } from './theme.js';
 
 /**
  * 命令执行上下文接口，包含当前会话状态和交互界面
@@ -42,7 +37,7 @@ export async function dispatchCommand(input: string, context: CommandContext): P
       break;
     default:
       // 未知命令处理
-      console.log(`${COLOR_RED}[错误] 未知的系统指令: ${command}，输入 /help 查看帮助。${COLOR_RESET}`);
+      console.log(theme.error(`[错误] 未知的系统指令: ${command}，输入 /help 查看帮助。`));
   }
 }
 
@@ -56,7 +51,7 @@ export async function dispatchCommand(input: string, context: CommandContext): P
 async function handleModelCommand(args: string[], context: CommandContext): Promise<void> {
 
   console.log();
-  p.intro(`${COLOR_YELLOW}模型配置向导${COLOR_RESET}`);
+  p.intro(theme.highlight('模型配置向导'));
 
   // 组装内置模型选项供用户选择
   const modelOptions = Object.keys(BUILTIN_MODELS).map(id => ({
@@ -122,11 +117,11 @@ async function handleModelCommand(args: string[], context: CommandContext): Prom
     }
 
     // 打印成功提示
-    p.outro(`${COLOR_GREEN}配置已生效！当前激活模型：${targetModelId}${COLOR_RESET}`);
+    p.outro(theme.success(`配置已生效！当前激活模型：${targetModelId}`));
   } catch (e: unknown) {
     // 捕获异常并予以呈现
     const msg = e instanceof Error ? e.message : String(e);
-    p.outro(`${COLOR_RED}模型切换失败: ${msg}${COLOR_RESET}`);
+    p.outro(theme.error(`模型切换失败: ${msg}`));
   }
 }
 
@@ -134,8 +129,8 @@ async function handleModelCommand(args: string[], context: CommandContext): Prom
  * 打印系统层级命令的帮助菜单信息。
  */
 function handleHelpCommand(): void {
-  console.log(`\n${COLOR_GREEN}可用指令列表:${COLOR_RESET}`);
-  console.log(`  ${COLOR_YELLOW}/model <id>${COLOR_RESET} - 动态切换当前会话的大语言模型`);
-  console.log(`  ${COLOR_YELLOW}/help${COLOR_RESET}       - 显示此帮助信息`);
-  console.log(`  ${COLOR_YELLOW}exit / quit${COLOR_RESET} - 退出程序\n`);
+  console.log(`\n${theme.success('可用指令列表:')}`);
+  console.log(`  ${theme.highlight('/model <id>')} - 动态切换当前会话的大语言模型`);
+  console.log(`  ${theme.highlight('/help')}       - 显示此帮助信息`);
+  console.log(`  ${theme.highlight('exit / quit')} - 退出程序\n`);
 }

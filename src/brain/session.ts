@@ -2,6 +2,7 @@ import { OpenAI } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { McpToolManager, ToolRegistry } from '../action/index.js';
 import { LlmConfig } from '../config/index.js';
+import { buildSystemPrompt } from './prompts.js';
 
 export type AgentEvent =
   | { type: 'thinking'; content: string }
@@ -54,15 +55,7 @@ export class SessionManager {
     });
 
     // 初始化系统指令，确立智能体的工作边界与行为准则
-    const systemPrompt = `你是一个专业且精确的本地智能体助手。
-你严格在授权的工作区根目录下运行。
-你可以使用提供给你的本地工具读取文件、写入文件以及列出目录内容。
-
-**极其重要的指令：**
-1. 所有文件操作都必须严格限制在授权的工作区目录下。你的工具集会自动执行此项校验，一旦你尝试越权操作外部目录，工具将返回拒绝访问的错误。
-2. 如果工具在运行过程中返回错误（例如文件未找到、路径越权等），请分析错误原因并优雅地向用户解释，或者在修正参数后重新尝试调用。
-3. 请直接、专业且精准地回答用户问题，避免冗余的客套话或占位信息。
-4. 【语言强制】你必须始终使用简体中文进行思考（内部逻辑和推理链）以及最终回复，仅在必要时保留英文的专业术语或代码片段。`;
+    const systemPrompt = buildSystemPrompt();
 
     this.messageHistory.push({
       role: 'system',

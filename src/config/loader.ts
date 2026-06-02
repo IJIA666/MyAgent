@@ -12,14 +12,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { AppConfig, McpConfig } from './types.js';
 import { getModelConfig } from './models.js';
 import { interpolateEnvVars } from '../utils/env.js';
-
-// ============================================================================
-// 终端颜色常量（仅供配置模块内部日志使用）
-// ============================================================================
-
-const COLOR_RESET = '\x1b[0m';
-const COLOR_YELLOW = '\x1b[33m';
-const COLOR_GREEN = '\x1b[32m';
+import { theme } from '../interface/theme.js';
 
 /**
  * 检查配置文件是否存在，缺失时从 .example 模板自动复制。
@@ -36,9 +29,9 @@ export function ensureConfigFiles(): void {
     const templatePath = resolve(template);
 
     if (!existsSync(targetPath) && existsSync(templatePath)) {
-      console.log(`${COLOR_YELLOW}[配置] 缺少 ${label}，正在从模板复制生成。${COLOR_RESET}`);
+      console.log(theme.highlight(`[配置] 缺少 ${label}，正在从模板复制生成。`));
       copyFileSync(templatePath, targetPath);
-      console.log(`${COLOR_GREEN}[配置] ${label} 创建完毕，请按需调整内部参数。${COLOR_RESET}`);
+      console.log(theme.success(`[配置] ${label} 创建完毕，请按需调整内部参数。`));
     }
   }
 }

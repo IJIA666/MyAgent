@@ -6,17 +6,7 @@ import { createInterface } from 'readline';
 import { SessionManager } from '../brain/index.js';
 import { dispatchCommand } from './command.js';
 
-// ==========================================
-// 终端 ANSI 颜色转义字符定义
-// 用于在控制台中输出不同层级与状态的彩色文本
-// ==========================================
-const COLOR_RESET = '\x1b[0m';    // 重置所有颜色与样式
-const COLOR_CYAN = '\x1b[36m';    // 青色，主要用于提示符与系统强调
-const COLOR_MAGENTA = '\x1b[35m'; // 洋红色，用于系统响应的分界标识
-const COLOR_YELLOW = '\x1b[33m';  // 黄色，用于工具调度等过渡态信息
-const COLOR_GRAY = '\x1b[90m';    // 灰色，用于弱化的后台反馈与思考过程
-const COLOR_RED = '\x1b[31m';     // 红色，用于致命错误或异常中断提示
-const COLOR_GREEN = '\x1b[32m';   // 绿色，用于系统成功启动与正常退出
+import { theme } from './theme.js';
 
 /**
  * 初始化并启动基于 readline 的 REPL（交互式解释器）主循环。
@@ -42,7 +32,7 @@ export function startCli(session: SessionManager) {
      * 根据当前挂载的大模型名称，动态刷新终端输入提示符
      */
     const updatePrompt = () => {
-      rl.setPrompt(`${COLOR_CYAN}用户 [${session.getModelName()}] > ${COLOR_RESET}`);
+      rl.setPrompt(theme.info(`用户 [${session.getModelName()}] > `));
     };
 
     // 首次启动时主动渲染输入提示符
@@ -56,7 +46,7 @@ export function startCli(session: SessionManager) {
 
       // 1. 预处理：解析退出指令，提供安全终止流程
       if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
-        console.log(`\n${COLOR_GREEN}[系统] 进程正在终止，结束会话。${COLOR_RESET}`);
+        console.log(`\n${theme.success('[系统] 进程正在终止，结束会话。')}`);
         rl.close();
         process.exit(0);
       }
@@ -94,11 +84,11 @@ export function startCli(session: SessionManager) {
             case 'thinking':
               // 首次收到思考节点时，打印独立的分界线标头
               if (!hasPrintedReasoning) {
-                process.stdout.write(`\n${COLOR_GRAY}[思考过程]\n`);
+                process.stdout.write(`\n${theme.dim('[思考过程]')}\n`);
                 hasPrintedReasoning = true;
               }
               // 持续追加灰色的推理思绪片段
-              process.stdout.write(`${COLOR_GRAY}${event.content}${COLOR_RESET}`);
+              process.stdout.write(theme.dim(event.content));
               break;
             case 'content':
               // 首次收到最终文本时，检查是否需要脱离前置的思考区域块
@@ -113,29 +103,29 @@ export function startCli(session: SessionManager) {
               break;
             case 'tool_call_start':
               // 侦测到行动层工具被挂载唤醒时，呈现调度信息与参数全貌
-              process.stdout.write(`\n\n${COLOR_CYAN}[⚡ 正在调用工具 "${event.functionName}"]${COLOR_RESET}\n`);
-              console.log(`${COLOR_YELLOW}[调度参数] ${JSON.stringify(event.functionArgs)}${COLOR_RESET}`);
+              process.stdout.write(`\n\n${theme.info(`[⚡ 正在调用工具 "${event.functionName}"]`)}\n`);
+              console.log(theme.highlight(`[调度参数] ${JSON.stringify(event.functionArgs)}`));
               break;
             case 'tool_call_result':
               // 工具运行完毕，告知使用者数据流转的规模字节
-              console.log(`${COLOR_GRAY}[反馈] 工具 "${event.functionName}" 执行完毕，返回了 ${event.result.length} 字节的数据。${COLOR_RESET}`);
+              console.log(theme.dim(`[反馈] 工具 "${event.functionName}" 执行完毕，返回了 ${event.result.length} 字节的数据。`));
               break;
             case 'error':
               // 大脑层判定抛出的异常分支，通常是工具拒绝服务或路径越权
-              console.log(`${COLOR_RED}[异常] ${event.message}${COLOR_RESET}`);
+              console.log(theme.error(`[异常] ${event.message}`));
               break;
           }
         }
 
         // 推理流程完结收尾，向标准输出提交最终标识符以区分批次
-        console.log(`\n\n${COLOR_MAGENTA}系统响应 >${COLOR_RESET} 完毕。\n`);
+        console.log(`\n\n${theme.divider('系统响应 >')} 完毕。\n`);
 
       } catch (error: unknown) {
         // 兜底捕获异常（如网络阻断、协议解析崩溃等）并强制阻断展示
         const errorMsg = error instanceof Error ? error.message : String(error);
         // 使用回车符清理行残留数据，保证错误信息绝对醒目
         process.stdout.write(' '.repeat(60) + '\r');
-        console.log(`\n${COLOR_RED}[系统故障] ${errorMsg}${COLOR_RESET}\n`);
+        console.log(`\n${theme.error(`[系统故障] ${errorMsg}`)}\n`);
       }
 
       // 释放锁并恢复终端控制权，接纳下一轮全新指令
@@ -144,7 +134,7 @@ export function startCli(session: SessionManager) {
 
     // 绑定系统级中断信号处理（如 Ctrl+C）
     rl.on('SIGINT', () => {
-      console.log(`\n${COLOR_GREEN}[系统] 收到中断信号，程序退出。${COLOR_RESET}`);
+      console.log(`\n${theme.success('[系统] 收到中断信号，程序退出。')}`);
       rl.close();
       process.exit(0);
     });
