@@ -1,6 +1,5 @@
 import { resolve, dirname } from 'path';
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
-import { McpToolManager } from './mcp-client.js';
 
 /**
  * 授权工作区的绝对路径。
@@ -179,18 +178,5 @@ export const toolsDefinition = [
   }
 ];
 
-/**
- * 动态合并本地静态原生工具与远端 MCP 动态工具
- */
-export async function getAllTools(mcpManager?: McpToolManager) {
-  const localTools = [...toolsDefinition] as Record<string, unknown>[];
 
-  if (mcpManager) {
-    const mcpTools = await mcpManager.getMcpTools();
-    // 追加 MCP 获取的外部工具
-    return localTools.concat(mcpTools);
-  }
-
-  return localTools;
-}
 

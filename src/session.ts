@@ -1,11 +1,6 @@
 import { OpenAI } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
-import {
-  readFileTool,
-  writeFileTool,
-  listFilesTool,
-  getAllTools
-} from './tools.js';
+import { LocalFileSystemMcpServer } from './virtual-mcp.js';
 import { McpToolManager } from './mcp-client.js';
 import { LlmConfig } from './config.js';
 
@@ -30,6 +25,8 @@ export class SessionManager {
   // 工具调用的最大允许层级深度，防止模型内部异常导致死循环
   private maxIterations = 10;
 
+  // 虚拟 MCP 客户端（内置工具层）
+  private localMcpServer: LocalFileSystemMcpServer;
   // MCP 客户端管理器
   private mcpManager?: McpToolManager;
 
@@ -41,6 +38,7 @@ export class SessionManager {
    */
   constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager) {
     this.mcpManager = mcpManager;
+    this.localMcpServer = new LocalFileSystemMcpServer();
     this.llmConfig = llmConfig;
     this.modelName = llmConfig.model;
     // 默认可以从外部传入或保留空
@@ -132,7 +130,12 @@ export class SessionManager {
       iteration++;
 
       try {
-        const allTools = await getAllTools(this.mcpManager);
+        const localTools = await this.localMcpServer.getTools();
+        let allTools = [...localTools];
+        if (this.mcpManager) {
+          const mcpTools = await this.mcpManager.getMcpTools();
+          allTools = allTools.concat(mcpTools);
+        }
 
         // 构建请求模型并拉起远端调用
         const stream = await this.client.chat.completions.create({
@@ -245,25 +248,22 @@ export class SessionManager {
             let toolResult = '';
 
             try {
-              // 依据函数声明进行业务逻辑分发
-              switch (functionName) {
-                case 'readFile':
-                  toolResult = readFileTool(functionArgs.targetPath || '');
-                  break;
-                case 'writeFile':
-                  toolResult = writeFileTool(functionArgs.targetPath || '', functionArgs.content || '');
-                  break;
-                case 'listFiles':
-                  toolResult = JSON.stringify(listFilesTool(functionArgs.targetPath || '.'));
-                  break;
-                default:
-                  if (this.mcpManager) {
-                    // 如果存在外部 MCP 管理器，则尝试转发调用
-                    const mcpResult = await this.mcpManager.callMcpTool(functionName, functionArgs);
-                    toolResult = JSON.stringify(mcpResult);
-                  } else {
-                    throw new Error(`未知的工具名称："${functionName}"`);
-                  }
+              // 统一通过 MCP 接口调用（本地或远端）
+              const localToolsDef = await this.localMcpServer.getTools();
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const isLocalTool = localToolsDef.some((t: any) => t.function?.name === functionName);
+
+              if (isLocalTool) {
+                const mcpResult = await this.localMcpServer.callTool({
+                  name: functionName,
+                  arguments: functionArgs
+                });
+                toolResult = JSON.stringify(mcpResult);
+              } else if (this.mcpManager) {
+                const mcpResult = await this.mcpManager.callMcpTool(functionName, functionArgs);
+                toolResult = JSON.stringify(mcpResult);
+              } else {
+                throw new Error(`未知的工具名称："${functionName}"`);
               }
             } catch (toolError: unknown) {
               // 针对应用层异常进行无害化处理，并组装错误详情以供模型重算修正
