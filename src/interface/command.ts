@@ -58,9 +58,56 @@ export async function dispatchCommand(input: string, context: CommandContext): P
       // 处理帮助信息打印
       handleHelpCommand();
       break;
+    case '/skill':
+      // 处理技能相关操作
+      await handleSkillCommand(args, context);
+      break;
     default:
       // 未知命令处理
       console.log(theme.error(`[错误] 未知的系统指令: ${command}，输入 /help 查看帮助。`));
+  }
+}
+
+import { loadSkills } from '../brain/contextLoader.js';
+
+/**
+ * 处理技能挂载与查询操作。
+ * 
+ * @param args 命令行附带的参数数组
+ * @param context 命令执行上下文
+ */
+async function handleSkillCommand(args: string[], context: CommandContext): Promise<void> {
+  const subCommand = args[0]?.toLowerCase();
+  
+  if (!subCommand || subCommand === 'list') {
+    const allSkills = loadSkills();
+    console.log();
+    if (allSkills.length === 0) {
+      console.log(theme.info('当前系统未发现任何可用技能。'));
+      return;
+    }
+    console.log(theme.highlight('发现如下技能：'));
+    allSkills.forEach(s => {
+      console.log(`- ${theme.highlight(s.name)}: ${s.description}`);
+    });
+    console.log(theme.info('\n提示: 输入 /skill enable <name> 强行挂载技能，或 /skill disable <name> 取消挂载。'));
+    return;
+  }
+
+  const skillName = args[1];
+  if (!skillName) {
+    console.log(theme.error(`[错误] 未提供技能名称，例如 /skill ${subCommand} my-skill`));
+    return;
+  }
+
+  if (subCommand === 'enable') {
+    context.session.enableSkill(skillName);
+    console.log(theme.success(`[成功] 技能 ${skillName} 已显式挂载到当前会话。`));
+  } else if (subCommand === 'disable') {
+    context.session.disableSkill(skillName);
+    console.log(theme.success(`[成功] 技能 ${skillName} 已取消挂载。`));
+  } else {
+    console.log(theme.error(`[错误] 未知的技能指令: ${subCommand}`));
   }
 }
 

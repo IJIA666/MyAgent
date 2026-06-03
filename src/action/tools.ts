@@ -175,6 +175,23 @@ export const toolsDefinition = [
         }
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "load_skill",
+      description: "当需要使用特定扩展技能时调用此工具拉取技能全文，技能名称需从 <available_skills> 中选取。",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "需要加载的技能名称"
+          }
+        },
+        required: ["name"]
+      }
+    }
   }
 ];
 

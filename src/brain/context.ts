@@ -13,6 +13,7 @@ import { buildSystemPrompt } from './prompts.js';
 export class SessionContext {
   private messageHistory: ChatCompletionMessageParam[] = [];
   private sessionId: string;
+  private activeSkills: string[] = [];
 
   /**
    * 实例初始化。
@@ -23,12 +24,46 @@ export class SessionContext {
     this.sessionId = sessionId || Date.now().toString();
     
     // 初始化系统指令，确立智能体的工作边界与行为准则
-    const systemPrompt = buildSystemPrompt();
+    const systemPrompt = buildSystemPrompt(this.activeSkills);
     // 将系统提示词作为会话的第一条消息压入历史栈
     this.messageHistory.push({
       role: 'system',
       content: systemPrompt
     });
+  }
+
+  /**
+   * 启用某项技能，重新构建系统提示词，更新第一条消息。
+   */
+  public enableSkill(name: string): void {
+    if (!this.activeSkills.includes(name)) {
+      this.activeSkills.push(name);
+      this.rebuildSystemPrompt();
+    }
+  }
+
+  /**
+   * 禁用某项技能，重新构建系统提示词，更新第一条消息。
+   */
+  public disableSkill(name: string): void {
+    const index = this.activeSkills.indexOf(name);
+    if (index !== -1) {
+      this.activeSkills.splice(index, 1);
+      this.rebuildSystemPrompt();
+    }
+  }
+
+  public getActiveSkills(): string[] {
+    return this.activeSkills;
+  }
+
+  /**
+   * 重新构建系统指令并刷新内存中第一条 System 消息
+   */
+  public rebuildSystemPrompt(): void {
+    if (this.messageHistory.length > 0 && this.messageHistory[0].role === 'system') {
+      this.messageHistory[0].content = buildSystemPrompt(this.activeSkills);
+    }
   }
 
   /**
@@ -80,8 +115,13 @@ export class SessionContext {
       await fs.mkdir(dir, { recursive: true });
       // 根据 sessionId 构造具体的文件路径
       const file = path.join(dir, `${this.sessionId}.json`);
+      // 包装数据，连同 activeSkills 一同保存
+      const stateToSave = {
+        activeSkills: this.activeSkills,
+        messages: this.messageHistory
+      };
       // 将历史快照格式化为 JSON 字符串并写入文件（指定 UTF-8 编码）
-      await fs.writeFile(file, JSON.stringify(this.messageHistory, null, 2), 'utf-8');
+      await fs.writeFile(file, JSON.stringify(stateToSave, null, 2), 'utf-8');
     } catch {
       // 捕获并吞掉异常，静默落盘失败不应阻断核心流程
     }
@@ -101,13 +141,17 @@ export class SessionContext {
       const data = await fs.readFile(file, 'utf-8');
       // 将文本数据解析为 JSON 对象
       const parsed = JSON.parse(data);
-      // 如果解析出的是数组格式，则认为是合法的历史记录
+      // 如果解析出的是数组格式，则认为是旧版本合法的历史记录
       if (Array.isArray(parsed)) {
-        // 覆盖当前的内存上下文
         this.messageHistory = parsed;
-        // 更新当前的会话 ID
+        this.activeSkills = [];
         this.sessionId = targetSessionId;
-        // 恢复成功，返回 true
+        return true;
+      } else if (parsed && Array.isArray(parsed.messages)) {
+        // 新版本支持 activeSkills 保存
+        this.messageHistory = parsed.messages;
+        this.activeSkills = Array.isArray(parsed.activeSkills) ? parsed.activeSkills : [];
+        this.sessionId = targetSessionId;
         return true;
       }
     } catch {

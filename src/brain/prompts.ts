@@ -13,12 +13,38 @@ const BASE_SYSTEM_PROMPT = `你是一个专业且精确的本地智能体助手�
 3. 请直接、专业且精准地回答用户问题，避免冗余的客套话或占位信息。
 4. 【语言强制】你必须始终使用简体中文进行思考（内部逻辑和推理链）以及最终回复，仅在必要时保留英文的专业术语或代码片段。`;
 
+import { loadGlobalRules, loadLocalRules, loadSkills } from './contextLoader.js';
+
 /**
  * 组装并获取最终的系统级人设文本。
  * 
+ * @param activeSkills 当前会话中被启用的技能名称列表
  * @returns 完整的系统提示词字符串
  */
-export function buildSystemPrompt(): string {
-  // 当前阶段仅作最简化的静态文本回退，为后续扩展（如注入 CWD 等动态上下文）构建防腐层锚点
-  return BASE_SYSTEM_PROMPT;
+export function buildSystemPrompt(activeSkills: string[] = []): string {
+  const parts: string[] = [BASE_SYSTEM_PROMPT];
+
+  const globalRules = loadGlobalRules();
+  if (globalRules) {
+    parts.push(`\n<global_rules>\n${globalRules}\n</global_rules>`);
+  }
+
+  const localRules = loadLocalRules();
+  if (localRules) {
+    parts.push(`\n<project_rules>\n${localRules}\n</project_rules>`);
+  }
+
+  const allSkills = loadSkills();
+  if (allSkills.length > 0) {
+    const indexLines = allSkills.map(s => `- ${s.name}: ${s.description}`);
+    parts.push(`\n<available_skills>\n${indexLines.join('\n')}\n</available_skills>`);
+
+    const activeSkillContents = allSkills.filter(s => activeSkills.includes(s.name));
+    if (activeSkillContents.length > 0) {
+      const activeLines = activeSkillContents.map(s => `### [Skill: ${s.name}]\n${s.content}`);
+      parts.push(`\n<active_skills>\n${activeLines.join('\n\n')}\n</active_skills>`);
+    }
+  }
+
+  return parts.join('\n');
 }
