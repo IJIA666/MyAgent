@@ -6,7 +6,7 @@
  */
 
 import { resolve } from 'path';
-import { existsSync, copyFileSync, readFileSync } from 'fs';
+import { existsSync, copyFileSync, readFileSync, writeFileSync } from 'fs';
 import { config as dotenvConfig } from 'dotenv';
 
 import { AppConfig, McpConfig } from './types.js';
@@ -110,4 +110,28 @@ export function loadConfig(): AppConfig {
   }
 
   return config;
+}
+
+/**
+ * 更新指定 MCP Server 的启用状态并持久化写回 mcp_config.json
+ * 
+ * @param name 服务名称
+ * @param enabled 是否启用
+ */
+export function updateMcpServerStatus(name: string, enabled: boolean): void {
+  const configPath = resolve('mcp_config.json');
+  if (!existsSync(configPath)) {
+    throw new Error('未找到 mcp_config.json 配置文件');
+  }
+
+  const raw = readFileSync(configPath, 'utf-8');
+  const parsed = JSON.parse(raw) as McpConfig;
+
+  if (!parsed.mcpServers || !parsed.mcpServers[name]) {
+    throw new Error(`MCP 服务未找到: ${name}`);
+  }
+
+  parsed.mcpServers[name].enabled = enabled;
+
+  writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
 }

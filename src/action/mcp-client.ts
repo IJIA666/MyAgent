@@ -41,6 +41,10 @@ export class McpToolManager {
 
     const connectPromises = [];
     for (const [serverName, serverConfig] of Object.entries(servers)) {
+      if (serverConfig.enabled === false) {
+        console.log(`[MCP Client] 已跳过服务 [${serverName}] (处于停用状态)`);
+        continue;
+      }
       connectPromises.push(this.connectSingle(serverName, serverConfig));
     }
 
@@ -74,6 +78,66 @@ export class McpToolManager {
     } catch (e) {
       console.error(`[MCP Client] [${name}] 连接失败:`, e);
     }
+  }
+
+  /**
+   * 动态建立单一 MCP 服务的连接（如果尚未连接），
+   * 用于支持运行时的服务启停指令。
+   */
+  async connectServer(name: string): Promise<void> {
+    if (this.connections.has(name)) {
+      return;
+    }
+    const serverConfig = this.config.mcpServers?.[name];
+    if (!serverConfig) {
+      throw new Error(`无法启动连接：当前全局配置清单中不存在 MCP 服务 [${name}]`);
+    }
+    await this.connectSingle(name, serverConfig);
+  }
+
+  /**
+   * 主动销毁单一 MCP 服务的连接，并从路由总线中剔除该服务名下的全部工具签名元数据，
+   * 以防产生 Tool Not Found 错误。
+   */
+  async disconnectServer(name: string): Promise<void> {
+    const connection = this.connections.get(name);
+    if (!connection) {
+      return;
+    }
+    console.log(`[MCP Client] 正在断开服务连接: [${name}]`);
+    try {
+      connection.client.close();
+    } catch (e) {
+      console.error(`[MCP Client] 断开 [${name}] 时出错:`, e);
+    }
+    this.connections.delete(name);
+
+    // 同步清洗路由表，反注册所有属于该 Server 的工具
+    for (const [toolName, serverName] of this.toolRouter.entries()) {
+      if (serverName === name) {
+        this.toolRouter.delete(toolName);
+      }
+    }
+  }
+
+  /**
+   * 获取当前所有 MCP 服务的配置清单及其运行状态，
+   * 每次调用都会读取最新配置，以确保 enabled 标志位准确。
+   */
+  async getMcpServersStatus(): Promise<Array<{ name: string; command: string; enabled: boolean; connected: boolean }>> {
+    const { loadMcpConfig } = await import('../config/index.js');
+    const latestConfig = loadMcpConfig();
+    const servers = latestConfig.mcpServers || {};
+    const statusList = [];
+    for (const [name, config] of Object.entries(servers)) {
+      statusList.push({
+        name,
+        command: config.command,
+        enabled: config.enabled !== false,
+        connected: this.connections.has(name)
+      });
+    }
+    return statusList;
   }
 
   /**

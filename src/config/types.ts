@@ -45,6 +45,8 @@ export interface McpServerEntry {
   args?: string[];
   /** 传递给子进程的自定义环境变量（已完成插值替换） */
   env?: Record<string, string>;
+  /** 是否启用该 MCP 插件（缺省视为启用） */
+  enabled?: boolean;
 }
 
 /**

@@ -24,6 +24,8 @@ export type AgentEvent =
 export class SessionManager {
   /** 当前系统的工具注册管理台 */
   private toolRegistry: ToolRegistry;
+  /** MCP 管理器实例引用，供外层命令动态重载服务使用 */
+  public readonly mcpManager?: McpToolManager;
   /** 会话的跟踪记录仪，负责日志落盘 */
   private tracer: AgentTracer;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
@@ -39,6 +41,7 @@ export class SessionManager {
    * @param mcpManager 可选的 MCP 客户端管理器，用于挂载外部扩展能力
    */
   constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager) {
+    this.mcpManager = mcpManager;
     this.toolRegistry = new ToolRegistry(mcpManager);
     this.context = new SessionContext();
     this.driver = new LlmDriver(llmConfig);

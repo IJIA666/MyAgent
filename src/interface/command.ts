@@ -1,7 +1,7 @@
 import { Interface } from 'readline';
 import * as p from '@clack/prompts';
 import { SessionManager } from '../brain/index.js';
-import { getModelConfig, BUILTIN_MODELS } from '../config/index.js';
+import { getModelConfig, BUILTIN_MODELS, updateMcpServerStatus } from '../config/index.js';
 import { updateEnvVariable } from '../utils/env.js';
 import { theme } from './theme.js';
 import { redrawHistory } from './cli.js';
@@ -41,6 +41,14 @@ export async function dispatchCommand(input: string, context: CommandContext): P
     case '/history':
       // 查看历史会话记录
       await handleHistoryCommand();
+      break;
+    case '/mcp':
+      // 处理 MCP 开关动态配置
+      await handleMcpCommand(args, context);
+      break;
+    case '/tool':
+      // 查看可用工具清单
+      await handleToolCommand(args, context);
       break;
     case '/resume':
       // 恢复指定的历史会话
@@ -174,6 +182,8 @@ function handleHelpCommand(): void {
   console.log(`  ${theme.highlight('/rollback [N]')} - 回滚前 N 轮历史上下文记忆（默认 1 轮）`);
   console.log(`  ${theme.highlight('/history')}      - 查看保存的历史会话列表`);
   console.log(`  ${theme.highlight('/resume <id>')}  - 恢复指定的历史会话上下文`);
+  console.log(`  ${theme.highlight('/mcp <list|enable|disable> [name]')} - 管理与查阅 MCP 扩展服务`);
+  console.log(`  ${theme.highlight('/tool list')}      - 查看当前已挂载的可用工具清单`);
   console.log(`  ${theme.highlight('/help')}         - 显示此帮助信息`);
   console.log(`  ${theme.highlight('exit / quit')}   - 退出程序`);
   console.log(`\n${theme.success('快捷键支持:')}`);
@@ -230,5 +240,90 @@ async function handleResumeCommand(args: string[], context: CommandContext): Pro
     redrawHistory(context.session);
   } else {
     console.log(theme.error(`[错误] 恢复失败，找不到该会话或记录文件已损坏: ${id}`));
+  }
+}
+
+/**
+ * 动态启停 MCP Server 连接状态。
+ *
+ * @param args 命令行附带的参数数组（预期格式: enable/disable <server_name>）
+ * @param context 命令执行上下文
+ */
+async function handleMcpCommand(args: string[], context: CommandContext): Promise<void> {
+  if (args.length < 1) {
+    console.log(theme.error('[错误] 用法: /mcp <list|enable|disable> [server_name]'));
+    return;
+  }
+  
+  const action = args[0];
+  const serverName = args[1];
+  const mcpManager = context.session.mcpManager;
+
+  if (!mcpManager) {
+    console.log(theme.error('[错误] 当前系统尚未配置或初始化 MCP Tool Manager。'));
+    return;
+  }
+
+  try {
+    if (action === 'list') {
+      const statuses = await mcpManager.getMcpServersStatus();
+      if (statuses.length === 0) {
+        console.log(theme.info('[系统] 当前未配置任何 MCP 服务。'));
+        return;
+      }
+      console.log(`\n${theme.success('MCP 服务清单:')}`);
+      for (const s of statuses) {
+        const stateStr = s.enabled ? (s.connected ? theme.success('已连接') : theme.warning('启用但未连接')) : theme.dim('已停用');
+        console.log(`  ${theme.highlight(s.name.padEnd(15))} [${stateStr}] - ${theme.dim(s.command)}`);
+      }
+      console.log();
+    } else if (action === 'enable') {
+      if (!serverName) return console.log(theme.error('[错误] 请指定服务名: /mcp enable <server_name>'));
+      // 1. 回写文件状态
+      updateMcpServerStatus(serverName, true);
+      // 2. 动态连接挂载工具
+      await mcpManager.connectServer(serverName);
+      console.log(theme.success(`[系统] 成功启用并挂载 MCP 服务: ${serverName}`));
+    } else if (action === 'disable') {
+      if (!serverName) return console.log(theme.error('[错误] 请指定服务名: /mcp disable <server_name>'));
+      // 1. 回写文件状态
+      updateMcpServerStatus(serverName, false);
+      // 2. 断开连接并清理路由元数据
+      await mcpManager.disconnectServer(serverName);
+      console.log(theme.success(`[系统] 成功断开并停用 MCP 服务: ${serverName}`));
+    } else {
+      console.log(theme.error('[错误] 未知的 MCP 操作，仅支持 enable 和 disable'));
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.log(theme.error(`[错误] 操作 MCP 服务时出错: ${msg}`));
+  }
+}
+
+/**
+ * 查阅当前系统可用工具清单
+ */
+async function handleToolCommand(args: string[], context: CommandContext): Promise<void> {
+  if (args[0] === 'list') {
+    const mcpManager = context.session.mcpManager;
+    let tools: Array<{ function?: { name?: string; description?: string } }> = [];
+    if (mcpManager) {
+      tools = (await mcpManager.getMcpTools()) as Array<{ function?: { name?: string; description?: string } }>;
+    }
+    
+    if (tools.length === 0) {
+      console.log(theme.info('[系统] 当前没有挂载任何外部可用工具。'));
+      return;
+    }
+
+    console.log(`\n${theme.success('可用扩展工具清单:')}`);
+    for (const t of tools) {
+      const name = t.function?.name || 'unknown';
+      const desc = t.function?.description || '无描述';
+      console.log(`  ${theme.highlight(name.padEnd(25))} - ${theme.dim(desc)}`);
+    }
+    console.log();
+  } else {
+    console.log(theme.error('[错误] 未知的 tool 操作，仅支持 /tool list'));
   }
 }
