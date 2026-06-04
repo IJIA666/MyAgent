@@ -93,7 +93,7 @@ export function startCli(session: SessionManager) {
   const initRl = () => {
     const completer = (line: string) => {
       if (line.startsWith('/')) {
-        const commands = ['/model', '/rollback', '/help', '/history', '/resume'];
+        const commands = ['/model', '/rollback', '/help', '/history', '/resume', '/mcp', '/tool', '/skill'];
         const hits = commands.filter((c) => c.startsWith(line));
         return [hits.length ? hits : [], line];
       }

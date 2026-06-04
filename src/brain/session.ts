@@ -60,12 +60,28 @@ export class SessionManager {
     });
   }
 
+  public pinSkill(name: string): void {
+    this.context.pinSkill(name);
+  }
+
+  public unpinSkill(name: string): void {
+    this.context.unpinSkill(name);
+  }
+
   public enableSkill(name: string): void {
     this.context.enableSkill(name);
   }
 
   public disableSkill(name: string): void {
     this.context.disableSkill(name);
+  }
+
+  public getPinnedSkills(): string[] {
+    return this.context.getPinnedSkills();
+  }
+
+  public getDisabledSkills(): string[] {
+    return this.context.getDisabledSkills();
   }
 
   /**
@@ -239,12 +255,14 @@ export class SessionManager {
               let toolResult = '';
 
               try {
+                if (functionName === 'load_skill' && typeof functionArgs.name === 'string') {
+                  if (this.context.getDisabledSkills().includes(functionArgs.name)) {
+                    throw new Error(`技能 ${functionArgs.name} 已被彻底禁用（黑名单），拒绝提供上下文。`);
+                  }
+                }
+
                 // 统一通过中央工具注册表进行物理/虚拟工具的函数路由分发
                 const mcpResult = await this.toolRegistry.callTool(functionName, functionArgs);
-                
-                if (functionName === 'load_skill' && typeof functionArgs.name === 'string') {
-                  this.enableSkill(functionArgs.name);
-                }
 
                 // 将执行得到的原始结果转为字符串存储
                 toolResult = JSON.stringify(mcpResult);

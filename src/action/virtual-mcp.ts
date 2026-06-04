@@ -1,5 +1,5 @@
 import { toolsDefinition, readFileTool, writeFileTool, listFilesTool } from './tools.js';
-import { loadSkills } from '../brain/contextLoader.js';
+import { loadSkillContent } from '../brain/contextLoader.js';
 
 /**
  * 虚拟 MCP 调用请求接口定义
@@ -78,12 +78,11 @@ export class LocalFileSystemMcpServer {
 
         case 'load_skill': {
           if (typeof args.name !== 'string') throw new Error("name 必须是字符串");
-          const allSkills = loadSkills();
-          const targetSkill = allSkills.find(s => s.name === args.name);
-          if (!targetSkill) {
+          const body = loadSkillContent(args.name);
+          if (!body) {
             throw new Error(`未找到名为 "${args.name}" 的技能，请检查名称是否在 <available_skills> 中。`);
           }
-          resultText = targetSkill.content;
+          resultText = body;
           break;
         }
 

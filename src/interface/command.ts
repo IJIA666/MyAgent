@@ -78,9 +78,11 @@ import { loadSkills } from '../brain/contextLoader.js';
  */
 async function handleSkillCommand(args: string[], context: CommandContext): Promise<void> {
   const subCommand = args[0]?.toLowerCase();
-  
+
   if (!subCommand || subCommand === 'list') {
     const allSkills = loadSkills();
+    const pinnedSkills = context.session.getPinnedSkills();
+    const disabledSkills = context.session.getDisabledSkills();
     console.log();
     if (allSkills.length === 0) {
       console.log(theme.info('当前系统未发现任何可用技能。'));
@@ -88,9 +90,15 @@ async function handleSkillCommand(args: string[], context: CommandContext): Prom
     }
     console.log(theme.highlight('发现如下技能：'));
     allSkills.forEach(s => {
-      console.log(`- ${theme.highlight(s.name)}: ${s.description}`);
+      let tag = theme.dim('[按需拉取]');
+      if (pinnedSkills.includes(s.name)) {
+        tag = theme.warning('[已强制常驻]');
+      } else if (disabledSkills.includes(s.name)) {
+        tag = theme.error('[已禁用屏蔽]');
+      }
+      console.log(`- ${theme.highlight(s.name)} ${tag}: ${s.description}`);
     });
-    console.log(theme.info('\n提示: 输入 /skill enable <name> 强行挂载技能，或 /skill disable <name> 取消挂载。'));
+    console.log(theme.info('\n提示: /skill pin|unpin <name> 控制强制挂载， /skill disable|enable <name> 控制黑名单。'));
     return;
   }
 
@@ -100,14 +108,39 @@ async function handleSkillCommand(args: string[], context: CommandContext): Prom
     return;
   }
 
-  if (subCommand === 'enable') {
-    context.session.enableSkill(skillName);
-    console.log(theme.success(`[成功] 技能 ${skillName} 已显式挂载到当前会话。`));
+  const pinnedSkills = context.session.getPinnedSkills();
+  const disabledSkills = context.session.getDisabledSkills();
+
+  if (subCommand === 'pin') {
+    if (pinnedSkills.includes(skillName)) {
+      console.log(theme.info(`[提示] 技能 ${skillName} 已经处于强行常驻状态，无需重复置顶。`));
+      return;
+    }
+    context.session.pinSkill(skillName);
+    console.log(theme.success(`[成功] 技能 ${skillName} 已被强制置顶注入 System Prompt。\n(注意：此操作仅在当前会话临时生效)`));
+  } else if (subCommand === 'unpin') {
+    if (!pinnedSkills.includes(skillName)) {
+      console.log(theme.info(`[提示] 技能 ${skillName} 并未处于强行常驻状态。`));
+      return;
+    }
+    context.session.unpinSkill(skillName);
+    console.log(theme.success(`[成功] 技能 ${skillName} 已取消强制常驻，退回按需拉取模式。`));
   } else if (subCommand === 'disable') {
+    if (disabledSkills.includes(skillName)) {
+      console.log(theme.info(`[提示] 技能 ${skillName} 已经处于被屏蔽状态。`));
+      return;
+    }
     context.session.disableSkill(skillName);
-    console.log(theme.success(`[成功] 技能 ${skillName} 已取消挂载。`));
+    console.log(theme.success(`[成功] 技能 ${skillName} 已被彻底屏蔽，大模型将无法看见其索引也无法拉取其全文。`));
+  } else if (subCommand === 'enable') {
+    if (!disabledSkills.includes(skillName)) {
+      console.log(theme.info(`[提示] 技能 ${skillName} 并没有被屏蔽，当前为正常可用状态。`));
+      return;
+    }
+    context.session.enableSkill(skillName);
+    console.log(theme.success(`[成功] 技能 ${skillName} 已移出黑名单，恢复为按需拉取模式。`));
   } else {
-    console.log(theme.error(`[错误] 未知的技能指令: ${subCommand}`));
+    console.log(theme.error(`[错误] 未知的技能指令: ${subCommand}，支持 pin, unpin, disable, enable`));
   }
 }
 
@@ -215,7 +248,7 @@ function handleRollbackCommand(args: string[], context: CommandContext): void {
   }
 
   context.session.rollback(turns);
-  
+
   // 执行清屏并重绘剩下的有效记忆，抹除被回退对话在终端的显示
   redrawHistory(context.session);
 }
@@ -249,17 +282,17 @@ async function handleHistoryCommand(): Promise<void> {
       console.log(theme.info('[系统] 暂无任何历史会话记录。'));
       return;
     }
-    
+
     console.log(`\n${theme.success('历史会话列表:')}`);
-    
+
     // 获取文件的修改时间并排序
     const fileStats = await Promise.all(jsonFiles.map(async file => {
       const stats = await fs.stat(path.join(dir, file));
       return { file, mtime: stats.mtimeMs, mtimeDate: stats.mtime };
     }));
-    
+
     fileStats.sort((a, b) => b.mtime - a.mtime);
-    
+
     for (const fsObj of fileStats) {
       const id = fsObj.file.replace('.json', '');
       const dateStr = fsObj.mtimeDate.toLocaleString();
@@ -301,7 +334,7 @@ async function handleMcpCommand(args: string[], context: CommandContext): Promis
     console.log(theme.error('[错误] 用法: /mcp <list|enable|disable> [server_name]'));
     return;
   }
-  
+
   const action = args[0];
   const serverName = args[1];
   const mcpManager = context.session.mcpManager;
@@ -357,7 +390,7 @@ async function handleToolCommand(args: string[], context: CommandContext): Promi
     if (mcpManager) {
       tools = (await mcpManager.getMcpTools()) as Array<{ function?: { name?: string; description?: string } }>;
     }
-    
+
     if (tools.length === 0) {
       console.log(theme.info('[系统] 当前没有挂载任何外部可用工具。'));
       return;

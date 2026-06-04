@@ -34,3 +34,4 @@ ENV/
 
 # Runtime and local artifacts
 .myagent/
+.agent/skills/

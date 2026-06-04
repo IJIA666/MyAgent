@@ -13,7 +13,8 @@ import { buildSystemPrompt } from './prompts.js';
 export class SessionContext {
   private messageHistory: ChatCompletionMessageParam[] = [];
   private sessionId: string;
-  private activeSkills: string[] = [];
+  private pinnedSkills: string[] = [];
+  private disabledSkills: string[] = [];
 
   /**
    * 实例初始化。
@@ -22,9 +23,9 @@ export class SessionContext {
   constructor(sessionId?: string) {
     // 如果没有传入 sessionId，则使用当前时间戳作为默认会话标识
     this.sessionId = sessionId || Date.now().toString();
-    
+
     // 初始化系统指令，确立智能体的工作边界与行为准则
-    const systemPrompt = buildSystemPrompt(this.activeSkills);
+    const systemPrompt = buildSystemPrompt(this.pinnedSkills, this.disabledSkills);
     // 将系统提示词作为会话的第一条消息压入历史栈
     this.messageHistory.push({
       role: 'system',
@@ -33,28 +34,63 @@ export class SessionContext {
   }
 
   /**
-   * 启用某项技能，重新构建系统提示词，更新第一条消息。
+   * 强行置顶某项技能，重新构建系统提示词，更新第一条消息。
    */
-  public enableSkill(name: string): void {
-    if (!this.activeSkills.includes(name)) {
-      this.activeSkills.push(name);
+  public pinSkill(name: string): void {
+    if (!this.pinnedSkills.includes(name)) {
+      this.pinnedSkills.push(name);
+      // 如果被强制挂载了，同时也从黑名单里移出来
+      const dIndex = this.disabledSkills.indexOf(name);
+      if (dIndex !== -1) {
+        this.disabledSkills.splice(dIndex, 1);
+      }
       this.rebuildSystemPrompt();
     }
   }
 
   /**
-   * 禁用某项技能，重新构建系统提示词，更新第一条消息。
+   * 取消置顶某项技能，重新构建系统提示词，更新第一条消息。
    */
-  public disableSkill(name: string): void {
-    const index = this.activeSkills.indexOf(name);
+  public unpinSkill(name: string): void {
+    const index = this.pinnedSkills.indexOf(name);
     if (index !== -1) {
-      this.activeSkills.splice(index, 1);
+      this.pinnedSkills.splice(index, 1);
       this.rebuildSystemPrompt();
     }
   }
 
-  public getActiveSkills(): string[] {
-    return this.activeSkills;
+  /**
+   * 将某个技能彻底拉黑（禁止拉取，并在下一次构建系统提示词时隐藏索引）
+   */
+  public disableSkill(name: string): void {
+    if (!this.disabledSkills.includes(name)) {
+      this.disabledSkills.push(name);
+      // 如果之前被置顶过，也强制踢出
+      const pIndex = this.pinnedSkills.indexOf(name);
+      if (pIndex !== -1) {
+        this.pinnedSkills.splice(pIndex, 1);
+      }
+      this.rebuildSystemPrompt();
+    }
+  }
+
+  /**
+   * 从黑名单中移除某技能（恢复为默认的按需拉取模式）
+   */
+  public enableSkill(name: string): void {
+    const index = this.disabledSkills.indexOf(name);
+    if (index !== -1) {
+      this.disabledSkills.splice(index, 1);
+      this.rebuildSystemPrompt();
+    }
+  }
+
+  public getPinnedSkills(): string[] {
+    return this.pinnedSkills;
+  }
+
+  public getDisabledSkills(): string[] {
+    return this.disabledSkills;
   }
 
   /**
@@ -62,7 +98,7 @@ export class SessionContext {
    */
   public rebuildSystemPrompt(): void {
     if (this.messageHistory.length > 0 && this.messageHistory[0].role === 'system') {
-      this.messageHistory[0].content = buildSystemPrompt(this.activeSkills);
+      this.messageHistory[0].content = buildSystemPrompt(this.pinnedSkills, this.disabledSkills);
     }
   }
 
@@ -115,9 +151,8 @@ export class SessionContext {
       await fs.mkdir(dir, { recursive: true });
       // 根据 sessionId 构造具体的文件路径
       const file = path.join(dir, `${this.sessionId}.json`);
-      // 包装数据，连同 activeSkills 一同保存
+      // 包装数据，不再保存 activeSkills（强制挂载属于单次会话临时状态）
       const stateToSave = {
-        activeSkills: this.activeSkills,
         messages: this.messageHistory
       };
       // 将历史快照格式化为 JSON 字符串并写入文件（指定 UTF-8 编码）
@@ -144,13 +179,15 @@ export class SessionContext {
       // 如果解析出的是数组格式，则认为是旧版本合法的历史记录
       if (Array.isArray(parsed)) {
         this.messageHistory = parsed;
-        this.activeSkills = [];
+        this.pinnedSkills = [];
+        this.disabledSkills = [];
         this.sessionId = targetSessionId;
         return true;
       } else if (parsed && Array.isArray(parsed.messages)) {
-        // 新版本支持 activeSkills 保存
+        // 新版本读取，初始化时清空临时激活列表
         this.messageHistory = parsed.messages;
-        this.activeSkills = Array.isArray(parsed.activeSkills) ? parsed.activeSkills : [];
+        this.pinnedSkills = [];
+        this.disabledSkills = [];
         this.sessionId = targetSessionId;
         return true;
       }
