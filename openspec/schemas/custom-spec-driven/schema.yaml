@@ -7,136 +7,36 @@ artifacts:
     description: Initial proposal document outlining the change
     template: proposal.md
     instruction: >
-      Create the proposal document that establishes WHY this change is needed.
-
-
-      Sections:
-
-      - **Why**: 1-2 sentences on the problem or opportunity. What problem does
-      this solve? Why now?
-
-      - **What Changes**: Bullet list of changes. Be specific about new
-      capabilities, modifications, or removals. Mark breaking changes with
-      **BREAKING**.
-
-      - **Capabilities**: Identify which specs will be created or modified:
-        - **New Capabilities**: List capabilities being introduced. Each becomes a new `specs/<name>/spec.md`. Use kebab-case names (e.g., `user-auth`, `data-export`).
-        - **Modified Capabilities**: List existing capabilities whose REQUIREMENTS are changing. Only include if spec-level behavior changes (not just implementation details). Each needs a delta spec file. Check `openspec/specs/` for existing spec names. Leave empty if no requirement changes.
-      - **Impact**: Affected code, APIs, dependencies, or systems.
-
-
-      IMPORTANT: The Capabilities section is critical. It creates the contract
-      between
-
-      proposal and specs phases. Research existing specs before filling this in.
-
-      Each capability listed here will need a corresponding spec file.
-
-
-      Keep it concise (1-2 pages). Focus on the "why" not the "how" -
-
-      implementation details belong in design.md.
-
-
-      This is the foundation - specs, design, and tasks all build on this.
+      创建 proposal 文档，阐述“为什么做”以及“要做什么”。
+      
+      核心板块：
+      - **Why**: 简述背景、要解决的问题以及为何现在做。
+      - **What Changes**: 提纲挈领地列出改动点，若有不兼容变更必须标记 **BREAKING**。
+      - **Capabilities (极度重要)**: 明确将要影响的契约模块，为下一步生成 specs 定下范围：
+        - **New Capabilities**: 将要新增的模块列表。必须使用 kebab-case（如 `user-auth`），每个将生成 `specs/<name>/spec.md`。
+        - **Modified Capabilities**: 将要修改的既有模块列表（仅限需求层面的改动，纯技术重构不在此列）。若无则留空。
+      - **Impact**: 评估受影响的代码、API 或依赖。
+      
+      注意：本文件不要写具体的技术实现细节，技术实现留给 design.md。
     requires: []
   - id: specs
     generates: specs/**/*.md
     description: Detailed specifications for the change
     template: spec.md
     instruction: >
-      Create specification files that define WHAT the system should do.
-
-
-      Create one spec file per capability listed in the proposal's Capabilities
-      section.
-
-      - New capabilities: use the exact kebab-case name from the proposal
-      (specs/<capability>/spec.md).
-
-      - Modified capabilities: use the existing spec folder name from
-      openspec/specs/<capability>/ when creating the delta spec at
-      specs/<capability>/spec.md.
-
-
-      Delta operations (use ## headers):
-
-      - **ADDED Requirements**: New capabilities
-
-      - **MODIFIED Requirements**: Changed behavior - MUST include full updated
-      content
-
-      - **REMOVED Requirements**: Deprecated features - MUST include **Reason**
-      and **Migration**
-
-      - **RENAMED Requirements**: Name changes only - use FROM:/TO: format
-
-
-      Format requirements:
-
-      - Each requirement: `### Requirement: <name>` followed by description
-
-      - Use SHALL/MUST for normative requirements (avoid should/may)
-
-      - Each scenario: `#### Scenario: <name>` with WHEN/THEN format
-
-      - **CRITICAL**: Scenarios MUST use exactly 4 hashtags (`####`). Using 3
-      hashtags or bullets will fail silently.
-
-      - Every requirement MUST have at least one scenario.
-
-
-      MODIFIED requirements workflow:
-
-      1. Locate the existing requirement in openspec/specs/<capability>/spec.md
-
-      2. Copy the ENTIRE requirement block (from `### Requirement:` through all
-      scenarios)
-
-      3. Paste under `## MODIFIED Requirements` and edit to reflect new behavior
-
-      4. Ensure header text matches exactly (whitespace-insensitive)
-
-
-      Common pitfall: Using MODIFIED with partial content loses detail at
-      archive time.
-
-      If adding new concerns without changing existing behavior, use ADDED
-      instead.
-
-
-      Example:
-
-      ```
-
-      ## ADDED Requirements
-
-
-      ### Requirement: User can export data
-
-      The system SHALL allow users to export their data in CSV format.
-
-
-      #### Scenario: Successful export
-
-      - **WHEN** user clicks "Export" button
-
-      - **THEN** system downloads a CSV file with all user data
-
-
-      ## REMOVED Requirements
-
-
-      ### Requirement: Legacy export
-
-      **Reason**: Replaced by new export system
-
-      **Migration**: Use new export endpoint at /api/v2/export
-
-      ```
-
-
-      Specs should be testable - each scenario is a potential test case.
+      生成业务规范契约 (Specs)，定义系统“应具备什么外部行为”。
+      必须依据 proposal 中列出的 Capabilities 逐一创建对应的 `specs/<capability>/spec.md` 文件。
+      
+      **增量修改准则 (Delta Operations - 使用二级标题 ##)**：
+      - **ADDED Requirements**: 新增的需求块。
+      - **MODIFIED Requirements**: 修改既有需求。必须去 `openspec/specs/` 里找到原文，将完整的 `### Requirement` 块连同其下的所有场景全量复制过来后，再进行修改。严禁只写部分内容导致信息丢失。
+      - **REMOVED Requirements**: 废弃的需求，必须写明 **Reason** (原因) 和 **Migration** (迁移方案)。
+      - **RENAMED Requirements**: 仅限改名，格式为 FROM: / TO: 。
+      
+      **排版严控**:
+      - 需求必须使用三级标题：`### Requirement: <名称>`，使用 SHALL/MUST 陈述语气。
+      - 场景必须使用且仅能使用四级标题：`#### Scenario: <名称>`。严禁使用 3 个 `#` 或无序列表，否则将导致解析失败！
+      - 场景内使用 WHEN/THEN 格式。每个 Requirement 至少包含一个 Scenario。
     requires:
       - proposal
   - id: design
@@ -144,44 +44,17 @@ artifacts:
     description: Technical design document with implementation details
     template: design.md
     instruction: >
-      Create the design document that explains HOW to implement the change.
-
-
-      When to include design.md (create only if any apply):
-
-      - Cross-cutting change (multiple services/modules) or new architectural
-      pattern
-
-      - New external dependency or significant data model changes
-
-      - Security, performance, or migration complexity
-
-      - Ambiguity that benefits from technical decisions before coding
-
-
-      Sections:
-
-      - **Context**: Background, current state, constraints, stakeholders
-
-      - **Goals / Non-Goals**: What this design achieves and explicitly excludes
-
-      - **Decisions**: Key technical choices with rationale (why X over Y?).
-      Include alternatives considered for each decision.
-
-      - **Risks / Trade-offs**: Known limitations, things that could go wrong.
-      Format: [Risk] → Mitigation
-
-      - **Migration Plan**: Steps to deploy, rollback strategy (if applicable)
-
-      - **Open Questions**: Outstanding decisions or unknowns to resolve
-
-
-      Focus on architecture and approach, not line-by-line implementation.
-
-      Reference the proposal for motivation and specs for requirements.
-
-
-      Good design docs explain the "why" behind technical decisions.
+      生成架构设计文档 (Design)，解决“技术上如何实现”的问题。
+      
+      核心板块：
+      - **Context**: 简述技术背景与系统现状。
+      - **Goals / Non-Goals**: 明确技术方案要达成的目标，以及**坚决不做的非目标**（防范范围蔓延）。
+      - **Decisions**: 核心架构决策。必须讲明原因（Why X over Y?），并列出曾经考虑过的替代方案。
+      - **Risks / Trade-offs**: 已知风险与权衡取舍。格式：[风险点] -> 缓解策略。
+      - **Migration Plan**: 部署或数据迁移步骤，及回滚策略。
+      - **Open Questions**: 尚待确认的设计疑点。
+      
+      注意：聚焦架构决策、数据流转与模块关系，不需要写流水账式的代码级伪代码。
     requires:
       - proposal
   - id: tasks
@@ -189,47 +62,18 @@ artifacts:
     description: Implementation checklist with trackable tasks
     template: tasks.md
     instruction: |
-      Create the task list that breaks down the implementation work.
-
-      **IMPORTANT: Follow the template below exactly.** The apply phase parses
-      checkbox format to track progress. Tasks not using `- [ ]` won't be tracked.
-
-      Guidelines:
-      - Group related tasks under ## numbered headings
-      - Each task MUST be a checkbox: `- [ ] X.Y Task description`
-      - Tasks should be small enough to complete in one session
-      - Order tasks by dependency (what must be done first?)
-      - After each task group, add an automated checkpoint for verification
-
-      Checkpoint rules:
-      - Use HTML comment syntax: `<!-- checkpoint: <command> -->`
-      - Place after the last task in a group, before the next ## heading
-      - Command must return exit code 0 on success
-      - Choose commands appropriate to the project's tech stack:
-        - Java/Maven: `mvn compile -q`, `mvn test -q`, `mvn test -pl <module> -q`
-        - Node.js: `npm run build`, `npm test`
-        - Gradle: `./gradlew compileJava`, `./gradlew test`
-      - At minimum: compilation check after infrastructure changes, test check after logic changes
-
-      Example:
-      ```
-      ## 1. Setup
-
-      - [ ] 1.1 Create new module structure
-      - [ ] 1.2 Add dependencies
-
-      <!-- checkpoint: mvn compile -q -->
-
-      ## 2. Core Implementation
-
-      - [ ] 2.1 Implement data export function
-      - [ ] 2.2 Write unit tests
-
-      <!-- checkpoint: mvn test -q -->
-      ```
-
-      Reference specs for what needs to be built, design for how to build it.
-      Each task should be verifiable - you know when it's done.
+      生成施工任务单 (Tasks)。将 design 落地为可追踪的执行步骤。
+      
+      **格式严控 (必须严格遵守，否则解析器将失效)**：
+      - 按依赖顺序，使用 `##` 二级标题将任务分组。
+      - 每个子任务必须使用严格的复选框格式：`- [ ] X.Y 任务描述`。
+      - 粒度必须足够小（可在一个会话内完成）。
+      
+      **检查点机制 (Checkpoints)**：
+      - 在每个 `##` 任务组的末尾，必须插入至少一个自动编译或测试检查点。
+      - 格式必须严格为：`<!-- checkpoint: <终端命令> -->`
+      - 示例：`<!-- checkpoint: npm run build -->` 或 `<!-- checkpoint: mvn test -q -->`
+      - 强关联性：如果有基建改动，必须有编译检查点；如果有业务逻辑改动，必须有单测/集成测检查点。
     requires:
       - specs
       - design
@@ -238,8 +82,9 @@ apply:
     - tasks
   tracks: tasks.md
   instruction: |
-    Read context files, work through pending tasks, mark complete as you go.
-    When encountering a `<!-- checkpoint: <command> -->` marker, execute the
-    specified command. If exit code is 0, continue. If non-zero, stop immediately
-    and report the failure with full error output.
-    Pause if you hit blockers or need clarification.
+    加载相关上下文，依据 tasks.md 逐项编写业务代码，执行完毕后将对应的复选框标记为 `- [x]`。
+    
+    **检查点红线执行规则**：
+    当在任务列表中遇到 `<!-- checkpoint: <command> -->` 标记时，必须在终端执行该指令。
+    - 若命令成功（Exit 0），继续执行后续任务。
+    - 若命令失败（非零退出码），**必须立即中止后续所有编码与任务**。将详细报错输出汇报给用户，或者根据报错信息自动排查原因并修复后再重试。严禁在报错未解决的情况下强行打钩推进。
