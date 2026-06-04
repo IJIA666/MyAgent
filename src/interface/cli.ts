@@ -54,6 +54,9 @@ export function startCli(session: SessionManager) {
   let rl: ReturnType<typeof createInterface>;
   let isGenerating = false;
   let lastEscapeTime = 0;
+  
+  // 外部维系终端输入历史记录，打破 rl 实例销毁导致的“记忆断层”
+  const commandHistory: string[] = [];
 
   // 挂载全局按键监听以实现双击 ESC 快捷键
   process.stdin.on('keypress', (str, key) => {
@@ -103,7 +106,8 @@ export function startCli(session: SessionManager) {
     rl = createInterface({
       input: process.stdin,
       output: process.stdout,
-      completer: completer
+      completer: completer,
+      history: commandHistory
     });
 
     /**
