@@ -60,30 +60,6 @@ export class SessionManager {
     });
   }
 
-  public pinSkill(name: string): void {
-    this.context.pinSkill(name);
-  }
-
-  public unpinSkill(name: string): void {
-    this.context.unpinSkill(name);
-  }
-
-  public enableSkill(name: string): void {
-    this.context.enableSkill(name);
-  }
-
-  public disableSkill(name: string): void {
-    this.context.disableSkill(name);
-  }
-
-  public getPinnedSkills(): string[] {
-    return this.context.getPinnedSkills();
-  }
-
-  public getDisabledSkills(): string[] {
-    return this.context.getDisabledSkills();
-  }
-
   /**
    * 输出当前关联的上下文状态数据。
    *
@@ -188,9 +164,10 @@ export class SessionManager {
    * 处理单次对话请求的完整生命周期。
    * 采用 ReAct（Reasoning and Acting）架构设计，允许模型进行多次往返的工具请求与状态回溯。
    * 
+   * @param transientSkillContent 可选。当前请求独占的临时技能规范内容，将作为单次对话的沙盒上下文动态注入。
    * @returns 抛出 AgentEvent 流，由外部消费者负责呈现。
    */
-  public async *chat(): AsyncGenerator<AgentEvent, void, unknown> {
+  public async *chat(transientSkillContent?: string): AsyncGenerator<AgentEvent, void, unknown> {
     // 初始化重试与工具循环计数器，用于监控防范模型陷入死循环
     let iteration = 0;
 
@@ -204,9 +181,22 @@ export class SessionManager {
         // 深拷贝捕获当前发送给大模型的上下文快照，用于稍后追踪记录时对比
         const snapshotContext = [...this.context.getHistory()];
 
-        // 委托 driver 层拉起底层流式请求
+        // 历史流动态入栈 (History Stream Push-Pop):
+        // 将独立技能压入发送队列的尾端（最新一条用户消息之前），在不污染头部基线缓存的前提下实现超高指令聚焦
+        if (transientSkillContent) {
+          const lastMsg = snapshotContext.pop();
+          snapshotContext.push({
+            role: 'system',
+            content: `<transient_skill>\n${transientSkillContent}\n</transient_skill>`
+          });
+          if (lastMsg) {
+            snapshotContext.push(lastMsg);
+          }
+        }
+
+        // 委托 driver 层拉起底层流式请求，注意此处传递的是动态入栈后的 snapshotContext
         const stream = this.driver.streamChat(
-          this.context.getHistory(),
+          snapshotContext,
           allTools as unknown as ChatCompletionTool[]
         );
 
@@ -255,12 +245,6 @@ export class SessionManager {
               let toolResult = '';
 
               try {
-                if (functionName === 'load_skill' && typeof functionArgs.name === 'string') {
-                  if (this.context.getDisabledSkills().includes(functionArgs.name)) {
-                    throw new Error(`技能 ${functionArgs.name} 已被彻底禁用（黑名单），拒绝提供上下文。`);
-                  }
-                }
-
                 // 统一通过中央工具注册表进行物理/虚拟工具的函数路由分发
                 const mcpResult = await this.toolRegistry.callTool(functionName, functionArgs);
 

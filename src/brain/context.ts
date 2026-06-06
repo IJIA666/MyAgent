@@ -13,8 +13,6 @@ import { buildSystemPrompt } from './prompts.js';
 export class SessionContext {
   private messageHistory: ChatCompletionMessageParam[] = [];
   private sessionId: string;
-  private pinnedSkills: string[] = [];
-  private disabledSkills: string[] = [];
 
   /**
    * 实例初始化。
@@ -25,81 +23,12 @@ export class SessionContext {
     this.sessionId = sessionId || Date.now().toString();
 
     // 初始化系统指令，确立智能体的工作边界与行为准则
-    const systemPrompt = buildSystemPrompt(this.pinnedSkills, this.disabledSkills);
+    const systemPrompt = buildSystemPrompt();
     // 将系统提示词作为会话的第一条消息压入历史栈
     this.messageHistory.push({
       role: 'system',
       content: systemPrompt
     });
-  }
-
-  /**
-   * 强行置顶某项技能，重新构建系统提示词，更新第一条消息。
-   */
-  public pinSkill(name: string): void {
-    if (!this.pinnedSkills.includes(name)) {
-      this.pinnedSkills.push(name);
-      // 如果被强制挂载了，同时也从黑名单里移出来
-      const dIndex = this.disabledSkills.indexOf(name);
-      if (dIndex !== -1) {
-        this.disabledSkills.splice(dIndex, 1);
-      }
-      this.rebuildSystemPrompt();
-    }
-  }
-
-  /**
-   * 取消置顶某项技能，重新构建系统提示词，更新第一条消息。
-   */
-  public unpinSkill(name: string): void {
-    const index = this.pinnedSkills.indexOf(name);
-    if (index !== -1) {
-      this.pinnedSkills.splice(index, 1);
-      this.rebuildSystemPrompt();
-    }
-  }
-
-  /**
-   * 将某个技能彻底拉黑（禁止拉取，并在下一次构建系统提示词时隐藏索引）
-   */
-  public disableSkill(name: string): void {
-    if (!this.disabledSkills.includes(name)) {
-      this.disabledSkills.push(name);
-      // 如果之前被置顶过，也强制踢出
-      const pIndex = this.pinnedSkills.indexOf(name);
-      if (pIndex !== -1) {
-        this.pinnedSkills.splice(pIndex, 1);
-      }
-      this.rebuildSystemPrompt();
-    }
-  }
-
-  /**
-   * 从黑名单中移除某技能（恢复为默认的按需拉取模式）
-   */
-  public enableSkill(name: string): void {
-    const index = this.disabledSkills.indexOf(name);
-    if (index !== -1) {
-      this.disabledSkills.splice(index, 1);
-      this.rebuildSystemPrompt();
-    }
-  }
-
-  public getPinnedSkills(): string[] {
-    return this.pinnedSkills;
-  }
-
-  public getDisabledSkills(): string[] {
-    return this.disabledSkills;
-  }
-
-  /**
-   * 重新构建系统指令并刷新内存中第一条 System 消息
-   */
-  public rebuildSystemPrompt(): void {
-    if (this.messageHistory.length > 0 && this.messageHistory[0].role === 'system') {
-      this.messageHistory[0].content = buildSystemPrompt(this.pinnedSkills, this.disabledSkills);
-    }
   }
 
   /**
@@ -179,15 +108,11 @@ export class SessionContext {
       // 如果解析出的是数组格式，则认为是旧版本合法的历史记录
       if (Array.isArray(parsed)) {
         this.messageHistory = parsed;
-        this.pinnedSkills = [];
-        this.disabledSkills = [];
         this.sessionId = targetSessionId;
         return true;
       } else if (parsed && Array.isArray(parsed.messages)) {
-        // 新版本读取，初始化时清空临时激活列表
+        // 新版本读取，恢复状态
         this.messageHistory = parsed.messages;
-        this.pinnedSkills = [];
-        this.disabledSkills = [];
         this.sessionId = targetSessionId;
         return true;
       }

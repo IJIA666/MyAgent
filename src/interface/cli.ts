@@ -3,10 +3,91 @@
  * 负责绑定标准输入输出（stdin/stdout），承接用户的终端文本流，并向大脑层订阅与渲染 AI 思考事件。
  */
 import { createInterface } from 'readline';
+import * as p from '@clack/prompts';
 import { SessionManager } from '../brain/index.js';
 import { dispatchCommand } from './command.js';
+import { loadSkills } from '../brain/contextLoader.js';
 
 import { theme } from './theme.js';
+
+async function showInteractiveMenu(): Promise<string | null> {
+  console.log();
+  const mainAction = await p.select({
+    message: '选择要执行的操作:',
+    options: [
+      { value: 'skill', label: '调用特殊技能 (Skill)' },
+      { value: 'model', label: '切换大模型配置 (Model)' },
+      { value: 'rollback', label: '撤销上轮对话 (Rollback)' },
+      { value: 'history', label: '查看历史记录 (History)' },
+      { value: 'resume', label: '恢复历史会话 (Resume)' },
+      { value: 'tool', label: '查看扩展工具清单 (Tool)' },
+      { value: 'mcp', label: '管理 MCP 服务 (MCP)' },
+      { value: 'help', label: '查看帮助 (Help)' },
+      { value: 'cancel', label: '取消' },
+    ]
+  });
+
+  if (p.isCancel(mainAction) || mainAction === 'cancel') {
+    p.cancel('操作已取消。');
+    return null;
+  }
+
+  if (mainAction === 'skill') {
+    const allSkills = loadSkills();
+    if (allSkills.length === 0) {
+      p.outro(theme.info('未发现任何可用技能。'));
+      return null;
+    }
+
+    const skillSelect = await p.select({
+      message: '请选择要挂载的临时技能:',
+      options: allSkills.map(s => ({
+        value: s.name,
+        label: `${s.name} - ${s.description}`
+      }))
+    });
+
+    if (p.isCancel(skillSelect)) {
+      p.cancel('操作已取消。');
+      return null;
+    }
+
+    const taskText = await p.text({
+      message: '请输入希望技能执行的具体任务:',
+      placeholder: '例如：帮我查一下... / 帮我写一下...',
+      validate(value) {
+        if (!value || !value.trim()) return '任务要求不能为空';
+      }
+    });
+
+    if (p.isCancel(taskText)) {
+      p.cancel('操作已取消。');
+      return null;
+    }
+
+    return `/skill ${skillSelect as string} ${taskText as string}`;
+  }
+
+  if (['model', 'history', 'tool', 'help'].includes(mainAction as string)) {
+    return `/${mainAction}`;
+  }
+
+  if (mainAction === 'resume') {
+    const id = await p.text({ message: '请输入要恢复的会话 ID:' });
+    if (p.isCancel(id) || !id) return null;
+    return `/resume ${id}`;
+  }
+
+  if (mainAction === 'mcp') {
+    return `/mcp list`; 
+  }
+
+  if (mainAction === 'rollback') {
+    return `/rollback 1`; 
+  }
+
+  return null;
+}
 
 /**
  * 清屏并重新渲染当前生效的会话上下文。
@@ -121,10 +202,53 @@ export function startCli(session: SessionManager) {
     updatePrompt();
     rl.prompt();
 
+    const runStreamLoop = async (transientSkill?: string) => {
+      isGenerating = true;
+      try {
+        let hasPrintedReasoning = false;
+        let hasPrintedContent = false;
+        for await (const event of session.chat(transientSkill)) {
+          switch (event.type) {
+            case 'thinking':
+              if (!hasPrintedReasoning) {
+                process.stdout.write(`\n${theme.dim('[思考过程]')}\n`);
+                hasPrintedReasoning = true;
+              }
+              process.stdout.write(theme.dim(event.content));
+              break;
+            case 'content':
+              if (!hasPrintedContent) {
+                if (hasPrintedReasoning) process.stdout.write('\n\n');
+                hasPrintedContent = true;
+              }
+              process.stdout.write(event.content);
+              break;
+            case 'tool_call_start':
+              process.stdout.write(`\n\n${theme.info(`[⚡ 正在调用工具 "${event.functionName}"]`)}\n`);
+              console.log(theme.highlight(`[调度参数] ${JSON.stringify(event.functionArgs)}`));
+              break;
+            case 'tool_call_result':
+              console.log(theme.dim(`[反馈] 工具 "${event.functionName}" 执行完毕，返回了 ${event.result.length} 字节的数据。`));
+              break;
+            case 'error':
+              console.log(theme.error(`[异常] ${event.message}`));
+              break;
+          }
+        }
+        console.log(`\n\n${theme.divider('系统响应 >')} 完毕。\n`);
+      } catch (error: unknown) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        process.stdout.write(' '.repeat(60) + '\r');
+        console.log(`\n${theme.error(`[系统故障] ${errorMsg}`)}\n`);
+      } finally {
+        isGenerating = false;
+      }
+    };
+
     // 绑定回车键触发的整行文本提交事件
     rl.on('line', async (line) => {
       // 抹除首尾空格，防止无效空白干扰
-      const input = line.trim();
+      let input = line.trim();
 
       // 1. 预处理：解析退出指令，提供安全终止流程
       if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
@@ -133,18 +257,37 @@ export function startCli(session: SessionManager) {
         process.exit(0);
       }
 
-      // 2. 预处理：拦截纯换行或空输入，规避无意义交互触发
+      // 2. 预处理：拦截纯换行或空输入
       if (!input) {
         rl.prompt();
         return;
       }
 
-      // 3. 拦截斜杠命令（Slash Command），将其分发至独立的界面层路由器
-      if (input.startsWith('/')) {
-        // 彻底关闭并解绑原有的 readline 监听，将 stdin 流转交出去
+      // 3. 全局交互式菜单入口
+      if (input === '/') {
         rl.close();
         try {
-          await dispatchCommand(input, { session, rl });
+          const menuResult = await showInteractiveMenu();
+          if (!menuResult) {
+            initRl();
+            return;
+          }
+          input = menuResult; // 覆盖原始输入并掉入后续逻辑
+        } catch (e) {
+          initRl();
+          return;
+        }
+      }
+
+      // 4. 拦截斜杠命令（Slash Command），将其分发至独立的界面层路由器
+      if (input.startsWith('/')) {
+        rl.close();
+        try {
+          const cmdResult = await dispatchCommand(input, { session, rl });
+          if (cmdResult && cmdResult.transientSkillContent && cmdResult.userMessage) {
+            session.addUserMessage(cmdResult.userMessage);
+            await runStreamLoop(cmdResult.transientSkillContent);
+          }
         } finally {
           // 命令执行完毕后，无论成功与否均重新初始化 REPL 界面
           initRl();
@@ -152,66 +295,9 @@ export function startCli(session: SessionManager) {
         return;
       }
 
-      // 4. 正式推进会话状态：将有效文本推送至大脑层维护的历史记忆中
+      // 5. 正式推进会话状态：将有效文本推送至大脑层维护的历史记忆中
       session.addUserMessage(input);
-
-      isGenerating = true;
-      try {
-        // 标记位：用于控制打印流时的换行排版逻辑
-        let hasPrintedReasoning = false;
-        let hasPrintedContent = false;
-
-        // 5. 消费事件流：发起大模型推理请求，并异步遍历（for await）其产生的事件序列
-        for await (const event of session.chat()) {
-          switch (event.type) {
-            case 'thinking':
-              // 首次收到思考节点时，打印独立的分界线标头
-              if (!hasPrintedReasoning) {
-                process.stdout.write(`\n${theme.dim('[思考过程]')}\n`);
-                hasPrintedReasoning = true;
-              }
-              // 持续追加灰色的推理思绪片段
-              process.stdout.write(theme.dim(event.content));
-              break;
-            case 'content':
-              // 首次收到最终文本时，检查是否需要脱离前置的思考区域块
-              if (!hasPrintedContent) {
-                if (hasPrintedReasoning) {
-                  process.stdout.write('\n\n'); 
-                }
-                hasPrintedContent = true;
-              }
-              // 实时流式吐出高亮的正常交流内容
-              process.stdout.write(event.content);
-              break;
-            case 'tool_call_start':
-              // 侦测到行动层工具被挂载唤醒时，呈现调度信息与参数全貌
-              process.stdout.write(`\n\n${theme.info(`[⚡ 正在调用工具 "${event.functionName}"]`)}\n`);
-              console.log(theme.highlight(`[调度参数] ${JSON.stringify(event.functionArgs)}`));
-              break;
-            case 'tool_call_result':
-              // 工具运行完毕，告知使用者数据流转的规模字节
-              console.log(theme.dim(`[反馈] 工具 "${event.functionName}" 执行完毕，返回了 ${event.result.length} 字节的数据。`));
-              break;
-            case 'error':
-              // 大脑层判定抛出的异常分支，通常是工具拒绝服务或路径越权
-              console.log(theme.error(`[异常] ${event.message}`));
-              break;
-          }
-        }
-
-        // 推理流程完结收尾，向标准输出提交最终标识符以区分批次
-        console.log(`\n\n${theme.divider('系统响应 >')} 完毕。\n`);
-
-      } catch (error: unknown) {
-        // 兜底捕获异常（如网络阻断、协议解析崩溃等）并强制阻断展示
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        // 使用回车符清理行残留数据，保证错误信息绝对醒目
-        process.stdout.write(' '.repeat(60) + '\r');
-        console.log(`\n${theme.error(`[系统故障] ${errorMsg}`)}\n`);
-      } finally {
-        isGenerating = false;
-      }
+      await runStreamLoop();
 
       // 释放锁并恢复终端控制权，接纳下一轮全新指令
       rl.prompt();

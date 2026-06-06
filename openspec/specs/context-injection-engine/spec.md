@@ -29,13 +29,15 @@ The system MUST discover skills from the `D:\Projects\MyAgent\.agent\skills\` di
 - **THEN** the agent CAN invoke a designated internal Tool (e.g., `skill_view`) to load the full text of that skill dynamically.
 
 ### Requirement: CLI `/skill` Command
-The system MUST provide a CLI command to manage skill states manually.
+The system MUST provide a CLI command to manage and invoke skills dynamically.
 
 #### Scenario: User manages skills via CLI
 - **WHEN** the user types `/skill list`
 - **THEN** the terminal prints a list of all available skills.
-- **WHEN** the user types `/skill enable <name>`
-- **THEN** the specified skill's full text is persistently added to the system context for the current session.
+
+#### Scenario: User invokes a temporary skill via CLI
+- **WHEN** the user types `/skill <name> <task>`
+- **THEN** the system extracts the specified skill content and dynamically pushes it along with the user's task to the LLM for that single execution turn. The skill MUST NOT be persistently mounted across turns.
 
 ### Requirement: Hot Reloading
 The system MUST NOT cache rule or skill file contents persistently across turns in a way that requires process restarts to apply changes.

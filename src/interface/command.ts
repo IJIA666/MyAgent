@@ -16,13 +16,18 @@ export interface CommandContext {
   rl: Interface;           // 绑定的 readline 交互接口
 }
 
+export interface CommandResult {
+  transientSkillContent?: string;
+  userMessage?: string;
+}
+
 /**
  * 分发执行系统级的 Slash Command。
  *
  * @param input 原始输入字符串（以 / 开头）
  * @param context 命令执行上下文
  */
-export async function dispatchCommand(input: string, context: CommandContext): Promise<void> {
+export async function dispatchCommand(input: string, context: CommandContext): Promise<CommandResult | void> {
   // 解析命令和参数
   const parts = input.trim().split(' ');
   const command = parts[0].toLowerCase();
@@ -59,89 +64,56 @@ export async function dispatchCommand(input: string, context: CommandContext): P
       handleHelpCommand();
       break;
     case '/skill':
-      // 处理技能相关操作
-      await handleSkillCommand(args, context);
-      break;
+      // 处理技能相关操作并返回动态挂载数据
+      return await handleSkillCommand(args, context);
     default:
       // 未知命令处理
       console.log(theme.error(`[错误] 未知的系统指令: ${command}，输入 /help 查看帮助。`));
   }
 }
 
-import { loadSkills } from '../brain/contextLoader.js';
+import { loadSkills, loadSkillContent } from '../brain/contextLoader.js';
 
 /**
- * 处理技能挂载与查询操作。
+ * 处理单次动态技能注入操作。
  * 
  * @param args 命令行附带的参数数组
  * @param context 命令执行上下文
  */
-async function handleSkillCommand(args: string[], context: CommandContext): Promise<void> {
-  const subCommand = args[0]?.toLowerCase();
+async function handleSkillCommand(args: string[], context: CommandContext): Promise<CommandResult | void> {
+  const skillName = args[0]?.toLowerCase();
 
-  if (!subCommand || subCommand === 'list') {
+  if (!skillName || skillName === 'list') {
     const allSkills = loadSkills();
-    const pinnedSkills = context.session.getPinnedSkills();
-    const disabledSkills = context.session.getDisabledSkills();
     console.log();
     if (allSkills.length === 0) {
       console.log(theme.info('当前系统未发现任何可用技能。'));
       return;
     }
-    console.log(theme.highlight('发现如下技能：'));
+    console.log(theme.highlight('发现如下可用技能：'));
     allSkills.forEach(s => {
-      let tag = theme.dim('[按需拉取]');
-      if (pinnedSkills.includes(s.name)) {
-        tag = theme.warning('[已强制常驻]');
-      } else if (disabledSkills.includes(s.name)) {
-        tag = theme.error('[已禁用屏蔽]');
-      }
-      console.log(`- ${theme.highlight(s.name)} ${tag}: ${s.description}`);
+      console.log(`- ${theme.highlight(s.name)}: ${s.description}`);
     });
-    console.log(theme.info('\n提示: /skill pin|unpin <name> 控制强制挂载， /skill disable|enable <name> 控制黑名单。'));
+    console.log(theme.info('\n提示: 使用 /skill <name> <task> 语法临时调用指定技能。'));
     return;
   }
 
-  const skillName = args[1];
-  if (!skillName) {
-    console.log(theme.error(`[错误] 未提供技能名称，例如 /skill ${subCommand} my-skill`));
+  const skillContent = loadSkillContent(skillName);
+  if (!skillContent) {
+    console.log(theme.error(`[错误] 未找到名为 "${skillName}" 的技能文件。`));
     return;
   }
 
-  const pinnedSkills = context.session.getPinnedSkills();
-  const disabledSkills = context.session.getDisabledSkills();
-
-  if (subCommand === 'pin') {
-    if (pinnedSkills.includes(skillName)) {
-      console.log(theme.info(`[提示] 技能 ${skillName} 已经处于强行常驻状态，无需重复置顶。`));
-      return;
-    }
-    context.session.pinSkill(skillName);
-    console.log(theme.success(`[成功] 技能 ${skillName} 已被强制置顶注入 System Prompt。\n(注意：此操作仅在当前会话临时生效)`));
-  } else if (subCommand === 'unpin') {
-    if (!pinnedSkills.includes(skillName)) {
-      console.log(theme.info(`[提示] 技能 ${skillName} 并未处于强行常驻状态。`));
-      return;
-    }
-    context.session.unpinSkill(skillName);
-    console.log(theme.success(`[成功] 技能 ${skillName} 已取消强制常驻，退回按需拉取模式。`));
-  } else if (subCommand === 'disable') {
-    if (disabledSkills.includes(skillName)) {
-      console.log(theme.info(`[提示] 技能 ${skillName} 已经处于被屏蔽状态。`));
-      return;
-    }
-    context.session.disableSkill(skillName);
-    console.log(theme.success(`[成功] 技能 ${skillName} 已被彻底屏蔽，大模型将无法看见其索引也无法拉取其全文。`));
-  } else if (subCommand === 'enable') {
-    if (!disabledSkills.includes(skillName)) {
-      console.log(theme.info(`[提示] 技能 ${skillName} 并没有被屏蔽，当前为正常可用状态。`));
-      return;
-    }
-    context.session.enableSkill(skillName);
-    console.log(theme.success(`[成功] 技能 ${skillName} 已移出黑名单，恢复为按需拉取模式。`));
-  } else {
-    console.log(theme.error(`[错误] 未知的技能指令: ${subCommand}，支持 pin, unpin, disable, enable`));
+  const task = args.slice(1).join(' ');
+  if (!task) {
+    console.log(theme.error(`[错误] 已选定技能 "${skillName}"，但未提供具体任务。\n用法: /skill ${skillName} 帮我执行具体操作...`));
+    return;
   }
+
+  return {
+    transientSkillContent: skillContent,
+    userMessage: task
+  };
 }
 
 /**
@@ -258,14 +230,16 @@ function handleRollbackCommand(args: string[], context: CommandContext): void {
  */
 function handleHelpCommand(): void {
   console.log(`\n${theme.success('可用指令列表:')}`);
-  console.log(`  ${theme.highlight('/model <id>')} - 动态切换当前会话的大语言模型`);
-  console.log(`  ${theme.highlight('/rollback [N]')} - 回滚前 N 轮历史上下文记忆（默认 1 轮）`);
-  console.log(`  ${theme.highlight('/history')}      - 查看保存的历史会话列表`);
-  console.log(`  ${theme.highlight('/resume <id>')}  - 恢复指定的历史会话上下文`);
+  console.log(`  ${theme.highlight('/')}               - 唤起交互式全屏操作菜单 (推荐)`);
+  console.log(`  ${theme.highlight('/skill <name> <task>')} - 单次临时调用指定技能执行任务`);
+  console.log(`  ${theme.highlight('/model <id>')}       - 动态切换当前会话的大语言模型`);
+  console.log(`  ${theme.highlight('/rollback [N]')}     - 回滚前 N 轮历史上下文记忆（默认 1 轮）`);
+  console.log(`  ${theme.highlight('/history')}          - 查看保存的历史会话列表`);
+  console.log(`  ${theme.highlight('/resume <id>')}      - 恢复指定的历史会话上下文`);
   console.log(`  ${theme.highlight('/mcp <list|enable|disable> [name]')} - 管理与查阅 MCP 扩展服务`);
-  console.log(`  ${theme.highlight('/tool list')}      - 查看当前已挂载的可用工具清单`);
-  console.log(`  ${theme.highlight('/help')}         - 显示此帮助信息`);
-  console.log(`  ${theme.highlight('exit / quit')}   - 退出程序`);
+  console.log(`  ${theme.highlight('/tool list')}          - 查看当前已挂载的可用工具清单`);
+  console.log(`  ${theme.highlight('/help')}             - 显示此帮助信息`);
+  console.log(`  ${theme.highlight('exit / quit')}       - 退出程序`);
   console.log(`\n${theme.success('快捷键支持:')}`);
   console.log(`  ${theme.highlight('双击 ESC')} - [生成中] 中断响应流；[空闲时] 单步回滚上一轮对话\n`);
 }
@@ -384,7 +358,7 @@ async function handleMcpCommand(args: string[], context: CommandContext): Promis
  * 查阅当前系统可用工具清单
  */
 async function handleToolCommand(args: string[], context: CommandContext): Promise<void> {
-  if (args[0] === 'list') {
+  if (!args[0] || args[0] === 'list') {
     const mcpManager = context.session.mcpManager;
     let tools: Array<{ function?: { name?: string; description?: string } }> = [];
     if (mcpManager) {
