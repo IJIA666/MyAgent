@@ -4,6 +4,7 @@ import { LlmConfig } from '../config/index.js';
 import { AgentTracer } from './tracer.js';
 import { SessionContext } from './context.js';
 import { LlmDriver } from './driver.js';
+import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 
 /**
  * 智能体产生的事件类型定义，外部消费者（如 UI 终端）据此渲染流式反馈过程。
@@ -34,18 +35,22 @@ export class SessionManager {
   private context: SessionContext;
   /** 大语言模型的核心驱动模块 */
   private driver: LlmDriver;
+  /** 上下文管理与组装适配器 */
+  private contextAdapter: ContextAdapter;
 
   /**
    * 实例初始化。
    * @param llmConfig 大语言模型连接配置
    * @param mcpManager 可选的 MCP 客户端管理器，用于挂载外部扩展能力
+   * @param contextAdapter 可选的上下文适配器，若未传则默认使用 DefaultContextAdapter
    */
-  constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager) {
+  constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager, contextAdapter?: ContextAdapter) {
     this.mcpManager = mcpManager;
     this.toolRegistry = new ToolRegistry(mcpManager);
     this.context = new SessionContext();
     this.driver = new LlmDriver(llmConfig);
     this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());
+    this.contextAdapter = contextAdapter || new DefaultContextAdapter();
   }
 
   /**
@@ -178,21 +183,11 @@ export class SessionManager {
       try {
         // 懒加载获取当前系统内所有处于激活状态的工具集合
         const allTools = await this.toolRegistry.getTools();
-        // 深拷贝捕获当前发送给大模型的上下文快照，用于稍后追踪记录时对比
-        const snapshotContext = [...this.context.getHistory()];
-
-        // 历史流动态入栈 (History Stream Push-Pop):
-        // 将独立技能压入发送队列的尾端（最新一条用户消息之前），在不污染头部基线缓存的前提下实现超高指令聚焦
-        if (transientSkillContent) {
-          const lastMsg = snapshotContext.pop();
-          snapshotContext.push({
-            role: 'system',
-            content: `<transient_skill>\n${transientSkillContent}\n</transient_skill>`
-          });
-          if (lastMsg) {
-            snapshotContext.push(lastMsg);
-          }
-        }
+        // 委托上下文适配器进行历史记录的组装和临时技能的动态挂载，避免污染原始会话记录并防范协议交错风险
+        const snapshotContext = this.contextAdapter.assemble(
+          this.context.getHistory(),
+          transientSkillContent
+        );
 
         // 委托 driver 层拉起底层流式请求，注意此处传递的是动态入栈后的 snapshotContext
         const stream = this.driver.streamChat(
