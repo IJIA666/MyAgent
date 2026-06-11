@@ -273,7 +273,7 @@ export function startCli(session: SessionManager) {
             return;
           }
           input = menuResult; // 覆盖原始输入并掉入后续逻辑
-        } catch (e) {
+        } catch {
           initRl();
           return;
         }

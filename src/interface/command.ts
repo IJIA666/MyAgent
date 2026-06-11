@@ -35,6 +35,10 @@ export async function dispatchCommand(input: string, context: CommandContext): P
 
   // 路由分发到对应的处理逻辑
   switch (command) {
+    case '/reload-rules':
+      // 动态重载全局与项目局部规则文件并刷新缓存
+      handleReloadRulesCommand(context);
+      break;
     case '/model':
       // 处理模型切换命令
       await handleModelCommand(args, context);
@@ -65,7 +69,7 @@ export async function dispatchCommand(input: string, context: CommandContext): P
       break;
     case '/skill':
       // 处理技能相关操作并返回动态挂载数据
-      return await handleSkillCommand(args, context);
+      return await handleSkillCommand(args);
     default:
       // 未知命令处理
       console.log(theme.error(`[错误] 未知的系统指令: ${command}，输入 /help 查看帮助。`));
@@ -80,7 +84,7 @@ import { loadSkills, loadSkillContent } from '../brain/contextLoader.js';
  * @param args 命令行附带的参数数组
  * @param context 命令执行上下文
  */
-async function handleSkillCommand(args: string[], context: CommandContext): Promise<CommandResult | void> {
+async function handleSkillCommand(args: string[]): Promise<CommandResult | void> {
   const skillName = args[0]?.toLowerCase();
 
   if (!skillName || skillName === 'list') {
@@ -237,6 +241,7 @@ function handleHelpCommand(): void {
   console.log(`  ${theme.highlight('/history')}          - 查看保存的历史会话列表`);
   console.log(`  ${theme.highlight('/resume <id>')}      - 恢复指定的历史会话上下文`);
   console.log(`  ${theme.highlight('/mcp <list|enable|disable> [name]')} - 管理与查阅 MCP 扩展服务`);
+  console.log(`  ${theme.highlight('/reload-rules')}    - 重新读取并锁定最新的全局和项目局部规则`);
   console.log(`  ${theme.highlight('/tool list')}          - 查看当前已挂载的可用工具清单`);
   console.log(`  ${theme.highlight('/help')}             - 显示此帮助信息`);
   console.log(`  ${theme.highlight('exit / quit')}       - 退出程序`);
@@ -380,4 +385,14 @@ async function handleToolCommand(args: string[], context: CommandContext): Promi
   } else {
     console.log(theme.error('[错误] 未知的 tool 操作，仅支持 /tool list'));
   }
+}
+
+/**
+ * 重新读取规则文件并刷新 SessionManager 中的缓存。
+ * 
+ * @param context 命令执行上下文
+ */
+function handleReloadRulesCommand(context: CommandContext): void {
+  context.session.reloadRules();
+  console.log(theme.success('[系统] 已重新读取并锁定最新的全局与局部项目规则。'));
 }

@@ -5,6 +5,8 @@ import { AgentTracer } from './tracer.js';
 import { SessionContext } from './context.js';
 import { LlmDriver } from './driver.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 
 /**
  * 智能体产生的事件类型定义，外部消费者（如 UI 终端）据此渲染流式反馈过程。
@@ -38,6 +40,11 @@ export class SessionManager {
   /** 上下文管理与组装适配器 */
   private contextAdapter: ContextAdapter;
 
+  /** 缓存的全局规则内容 */
+  private cachedGlobalRules: string | null = null;
+  /** 缓存的局部项目规则内容 */
+  private cachedLocalRules: string | null = null;
+
   /**
    * 实例初始化。
    * @param llmConfig 大语言模型连接配置
@@ -51,6 +58,10 @@ export class SessionManager {
     this.driver = new LlmDriver(llmConfig);
     this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());
     this.contextAdapter = contextAdapter || new DefaultContextAdapter();
+
+    // 载入全局和项目局部的规则并写入缓存，同时重新组装首条 System Prompt 以锁定前缀哈希
+    this.loadRulesToCache();
+    this.context.updateSystemPrompt(this.cachedGlobalRules || undefined);
   }
 
   /**
@@ -186,7 +197,8 @@ export class SessionManager {
         // 委托上下文适配器进行历史记录的组装和临时技能的动态挂载，避免污染原始会话记录并防范协议交错风险
         const snapshotContext = this.contextAdapter.assemble(
           this.context.getHistory(),
-          transientSkillContent
+          transientSkillContent,
+          this.cachedLocalRules || undefined
         );
 
         // 委托 driver 层拉起底层流式请求，注意此处传递的是动态入栈后的 snapshotContext
@@ -324,5 +336,47 @@ export class SessionManager {
 
     // 达到最大允许轮数依然没有完结退出，抛出死循环超载保护异常
     throw new Error(`超出了工具调用的最大迭代轮数限制（${this.maxIterations} 轮）。`);
+  }
+
+  /**
+   * 将规则文件探测并加载锁定至内存缓存中，防止哈希抖动。
+   */
+  private loadRulesToCache(): void {
+    // 1. 加载全局级规则
+    try {
+      const globalRulesPath = join(process.cwd(), '.agent/global_rules.md');
+      if (existsSync(globalRulesPath)) {
+        this.cachedGlobalRules = readFileSync(globalRulesPath, 'utf-8').trim();
+      } else {
+        this.cachedGlobalRules = '';
+      }
+    } catch (e) {
+      console.warn(`[SessionManager] 读取全局规则失败: ${e}`);
+      this.cachedGlobalRules = '';
+    }
+
+    // 2. 自动探测并加载局部项目规则 (.myagent.md)
+    try {
+      const localRulesPath = join(process.cwd(), '.myagent.md');
+      if (existsSync(localRulesPath)) {
+        this.cachedLocalRules = readFileSync(localRulesPath, 'utf-8').trim();
+        console.log(`[SessionManager] 已探测并锁定局部规则文件: ${localRulesPath}`);
+      } else {
+        this.cachedLocalRules = '';
+      }
+    } catch (e) {
+      console.warn(`[SessionManager] 探测局部规则文件失败: ${e}`);
+      this.cachedLocalRules = '';
+    }
+  }
+
+  /**
+   * 清除全局 and 局部规则的内存缓存，并重新从磁盘中加载。
+   * 会在下一轮交互时强制生效最新的规则内容。
+   */
+  public reloadRules(): void {
+    console.log('[SessionManager] 正在重载规则文件...');
+    this.loadRulesToCache();
+    this.context.updateSystemPrompt(this.cachedGlobalRules || undefined);
   }
 }

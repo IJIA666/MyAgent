@@ -30,6 +30,19 @@ export class SessionContext {
       content: systemPrompt
     });
   }
+  
+  /**
+   * 重新组装并更新会话消息历史中的首条系统提示词（System Prompt）。
+   * 此方法保持消息历史中的第 0 个系统消息节点，直接覆写其 content，常用于规则热重载。
+   *
+   * @param customGlobalRules 可选的全局规则内容缓存，用于覆盖并锁定
+   */
+  public updateSystemPrompt(customGlobalRules?: string): void {
+    const systemPrompt = buildSystemPrompt(customGlobalRules);
+    if (this.messageHistory.length > 0 && this.messageHistory[0].role === 'system') {
+      this.messageHistory[0].content = systemPrompt;
+    }
+  }
 
   /**
    * 获取当前会话唯一标识。

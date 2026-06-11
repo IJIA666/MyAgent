@@ -14,32 +14,27 @@ const BASE_SYSTEM_PROMPT = `你是一个专业且精确的本地智能体助手�
 3. 请直接、专业且精准地回答用户问题，避免冗余的客套话或占位信息。
 4. 【语言强制】你必须始终使用简体中文进行思考（内部逻辑和推理链）以及最终回复，仅在必要时保留英文的专业术语或代码片段。`;
 
-import { loadGlobalRules, loadLocalRules, loadSkills } from './contextLoader.js';
+import { loadGlobalRules, loadSkills } from './contextLoader.js';
 
 /**
  * 组装并获取最终的系统级人设文本。
- * 此方法每次调用时会从 ContextLoader 中拉取最新的规则状态和技能目录大纲，
- * 采用结构化 XML 标签将各区块（如全局规则、可用技能索引等）隔离开来。
+ * 此方法允许接收外部已加载的全局规则缓存，以维持会话锁定的 Byte-stable 哈希前缀。
+ * 注意：项目局部规则已剥离，改为在 ContextAdapter 中动态注入至 user 消息前，以防破坏前置缓存。
  * 
+ * @param customGlobalRules 可选的全局规则内容缓存，若不传则从磁盘加载最新的规则状态
  * @returns {string} 完整的、准备用于发送给 LLM 的全局静态基线系统提示词字符串。
  */
-export function buildSystemPrompt(): string {
+export function buildSystemPrompt(customGlobalRules?: string): string {
   // 使用数组收集所有区块片段
   const parts: string[] = [BASE_SYSTEM_PROMPT];
 
   // 1. 挂载全局级规则
-  const globalRules = loadGlobalRules();
+  const globalRules = customGlobalRules !== undefined ? customGlobalRules : loadGlobalRules();
   if (globalRules) {
     parts.push(`\n<global_rules>\n${globalRules}\n</global_rules>`);
   }
 
-  // 2. 挂载工作区局部规则
-  const localRules = loadLocalRules();
-  if (localRules) {
-    parts.push(`\n<project_rules>\n${localRules}\n</project_rules>`);
-  }
-
-  // 3. 挂载全局技能目录大纲 (防范管中窥豹，保留全知视野)
+  // 2. 挂载全局技能目录大纲 (防范管中窥豹，保留全知视野)
   const allSkills = loadSkills();
   if (allSkills.length > 0) {
     // 提取所有技能名称和摘要供 LLM 建立全局感知
