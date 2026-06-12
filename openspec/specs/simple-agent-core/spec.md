@@ -17,11 +17,15 @@
 - **THEN** 系统必须将上一轮的完整 `reasoning_content` 和拼接好的 `tool_calls` 作为上下文严格按原样压入消息历史栈中，确保二次调用不报错且思考链不丢失。
 
 ### Requirement: 授权路径绝对安全沙箱
-系统在执行文件读取（readFile）、写入（writeFile）、列出（listFiles）等本地操作时，必须（MUST）对输入的路径进行绝对路径解析（`path.resolve`），并严格验证其是否处于授权工作区根目录下。若发现路径试图越界，必须立即予以拦截，禁止调用底层文件系统，并向大模型返回明确的越权阻断错误。
+系统在执行文件读取（readFile）、写入（writeFile）、列出（listFiles）等本地操作时，必须（MUST）对输入的路径进行绝对路径解析（`path.resolve`），并严格验证其是否处于授权工作区根目录下。验证时必须（MUST）包含系统路径分隔符（`path.sep`）或进行完全相等匹配，防止以同前缀的目录名进行逃逸。若发现路径试图越界，必须立即予以拦截，禁止调用底层文件系统，并向大模型返回明确的越权阻断错误。
 
 #### Scenario: 阻断恶意路径遍历与越权操作
 - **WHEN** 大模型受到提示词诱导或自主尝试通过工具读取外部路径（例如试图传入绝对路径 `C:\Windows\win.ini`，或者利用相对路径 `../../etc/passwd` 试图穿透授权工作区）
 - **THEN** 文件工具处理器必须立刻拦截此操作，不得触发任何底层读写 API，并向大模型返回 “Access Denied: Path is outside the authorized directory” 的错误回显，以确保本地系统安全。
+
+#### Scenario: 阻断同前缀目录越位逃逸
+- **WHEN** 模型或用户输入了被解析为与授权工作区同前缀但属于另一个文件夹路径的参数（例如工作区为 `/authorized/path`，输入解析结果为 `/authorized/path-secret`）
+- **THEN** 文件工具处理器必须识别到该路径缺乏物理分隔符分界，判定其溢出了授权工作区安全边界，立刻拦截此操作并返回安全拒绝报错。
 
 ### Requirement: 动态模型配置切换
 系统必须（MUST）支持通过外部 `.env` 环境变量加载 `DEEPSEEK_API_KEY`、`DEEPSEEK_API_URL` 以及 `DEEPSEEK_MODEL`，使系统在启动时动态调用对应的大语言模型。配置的加载必须由独立的配置管理模块（`config.ts`）统一完成，会话管理模块（`session.ts`）通过构造函数参数接收已加载的配置值，不得自行读取 `process.env` 或包含硬编码的默认 API Key。
@@ -83,11 +87,15 @@
 - **THEN** 系统必须将上一轮的完整 `reasoning_content` 和拼接好的 `tool_calls` 作为上下文严格按原样压入消息历史栈中，确保二次调用不报错且思考链不丢失。
 
 ### Requirement: 授权路径绝对安全沙箱
-系统在执行文件读取（readFile）、写入（writeFile）、列出（listFiles）等本地操作时，必须（MUST）对输入的路径进行绝对路径解析（`path.resolve`），并严格验证其是否处于授权工作区根目录下。若发现路径试图越界，必须立即予以拦截，禁止调用底层文件系统，并向大模型返回明确的越权阻断错误。
+系统在执行文件读取（readFile）、写入（writeFile）、列出（listFiles）等本地操作时，必须（MUST）对输入的路径进行绝对路径解析（`path.resolve`），并严格验证其是否处于授权工作区根目录下。验证时必须（MUST）包含系统路径分隔符（`path.sep`）或进行完全相等匹配，防止以同前缀的目录名进行逃逸。若发现路径试图越界，必须立即予以拦截，禁止调用底层文件系统，并向大模型返回明确的越权阻断错误。
 
 #### Scenario: 阻断恶意路径遍历与越权操作
 - **WHEN** 大模型受到提示词诱导或自主尝试通过工具读取外部路径（例如试图传入绝对路径 `C:\Windows\win.ini`，或者利用相对路径 `../../etc/passwd` 试图穿透授权工作区）
 - **THEN** 文件工具处理器必须立刻拦截此操作，不得触发任何底层读写 API，并向大模型返回 “Access Denied: Path is outside the authorized directory” 的错误回显，以确保本地系统安全。
+
+#### Scenario: 阻断同前缀目录越位逃逸
+- **WHEN** 模型或用户输入了被解析为与授权工作区同前缀但属于另一个文件夹路径的参数（例如工作区为 `/authorized/path`，输入解析结果为 `/authorized/path-secret`）
+- **THEN** 文件工具处理器必须识别到该路径缺乏物理分隔符分界，判定其溢出了授权工作区安全边界，立刻拦截此操作并返回安全拒绝报错。
 
 ### Requirement: 动态模型配置切换
 系统必须（MUST）支持通过外部 `.env` 环境变量加载 `DEEPSEEK_API_KEY`、`DEEPSEEK_API_URL` 以及 `DEEPSEEK_MODEL`，使系统在启动时动态调用对应的大语言模型。配置的加载必须由独立的配置管理模块（`config.ts`）统一完成，会话管理模块（`session.ts`）通过构造函数参数接收已加载的配置值，不得自行读取 `process.env` 或包含硬编码的默认 API Key。

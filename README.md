@@ -1,27 +1,32 @@
-# IJIA Agent (极简受控智能体)
+# IJIA Agent (受控通用智能体底座)
 
-一个基于 TypeScript 的极简 Agent 系统，具备沙箱化本地文件工具、扩展 MCP 协议客户端以及 REPL 终端会话管理能力。
+本项目是以通用智能助手为长远演进目标的智能体系统。它基于 TypeScript 与 ESM 规范构建，具备沙箱化本地文件工具、可动态配置的外部 Model Context Protocol (MCP) 客户端以及完备的 REPL 终端会话管理能力。
 
-本项目不仅是一个可运行的智能体，更是探索 **Harness + Skill**（约束框架 + 可插拔技能）前沿工程范式的实践平台。
+项目在设计之初即贯彻了面向未来的系统化演进思想。在经历 simple-agent-core 极简核心构建、会话持久化、上下文回滚、MCP 动态启停开关、规则缓存以及自动化补全等 15 项核心 Spec（定义于 `openspec/specs` 目录下）的微观重构与级联演进后，已具备了完备的 Harness 控制能力。未来它将作为高内聚的通用智能体底座，不断扩充外部工作流和多领域专业技能包。
 
 ---
 
-## 💡 核心设计思想：Harness + Skill 范式
+## 核心设计哲学：Harness + Skill 范式与演进大方向
 
-在 Agent 的工程化落地中，本项目摒弃了 LangChain/LangGraph 等预设死流程图的重型框架，采用了更具灵活性与可控性平衡的 **Harness + Skill** 范式。
+在 Agentic Systems 的工程落地中，本项目深刻权衡了“完全自主决策”的灵活性与“程序化工作流”的稳定性。我们摒弃了传统的通过硬编码流程图（如 LangChain/LangGraph）来限制 AI 的方式，采用了更具自适应能力的 **Harness + Skill** 范式。
 
-### 1. Harness (约束框架/安全缰绳)
-Harness 负责为大模型设定清晰、可执行的“行为边界与安全规则”，让大模型在清晰边界内自主决策，而非无序自由发挥，主要包含：
-*   **最大迭代次数限制**：在 [session.ts](src/brain/session.ts) 中对 ReAct 推理循环设置了硬性最大轮数上限（默认 10 轮），防止模型在处理复杂或模糊任务时陷入无限工具调用的死循环，控制 Token 消耗。
-*   **沙箱文件路径强隔离**：在 [tools.ts](src/action/tools.ts) 的本地文件读写工具中强制引入 `secureResolvePath` 校验。所有相对路径操作都必须被局限在授权的工作区根目录下，从根本上杜绝路径穿越（Path Traversal）等安全越权行为。
-*   **黑匣子追踪记录 (Tracer)**：在 [tracer.ts](src/brain/tracer.ts) 中对每一次迭代的上下文、推理过程（Reasoning Chain）、工具调用及其返回值进行格式化，以 JSONLines 格式持久化到 `.myagent/traces` 中，用于事后评测与分析。
-*   **请求中断控制**：集成 `AbortController` 机制，支持在模型推理流生成过程中通过双击 `ESC` 或系统信号强行安全终止。
+### 1. Harness (约束框架底座)
+Harness 作为智能体运行的安全底座，并不预设死板的顺序节点，而是为模型运行提供了一套“安全沙箱与行为守则”：
+*   **最大迭代次数限制**：在 [session.ts](src/brain/session.ts) 中对 ReAct 推理循环设置了硬性最大轮数上限（默认 10 轮），防止模型在处理复杂或模糊任务时陷入无限工具调用的死循环，并保障资源消耗可控。
+*   **绝对路径沙箱隔离**：在 [tools.ts](src/action/tools.ts) 中对所有涉及本地的操作强制引入 `secureResolvePath` 校验，确保文件读写只在授权的工作区根目录下进行，从底层杜绝路径越界。
+*   **黑匣子追踪记录 (Tracer)**：在 [tracer.ts](src/brain/tracer.ts) 中对每一次迭代的上下文、推理过程（Reasoning Chain）、工具调用及其返回值进行格式化，以 JSONLines 格式持久化到 `.myagent/traces` 中，用于分析与后续的 Evals 评测。
+*   **中断控制与回滚机制**：集成基于 `AbortController` 的响应中断，支持动态撤销（Rollback）指定轮次的历史记忆，为未来面对更复杂的通用任务提供了高弹性的状态回溯支撑。
 
-### 2. Skill (动态加载技能)
-Skill 将特定领域的 SOP 与业务逻辑封装为独立、轻量的 Markdown 文件（放在 `.agent/skills/` 下），其加载机制采用**渐进式披露**策略：
-*   **全局大纲感知**：系统启动时，[prompts.ts](src/brain/prompts.ts) 仅将各技能的名称与简短描述（Metadata）挂载到 `<available_skills>` 系统提示词块中，使大模型建立基本的“技能目录检索”心智，而不直接倾倒具体的技能详情。
-*   **自主拉取正文**：当大模型评估任务需要某个特定领域知识时，主动发起 Function Calling 调用 `load_skill(name)` 工具。由本地虚拟 MCP 读取对应的 `SKILL.md` 的 Markdown 正文并返回。
-*   **优雅上下文注入**：[DefaultContextAdapter.ts](src/brain/adapters/DefaultContextAdapter.ts) 负责将获取的技能文本以 `<transient_skill>` 的形式**动态插入到最后一条 User 消息之前**。这样既能让模型感知技能，又维持了 Assistant `tool_calls` 与 Tool 返回结果消息的相邻性，避免破坏大模型底层协议中“tool 消息必须紧随 assistant tool_calls 之后”的强物理邻近限制。
+### 2. Skill (可插拔动态技能)
+Skill 代表具体的业务领域 SOP 或重型外部 Workflow 插件（位于 `.agent/skills/` 目录下），它通过**“渐进式披露”**被大模型消费：
+*   **全局大纲感知**：系统在 System Prompt 阶段，仅将技能的 Metadata（名称与简述）在 `<available_skills>` 块中暴露给模型，避免用庞大的具体规则将模型的上下文首字节哈希（Context Caching）冲垮。
+*   **按需动态装载**：当模型在处理任务（如读写 Word doc、处理 PDF 等）时，自主评估并发出 `load_skill(name)` 调用。虚拟 MCP 路由将具体的技能正文反馈给模型。
+*   **无害化上下文注入**：[DefaultContextAdapter.ts](src/brain/adapters/DefaultContextAdapter.ts) 动态将具体技能以 `<transient_skill>` 系统消息形式插在**最后一条 User 消息之前**。这样既能让模型即时获取 SOP 指导，又避免了因插在 Assistant `tool_calls` 与 Tool 返回结果之间而破坏底层协议邻近原则导致的格式报错。
+
+### 3. 面向未来的演进大方向
+项目的最终愿景是构建具备完全自主决策能力的通用智能助手。在架构演进上：
+*   **从 simple-agent-core 到通用底座**：我们目前的 TypeScript 极简 Agent 系统是核心基线。随着 15 项 openspec 规格的逐步固化，我们正在将上下文注入引擎、自动补全、环境隔离等能力沉淀为通用基础构件。
+*   **外置 SOP 与 Workflow 协同**：未来我们将引入外置的动态 Workflow 编排能力。智能体无需在本地硬编码固定业务逻辑，而是将复杂长链路业务以“外置 workflow”形式作为 Skill 提供给大模型，供其在需要时通过 Harness 载入并遵循，实现自适应任务解决。
 
 ---
 
@@ -30,7 +35,7 @@ Skill 将特定领域的 SOP 与业务逻辑封装为独立、轻量的 Markdown
 *   **开发语言**：TypeScript (基于 ESM 规范编译运行)
 *   **运行时环境**：Node.js >= 20.11
 *   **核心依赖**：
-    *   `openai`：集成 OpenAI 兼容协议（完美适配 DeepSeek-V3/R1 等具备 Reasoning 推理链输出的模型）。
+    *   `openai`：集成 OpenAI 兼容协议（完美适配 DeepSeek-V4 等具备 Reasoning 推理链输出的模型）。
     *   `@modelcontextprotocol/sdk`：集成 Model Context Protocol (MCP) 标准，支持 stdio 传输层进行外部工具的挂载。
     *   `@clack/prompts`：用于 CLI 交互中流畅优美的交互式菜单呈现。
     *   `gray-matter`：用于解析技能 `SKILL.md` 顶部的 YAML Frontmatter 结构。
@@ -42,9 +47,9 @@ Skill 将特定领域的 SOP 与业务逻辑封装为独立、轻量的 Markdown
 
 ```text
 MyAgent/
-├── .agent/                  # 智能体全局规则与技能库存放目录
+├── .agent/                  # 智能体全局规则与技能库存放目录(临时)
 │   ├── global_rules.md      # 全局硬性规则
-│   └── skills/              # 扩展技能目录 (内含 docx, pdf 等技能下的 SKILL.md)
+│   └── skills/              # 扩展技能目录 
 ├── .myagent/                # 系统运行时数据落盘目录
 │   ├── sessions/            # 历史对话会话 JSON 状态
 │   └── traces/              # 结构化 ReAct 迭代黑匣子日志 (JSONL)

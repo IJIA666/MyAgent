@@ -2,6 +2,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { McpConfig, McpServerEntry, buildSubprocessEnv } from '../config/index.js';
 
+// 系统本地内置文件操作及技能载入工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
+const BUILTIN_TOOL_NAMES = new Set(['readFile', 'writeFile', 'listFiles', 'load_skill']);
+
 /**
  * MCP (Model Context Protocol) 客户端管理类。
  * 通过构造函数接收已加载的 McpConfig 配置，不自行读取文件或环境变量。
@@ -15,16 +18,22 @@ export class McpToolManager {
   private config: McpConfig;
 
   /**
+   * 具名的信号监听回调硬引用，防止重复监听与内存泄露
+   */
+  private cleanupHandler = () => {
+    this.close().catch(() => {});
+  };
+
+  /**
    * @param config 已完成环境变量插值的 MCP 配置对象
    */
   constructor(config: McpConfig) {
     this.config = config;
 
-    // 绑定生命周期系统信号，防止产生僵尸进程
-    const cleanup = () => this.close();
-    process.on('exit', cleanup);
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
+    // 绑定具名的生命周期系统信号处理器，防止产生僵尸进程
+    process.on('exit', this.cleanupHandler);
+    process.on('SIGINT', this.cleanupHandler);
+    process.on('SIGTERM', this.cleanupHandler);
   }
 
   /**
@@ -97,19 +106,16 @@ export class McpToolManager {
 
   /**
    * 主动销毁单一 MCP 服务的连接，并从路由总线中剔除该服务名下的全部工具签名元数据，
-   * 以防产生 Tool Not Found 错误。
+   * 采用优雅超时断开机制，防范残留子进程。
    */
   async disconnectServer(name: string): Promise<void> {
     const connection = this.connections.get(name);
     if (!connection) {
       return;
     }
-    console.log(`[MCP Client] 正在断开服务连接: [${name}]`);
-    try {
-      connection.client.close();
-    } catch (e) {
-      console.error(`[MCP Client] 断开 [${name}] 时出错:`, e);
-    }
+    
+    // 执行优雅关闭，给子进程 3 秒优雅退出等待
+    await this.shutdownConnection(name, connection);
     this.connections.delete(name);
 
     // 同步清洗路由表，反注册所有属于该 Server 的工具
@@ -155,6 +161,17 @@ export class McpToolManager {
       try {
         const response = await client.listTools();
         for (const tool of response.tools) {
+          // 1. 校验是否与系统本地内置文件操作工具重名，防止内置沙箱工具被恶意覆盖
+          if (BUILTIN_TOOL_NAMES.has(tool.name)) {
+            throw new Error(`[MCP 命名冲突] 外部服务 [${serverName}] 注册的工具 "${tool.name}" 与系统本地内置工具冲突！`);
+          }
+          
+          // 2. 校验是否存在多个外部服务注册了完全同名的工具，防止路由混乱
+          if (this.toolRouter.has(tool.name)) {
+            const existingServer = this.toolRouter.get(tool.name);
+            throw new Error(`[MCP 命名冲突] 外部服务 [${serverName}] 与 [${existingServer}] 注册了同名工具 "${tool.name}"！`);
+          }
+
           // 记录工具属于哪个 server
           this.toolRouter.set(tool.name, serverName);
           allTools.push({
@@ -166,7 +183,12 @@ export class McpToolManager {
             }
           });
         }
-      } catch (e) {
+      } catch (e: unknown) {
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        // 如果是致命的命名空间冲突，必须强行抛出阻断启动
+        if (errorMsg.includes('[MCP 命名冲突]')) {
+          throw e;
+        }
         console.error(`[MCP Client] [${serverName}] 获取工具列表失败:`, e);
       }
     }
@@ -198,22 +220,59 @@ export class McpToolManager {
   }
 
   /**
-   * 安全断开所有连接并回收子进程
+   * 安全断开所有连接并回收子进程，解除全局退出信号监听。
    */
-  close() {
-    if (!this.isClosed) {
-      this.isClosed = true;
-      if (this.connections.size > 0) {
-        console.log(`[MCP Client] 正在安全断开所有连接并清理子进程...`);
-        for (const { client } of this.connections.values()) {
-          try {
-            client.close();
-          } catch {
-            // 忽略关闭时的错误
-          }
-        }
-        this.connections.clear();
+  async close(): Promise<void> {
+    if (this.isClosed) {
+      return;
+    }
+    this.isClosed = true;
+
+    // 立即注销全局监听器，防止内存泄露
+    process.off('exit', this.cleanupHandler);
+    process.off('SIGINT', this.cleanupHandler);
+    process.off('SIGTERM', this.cleanupHandler);
+
+    if (this.connections.size > 0) {
+      console.log(`[MCP Client] 正在安全断开所有连接并清理子进程...`);
+      const closePromises: Promise<void>[] = [];
+      for (const [name, conn] of this.connections.entries()) {
+        closePromises.push(this.shutdownConnection(name, conn));
       }
+      await Promise.all(closePromises);
+      this.connections.clear();
+    }
+  }
+
+  /**
+   * 优雅销毁单一 MCP 服务连接。
+   * 包含 Stdin EOF 触发、3 秒异步自毁等待和 client 连接释放三个完整执行动作。
+   * 
+   * @param name 被销毁服务的名称
+   * @param conn 客户端与传输层句柄对象
+   */
+  private async shutdownConnection(name: string, conn: { client: Client; transport?: StdioClientTransport }): Promise<void> {
+    console.log(`[MCP Client] 正在优雅关闭服务: [${name}]`);
+    
+    // 1. 关闭传输管道的 stdin，发出 EOF 信号以触发优雅自毁
+    try {
+      if (conn.transport) {
+        await conn.transport.close();
+      }
+    } catch (e) {
+      console.error(`[MCP Client] 关闭 [${name}] 传输管道时出错:`, e);
+    }
+
+    // 2. 异步等待 3 秒缓冲退出时间，使进程有足够时间收尾
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // 3. 彻底释放客户端协议资源
+    try {
+      if (conn.client) {
+        await conn.client.close();
+      }
+    } catch (e) {
+      console.error(`[MCP Client] 关闭 [${name}] 客户端协议时出错:`, e);
     }
   }
 }

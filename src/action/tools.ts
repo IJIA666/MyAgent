@@ -1,4 +1,4 @@
-import { resolve, dirname } from 'path';
+import { resolve, dirname, sep } from 'path';
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 
 /**
@@ -35,8 +35,11 @@ export function secureResolvePath(targetPath: string): string {
   // 基于安全边界生成规范化的拼接结果，该策略将隐性消除全部的偏移量标识（如 '..'）
   const resolvedPath = resolve(authorizedDir, targetPath);
 
-  // 以字符串前缀匹配进行强边界制约，阻止逃逸
-  if (!resolvedPath.startsWith(authorizedDir)) {
+  // 加固判定：目标路径必须完全等于授权工作区根目录，
+  // 或者以授权工作区根目录加上系统路径分隔符开头（证明属于工作区内的直接子元素），
+  // 从根本上防范类似于 /auth/path-secret 穿透 /auth/path 的逃逸隐患。
+  const isAuthorized = resolvedPath === authorizedDir || resolvedPath.startsWith(authorizedDir + sep);
+  if (!isAuthorized) {
     throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区的安全防护边界。`);
   }
 
