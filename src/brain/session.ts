@@ -2,7 +2,7 @@ import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/reso
 import { McpToolManager, ToolRegistry } from '../action/index.js';
 import { LlmConfig } from '../config/index.js';
 import { AgentTracer } from './tracer.js';
-import { SessionContext } from './context.js';
+import { SessionContext, computeStringHash, ApiUsage, ContextTokenUsage } from './context.js';
 import { LlmDriver } from './driver.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 import { existsSync, readFileSync } from 'fs';
@@ -44,6 +44,22 @@ export class SessionManager {
   private cachedGlobalRules: string | null = null;
   /** 缓存的局部项目规则内容 */
   private cachedLocalRules: string | null = null;
+
+  /** 上次 System Prompt 的哈希指纹 */
+  private lastSystemPromptHash = '';
+  /** 上次 Tools 定义的哈希指纹 */
+  private lastToolsHash = '';
+  /** 上次 API 请求返回的缓存读取 Token 数 */
+  private lastCacheReadTokens: number | null = null;
+  /** 上次交互结束的时间戳 */
+  private lastInteractionTime: number | null = null;
+  /** 待分析的缓存变更归因项 */
+  private pendingChanges: string[] = [];
+  /** 标识是否为首次调用 */
+  private isFirstCall = true;
+  /** 上次 Token 估算明细 */
+  private lastEstimatedUsage: ContextTokenUsage | null = null;
+
 
   /**
    * 实例初始化。
@@ -201,6 +217,38 @@ export class SessionManager {
           this.cachedLocalRules || undefined
         );
 
+        // 前置计算当前上下文的预测 Token 预算
+        const estimatedTokens = this.context.estimateSnapshotTokens(snapshotContext);
+        this.lastEstimatedUsage = estimatedTokens;
+
+        // 前置计算 System Prompt 和 Tools 的哈希值以做一致性比对
+        const currentSystemPrompt = (snapshotContext.length > 0 && snapshotContext[0].role === 'system')
+          ? (typeof snapshotContext[0].content === 'string' ? snapshotContext[0].content : '')
+          : '';
+        const currentSystemPromptHash = computeStringHash(currentSystemPrompt);
+        const currentToolsHash = computeStringHash(JSON.stringify(allTools));
+
+        if (!this.isFirstCall) {
+          const changes: string[] = [];
+          if (this.lastSystemPromptHash && currentSystemPromptHash !== this.lastSystemPromptHash) {
+            changes.push(`System Prompt 变更 (哈希: ${this.lastSystemPromptHash.slice(0, 8)} -> ${currentSystemPromptHash.slice(0, 8)})`);
+          }
+          if (this.lastToolsHash && currentToolsHash !== this.lastToolsHash) {
+            changes.push(`可用工具集变更 (哈希: ${this.lastToolsHash.slice(0, 8)} -> ${currentToolsHash.slice(0, 8)})`);
+          }
+          if (changes.length > 0) {
+            this.pendingChanges.push(...changes);
+            yield {
+              type: 'error',
+              message: `[缓存抖动警报] 发现非预期的前缀哈希变更，将导致缓存一致性前缀失效！变更项: ${changes.join(', ')}`
+            };
+          }
+        }
+
+        // 更新本次会话的哈希基准
+        this.lastSystemPromptHash = currentSystemPromptHash;
+        this.lastToolsHash = currentToolsHash;
+
         // 委托 driver 层拉起底层流式请求，注意此处传递的是动态入栈后的 snapshotContext
         const stream = this.driver.streamChat(
           snapshotContext,
@@ -222,6 +270,11 @@ export class SessionManager {
             hasToolCalls = true;
             // 将包含待执行工具调用的助手消息压入上下文堆栈
             this.context.addMessage(event.assistantMessage);
+
+            // 后置执行缓存分析与校准逻辑
+            if (event.usage) {
+              yield* this.checkCacheAndCalibrate(event.usage);
+            }
             
             // 初始化本次将要记录的格式化工具清单
             finalToolCalls = event.toolCalls.map((tc) => ({
@@ -285,11 +338,18 @@ export class SessionManager {
               context: snapshotContext,
               reasoning: event.assistantMessage.reasoning_content || '',
               content: event.assistantMessage.content || '',
-              tool_calls: finalToolCalls
+              tool_calls: finalToolCalls,
+              estimated_tokens: estimatedTokens,
+              actual_tokens: event.usage
             });
           } else if (event.type === 'complete') {
             // 普通文本回复已全量返回，无任何动作触发
             this.context.addMessage(event.assistantMessage);
+
+            // 后置执行缓存分析与校准逻辑
+            if (event.usage) {
+              yield* this.checkCacheAndCalibrate(event.usage);
+            }
             
             // 写入本次无动作纯回复的交互日志
             this.tracer.logInteraction({
@@ -297,7 +357,9 @@ export class SessionManager {
               iteration,
               context: snapshotContext,
               reasoning: event.reasoning,
-              content: event.content
+              content: event.content,
+              estimated_tokens: estimatedTokens,
+              actual_tokens: event.usage
             });
             
             // 自然终止前，主动触发一次状态静默持久化
@@ -379,4 +441,70 @@ export class SessionManager {
     this.loadRulesToCache();
     this.context.updateSystemPrompt(this.cachedGlobalRules || undefined);
   }
+
+  /**
+   * 后置缓存失效检测与归因校准逻辑
+   */
+  private *checkCacheAndCalibrate(usage: ApiUsage): Generator<AgentEvent, void, unknown> {
+    if (!usage) return;
+    
+    // 获取本次真实缓存命中数
+    const currentCacheRead = usage.prompt_tokens_details?.cached_tokens ?? 0;
+    
+    // 若不是首次调用，且有上次的缓存读取基准，则进行击穿校验
+    if (!this.isFirstCall && this.lastCacheReadTokens !== null) {
+      const tokenDrop = this.lastCacheReadTokens - currentCacheRead;
+      // 触发击穿阈值：缓存跌幅超 5% 且下降 Token 绝对值 >= 2000
+      if (currentCacheRead < this.lastCacheReadTokens * 0.95 && tokenDrop >= 2000) {
+        let reason: string;
+        if (this.pendingChanges.length > 0) {
+          reason = `前置指纹变更所致 (${this.pendingChanges.join(', ')})`;
+        } else {
+          // 无客户端更改，计算时间差
+          const timeGap = this.lastInteractionTime ? (Date.now() - this.lastInteractionTime) : 0;
+          if (timeGap > 5 * 60 * 1000) {
+            const minutes = Math.round(timeGap / 1000 / 60);
+            reason = `提示词未变动，疑因 TTL 超时淘汰 (距上次交互已过 ${minutes} 分钟)`;
+          } else {
+            reason = '提示词未变动，疑因大模型服务端多用户高并发队列驱逐';
+          }
+        }
+        yield {
+          type: 'error',
+          message: `[缓存击穿诊断] 缓存读取 Token 急剧下跌！( 上轮缓存: ${this.lastCacheReadTokens} -> 本轮缓存: ${currentCacheRead}，下跌: ${tokenDrop} )。诱因判定: ${reason}`
+        };
+      }
+    }
+    
+    // 更新状态基准
+    this.lastCacheReadTokens = currentCacheRead;
+    this.pendingChanges = [];
+    this.lastInteractionTime = Date.now();
+    this.isFirstCall = false;
+
+    // 校准本地 Token 预算数据库
+    this.context.updateLastApiUsage(usage, this.context.getHistory().length);
+  }
+
+  /**
+   * 获取最近一次大模型的 API 结算 Usage
+   */
+  public getLastApiUsage(): ApiUsage | null {
+    return this.context.getLastApiUsage();
+  }
+
+  /**
+   * 获取最近一轮大模型请求前的 Token 估算明细
+   */
+  public getLastEstimatedUsage(): ContextTokenUsage | null {
+    return this.lastEstimatedUsage;
+  }
+
+  /**
+   * 获取当前 System Prompt 的哈希值
+   */
+  public getSystemPromptHash(): string {
+    return this.context.getSystemPromptHash();
+  }
 }
+

@@ -1,6 +1,7 @@
 import { OpenAI } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { LlmConfig } from '../config/index.js';
+import { ApiUsage } from './context.js';
 
 /**
  * 大模型增量流式返回的碎片数据结构定义（兼容 DeepSeek 扩展协议）。
@@ -125,8 +126,8 @@ export class LlmDriver {
   ): AsyncGenerator<
     | { type: 'thinking'; content: string }
     | { type: 'content'; content: string }
-    | { type: 'tool_calls'; toolCalls: PartialToolCall[]; assistantMessage: DeepSeekAssistantMessage }
-    | { type: 'complete'; content: string; reasoning: string; assistantMessage: DeepSeekAssistantMessage },
+    | { type: 'tool_calls'; toolCalls: PartialToolCall[]; assistantMessage: DeepSeekAssistantMessage; usage?: ApiUsage }
+    | { type: 'complete'; content: string; reasoning: string; assistantMessage: DeepSeekAssistantMessage; usage?: ApiUsage },
     void,
     unknown
   > {
@@ -143,6 +144,7 @@ export class LlmDriver {
           tool_choice: 'auto', // 默认交由模型自行决策是否调用工具
           max_tokens: this.llmConfig.maxTokens, // 限制最大的生成 token 数
           stream: true, // 强制开启流式返回
+          stream_options: { include_usage: true }, // 在流式 chunk 中包含 usage 信息
           // 根据模型不同特性，动态拼装扩展层参数（例如特定模型的思考模式配置）
           ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions) : {})
         },
@@ -156,9 +158,27 @@ export class LlmDriver {
       let fullReasoning = '';
       // 用于暂存逐步收集到的工具流碎片的数组集合
       const accumulatedToolCalls: PartialToolCall[] = [];
+      // 用于记录最后 API 结算返回的 usage 详情
+      let finalUsage: ApiUsage | undefined = undefined;
 
       // 异步遍历接收服务端返回的数据流 chunk
       for await (const chunk of stream) {
+        if (chunk.usage) {
+          const usage = chunk.usage as {
+            prompt_tokens: number;
+            completion_tokens: number;
+            prompt_tokens_details?: {
+              cached_tokens?: number;
+            };
+          };
+          finalUsage = {
+            input_tokens: usage.prompt_tokens,
+            output_tokens: usage.completion_tokens,
+            cache_read_input_tokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
+            prompt_tokens_details: usage.prompt_tokens_details
+          };
+        }
+
         // 进行类型强制转换，兼容包含扩展协议的返回结构（如 deepseek）
         const delta = chunk.choices[0]?.delta as DeepSeekDelta | undefined;
         // 忽略空数据包
@@ -218,11 +238,12 @@ export class LlmDriver {
         // 挂载累加出的完整工具包数据
         assistantMessage.tool_calls = accumulatedToolCalls;
         // 抛出带有工具调用指令的特定完成事件流
-        yield { type: 'tool_calls', toolCalls: accumulatedToolCalls, assistantMessage };
+        yield { type: 'tool_calls', toolCalls: accumulatedToolCalls, assistantMessage, usage: finalUsage };
       } else {
         // 如果是普通的纯文本回复，抛出常规的完成信号
-        yield { type: 'complete', content: fullContent, reasoning: fullReasoning, assistantMessage };
+        yield { type: 'complete', content: fullContent, reasoning: fullReasoning, assistantMessage, usage: finalUsage };
       }
+
     } finally {
       // 无论由于自然完毕还是网络异常跳出作用域，都安全清理中止控制器
       this.abortController = null;

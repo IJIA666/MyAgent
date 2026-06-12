@@ -236,6 +236,66 @@ export function startCli(session: SessionManager) {
           }
         }
         console.log(`\n\n${theme.divider('系统响应 >')} 完毕。\n`);
+
+        // 获取并展示本轮交互后的 Token 状态回显面板
+        const lastEstimated = session.getLastEstimatedUsage();
+        const lastUsage = session.getLastApiUsage();
+        if (lastEstimated) {
+          const systemTokens = lastEstimated.system ?? 0;
+          const rulesTokens = lastEstimated.rules ?? 0;
+          const skillTokens = lastEstimated.transient ?? 0;
+          const historyTokens = lastEstimated.history ?? 0;
+          const totalEstimated = lastEstimated.total ?? 0;
+
+          const pctSystem = totalEstimated > 0 ? ((systemTokens / totalEstimated) * 100).toFixed(1) : '0.0';
+          const pctRules = totalEstimated > 0 ? ((rulesTokens / totalEstimated) * 100).toFixed(1) : '0.0';
+          const pctSkill = totalEstimated > 0 ? ((skillTokens / totalEstimated) * 100).toFixed(1) : '0.0';
+          const pctHistory = totalEstimated > 0 ? ((historyTokens / totalEstimated) * 100).toFixed(1) : '0.0';
+
+          const contextWindow = 64000;
+          const totalActual = lastUsage ? (lastUsage.input_tokens + lastUsage.output_tokens) : totalEstimated;
+          const windowRatio = ((totalActual / contextWindow) * 100).toFixed(1);
+
+          let actualInput = '暂无数据';
+          let actualOutput = '暂无数据';
+          let cachedTokens = 0;
+          let hitRate = '0.0';
+          let costStr = '暂无数据';
+
+          if (lastUsage) {
+            actualInput = String(lastUsage.input_tokens);
+            actualOutput = String(lastUsage.output_tokens);
+            cachedTokens = lastUsage.prompt_tokens_details?.cached_tokens ?? 0;
+            hitRate = lastUsage.input_tokens > 0 ? ((cachedTokens / lastUsage.input_tokens) * 100).toFixed(1) : '0.0';
+
+            const inputCost = (lastUsage.input_tokens - cachedTokens) * 0.00014 / 1000 + cachedTokens * 0.000014 / 1000;
+            const outputCost = lastUsage.output_tokens * 0.00028 / 1000;
+            const totalCostUsd = inputCost + outputCost;
+            const totalCostCny = totalCostUsd * 7.25;
+            costStr = `$${totalCostUsd.toFixed(6)} (约 ￥${totalCostCny.toFixed(5)})`;
+          }
+
+          const systemHash = session.getSystemPromptHash();
+          const hashShort = systemHash ? systemHash.slice(0, 8) : '暂无';
+
+          console.log(theme.divider('======================= 📊 TOKEN 监控面板 ======================='));
+          console.log(`${theme.highlight('💡 预测 Token 预算：')}${totalEstimated}`);
+          console.log(`   ├── 基础人设 (System):  ${systemTokens} (${pctSystem}%)`);
+          console.log(`   ├── 规则集   (Rules):   ${rulesTokens} (${pctRules}%)`);
+          console.log(`   ├── 临时技能 (Skill):   ${skillTokens} (${pctSkill}%)`);
+          console.log(`   └── 历史对话 (History): ${historyTokens} (${pctHistory}%)`);
+          console.log(theme.dim('--------------------------------------------------------------'));
+          console.log(`${theme.highlight('⚡ API 实际结算 (Usage)：')}`);
+          console.log(`   ├── 输入 Token (Input):  ${actualInput}`);
+          console.log(`   ├── 输出 Token (Output): ${actualOutput}`);
+          console.log(`   ├── 缓存命中 (Cached):   ${cachedTokens} (${hitRate}%)`);
+          console.log(`   ├── 窗口占用 (Window):   ${totalActual} / ${contextWindow} (${windowRatio}%)`);
+          console.log(`   └── 本轮估算花费 (Cost):  ${theme.success(costStr)}`);
+          console.log(theme.dim('--------------------------------------------------------------'));
+          console.log(`${theme.highlight('🔒 缓存一致性哈希 (Cache Hash)：')}${hashShort}`);
+          console.log(theme.divider('================================================================'));
+          console.log();
+        }
       } catch (error: unknown) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         process.stdout.write(' '.repeat(60) + '\r');

@@ -29,6 +29,25 @@ export interface InteractionRecord {
     result?: string;
     error?: string;
   }>;
+  /**
+   * 预测的 Token 详情
+   */
+  estimated_tokens?: {
+    total: number;
+    system: number;
+    rules: number;
+    transient: number;
+    history: number;
+  };
+  /**
+   * 实际的 API Token 消耗
+   */
+  actual_tokens?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
 }
 
 /**
