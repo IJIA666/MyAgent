@@ -22,6 +22,7 @@ async function showInteractiveMenu(): Promise<string | null> {
       { value: 'resume', label: '恢复历史会话 (Resume)' },
       { value: 'tool', label: '查看扩展工具清单 (Tool)' },
       { value: 'mcp', label: '管理 MCP 服务 (MCP)' },
+      { value: 'reload-rules', label: '重载全局和项目规则 (Reload Rules)' },
       { value: 'help', label: '查看帮助 (Help)' },
       { value: 'cancel', label: '取消' },
     ]
@@ -68,7 +69,7 @@ async function showInteractiveMenu(): Promise<string | null> {
     return `/skill ${skillSelect as string} ${taskText as string}`;
   }
 
-  if (['model', 'history', 'tool', 'help'].includes(mainAction as string)) {
+  if (['model', 'history', 'tool', 'help', 'reload-rules'].includes(mainAction as string)) {
     return `/${mainAction}`;
   }
 
