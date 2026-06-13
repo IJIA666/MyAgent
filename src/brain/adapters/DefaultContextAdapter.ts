@@ -1,28 +1,66 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { ContextAdapter } from './ContextAdapter.js';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 
 /**
  * 默认上下文适配器实现类。
- * 负责在最新一条用户消息前挂载临时技能指令，并提供空历史兜底。
+ * 负责在最新一条用户消息前挂载临时技能指令，并在会话头部注入历史摘要 Checkpoint 及核心文件记忆。
  */
 export class DefaultContextAdapter implements ContextAdapter {
   /**
-   * 组装会话历史、临时技能规范与局部项目规则。
+   * 组装会话历史、临时技能规范、局部项目规则、历史摘要与最近读写的文件。
    * 采用不可变原则，返回拷贝后的新消息数组，防止污染原始会话内存。
-   * 注入位置在最新的一条 user 消息之前，以保持 assistant(tool_calls) 与 tool 消息的相邻性，避免大模型协议错误。
    *
    * @param baseHistory 会话的基础消息历史记录
    * @param transientContext 临时注入的技能规范内容
    * @param localRules 局部项目规则内容
+   * @param summary 物理轮换产生的历史提炼摘要
+   * @param recentFiles 剔除历史中大模型读写过的核心代码文件路径
    * @returns 拼接后的完整消息参数数组
    */
   public assemble(
     baseHistory: ChatCompletionMessageParam[],
     transientContext?: string,
-    localRules?: string
+    localRules?: string,
+    summary?: string | null,
+    recentFiles?: string[]
   ): ChatCompletionMessageParam[] {
     // 1. 浅拷贝基础消息数组，防止对数组的增删插操作污染原始引用
     const historySnapshot = [...baseHistory];
+
+    // 1.1 组装并前置注入物理会话轮换的 Checkpoint 摘要与文件记忆附件
+    const headInjections: ChatCompletionMessageParam[] = [];
+    if (summary) {
+      headInjections.push({
+        role: 'user',
+        content: `<conversation-checkpoint>\n${summary}\n</conversation-checkpoint>`
+      });
+    }
+    if (recentFiles && recentFiles.length > 0) {
+      for (const filePath of recentFiles) {
+        try {
+          const absolutePath = join(process.cwd(), filePath);
+          if (existsSync(absolutePath)) {
+            const fileContent = readFileSync(absolutePath, 'utf-8');
+            headInjections.push({
+              role: 'system',
+              content: `<transient_file path="${filePath}">\n${fileContent}\n</transient_file>`
+            });
+          }
+        } catch {
+          // 容错处理：文件读取失败时不影响主上下文流程
+        }
+      }
+    }
+    // 时序追加至首条 System Prompt 之后以锁定头部前缀
+    if (headInjections.length > 0) {
+      if (historySnapshot.length > 0) {
+        historySnapshot.splice(1, 0, ...headInjections);
+      } else {
+        historySnapshot.push(...headInjections);
+      }
+    }
 
     // 2. 构建待注入的系统消息队列
     const messagesToInject: ChatCompletionMessageParam[] = [];

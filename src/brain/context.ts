@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import { getEncoding } from 'js-tiktoken';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { buildSystemPrompt } from './prompts.js';
+import { LlmConfig } from '../config/types.js';
 
 const encoder = getEncoding('cl100k_base');
 
@@ -87,6 +88,8 @@ export interface ContextTokenUsage {
 export class SessionContext {
   private messageHistory: ChatCompletionMessageParam[] = [];
   private sessionId: string;
+  private checkpointSummary: string | null = null;
+  private recentFiles: string[] = [];
 
   private lastApiUsage: ApiUsage | null = null;
   private lastApiHistoryLength: number = 0;
@@ -129,6 +132,42 @@ export class SessionContext {
    */
   public getSessionId(): string {
     return this.sessionId;
+  }
+
+  /**
+   * 获取当前物理会话所关联的 Checkpoint 提炼摘要。
+   *
+   * @returns 提炼的摘要内容，若无则返回 null
+   */
+  public getCheckpointSummary(): string | null {
+    return this.checkpointSummary;
+  }
+
+  /**
+   * 设定当前物理会话所关联的 Checkpoint 提炼摘要。
+   *
+   * @param summary 提炼的摘要内容
+   */
+  public setCheckpointSummary(summary: string | null): void {
+    this.checkpointSummary = summary;
+  }
+
+  /**
+   * 获取最近读写的文件记忆列表。
+   *
+   * @returns 被剔除历史中最近访问的文件相对路径列表
+   */
+  public getRecentFiles(): string[] {
+    return this.recentFiles;
+  }
+
+  /**
+   * 设定最近读写的文件记忆列表。
+   *
+   * @param files 最近访问的文件相对路径列表
+   */
+  public setRecentFiles(files: string[]): void {
+    this.recentFiles = files;
   }
 
   /**
@@ -269,7 +308,9 @@ export class SessionContext {
       const file = path.join(dir, `${this.sessionId}.json`);
       // 包装数据，不再保存 activeSkills（强制挂载属于单次会话临时状态）
       const stateToSave = {
-        messages: this.messageHistory
+        messages: this.messageHistory,
+        checkpointSummary: this.checkpointSummary,
+        recentFiles: this.recentFiles
       };
       // 将历史快照格式化为 JSON 字符串并写入文件（指定 UTF-8 编码）
       await fs.writeFile(file, JSON.stringify(stateToSave, null, 2), 'utf-8');
@@ -301,6 +342,8 @@ export class SessionContext {
         // 新版本读取，恢复状态
         this.messageHistory = parsed.messages;
         this.sessionId = targetSessionId;
+        this.checkpointSummary = parsed.checkpointSummary || null;
+        this.recentFiles = parsed.recentFiles || [];
         return true;
       }
     } catch {
@@ -308,5 +351,26 @@ export class SessionContext {
     }
     // 恢复失败，返回 false
     return false;
+  }
+
+  /**
+   * 基于激活模型的连接配置及其关联的最大上下文窗口，计算触发压缩的 Token 阈值（默认 75%）。
+   *
+   * @param config 激活的模型连接配置或激活的模型名称
+   * @param ratio 触发压缩的水位线比例，默认 0.75
+   * @returns 触发压缩的 Token 数量阈值
+   */
+  public getCompactionThreshold(config: LlmConfig | string, ratio: number = 0.75): number {
+    let contextWindow = 32000; // 缺省保守值
+
+    if (config && typeof config === 'object') {
+      if (typeof config.contextWindow === 'number') {
+        contextWindow = config.contextWindow;
+      } else if (config.profile && typeof config.profile.contextWindow === 'number') {
+        contextWindow = config.profile.contextWindow;
+      }
+    }
+
+    return Math.floor(contextWindow * ratio);
   }
 }

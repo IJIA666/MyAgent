@@ -1,4 +1,4 @@
-import { OpenAI } from 'openai';
+import { OpenAI, type ClientOptions } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { LlmConfig } from '../config/index.js';
 import { ApiUsage } from './context.js';
@@ -64,10 +64,20 @@ export class LlmDriver {
     this.modelOptions = modelOptions || {};
 
     // 实例化底层 OpenAI 协议兼容客户端
-    this.client = new OpenAI({
+    const clientOptions: ClientOptions = {
       apiKey: llmConfig.apiKey,
       baseURL: llmConfig.baseUrl
-    });
+    };
+    if (llmConfig.timeout !== undefined) {
+      clientOptions.timeout = llmConfig.timeout;
+    }
+    if (llmConfig.maxRetries !== undefined) {
+      clientOptions.maxRetries = llmConfig.maxRetries;
+    }
+    if (llmConfig.headers !== undefined) {
+      clientOptions.defaultHeaders = llmConfig.headers;
+    }
+    this.client = new OpenAI(clientOptions);
   }
 
   /**
@@ -92,11 +102,21 @@ export class LlmDriver {
     this.modelName = newConfig.model;
     // 更新运行时配置
     this.modelOptions = options;
-    // 重新实例化底层通信客户端
-    this.client = new OpenAI({
+    // 重新实例化底层通信客户端，携带覆写的高级配置参数
+    const clientOptions: ClientOptions = {
       apiKey: newConfig.apiKey,
       baseURL: newConfig.baseUrl
-    });
+    };
+    if (newConfig.timeout !== undefined) {
+      clientOptions.timeout = newConfig.timeout;
+    }
+    if (newConfig.maxRetries !== undefined) {
+      clientOptions.maxRetries = newConfig.maxRetries;
+    }
+    if (newConfig.headers !== undefined) {
+      clientOptions.defaultHeaders = newConfig.headers;
+    }
+    this.client = new OpenAI(clientOptions);
   }
 
   /**
@@ -145,6 +165,8 @@ export class LlmDriver {
           max_tokens: this.llmConfig.maxTokens, // 限制最大的生成 token 数
           stream: true, // 强制开启流式返回
           stream_options: { include_usage: true }, // 在流式 chunk 中包含 usage 信息
+          // 若配置了采样温度则予以透传
+          ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
           // 根据模型不同特性，动态拼装扩展层参数（例如特定模型的思考模式配置）
           ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions) : {})
         },
@@ -246,6 +268,36 @@ export class LlmDriver {
 
     } finally {
       // 无论由于自然完毕还是网络异常跳出作用域，都安全清理中止控制器
+      this.abortController = null;
+    }
+  }
+
+  /**
+   * 发起非流式的大模型交互请求（常用于背景分析、上下文提炼与摘要归纳等同步辅助计算场景）。
+   * 
+   * @param messages 大模型所需的消息上下文序列
+   * @returns 大模型生成的完整文本回复内容
+   */
+  public async chat(messages: ChatCompletionMessageParam[]): Promise<string> {
+    // 实例化中止控制器以管控本次网络调用
+    this.abortController = new AbortController();
+    try {
+      const response = await this.client.chat.completions.create(
+        {
+          model: this.modelName, // 保持激活的模型名称
+          messages: messages,
+          max_tokens: this.llmConfig.maxTokens,
+          stream: false, // 声明使用非流式同步通信
+          // 若配置了采样温度则予以透传
+          ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
+          // 动态组装特定模型所要求的运行时 Payload
+          ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions) : {})
+        },
+        { signal: this.abortController.signal }
+      );
+      return response.choices[0]?.message?.content || '';
+    } finally {
+      // 网络调用结束后安全清理控制器
       this.abortController = null;
     }
   }

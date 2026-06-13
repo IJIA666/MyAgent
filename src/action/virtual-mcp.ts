@@ -1,4 +1,4 @@
-import { toolsDefinition, readFileTool, writeFileTool, listFilesTool } from './tools.js';
+import { toolsDefinition, readFileTool, writeFileTool, listFilesTool, readTempFileByLinesTool } from './tools.js';
 import { loadSkillContent } from '../brain/contextLoader.js';
 
 /**
@@ -83,6 +83,14 @@ export class LocalFileSystemMcpServer {
             throw new Error(`未找到名为 "${args.name}" 的技能，请检查名称是否在 <available_skills> 中。`);
           }
           resultText = body;
+          break;
+        }
+
+        case 'read_temp_file_by_lines': {
+          if (typeof args.targetPath !== 'string') throw new Error("targetPath 必须是字符串");
+          if (typeof args.lineStart !== 'number') throw new Error("lineStart 必须是数字");
+          if (typeof args.lineEnd !== 'number') throw new Error("lineEnd 必须是数字");
+          resultText = readTempFileByLinesTool(args.targetPath, args.lineStart, args.lineEnd);
           break;
         }
 

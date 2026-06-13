@@ -5,8 +5,9 @@ import { AgentTracer } from './tracer.js';
 import { SessionContext, computeStringHash, ApiUsage, ContextTokenUsage } from './context.js';
 import { LlmDriver } from './driver.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
+import { join, dirname } from 'path';
+import { buildCompactionSummaryPrompt } from './prompts.js';
 
 /**
  * 智能体产生的事件类型定义，外部消费者（如 UI 终端）据此渲染流式反馈过程。
@@ -39,6 +40,8 @@ export class SessionManager {
   private driver: LlmDriver;
   /** 上下文管理与组装适配器 */
   private contextAdapter: ContextAdapter;
+  /** 当前的大语言模型连接配置 */
+  private llmConfig: LlmConfig;
 
   /** 缓存的全局规则内容 */
   private cachedGlobalRules: string | null = null;
@@ -59,6 +62,8 @@ export class SessionManager {
   private isFirstCall = true;
   /** 上次 Token 估算明细 */
   private lastEstimatedUsage: ContextTokenUsage | null = null;
+  /** 连续上下文压缩失败的次数，用于执行熔断防护 */
+  private compactionFailures = 0;
 
 
   /**
@@ -68,6 +73,7 @@ export class SessionManager {
    * @param contextAdapter 可选的上下文适配器，若未传则默认使用 DefaultContextAdapter
    */
   constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager, contextAdapter?: ContextAdapter) {
+    this.llmConfig = llmConfig;
     this.mcpManager = mcpManager;
     this.toolRegistry = new ToolRegistry(mcpManager);
     this.context = new SessionContext();
@@ -147,6 +153,7 @@ export class SessionManager {
    * @param options 额外的运行时交互配置选项
    */
   public switchModel(newConfig: LlmConfig, options?: Record<string, unknown>): void {
+    this.llmConfig = newConfig;
     this.driver.switchModel(newConfig, options);
   }
 
@@ -193,6 +200,183 @@ export class SessionManager {
   }
 
   /**
+   * 拦截并处理超大工具输出。
+   * 如果输出长度超过 8000 字符，执行落盘到工作区内的 .myagent/temp/ 目录，
+   * 并将内容替换为带有首尾预览及分页读取引导的占位符。
+   * 
+   * @param functionName 被调用的工具名称
+   * @param toolResult 原始工具输出结果
+   * @returns 过滤或拦截后的工具输出结果
+   */
+  private handleLargeToolOutput(functionName: string, toolResult: string): string {
+    const LIMIT = 8000;
+    if (toolResult.length <= LIMIT) {
+      return toolResult;
+    }
+
+    // 确定临时落盘目录，并确保目录存在
+    const tempDir = join(process.cwd(), '.myagent/temp');
+    if (!existsSync(tempDir)) {
+      mkdirSync(tempDir, { recursive: true });
+    }
+
+    // 产生唯一的随机文件名
+    const randomId = Math.random().toString(36).substring(2, 10);
+    const timestamp = Date.now();
+    const tempFileName = `output_${timestamp}_${randomId}.txt`;
+    const fullPath = join(tempDir, tempFileName);
+
+    // 将大文本输出写入本地物理文件
+    writeFileSync(fullPath, toolResult, 'utf-8');
+
+    // 截取前部和尾部预览
+    const previewStart = toolResult.substring(0, 1000);
+    const previewEnd = toolResult.substring(toolResult.length - 1000);
+    const relativePath = `.myagent/temp/${tempFileName}`;
+
+    // 返回经过过滤与占位指引后的文本提示
+    return `[警告：工具 "${functionName}" 的输出内容过长（共 ${toolResult.length} 字符），已自动拦截并落盘至临时文件。]
+[临时文件路径：${relativePath}]
+[前 1000 字符预览]：
+${previewStart}
+...
+[后 1000 字符预览]：
+${previewEnd}
+[提示：若要调阅上述完整或指定行范围的内容，请调用 "read_temp_file_by_lines" 工具，传入 "targetPath": "${relativePath}" 并指定起始和结束行。]`;
+  }
+
+  /**
+   * 执行上下文历史的物理压缩与会话物理轮换。
+   * 通过同步发起无状态 LLM 请求提炼摘要，轮换新会话 ID 并保留核心文件记忆。
+   * 
+   * @returns 压缩轮换是否成功
+   */
+  public async compact(): Promise<boolean> {
+    const currentSessionId = this.context.getSessionId();
+    const lockFilePath = join(process.cwd(), '.myagent/sessions', `${currentSessionId}.lock`);
+
+    // 1. 物理并发文件锁防护
+    try {
+      const lockDir = dirname(lockFilePath);
+      if (!existsSync(lockDir)) {
+        mkdirSync(lockDir, { recursive: true });
+      }
+      if (existsSync(lockFilePath)) {
+        console.warn(`[SessionManager] 会话 ${currentSessionId} 正在执行压缩，跳过本次调用。`);
+        return false;
+      }
+      writeFileSync(lockFilePath, 'locked', 'utf-8');
+    } catch (lockError) {
+      console.warn(`[SessionManager] 抢占会话压缩锁失败: ${lockError}`);
+      return false;
+    }
+
+    try {
+      // 2. 判定连续压缩失败熔断
+      if (this.compactionFailures >= 3) {
+        console.warn(`[SessionManager] 上下文压缩连续失败达 3 次，触发熔断，暂时放弃压缩。`);
+        return false;
+      }
+
+      const fullHistory = this.context.getHistory();
+      if (fullHistory.length <= 2) {
+        // 只有 system 消息和单轮对话，无需压缩
+        return false;
+      }
+
+      // 提取除第 0 条 system 消息以外的所有历史消息进行归纳
+      const messagesToCompact = fullHistory.slice(1);
+
+      // 3. 同步调用 LLM 提炼摘要
+      const summaryPrompt = buildCompactionSummaryPrompt(messagesToCompact);
+      const summary = await this.driver.chat(summaryPrompt);
+
+      if (!summary || summary.trim().length === 0) {
+        throw new Error('LLM 提炼摘要返回空内容');
+      }
+
+      // 4. 物理保存旧 Session 状态（完成归档）
+      await this.context.saveState();
+
+      // 5. 记忆重建：扫描被剔除历史中读写过的核心文件
+      const recentFiles = this.collectReadToolFilePaths(messagesToCompact);
+
+      // 6. 新物理会话初始化
+      const newSessionId = `compact_${Date.now()}`;
+      const newContext = new SessionContext(newSessionId);
+
+      // 继承并更新 System Prompt
+      newContext.updateSystemPrompt(this.cachedGlobalRules || undefined);
+
+      // 设定压缩摘要与最近读写的文件路径
+      newContext.setCheckpointSummary(summary.trim());
+      newContext.setRecentFiles(recentFiles);
+
+      // 切换当前活跃的 Session 实例
+      this.context = newContext;
+      this.tracer = new AgentTracer(process.cwd(), newSessionId);
+
+      // 物理保存一次新会话初始状态
+      await this.context.saveState();
+
+      // 重置失败计数
+      this.compactionFailures = 0;
+      return true;
+
+    } catch (error) {
+      this.compactionFailures++;
+      console.error(`[SessionManager] 压缩提炼失败 (连续失败 ${this.compactionFailures} 次): ${error}`);
+      return false;
+    } finally {
+      // 7. 物理文件锁清理
+      try {
+        if (existsSync(lockFilePath)) {
+          unlinkSync(lockFilePath);
+        }
+      } catch {
+        // 忽略清理锁文件的异常
+      }
+    }
+  }
+
+  /**
+   * 从待剔除的历史消息中，扫描找出最近大模型读写过的核心代码文件路径。
+   *
+   * @param messages 待扫描的历史消息数组
+   * @returns 收集到的核心代码文件路径数组（去重后）
+   */
+  private collectReadToolFilePaths(messages: ChatCompletionMessageParam[]): string[] {
+    const files = new Set<string>();
+
+    for (const msg of messages) {
+      const customMsg = msg as {
+        tool_calls?: Array<{
+          function?: {
+            name?: string;
+            arguments?: string;
+          };
+        }>;
+      };
+      if (msg.role === 'assistant' && customMsg.tool_calls && Array.isArray(customMsg.tool_calls)) {
+        for (const tc of customMsg.tool_calls) {
+          if (tc.function && (tc.function.name === 'readFile' || tc.function.name === 'writeFile')) {
+            try {
+              const args = JSON.parse(tc.function.arguments || '{}');
+              if (args && typeof args.targetPath === 'string') {
+                files.add(args.targetPath);
+              }
+            } catch {
+              // 忽略参数反序列化失败的异常
+            }
+          }
+        }
+      }
+    }
+
+    return Array.from(files);
+  }
+
+  /**
    * 处理单次对话请求的完整生命周期。
    * 采用 ReAct（Reasoning and Acting）架构设计，允许模型进行多次往返的工具请求与状态回溯。
    * 
@@ -214,12 +398,34 @@ export class SessionManager {
         const snapshotContext = this.contextAdapter.assemble(
           this.context.getHistory(),
           transientSkillContent,
-          this.cachedLocalRules || undefined
+          this.cachedLocalRules || undefined,
+          this.context.getCheckpointSummary(),
+          this.context.getRecentFiles()
         );
 
         // 前置计算当前上下文的预测 Token 预算
         const estimatedTokens = this.context.estimateSnapshotTokens(snapshotContext);
         this.lastEstimatedUsage = estimatedTokens;
+
+        // 动态执行 Token 占用水位校验，一旦超出最大窗口的 75% 阈值则静默触发压缩逻辑
+        const threshold = this.context.getCompactionThreshold(this.llmConfig);
+        if (estimatedTokens.total > threshold) {
+          yield {
+            type: 'thinking',
+            content: `[系统检测] 当前上下文 Token 估算数 (${estimatedTokens.total}) 已超出模型安全阈值 (${threshold})，正在执行静默压缩与物理会话轮换...`
+          };
+          const compactSuccess = await this.compact();
+          if (compactSuccess) {
+            // 物理会话轮换成功，回退迭代轮数限制，并重新开始装配上下文
+            iteration = Math.max(0, iteration - 1);
+            continue;
+          } else {
+            yield {
+              type: 'error',
+              message: `[系统警报] 上下文自动压缩失败，将继续以当前历史深度进行后续生成。`
+            };
+          }
+        }
 
         // 前置计算 System Prompt 和 Tools 的哈希值以做一致性比对
         const currentSystemPrompt = (snapshotContext.length > 0 && snapshotContext[0].role === 'system')
@@ -309,7 +515,9 @@ export class SessionManager {
                 const mcpResult = await this.toolRegistry.callTool(functionName, functionArgs);
 
                 // 将执行得到的原始结果转为字符串存储
-                toolResult = JSON.stringify(mcpResult);
+                const rawResult = JSON.stringify(mcpResult);
+                // 对超大输出执行拦截并落盘
+                toolResult = this.handleLargeToolOutput(functionName, rawResult);
                 finalToolCalls[i].result = toolResult;
               } catch (toolError: unknown) {
                 // 捕获应用侧物理执行引发的致命异常，并予以无害化处理（转为大模型可见的报错）

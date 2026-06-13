@@ -16,7 +16,15 @@ export const BUILTIN_MODELS: Record<string, ModelProfile> = {
     envKeyName: 'DEEPSEEK_API_KEY',
     envUrlName: 'DEEPSEEK_API_URL',
     defaultBaseUrl: 'https://api.deepseek.com',
-    defaultModel: 'deepseek-v4-flash',
+    defaultModel: 'deepseek-v4-flash[1m]',
+    /** 预设上下文最大窗口为 1000000 tokens */
+    contextWindow: 1000000,
+    /** 预设采样温度为 0.2 */
+    temperature: 0.2,
+    /** 预设超时时间为 600 秒（毫秒） */
+    timeout: 600000,
+    /** 预设最大重试次数为 3 次 */
+    maxRetries: 3,
     buildExtraPayload: (options?: Record<string, unknown>) => {
       // 优先取交互传递的思考等级，兜底使用环境变量，默认设为 high
       const effort = options?.reasoning_effort || process.env.DEEPSEEK_REASONING_EFFORT || 'high';
@@ -35,7 +43,15 @@ export const BUILTIN_MODELS: Record<string, ModelProfile> = {
     envKeyName: 'DEEPSEEK_API_KEY',
     envUrlName: 'DEEPSEEK_API_URL',
     defaultBaseUrl: 'https://api.deepseek.com',
-    defaultModel: 'deepseek-v4-pro',
+    defaultModel: 'deepseek-v4-pro[1m]',
+    /** 预设上下文最大窗口为 1000000 tokens */
+    contextWindow: 1000000,
+    /** 预设采样温度为 0.2 */
+    temperature: 0.2,
+    /** 预设超时时间为 600 秒（毫秒） */
+    timeout: 600000,
+    /** 预设最大重试次数为 3 次 */
+    maxRetries: 3,
     buildExtraPayload: (options?: Record<string, unknown>) => {
       const effort = options?.reasoning_effort || process.env.DEEPSEEK_REASONING_EFFORT || 'high';
       if (effort === 'disabled') {
@@ -50,7 +66,26 @@ export const BUILTIN_MODELS: Record<string, ModelProfile> = {
 };
 
 /**
- * 根据模型 ID 动态构建大语言模型连接配置。
+ * 解析各种形式的上下文窗口大小配置（支持数字或类似 1m、128k 的单位缩写形式）。
+ * @param val 配置字符串
+ */
+export function parseContextWindow(val: string): number {
+  const clean = val.trim().toLowerCase();
+  const num = parseFloat(clean);
+  if (isNaN(num)) {
+    return 32000; // 无法解析时采用绝对安全的保守下限值
+  }
+  if (clean.endsWith('m')) {
+    return Math.floor(num * 1000000);
+  }
+  if (clean.endsWith('k')) {
+    return Math.floor(num * 1000);
+  }
+  return Math.floor(num);
+}
+
+/**
+ * 根据模型 ID 动态构建大语言模型连接配置，支持通过环境变量进行高优先级覆写。
  * @param id 模型在 BUILTIN_MODELS 中的 ID
  */
 export function getModelConfig(id: string): LlmConfig {
@@ -66,7 +101,80 @@ export function getModelConfig(id: string): LlmConfig {
   if (profile.envUrlName && process.env[profile.envUrlName]) {
     baseUrl = process.env[profile.envUrlName]!;
   }
-  const model = profile.defaultModel;
+
+  // 优先读取环境变量进行模型名称与最大输出 Tokens 的覆盖
+  const rawModel = process.env.DEEPSEEK_MODEL || profile.defaultModel;
   const maxTokens = parseInt(process.env.DEEPSEEK_MAX_TOKENS || '4096', 10);
-  return { apiKey, baseUrl, model, profile, maxTokens };
+
+  // 匹配并剥除模型名中的窗口尺寸后缀（如 [1m]、[128k] 等）
+  let model = rawModel;
+  let extractedWindow: number | null = null;
+  const suffixRegex = /\[(\d+)([km])\]/i;
+  const match = rawModel.match(suffixRegex);
+  if (match) {
+    const value = parseInt(match[1], 10);
+    const unit = match[2].toLowerCase();
+    if (unit === 'm') {
+      extractedWindow = value * 1000000;
+    } else if (unit === 'k') {
+      extractedWindow = value * 1000;
+    }
+    // 自动剥除后缀，以防向第三方 API 发送模型参数时因携带非标准后缀发生接口报错
+    model = rawModel.replace(suffixRegex, '');
+  }
+
+  // 级联读取环境变量或使用模型预设的默认值。若检测到模型名已被覆写但缺失窗口环境变量配置且无后缀特征，主动退化至 32000 保守值防爆
+  const isModelOverridden = process.env.DEEPSEEK_MODEL !== undefined && process.env.DEEPSEEK_MODEL !== profile.defaultModel;
+  let contextWindow = profile.contextWindow || 1000000;
+  if (process.env.DEEPSEEK_CONTEXT_WINDOW) {
+    contextWindow = parseContextWindow(process.env.DEEPSEEK_CONTEXT_WINDOW);
+  } else if (extractedWindow !== null) {
+    contextWindow = extractedWindow;
+  } else if (isModelOverridden) {
+    contextWindow = 32000;
+  }
+
+  const temperature = process.env.DEEPSEEK_TEMPERATURE
+    ? parseFloat(process.env.DEEPSEEK_TEMPERATURE)
+    : profile.temperature;
+
+  const timeout = process.env.DEEPSEEK_TIMEOUT
+    ? parseInt(process.env.DEEPSEEK_TIMEOUT, 10)
+    : (profile.timeout || 600000);
+
+  const maxRetries = process.env.DEEPSEEK_MAX_RETRIES
+    ? parseInt(process.env.DEEPSEEK_MAX_RETRIES, 10)
+    : (profile.maxRetries || 3);
+
+  // 解析自定义请求头环境变量，支持分号或换行符分割的名值对
+  let headers: Record<string, string> | undefined = profile.headers;
+  const envHeaders = process.env.DEEPSEEK_HEADERS;
+  if (envHeaders) {
+    headers = { ...(headers || {}) };
+    const lines = envHeaders.split(/[;\n\r]+/);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const colonIdx = line.indexOf(':');
+      if (colonIdx !== -1) {
+        const key = line.slice(0, colonIdx).trim();
+        const value = line.slice(colonIdx + 1).trim();
+        if (key) {
+          headers[key] = value;
+        }
+      }
+    }
+  }
+
+  return {
+    apiKey,
+    baseUrl,
+    model,
+    profile,
+    maxTokens,
+    contextWindow,
+    temperature,
+    timeout,
+    maxRetries,
+    headers
+  };
 }

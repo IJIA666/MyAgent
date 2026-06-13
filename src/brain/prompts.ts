@@ -14,6 +14,7 @@ const BASE_SYSTEM_PROMPT = `你是一个专业且精确的本地智能体助手�
 3. 请直接、专业且精准地回答用户问题，避免冗余的客套话或占位信息。
 4. 【语言强制】你必须始终使用简体中文进行思考（内部逻辑和推理链）以及最终回复，仅在必要时保留英文的专业术语或代码片段。`;
 
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { loadGlobalRules, loadSkills } from './contextLoader.js';
 
 /**
@@ -44,4 +45,67 @@ export function buildSystemPrompt(customGlobalRules?: string): string {
 
   // 将所有片段拼装为一个长字符串
   return parts.join('\n');
+}
+
+/**
+ * 组装大模型上下文压缩摘要的提炼提示词，返回供 LlmDriver 直接调用的 messages 数组。
+ * 
+ * @param messagesToCompact 需要被压缩提炼的历史消息数组
+ * @returns 组装好的、用于调用总结模型的 messages 数组
+ */
+export function buildCompactionSummaryPrompt(
+  messagesToCompact: ChatCompletionMessageParam[]
+): ChatCompletionMessageParam[] {
+  const systemInstruction = `你是一个专业的上下文提炼助手。
+你的任务是将待归档的智能体与用户的交互历史提炼为一份不超过 1000 字符的 Markdown 格式的概要（Checkpoint Summary）。
+
+**请务必遵守以下提炼规则：**
+1. **核心保留项**：
+   - 已经达成的核心技术与设计决策。
+   - 已经修改或创建的文件列表，以及对其所做修改的极简说明。
+   - 当前面临的核心技术瓶颈、未决问题，以及明确的下一步任务（TODO 列表）。
+2. **噪声过滤规则**：
+   - 必须滤除工具执行时的海量冗余日志、大段的文件内容。
+   - 必须过滤排查过程中的无用死胡同、反复失败的中间尝试。
+   - 忽略多余的礼貌性寒暄或重复确认。
+3. **输出格式约束**：
+   - 直接输出 Markdown 文本，不要有任何包裹容器、前言或总结性客套话。
+   - 保持语言简练，严格控制在 1000 字符以内。
+   - 使用简体中文编写。`;
+
+  // 将待压缩的消息历史格式化为易读的文本格式
+  const formattedHistory = messagesToCompact.map((msg) => {
+    let contentStr = '';
+    if (typeof msg.content === 'string') {
+      contentStr = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      contentStr = msg.content
+        .map((part: { type: string; text?: string }) => (part.type === 'text' && part.text ? part.text : ''))
+        .join('\n');
+    }
+    // 包含工具调用情况
+    let toolCallsStr = '';
+    const customMsg = msg as {
+      tool_calls?: Array<{
+        function: {
+          name: string;
+        };
+      }>;
+    };
+    if (msg.role === 'assistant' && customMsg.tool_calls && Array.isArray(customMsg.tool_calls)) {
+      toolCallsStr = `\n[工具调用：${customMsg.tool_calls.map(tc => tc.function.name).join(', ')}]`;
+    }
+    return `[角色: ${msg.role}]${toolCallsStr}\n内容:\n${contentStr}\n---`;
+  }).join('\n\n');
+
+  return [
+    {
+      role: 'system',
+      content: systemInstruction
+    },
+    {
+      role: 'user',
+      content: `以下是需要你提炼的交互历史：\n\n${formattedHistory}`
+    }
+  ];
 }

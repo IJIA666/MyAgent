@@ -121,6 +121,60 @@ export function listFilesTool(targetPath: string = '.'): string[] {
 }
 
 /**
+ * 分页读取临时或普通文件内容的适配封装组件 。
+ * 提供行范围的分页读取能力 ， 防止拉取超大文件导致 Token 撑爆或死循环 。
+ * 
+ * @param targetPath 目标文件路径
+ * @param lineStart 起始行 （ 从 1 开始计数 ）
+ * @param lineEnd 结束行 （ 包含该行 ， 从 1 开始计数 ）
+ * @returns 截取后的文件内容片段
+ */
+export function readTempFileByLinesTool(targetPath: string, lineStart: number, lineEnd: number): string {
+  // 安全路径校验 ： 利用 secureResolvePath 验证目标文件是否溢出授权沙箱边界
+  const safePath = secureResolvePath(targetPath);
+
+  // 检查目标文件是否存在
+  if (!existsSync(safePath)) {
+    throw new Error(`未找到文件："${targetPath}"`);
+  }
+
+  // 限制仅能读取普通文件，拒绝读取文件夹
+  if (statSync(safePath).isDirectory()) {
+    throw new Error(`路径 "${targetPath}" 是一个目录，不能按行进行读取。`);
+  }
+
+  // 起始行必须有效 ， 从 1 开始
+  if (lineStart < 1) {
+    throw new Error('起始行 lineStart 必须大于或等于 1');
+  }
+
+  // 结束行不能比起始行小
+  if (lineEnd < lineStart) {
+    throw new Error('结束行 lineEnd 必须大于或等于起始行 lineStart');
+  }
+
+  // 读取文件完整文本内容
+  const content = readFileSync(safePath, 'utf-8');
+  // 按行切分 ， 兼容不同平台的换行符
+  const lines = content.split(/\r?\n/);
+  const totalLines = lines.length;
+
+  // 校验行范围边界
+  if (lineStart > totalLines) {
+    return `[提示：起始行 ${lineStart} 超过了文件的总行数 ${totalLines}]`;
+  }
+
+  // 转换 1 - indexed 到 0 - indexed 进行切片
+  const sliceStart = lineStart - 1;
+  const sliceEnd = Math.min(lineEnd, totalLines);
+  const slicedLines = lines.slice(sliceStart, sliceEnd);
+
+  // 组装带有行范围说明的头部前缀
+  const prefix = `[文件：${targetPath} 第 ${lineStart} 至 ${sliceEnd} 行，总共 ${totalLines} 行]\n`;
+  return prefix + slicedLines.join('\n');
+}
+
+/**
  * 基于 OpenAI Function Calling 协议构建的工具集。
  * 此契约用于支撑大模型推理侧了解本地可调度能力及其边界限制。
  */
@@ -193,6 +247,31 @@ export const toolsDefinition = [
           }
         },
         required: ["name"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_temp_file_by_lines",
+      description: "安全地分页读取指定文本文件（包括落盘的超大临时文件）的指定行范围内容。",
+      parameters: {
+        type: "object",
+        properties: {
+          targetPath: {
+            type: "string",
+            description: "目标文件路径（相对于工作区根目录的相对路径，例如 '.myagent/temp/output_123.txt'）。"
+          },
+          lineStart: {
+            type: "number",
+            description: "读取的起始行号（从 1 开始计数）。"
+          },
+          lineEnd: {
+            type: "number",
+            description: "读取的结束行号（包含该行，从 1 开始计数）。"
+          }
+        },
+        required: ["targetPath", "lineStart", "lineEnd"]
       }
     }
   }

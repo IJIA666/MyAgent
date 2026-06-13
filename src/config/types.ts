@@ -13,6 +13,16 @@ export interface ModelProfile {
   envUrlName?: string;
   defaultBaseUrl: string;
   defaultModel: string;
+  /** 上下文最大窗口（Token数） */
+  contextWindow?: number;
+  /** 采样温度 */
+  temperature?: number;
+  /** 网络请求超时限制（毫秒） */
+  timeout?: number;
+  /** 最大重试次数 */
+  maxRetries?: number;
+  /** 自定义请求头 */
+  headers?: Record<string, string>;
   /** 构建额外 Payload 的钩子函数，支持接收运行时交互传递的参数 */
   buildExtraPayload?: (options?: Record<string, unknown>) => Record<string, unknown>;
 }
@@ -32,6 +42,16 @@ export interface LlmConfig {
   profile: ModelProfile;
   /** 最大 Token 输出限制 */
   maxTokens: number;
+  /** 上下文最大窗口（Token数） */
+  contextWindow?: number;
+  /** 采样温度 */
+  temperature?: number;
+  /** 网络请求超时限制（毫秒） */
+  timeout?: number;
+  /** 最大重试次数 */
+  maxRetries?: number;
+  /** 自定义请求头 */
+  headers?: Record<string, string>;
 }
 
 /**

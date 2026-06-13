@@ -35,6 +35,9 @@ export async function dispatchCommand(input: string, context: CommandContext): P
 
   // 路由分发到对应的处理逻辑
   switch (command) {
+    case '/compact':
+      await handleCompactCommand(context);
+      break;
     case '/reload-rules':
       // 动态重载全局与项目局部规则文件并刷新缓存
       handleReloadRulesCommand(context);
@@ -242,6 +245,7 @@ function handleHelpCommand(): void {
   console.log(`  ${theme.highlight('/resume <id>')}      - 恢复指定的历史会话上下文`);
   console.log(`  ${theme.highlight('/mcp <list|enable|disable> [name]')} - 管理与查阅 MCP 扩展服务`);
   console.log(`  ${theme.highlight('/reload-rules')}    - 重新读取并锁定最新的全局和项目局部规则`);
+  console.log(`  ${theme.highlight('/compact')}         - 强制对当前上下文历史执行静默压缩与物理轮换`);
   console.log(`  ${theme.highlight('/tool list')}          - 查看当前已挂载的可用工具清单`);
   console.log(`  ${theme.highlight('/help')}             - 显示此帮助信息`);
   console.log(`  ${theme.highlight('exit / quit')}       - 退出程序`);
@@ -395,4 +399,20 @@ async function handleToolCommand(args: string[], context: CommandContext): Promi
 function handleReloadRulesCommand(context: CommandContext): void {
   context.session.reloadRules();
   console.log(theme.success('[系统] 已重新读取并锁定最新的全局与局部项目规则。'));
+}
+
+/**
+ * 触发当前活跃会话的上下文压缩与物理会话轮换。
+ * 
+ * @param context 命令执行上下文
+ */
+async function handleCompactCommand(context: CommandContext): Promise<void> {
+  console.log(theme.info('\n[系统] 正在触发手动上下文压缩与物理会话轮换...'));
+  const success = await context.session.compact();
+  if (success) {
+    console.log(theme.success(`[系统] 手动压缩成功完成！新会话 ID: ${context.session.getSessionId()}`));
+    redrawHistory(context.session);
+  } else {
+    console.log(theme.error('[错误] 手动上下文压缩执行失败（可能由于交互轮数太少、会话锁定中或触发失败熔断）。'));
+  }
 }
