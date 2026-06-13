@@ -1,4 +1,4 @@
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
+import type { ChatCompletionMessageParam, ChatCompletionUserMessageParam } from 'openai/resources/chat/completions.js';
 import type { ContextAdapter } from './ContextAdapter.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
@@ -62,45 +62,51 @@ export class DefaultContextAdapter implements ContextAdapter {
       }
     }
 
-    // 2. 构建待注入的系统消息队列
-    const messagesToInject: ChatCompletionMessageParam[] = [];
-
-    // 3. 处理局部规则，如果存在则进行 XML 结构隔离包装
-    if (localRules) {
-      messagesToInject.push({
-        role: 'system',
-        content: `<project_rules>\n${localRules}\n</project_rules>`
-      });
-    }
-
-    // 4. 处理临时技能上下文
-    if (transientContext) {
-      messagesToInject.push({
-        role: 'system',
-        content: `<transient_skill>\n${transientContext}\n</transient_skill>`
-      });
-    }
-
-    // 5. 若无任何内容需要注入，直接返回历史快照
-    if (messagesToInject.length === 0) {
-      return historySnapshot;
-    }
-
-    // 6. 寻找最后一条 user 角色消息的位置
-    let lastUserIndex = -1;
-    for (let i = historySnapshot.length - 1; i >= 0; i--) {
-      if (historySnapshot[i].role === 'user') {
-        lastUserIndex = i;
-        break;
+    // 2. 组装局部规则与临时技能，内嵌拼接在最新一条 user 消息的 content 中
+    if (localRules || transientContext) {
+      let injectedText = '\n\n[SYSTEM NOTE: The following project rules and transient skills are injected for this turn. You must strictly follow them.]';
+      if (localRules) {
+        injectedText += `\n<project_rules>\n${localRules}\n</project_rules>`;
       }
-    }
+      if (transientContext) {
+        injectedText += `\n<transient_skill>\n${transientContext}\n</transient_skill>`;
+      }
+      injectedText += '\n[END OF SYSTEM NOTE]';
 
-    if (lastUserIndex === -1) {
-      // 7. 边界兜底：如果没有找到 user 消息，则将注入消息追加到末尾
-      historySnapshot.push(...messagesToInject);
-    } else {
-      // 8. 核心逻辑：安全地批量插入到最后一条 user 消息之前
-      historySnapshot.splice(lastUserIndex, 0, ...messagesToInject);
+      // 寻找最后一条 user 角色消息的位置
+      let lastUserIndex = -1;
+      for (let i = historySnapshot.length - 1; i >= 0; i--) {
+        if (historySnapshot[i].role === 'user') {
+          lastUserIndex = i;
+          break;
+        }
+      }
+
+      if (lastUserIndex === -1) {
+        // 3. 边界兜底：如果没有找到 user 消息，则自动构建一条 user 消息追加到末尾并持久化
+        historySnapshot.push({
+          role: 'user',
+          content: injectedText.trim()
+        });
+      } else {
+        // 4. 核心逻辑：安全地深拷贝最后一条 user 消息，防止污染 baseHistory 引用
+        const originalUserMsg = historySnapshot[lastUserIndex];
+        const copiedUserMsg = JSON.parse(JSON.stringify(originalUserMsg)) as ChatCompletionUserMessageParam;
+
+        const originalContent = originalUserMsg.content;
+        if (typeof originalContent === 'string') {
+          copiedUserMsg.content = originalContent + injectedText;
+        } else if (Array.isArray(originalContent)) {
+          copiedUserMsg.content = [
+            ...originalContent,
+            { type: 'text', text: injectedText }
+          ];
+        } else {
+          copiedUserMsg.content = injectedText.trim();
+        }
+
+        historySnapshot[lastUserIndex] = copiedUserMsg;
+      }
     }
 
     return historySnapshot;

@@ -17,7 +17,7 @@ describe('DefaultContextAdapter 单元测试', () => {
     expect(result).not.toBe(history);
   });
 
-  test('局部规则与临时技能正确注入在最后一条 user 消息之前，且顺序与标签正确', () => {
+  test('局部规则与临时技能正确内嵌拼接在最后一条 user 消息尾部', () => {
     const history: ChatCompletionMessageParam[] = [
       { role: 'system', content: 'system prompt' },
       { role: 'user', content: 'first user message' },
@@ -27,38 +27,36 @@ describe('DefaultContextAdapter 单元测试', () => {
 
     const result = adapter.assemble(history, 'skill content', 'project rules');
 
-    // 原始长度为 4，注入了 2 个，应返回 6
-    expect(result.length).toBe(6);
+    // 长度应依然是 4
+    expect(result.length).toBe(4);
     expect(result[0].content).toBe('system prompt');
     expect(result[1].content).toBe('first user message');
     expect(result[2].content).toBe('assistant reply');
 
-    // 局部规则在前，包裹在 <project_rules>
-    expect(result[3]).toEqual({
-      role: 'system',
-      content: '<project_rules>\nproject rules\n</project_rules>'
-    });
-
-    // 临时技能在后，包裹在 <transient_skill>
-    expect(result[4]).toEqual({
-      role: 'system',
-      content: '<transient_skill>\nskill content\n</transient_skill>'
-    });
-
-    // 最后一条消息恢复为 user 消息
-    expect(result[5].content).toBe('last user message');
+    // 最后一条消息应该内嵌注入内容
+    const lastMsgContent = result[3].content as string;
+    expect(lastMsgContent).toContain('last user message');
+    expect(lastMsgContent).toContain('[SYSTEM NOTE: The following project rules and transient skills are injected for this turn. You must strictly follow them.]');
+    expect(lastMsgContent).toContain('<project_rules>\nproject rules\n</project_rules>');
+    expect(lastMsgContent).toContain('<transient_skill>\nskill content\n</transient_skill>');
+    expect(lastMsgContent).toContain('[END OF SYSTEM NOTE]');
   });
 
-  test('消息历史中无任何 user 消息时安全追加到末尾', () => {
+  test('消息历史中无任何 user 消息时安全追加包含 XML 的 user 消息至末尾', () => {
     const history: ChatCompletionMessageParam[] = [
       { role: 'system', content: 'system prompt' }
     ];
 
     const result = adapter.assemble(history, 'skill content', 'project rules');
 
-    expect(result.length).toBe(3);
+    // 长度从 1 变成 2
+    expect(result.length).toBe(2);
     expect(result[0].content).toBe('system prompt');
-    expect(result[1].content).toContain('<project_rules>');
-    expect(result[2].content).toContain('<transient_skill>');
+    
+    // 追加的应该是 user 角色消息，包含规则与技能
+    expect(result[1].role).toBe('user');
+    const injectedContent = result[1].content as string;
+    expect(injectedContent).toContain('<project_rules>\nproject rules\n</project_rules>');
+    expect(injectedContent).toContain('<transient_skill>\nskill content\n</transient_skill>');
   });
 });

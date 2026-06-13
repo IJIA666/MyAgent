@@ -103,7 +103,13 @@ export function redrawHistory(session: SessionManager) {
     if (msg.role === 'system') continue;
     
     if (msg.role === 'user') {
-      console.log(`\n${theme.info(`用户 [${session.getModelName()}] > `)}${msg.content}`);
+      let contentStr = '';
+      if (typeof msg.content === 'string') {
+        contentStr = msg.content;
+      } else if (Array.isArray(msg.content)) {
+        contentStr = msg.content.map(p => ('text' in p ? p.text : '')).join('\n');
+      }
+      console.log(`\n${theme.info(`用户 [${session.getModelName()}] > `)}${renderContentWithWidgets(contentStr)}`);
     } else if (msg.role === 'assistant') {
       // 强转是为了兼容提取本地存储时的隐藏属性（例如 DeepSeek 特有的 reasoning_content）
       const customMsg = msg as unknown as { reasoning_content?: string };
@@ -374,4 +380,44 @@ export function startCli(session: SessionManager) {
 
   // 挂载初次监听
   initRl();
+}
+
+/**
+ * 将消息内容中内含的 XML 标签和定界符，解析并折叠转换为具有终端视觉效果的精美标签卡片微件。
+ */
+export function renderContentWithWidgets(content: string): string {
+  if (!content) return content;
+
+  let cleanText = content;
+  const widgets: string[] = [];
+
+  // 1. 匹配并解析 project_rules
+  const rulesRegex = /<project_rules>([\s\S]*?)<\/project_rules>/g;
+  let rulesMatch;
+  while ((rulesMatch = rulesRegex.exec(content)) !== null) {
+    const len = rulesMatch[1].length;
+    widgets.push(`  ${theme.dim('↙')} ${theme.highlight('rules: project_rules')} ${theme.dim(`(${len} 字符 - 已自动折叠锁定缓存)`)}`);
+  }
+  cleanText = cleanText.replace(rulesRegex, '');
+
+  // 2. 匹配并解析 transient_skill
+  const skillRegex = /<transient_skill>([\s\S]*?)<\/transient_skill>/g;
+  let skillMatch;
+  while ((skillMatch = skillRegex.exec(content)) !== null) {
+    const len = skillMatch[1].length;
+    widgets.push(`  ${theme.dim('↙')} ${theme.highlight('skill: transient_skill')} ${theme.dim(`(${len} 字符 - 已自动折叠锁定缓存)`)}`);
+  }
+  cleanText = cleanText.replace(skillRegex, '');
+
+  // 3. 过滤系统声明前置与后置定界语
+  cleanText = cleanText
+    .replace(/\[SYSTEM NOTE:[\s\S]*?\]\n?/g, '')
+    .replace(/\n?\[END OF SYSTEM NOTE\]/g, '')
+    .trim();
+
+  if (widgets.length > 0) {
+    return `${cleanText}\n\n${widgets.join('\n')}`;
+  }
+
+  return cleanText;
 }

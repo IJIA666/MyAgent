@@ -8,6 +8,7 @@ import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { buildCompactionSummaryPrompt } from './prompts.js';
+import { purifyContent } from '../utils/purify.js';
 
 /**
  * 智能体产生的事件类型定义，外部消费者（如 UI 终端）据此渲染流式反馈过程。
@@ -539,11 +540,20 @@ ${previewEnd}
               });
             }
 
+            const purifiedContext = snapshotContext.map(msg => {
+              if (typeof msg.content === 'string') {
+                return {
+                  ...msg,
+                  content: purifyContent(msg.content)
+                } as ChatCompletionMessageParam;
+              }
+              return msg;
+            });
             // 当前批次工具指令流转完毕，落盘本次带有工具动作快照的详细交互日志
             this.tracer.logInteraction({
               timestamp: new Date().toISOString(),
               iteration,
-              context: snapshotContext,
+              context: purifiedContext,
               reasoning: event.assistantMessage.reasoning_content || '',
               content: event.assistantMessage.content || '',
               tool_calls: finalToolCalls,
@@ -559,11 +569,20 @@ ${previewEnd}
               yield* this.checkCacheAndCalibrate(event.usage);
             }
             
+            const purifiedContext = snapshotContext.map(msg => {
+              if (typeof msg.content === 'string') {
+                return {
+                  ...msg,
+                  content: purifyContent(msg.content)
+                } as ChatCompletionMessageParam;
+              }
+              return msg;
+            });
             // 写入本次无动作纯回复的交互日志
             this.tracer.logInteraction({
               timestamp: new Date().toISOString(),
               iteration,
-              context: snapshotContext,
+              context: purifiedContext,
               reasoning: event.reasoning,
               content: event.content,
               estimated_tokens: estimatedTokens,
