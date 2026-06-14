@@ -5,10 +5,13 @@ import { AgentTracer } from './tracer.js';
 import { SessionContext, computeStringHash, ApiUsage, ContextTokenUsage } from './context.js';
 import { LlmDriver } from './driver.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join, dirname, resolve, relative } from 'path';
-import { buildCompactionSummaryPrompt, buildStaticFallbackSummary } from './prompts.js';
 import { purifyContent } from '../utils/purify.js';
+
+// 导入领域服务
+import { RuleManager } from './services/RuleManager.js';
+import { ContextRepository } from './services/ContextRepository.js';
+import { ToolDispatcher } from './services/ToolDispatcher.js';
+import { CompactionService } from './services/CompactionService.js';
 
 /**
  * 智能体产生的事件类型定义，外部消费者（如 UI 终端）据此渲染流式反馈过程。
@@ -22,9 +25,7 @@ export type AgentEvent =
 
 /**
  * 会话管理与模型交互调度中心。
- * 核心职责：
- * 1. 组合并调度 SessionContext 与 LlmDriver；
- * 2. 处理工具调用（Tool Calling）的解析、本地路由与反馈收集。
+ * 重构后退化为纯正的 ReAct 循环执行引擎，相关周边逻辑被下沉至各自领域服务。
  */
 export class SessionManager {
   /** 当前系统的工具注册管理台 */
@@ -44,11 +45,17 @@ export class SessionManager {
   /** 当前的大语言模型连接配置 */
   private llmConfig: LlmConfig;
 
-  /** 缓存的全局规则内容 */
-  private cachedGlobalRules: string | null = null;
-  /** 缓存的局部项目规则内容 */
-  private cachedLocalRules: string | null = null;
+  // ==== 领域服务集群 ====
+  /** 全局与局部规则热加载服务 */
+  private ruleManager: RuleManager;
+  /** 会话状态物理落盘与回溯服务 */
+  private contextRepo: ContextRepository;
+  /** 工具调度与返回文本处理服务 */
+  private toolDispatcher: ToolDispatcher;
+  /** 上下文提炼与截断防爆服务 */
+  private compactionService: CompactionService;
 
+  // ==== 缓存一致性校验状态 ====
   /** 上次 System Prompt 的哈希指纹 */
   private lastSystemPromptHash = '';
   /** 上次 Tools 定义的哈希指纹 */
@@ -63,13 +70,6 @@ export class SessionManager {
   private isFirstCall = true;
   /** 上次 Token 估算明细 */
   private lastEstimatedUsage: ContextTokenUsage | null = null;
-  /** 连续上下文压缩失败的次数，用于执行熔断防护 */
-  private compactionFailures = 0;
-  /** 上次提炼时的 Token 水平 */
-  private lastSummaryTokenLevel = 0;
-  /** 后台提炼是否在途 */
-  private isCompacting = false;
-
 
   /**
    * 实例初始化。
@@ -86,9 +86,11 @@ export class SessionManager {
     this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());
     this.contextAdapter = contextAdapter || new DefaultContextAdapter();
 
-    // 载入全局和项目局部的规则并写入缓存，同时重新组装首条 System Prompt 以锁定前缀哈希
-    this.loadRulesToCache();
-    this.context.updateSystemPrompt(this.cachedGlobalRules || undefined);
+    // 初始化解耦后的四大领域服务
+    this.ruleManager = new RuleManager(this.context);
+    this.contextRepo = new ContextRepository(this.context);
+    this.toolDispatcher = new ToolDispatcher(this.context);
+    this.compactionService = new CompactionService(this.context, this.driver);
   }
 
   /**
@@ -96,16 +98,11 @@ export class SessionManager {
    * @param content 用户侧的原始输入数据
    */
   public addUserMessage(content: string): void {
-    // 构造标准的 user 角色消息并压入状态上下文
-    this.context.addMessage({
-      role: 'user',
-      content: content
-    });
+    this.context.addMessage({ role: 'user', content });
   }
 
   /**
    * 输出当前关联的上下文状态数据。
-   *
    * @returns 包含对话历史的消息参数数组
    */
   public getHistory(): ChatCompletionMessageParam[] {
@@ -114,7 +111,6 @@ export class SessionManager {
 
   /**
    * 获取当前激活的模型名称。
-   *
    * @returns 当前会话绑定的模型名称字符串
    */
   public getModelName(): string {
@@ -123,7 +119,6 @@ export class SessionManager {
 
   /**
    * 获取当前会话唯一标识。
-   *
    * @returns 会话 ID 字符串
    */
   public getSessionId(): string {
@@ -134,7 +129,7 @@ export class SessionManager {
    * 将当前上下文静默序列化落盘到工作区文件。
    */
   public async saveState(): Promise<void> {
-    await this.context.saveState();
+    await this.contextRepo.saveState();
   }
 
   /**
@@ -143,8 +138,7 @@ export class SessionManager {
    * @returns 成功返回 true，否则返回 false
    */
   public async loadState(targetSessionId: string): Promise<boolean> {
-    // 委托底层 context 实例执行持久化数据的加载与状态覆写
-    const success = await this.context.loadState(targetSessionId);
+    const success = await this.contextRepo.loadState(targetSessionId);
     if (success) {
       // 状态恢复成功后，重置跟踪记录仪以绑定新的 Session ID 目录
       this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());
@@ -175,257 +169,15 @@ export class SessionManager {
    * @returns 返回被弹栈丢弃的历史消息数组（按原本对话顺序排列）
    */
   public rollback(turns: number): ChatCompletionMessageParam[] {
-    // 如果无需回退，则直接返回空集合
-    if (turns <= 0) return [];
-    
-    // 初始化已成功剥离的用户轮次计数
-    let poppedTurns = 0;
-    // 用于暂存被丢弃的历史节点，以便最终返回
-    const dropped: ChatCompletionMessageParam[] = [];
-
-    // 获取当前上下文的引用
-    const history = this.context.getHistory();
-    // 循环弹栈，始终保留 index 0 的 system 消息（length > 1）
-    while (history.length > 1 && poppedTurns < turns) {
-      const lastMsg = this.context.popMessage();
-      if (lastMsg) {
-        dropped.push(lastMsg);
-        // 当遇到 user 角色的消息时，说明一整轮（包括它自己和后续助手的回答/工具链）已被完整剥离
-        if (lastMsg.role === 'user') {
-          poppedTurns++;
-        }
-      }
-    }
-
-    // 状态发生变化后进行静默落盘（后台异步执行，忽略可能产生的文件 IO 异常）
-    this.context.saveState().catch(() => {});
-
-    // 因为是倒序弹出，此处反转数组恢复原有对话的时序逻辑
-    return dropped.reverse();
+    return this.contextRepo.rollback(turns);
   }
 
   /**
-   * 拦截并处理超大工具输出。
-   * 如果输出长度超过 8000 字符，执行落盘到工作区内的 .myagent/temp/ 目录，
-   * 并将内容替换为带有首尾预览及分页读取引导的占位符。
-   * 
-   * @param functionName 被调用的工具名称
-   * @param toolResult 原始工具输出结果
-   * @returns 过滤或拦截后的工具输出结果
+   * 清除全局 and 局部规则的内存缓存，并重新从磁盘中加载。
+   * 会在下一轮交互时强制生效最新的规则内容。
    */
-  private handleLargeToolOutput(functionName: string, toolResult: string): string {
-    const LIMIT = 8000;
-    if (toolResult.length <= LIMIT) {
-      return toolResult;
-    }
-
-    // 确定临时落盘目录，并确保目录存在
-    const tempDir = join(process.cwd(), '.myagent/temp');
-    if (!existsSync(tempDir)) {
-      mkdirSync(tempDir, { recursive: true });
-    }
-
-    // 产生唯一的随机文件名
-    const randomId = Math.random().toString(36).substring(2, 10);
-    const timestamp = Date.now();
-    const tempFileName = `output_${timestamp}_${randomId}.txt`;
-    const fullPath = join(tempDir, tempFileName);
-
-    // 将大文本输出写入本地物理文件
-    writeFileSync(fullPath, toolResult, 'utf-8');
-
-    // 截取前部和尾部预览
-    const previewStart = toolResult.substring(0, 1000);
-    const previewEnd = toolResult.substring(toolResult.length - 1000);
-    const relativePath = `.myagent/temp/${tempFileName}`;
-
-    // 返回经过过滤与占位指引后的文本提示
-    return `[警告：工具 "${functionName}" 的输出内容过长（共 ${toolResult.length} 字符），已自动拦截并落盘至临时文件。]
-[临时文件路径：${relativePath}]
-[前 1000 字符预览]：
-${previewStart}
-...
-[后 1000 字符预览]：
-${previewEnd}
-[提示：若要调阅上述完整或指定行范围的内容，请调用 "readFile" 工具，传入 "targetPath": "${relativePath}" 并指定 lineStart 和 lineEnd。]`;
-  }
-
-  /**
-   * JIT 伴生规范注入处理器。
-   * 沿着目标文件的目录树递归向上寻路，查找 README.md 或 .rules 文件。
-   * 遵循以下规则防洪防爆：
-   * 1. 排除根目录寻路（寻路截止于根目录的直接子级，current !== root）。
-   * 2. 全会话历史去重（解析 messages 排除曾经注入过的规则文件路径）。
-   * 3. 单轮交互内去重（Turn Deduplication，Set 拦截）。
-   * 
-   * @param targetPath 被读取的目标文件路径
-   * @param injectedJitPaths 当前交互轮次中已注入的规范文件相对路径集合
-   * @returns 组装好的 <system-reminder> 提示词文本，若无需注入则返回空字符串
-   */
-  private resolveJitContext(targetPath: string, injectedJitPaths: Set<string>): string {
-    const root = process.cwd();
-    const targetAbs = resolve(root, targetPath);
-    let current = dirname(targetAbs);
-
-    // 收集历史消息中已经成功加载过的 JIT 规则（全局去重）
-    const alreadyInjectedGlobally = new Set<string>();
-    const history = this.context.getHistory();
-    for (const msg of history) {
-      if (typeof msg.content === 'string') {
-        const regex = /\[JIT 规则已加载: ([^\]]+)\]/g;
-        let match;
-        while ((match = regex.exec(msg.content)) !== null) {
-          alreadyInjectedGlobally.add(match[1]);
-        }
-      }
-    }
-
-    const ruleFiles = ['README.md', '.rules'];
-    let JITText = '';
-
-    // 递归向上遍历，直至根目录前级（排除 root 根目录本身）
-    while (current.startsWith(root) && current !== root) {
-      let foundRuleFile: string | null = null;
-      for (const ruleFile of ruleFiles) {
-        const potentialPath = resolve(current, ruleFile);
-        if (existsSync(potentialPath)) {
-          foundRuleFile = potentialPath;
-          break;
-        }
-      }
-
-      if (foundRuleFile) {
-        const relRulePath = relative(root, foundRuleFile).replace(/\\/g, '/');
-
-        // 执行双重去重（全局历史与当前 Turn）
-        if (!alreadyInjectedGlobally.has(relRulePath) && !injectedJitPaths.has(relRulePath)) {
-          try {
-            const ruleContent = readFileSync(foundRuleFile, 'utf-8');
-            if (ruleContent.trim()) {
-              JITText += `\n\n---\n[JIT 规则已加载: ${relRulePath}]\n<system-reminder>\n${ruleContent}\n</system-reminder>`;
-              injectedJitPaths.add(relRulePath);
-            }
-          } catch {
-            // 忽略异常，安全过滤
-          }
-        }
-        // 第一 project-level 优先级匹配成功后，跳出不再向上追溯（对齐 Opencode 机制）
-        break;
-      }
-
-      const parent = dirname(current);
-      if (parent === current) break;
-      current = parent;
-    }
-
-    return JITText;
-  }
-
-  /**
-   * 执行无延迟硬截断（Pointer-based Truncation）。
-   * 丢弃中间消息并在头部拼接 session_summary.md。
-   * 
-   * @returns 压缩轮换是否成功
-   */
-  public async compact(): Promise<boolean> {
-    try {
-      const fullHistory = this.context.getHistory();
-      if (fullHistory.length <= 4) return false;
-
-      // 指针级截断：保留最后 4 条消息
-      this.context.truncateHistory(4);
-
-      // 如果兜底也没有摘要，则塞一个默认兜底
-      if (!this.context.getCheckpointSummary()) {
-        const fallback = buildStaticFallbackSummary(undefined, undefined);
-        this.context.setCheckpointSummary(fallback);
-      }
-
-      await this.context.saveState();
-      return true;
-    } catch (e) {
-      console.warn(`[SessionManager] 上下文硬截断失败: ${e}`);
-      return false;
-    }
-  }
-
-  /**
-   * 触发后台异步提炼摘要 (afterTurn 机制)
-   */
-  private async triggerAsyncCompactionIfNeeded(): Promise<void> {
-    if (this.isCompacting) return;
-    const currentTokens = this.lastEstimatedUsage?.total || 0;
-    
-    // 当累积增量 Token 达到 5000 时触发后台提炼任务
-    if (currentTokens - this.lastSummaryTokenLevel >= 5000) {
-      this.isCompacting = true;
-      try {
-        const fullHistory = this.context.getHistory();
-        if (fullHistory.length <= 2) return;
-        const messagesToCompact = fullHistory.slice(1);
-        const summaryPrompt = buildCompactionSummaryPrompt(messagesToCompact);
-        
-        const summary = await this.driver.generateSummaryAsync(summaryPrompt);
-        if (summary && summary.trim().length > 0) {
-          this.context.setCheckpointSummary(summary.trim());
-          this.lastSummaryTokenLevel = currentTokens;
-          const recentFiles = this.collectReadToolFilePaths(messagesToCompact);
-          this.context.setRecentFiles(recentFiles);
-          await this.context.saveState();
-          this.compactionFailures = 0;
-        }
-      } catch (e) {
-        console.warn(`[SessionManager] 异步提炼失败: ${e}`);
-        this.compactionFailures++;
-        if (this.compactionFailures >= 3) {
-          // 连续 3 次失败，使用兜底摘要
-          const fallback = buildStaticFallbackSummary('后台异步失败', '无响应');
-          this.context.setCheckpointSummary(fallback);
-        }
-      } finally {
-        this.isCompacting = false;
-      }
-    }
-  }
-
-  /**
-   * 从待剔除的历史消息中，反向扫描找出最近大模型读写过的核心代码文件路径（最多 5 个）。
-   *
-   * @param messages 待扫描的历史消息数组
-   * @returns 收集到的核心代码文件路径数组（去重后）
-   */
-  private collectReadToolFilePaths(messages: ChatCompletionMessageParam[]): string[] {
-    const files = new Set<string>();
-
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (files.size >= 5) break;
-      const msg = messages[i];
-      const customMsg = msg as {
-        tool_calls?: Array<{
-          function?: {
-            name?: string;
-            arguments?: string;
-          };
-        }>;
-      };
-      if (msg.role === 'assistant' && customMsg.tool_calls && Array.isArray(customMsg.tool_calls)) {
-        for (const tc of customMsg.tool_calls) {
-          if (tc.function && (tc.function.name === 'readFile' || tc.function.name === 'writeFile')) {
-            try {
-              const args = JSON.parse(tc.function.arguments || '{}');
-              if (args && typeof args.targetPath === 'string') {
-                files.add(args.targetPath);
-                if (files.size >= 5) break;
-              }
-            } catch {
-              // 忽略参数反序列化失败的异常
-            }
-          }
-        }
-      }
-    }
-
-    return Array.from(files);
+  public reloadRules(): void {
+    this.ruleManager.reloadRules();
   }
 
   /**
@@ -454,7 +206,7 @@ ${previewEnd}
         const snapshotContext = this.contextAdapter.assemble(
           this.context.getHistory(),
           transientSkillContent,
-          this.cachedLocalRules || undefined,
+          this.ruleManager.getLocalRules() || undefined,
           this.context.getCheckpointSummary(),
           this.context.getRecentFiles()
         );
@@ -470,7 +222,7 @@ ${previewEnd}
             type: 'thinking',
             content: `[系统检测] 当前上下文 Token 估算数 (${estimatedTokens.total}) 已超出模型安全阈值 (${threshold})，正在执行静默压缩与物理会话轮换...`
           };
-          const compactSuccess = await this.compact();
+          const compactSuccess = await this.compactionService.compact();
           if (compactSuccess) {
             // 物理会话轮换成功，回退迭代轮数限制，并重新开始装配上下文
             iteration = Math.max(0, iteration - 1);
@@ -544,7 +296,7 @@ ${previewEnd}
               arguments: tc.function.arguments
             }));
 
-            // 遍历并串行（或按需并发）处理该批次中出现的所有工具调用请求
+            // 遍历并串行处理该批次中出现的所有工具调用请求
             for (let i = 0; i < event.toolCalls.length; i++) {
               const toolCall = event.toolCalls[i];
               const functionName = toolCall.function.name;
@@ -590,7 +342,8 @@ ${previewEnd}
                 ) {
                   const firstContent = res.content[0];
                   if (firstContent && typeof firstContent.text === 'string') {
-                    const jitText = this.resolveJitContext(functionArgs.targetPath, injectedJitPaths);
+                    // 动态注入 JIT 上下文规范
+                    const jitText = this.toolDispatcher.resolveJitContext(functionArgs.targetPath, injectedJitPaths);
                     if (jitText) {
                       firstContent.text += jitText;
                     }
@@ -600,7 +353,7 @@ ${previewEnd}
                 // 将执行得到的原始结果转为字符串存储
                 const rawResult = JSON.stringify(mcpResult);
                 // 对超大输出执行拦截并落盘
-                toolResult = this.handleLargeToolOutput(functionName, rawResult);
+                toolResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
                 finalToolCalls[i].result = toolResult;
               } catch (toolError: unknown) {
                 // 捕获应用侧物理执行引发的致命异常，并予以无害化处理（转为大模型可见的报错）
@@ -631,6 +384,7 @@ ${previewEnd}
               }
               return msg;
             });
+
             // 当前批次工具指令流转完毕，落盘本次带有工具动作快照的详细交互日志
             this.tracer.logInteraction({
               timestamp: new Date().toISOString(),
@@ -672,8 +426,8 @@ ${previewEnd}
             });
             
             // 自然终止前，主动触发一次后台提炼检查
-            this.triggerAsyncCompactionIfNeeded().catch(() => {});
-            await this.context.saveState();
+            this.compactionService.triggerAsyncCompactionIfNeeded(this.lastEstimatedUsage?.total || 0).catch(() => {});
+            await this.contextRepo.saveState();
             // 彻底退出生成器生命周期
             return;
           }
@@ -691,9 +445,9 @@ ${previewEnd}
         // 如果是系统或用户主动下发的中断打断信号，进行安全脱离而不当一致性崩溃处理
         if (errorMsg.includes('APIUserAbortError') || errorMsg.includes('abort') || (apiError instanceof Error && apiError.name === 'AbortError')) {
           yield { type: 'error', message: '已收到中断指令，强行终止推理生成。' };
-          // 意外终止时同样要落盘截至目前的半截上下文
-          this.triggerAsyncCompactionIfNeeded().catch(() => {});
-          await this.context.saveState();
+          // 意外终止时同样要触发后台提炼检查与物理落盘
+          this.compactionService.triggerAsyncCompactionIfNeeded(this.lastEstimatedUsage?.total || 0).catch(() => {});
+          await this.contextRepo.saveState();
           return;
         }
 
@@ -703,54 +457,12 @@ ${previewEnd}
         throw new Error(fullErrorMsg, { cause: apiError });
       } finally {
         // 无论正常结束还是抛错中断，强制性确保当前上下文得到文件落盘保存
-        await this.context.saveState();
+        await this.contextRepo.saveState();
       }
     }
 
     // 达到最大允许轮数依然没有完结退出，抛出死循环超载保护异常
     throw new Error(`超出了工具调用的最大迭代轮数限制（${this.maxIterations} 轮）。`);
-  }
-
-  /**
-   * 将规则文件探测并加载锁定至内存缓存中，防止哈希抖动。
-   */
-  private loadRulesToCache(): void {
-    // 1. 加载全局级规则
-    try {
-      const globalRulesPath = join(process.cwd(), '.agent/global_rules.md');
-      if (existsSync(globalRulesPath)) {
-        this.cachedGlobalRules = readFileSync(globalRulesPath, 'utf-8').trim();
-      } else {
-        this.cachedGlobalRules = '';
-      }
-    } catch (e) {
-      console.warn(`[SessionManager] 读取全局规则失败: ${e}`);
-      this.cachedGlobalRules = '';
-    }
-
-    // 2. 自动探测并加载局部项目规则 (.myagent.md)
-    try {
-      const localRulesPath = join(process.cwd(), '.myagent.md');
-      if (existsSync(localRulesPath)) {
-        this.cachedLocalRules = readFileSync(localRulesPath, 'utf-8').trim();
-        console.log(`[SessionManager] 已探测并锁定局部规则文件: ${localRulesPath}`);
-      } else {
-        this.cachedLocalRules = '';
-      }
-    } catch (e) {
-      console.warn(`[SessionManager] 探测局部规则文件失败: ${e}`);
-      this.cachedLocalRules = '';
-    }
-  }
-
-  /**
-   * 清除全局 and 局部规则的内存缓存，并重新从磁盘中加载。
-   * 会在下一轮交互时强制生效最新的规则内容。
-   */
-  public reloadRules(): void {
-    console.log('[SessionManager] 正在重载规则文件...');
-    this.loadRulesToCache();
-    this.context.updateSystemPrompt(this.cachedGlobalRules || undefined);
   }
 
   /**
@@ -815,7 +527,6 @@ ${previewEnd}
    * 获取当前 System Prompt 的哈希值
    */
   public getSystemPromptHash(): string {
-    return this.context.getSystemPromptHash();
+    return this.lastSystemPromptHash;
   }
 }
-
