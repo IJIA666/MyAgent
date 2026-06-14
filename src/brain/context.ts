@@ -1,81 +1,17 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { getEncoding } from 'js-tiktoken';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { buildSystemPrompt } from './prompts.js';
-import { LlmConfig } from '../config/types.js';
 
-const encoder = getEncoding('cl100k_base');
-
-/**
- * 计算文本的 Token 数量
- */
-export function countTokens(text: string): number {
-  if (!text) return 0;
-  return encoder.encode(text).length;
-}
-
-/**
- * 估算单个 Chat Message 的 Token 数量
- */
-export function estimateMessageTokens(message: ChatCompletionMessageParam): number {
-  let tokens = 4; // 消息框架基础开销
-  if (typeof message.content === 'string') {
-    tokens += countTokens(message.content);
-  } else if (Array.isArray(message.content)) {
-    for (const part of message.content) {
-      if (part.type === 'text' && 'text' in part) {
-        tokens += countTokens(part.text);
-      }
-    }
-  }
-  // 加上工具调用的 Token 消耗
-  if (message.role === 'assistant') {
-    const customMsg = message as {
-      tool_calls?: Array<{
-        function?: {
-          name?: string;
-          arguments?: string;
-        };
-      }>;
-    };
-    if (customMsg.tool_calls && Array.isArray(customMsg.tool_calls)) {
-      for (const tc of customMsg.tool_calls) {
-        if (tc.function) {
-          tokens += countTokens(tc.function.name || '');
-          tokens += countTokens(tc.function.arguments || '');
-        }
-      }
-    }
-  }
-  return tokens;
-}
+export { ApiUsage, ContextTokenUsage } from './TokenEstimator.js';
+import { ApiUsage } from './TokenEstimator.js';
 
 /**
  * 计算字符串的 MD5 哈希
  */
 export function computeStringHash(text: string): string {
   return createHash('md5').update(text).digest('hex');
-}
-
-export interface ApiUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
-  prompt_tokens_details?: {
-    cached_tokens?: number;
-  };
-}
-
-export interface ContextTokenUsage {
-  total: number;
-  system: number;
-  rules: number;
-  transient: number;
-  history: number;
-  isEstimated: boolean;
 }
 
 /**
@@ -197,74 +133,15 @@ export class SessionContext {
   }
 
   /**
-   * 基于“锚点基准 + 增量计算”来预测当前拼装后的完整上下文 Token
-   * 
-   * @param snapshotContext 组装完成的待发送消息数组
-   * @returns 预测的各分块 Token 数量
+   * 获取最近一轮的真实 API Usage 数据与历史数组长度基准
+   * （此方法专供 TokenEstimator 在增量计算时获取基准）
    */
-  public estimateSnapshotTokens(snapshotContext: ChatCompletionMessageParam[]): ContextTokenUsage {
-    // 1. 计算 system prompt Token 数 (snapshotContext[0])
-    let systemTokens = 0;
-    if (snapshotContext.length > 0 && snapshotContext[0].role === 'system') {
-      systemTokens = estimateMessageTokens(snapshotContext[0]);
-    }
-
-    // 2. 区分规则、临时技能和对话历史
-    let rulesTokens = 0;
-    let transientTokens = 0;
-    let historyTokens = 0;
-
-    const nonSystemMessages: ChatCompletionMessageParam[] = [];
-    for (let i = 1; i < snapshotContext.length; i++) {
-      const msg = snapshotContext[i];
-      if (msg.role === 'system') {
-        const content = typeof msg.content === 'string' ? msg.content : '';
-        if (content.startsWith('<project_rules>')) {
-          rulesTokens += estimateMessageTokens(msg);
-        } else if (content.startsWith('<transient_skill>')) {
-          transientTokens += estimateMessageTokens(msg);
-        } else {
-          historyTokens += estimateMessageTokens(msg);
-        }
-      } else {
-        nonSystemMessages.push(msg);
-      }
-    }
-
-    // 3. 应用增量算法计算对话历史
-    if (this.lastApiUsage) {
-      const anchorBase = this.lastApiUsage.input_tokens + this.lastApiUsage.output_tokens;
-      let incrementalTokens = 0;
-      
-      const lastNonSystemCount = Math.max(0, this.lastApiHistoryLength - 1);
-      
-      if (nonSystemMessages.length > lastNonSystemCount) {
-        const incrementalMessages = nonSystemMessages.slice(lastNonSystemCount);
-        for (const msg of incrementalMessages) {
-          incrementalTokens += estimateMessageTokens(msg);
-        }
-      }
-      
-      // 历史 Token = 锚点 Base - 当前 System Tokens + 增量 Tokens
-      historyTokens += Math.max(0, anchorBase - systemTokens + incrementalTokens);
-    } else {
-      for (const msg of nonSystemMessages) {
-        historyTokens += estimateMessageTokens(msg);
-      }
-    }
-
-    const total = systemTokens + rulesTokens + transientTokens + historyTokens + 3; // 3为结尾控制字符
-
+  public getLastApiUsageBaseline(): { usage: ApiUsage | null; historyLength: number } {
     return {
-      total,
-      system: systemTokens,
-      rules: rulesTokens,
-      transient: transientTokens,
-      history: historyTokens,
-      isEstimated: true
+      usage: this.lastApiUsage,
+      historyLength: this.lastApiHistoryLength
     };
   }
-
 
   /**
    * 输出当前关联的上下文状态数据（不含深拷贝保护机制）。
@@ -365,24 +242,5 @@ export class SessionContext {
     return false;
   }
 
-  /**
-   * 基于激活模型的连接配置及其关联的最大上下文窗口，计算触发压缩的 Token 阈值（默认 75%）。
-   *
-   * @param config 激活的模型连接配置或激活的模型名称
-   * @param ratio 触发压缩的水位线比例，默认 0.75
-   * @returns 触发压缩的 Token 数量阈值
-   */
-  public getCompactionThreshold(config: LlmConfig | string, ratio: number = 0.75): number {
-    let contextWindow = 32000; // 缺省保守值
 
-    if (config && typeof config === 'object') {
-      if (typeof config.contextWindow === 'number') {
-        contextWindow = config.contextWindow;
-      } else if (config.profile && typeof config.profile.contextWindow === 'number') {
-        contextWindow = config.profile.contextWindow;
-      }
-    }
-
-    return Math.floor(contextWindow * ratio);
-  }
 }

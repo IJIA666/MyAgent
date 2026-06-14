@@ -2,7 +2,7 @@ import type { ChatCompletionMessageParam, ChatCompletionUserMessageParam } from 
 import type { ContextAdapter } from './ContextAdapter.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { countTokens } from '../context.js';
+import { countTokens } from '../TokenEstimator.js';
 import { HANDOFF_INSTRUCTION } from '../prompts.js';
 
 /**

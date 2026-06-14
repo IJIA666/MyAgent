@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SessionContext } from '../../src/brain/context.js';
+import { TokenEstimator } from '../../src/brain/TokenEstimator.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 
 describe('SessionContext Token & Hash Tests', () => {
@@ -39,7 +40,8 @@ describe('SessionContext Token & Hash Tests', () => {
       { role: 'user', content: 'Hello, what can you do?' }
     ];
 
-    const estimate = context.estimateSnapshotTokens(snapshot);
+    const baseline = context.getLastApiUsageBaseline();
+    const estimate = TokenEstimator.estimateSnapshotTokens(snapshot, baseline.usage, baseline.historyLength);
     expect(estimate.isEstimated).toBe(true);
     expect(estimate.system).toBeGreaterThan(0);
     expect(estimate.rules).toBeGreaterThan(0);
@@ -67,7 +69,8 @@ describe('SessionContext Token & Hash Tests', () => {
       { role: 'user', content: 'Great, show me.' } // 增量消息 2
     ];
 
-    const estimate = context.estimateSnapshotTokens(snapshot);
+    const baseline = context.getLastApiUsageBaseline();
+    const estimate = TokenEstimator.estimateSnapshotTokens(snapshot, baseline.usage, baseline.historyLength);
     expect(estimate.isEstimated).toBe(true);
     
     // 预测的 history 应当基于基准值进行增量计算：

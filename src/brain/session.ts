@@ -6,6 +6,7 @@ import { SessionContext, computeStringHash, ApiUsage, ContextTokenUsage } from '
 import { LlmDriver } from './driver.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 import { purifyContent } from '../utils/purify.js';
+import { TokenEstimator } from './TokenEstimator.js';
 
 // 导入领域服务
 import { RuleManager } from './services/RuleManager.js';
@@ -181,6 +182,14 @@ export class SessionManager {
   }
 
   /**
+   * 手动触发当前活跃会话的上下文压缩与物理会话轮换
+   * @returns 是否压缩成功
+   */
+  public async compact(): Promise<boolean> {
+    return await this.compactionService.compact();
+  }
+
+  /**
    * 处理单次对话请求的完整生命周期。
    * 采用 ReAct（Reasoning and Acting）架构设计，允许模型进行多次往返的工具请求与状态回溯。
    * 
@@ -212,11 +221,12 @@ export class SessionManager {
         );
 
         // 前置计算当前上下文的预测 Token 预算
-        const estimatedTokens = this.context.estimateSnapshotTokens(snapshotContext);
+        const baseline = this.context.getLastApiUsageBaseline();
+        const estimatedTokens = TokenEstimator.estimateSnapshotTokens(snapshotContext, baseline.usage, baseline.historyLength);
         this.lastEstimatedUsage = estimatedTokens;
 
         // 动态执行 Token 占用水位校验，一旦超出最大窗口的 80% 阈值则触发无延迟截断
-        const threshold = this.context.getCompactionThreshold(this.llmConfig, 0.8);
+        const threshold = TokenEstimator.getCompactionThreshold(this.llmConfig, 0.8);
         if (estimatedTokens.total > threshold) {
           yield {
             type: 'thinking',
