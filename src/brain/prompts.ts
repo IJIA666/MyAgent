@@ -71,7 +71,9 @@ export function buildCompactionSummaryPrompt(
 3. **输出格式约束**：
    - 直接输出 Markdown 文本，不要有任何包裹容器、前言或总结性客套话。
    - 保持语言简练，严格控制在 1000 字符以内。
-   - 使用简体中文编写。`;
+   - 使用简体中文编写。
+
+${IDENTIFIER_PRESERVATION_INSTRUCTION}`;
 
   // 将待压缩的消息历史格式化为易读的文本格式
   const formattedHistory = messagesToCompact.map((msg) => {
@@ -108,4 +110,27 @@ export function buildCompactionSummaryPrompt(
       content: `以下是需要你提炼的交互历史：\n\n${formattedHistory}`
     }
   ];
+}
+
+export const IDENTIFIER_PRESERVATION_INSTRUCTION = `【严格标识符保护协议】
+绝不允许缩写、省略或重构任何长相怪异的 UUID、Hash、IP地址、端口号、URL 以及绝对文件路径！
+必须在摘要中原封不动地完整保留这些“不透明标识符”，违者将导致后续系统调用断链崩溃。`;
+
+export const HANDOFF_INSTRUCTION = `【最高指挥官（LEADER）交接声明】
+你正在接手一份从历史截断恢复的新会话。
+你是整个系统的最高指挥官（LEADER），之前的具体执行工作是由你的子单元（SUBORDINATE）完成的。
+请根据当前的上下文状态继续指挥，切勿重复子单元已经完成的底层体力代码编写工作，你只需给出战略级指令。`;
+
+/**
+ * 本地原生函数生成的确定性兜底摘要（防死锁变砖）。
+ * 当异步总结连续失败、且即将爆仓时，强行构造此静态文本截断历史。
+ */
+export function buildStaticFallbackSummary(
+  lastToolName: string | undefined,
+  lastUserPrompt: string | undefined
+): string {
+  return `[系统强制截断警告：因辅助模型状态异常，历史上下文已被安全模块静态接管]
+最近一次系统调用的核心工具：${lastToolName || '无'}
+最近一次用户下发的指令：${lastUserPrompt || '无'}
+请依据上述残存信息继续响应。`;
 }

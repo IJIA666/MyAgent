@@ -5,9 +5,9 @@ import { AgentTracer } from './tracer.js';
 import { SessionContext, computeStringHash, ApiUsage, ContextTokenUsage } from './context.js';
 import { LlmDriver } from './driver.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname, resolve, relative } from 'path';
-import { buildCompactionSummaryPrompt } from './prompts.js';
+import { buildCompactionSummaryPrompt, buildStaticFallbackSummary } from './prompts.js';
 import { purifyContent } from '../utils/purify.js';
 
 /**
@@ -65,6 +65,10 @@ export class SessionManager {
   private lastEstimatedUsage: ContextTokenUsage | null = null;
   /** 连续上下文压缩失败的次数，用于执行熔断防护 */
   private compactionFailures = 0;
+  /** 上次提炼时的 Token 水平 */
+  private lastSummaryTokenLevel = 0;
+  /** 后台提炼是否在途 */
+  private isCompacting = false;
 
 
   /**
@@ -318,101 +322,74 @@ ${previewEnd}
   }
 
   /**
-   * 执行上下文历史的物理压缩与会话物理轮换。
-   * 通过同步发起无状态 LLM 请求提炼摘要，轮换新会话 ID 并保留核心文件记忆。
+   * 执行无延迟硬截断（Pointer-based Truncation）。
+   * 丢弃中间消息并在头部拼接 session_summary.md。
    * 
    * @returns 压缩轮换是否成功
    */
   public async compact(): Promise<boolean> {
-    const currentSessionId = this.context.getSessionId();
-    const lockFilePath = join(process.cwd(), '.myagent/sessions', `${currentSessionId}.lock`);
-
-    // 1. 物理并发文件锁防护
     try {
-      const lockDir = dirname(lockFilePath);
-      if (!existsSync(lockDir)) {
-        mkdirSync(lockDir, { recursive: true });
+      const fullHistory = this.context.getHistory();
+      if (fullHistory.length <= 4) return false;
+
+      // 指针级截断：保留最后 4 条消息
+      this.context.truncateHistory(4);
+
+      // 如果兜底也没有摘要，则塞一个默认兜底
+      if (!this.context.getCheckpointSummary()) {
+        const fallback = buildStaticFallbackSummary(undefined, undefined);
+        this.context.setCheckpointSummary(fallback);
       }
-      if (existsSync(lockFilePath)) {
-        console.warn(`[SessionManager] 会话 ${currentSessionId} 正在执行压缩，跳过本次调用。`);
-        return false;
-      }
-      writeFileSync(lockFilePath, 'locked', 'utf-8');
-    } catch (lockError) {
-      console.warn(`[SessionManager] 抢占会话压缩锁失败: ${lockError}`);
+
+      await this.context.saveState();
+      return true;
+    } catch (e) {
+      console.warn(`[SessionManager] 上下文硬截断失败: ${e}`);
       return false;
     }
+  }
 
-    try {
-      // 2. 判定连续压缩失败熔断
-      if (this.compactionFailures >= 3) {
-        console.warn(`[SessionManager] 上下文压缩连续失败达 3 次，触发熔断，暂时放弃压缩。`);
-        return false;
-      }
-
-      const fullHistory = this.context.getHistory();
-      if (fullHistory.length <= 2) {
-        // 只有 system 消息和单轮对话，无需压缩
-        return false;
-      }
-
-      // 提取除第 0 条 system 消息以外的所有历史消息进行归纳
-      const messagesToCompact = fullHistory.slice(1);
-
-      // 3. 同步调用 LLM 提炼摘要
-      const summaryPrompt = buildCompactionSummaryPrompt(messagesToCompact);
-      const summary = await this.driver.chat(summaryPrompt);
-
-      if (!summary || summary.trim().length === 0) {
-        throw new Error('LLM 提炼摘要返回空内容');
-      }
-
-      // 4. 物理保存旧 Session 状态（完成归档）
-      await this.context.saveState();
-
-      // 5. 记忆重建：扫描被剔除历史中读写过的核心文件
-      const recentFiles = this.collectReadToolFilePaths(messagesToCompact);
-
-      // 6. 新物理会话初始化
-      const newSessionId = `compact_${Date.now()}`;
-      const newContext = new SessionContext(newSessionId);
-
-      // 继承并更新 System Prompt
-      newContext.updateSystemPrompt(this.cachedGlobalRules || undefined);
-
-      // 设定压缩摘要与最近读写的文件路径
-      newContext.setCheckpointSummary(summary.trim());
-      newContext.setRecentFiles(recentFiles);
-
-      // 切换当前活跃的 Session 实例
-      this.context = newContext;
-      this.tracer = new AgentTracer(process.cwd(), newSessionId);
-
-      // 物理保存一次新会话初始状态
-      await this.context.saveState();
-
-      // 重置失败计数
-      this.compactionFailures = 0;
-      return true;
-
-    } catch (error) {
-      this.compactionFailures++;
-      console.error(`[SessionManager] 压缩提炼失败 (连续失败 ${this.compactionFailures} 次): ${error}`);
-      return false;
-    } finally {
-      // 7. 物理文件锁清理
+  /**
+   * 触发后台异步提炼摘要 (afterTurn 机制)
+   */
+  private async triggerAsyncCompactionIfNeeded(): Promise<void> {
+    if (this.isCompacting) return;
+    const currentTokens = this.lastEstimatedUsage?.total || 0;
+    
+    // 当累积增量 Token 达到 5000 时触发后台提炼任务
+    if (currentTokens - this.lastSummaryTokenLevel >= 5000) {
+      this.isCompacting = true;
       try {
-        if (existsSync(lockFilePath)) {
-          unlinkSync(lockFilePath);
+        const fullHistory = this.context.getHistory();
+        if (fullHistory.length <= 2) return;
+        const messagesToCompact = fullHistory.slice(1);
+        const summaryPrompt = buildCompactionSummaryPrompt(messagesToCompact);
+        
+        const summary = await this.driver.generateSummaryAsync(summaryPrompt);
+        if (summary && summary.trim().length > 0) {
+          this.context.setCheckpointSummary(summary.trim());
+          this.lastSummaryTokenLevel = currentTokens;
+          const recentFiles = this.collectReadToolFilePaths(messagesToCompact);
+          this.context.setRecentFiles(recentFiles);
+          await this.context.saveState();
+          this.compactionFailures = 0;
         }
-      } catch {
-        // 忽略清理锁文件的异常
+      } catch (e) {
+        console.warn(`[SessionManager] 异步提炼失败: ${e}`);
+        this.compactionFailures++;
+        if (this.compactionFailures >= 3) {
+          // 连续 3 次失败，使用兜底摘要
+          const fallback = buildStaticFallbackSummary('后台异步失败', '无响应');
+          this.context.setCheckpointSummary(fallback);
+        }
+      } finally {
+        this.isCompacting = false;
       }
     }
   }
 
   /**
-   * 从待剔除的历史消息中，扫描找出最近大模型读写过的核心代码文件路径。
+   * 从待剔除的历史消息中，反向扫描找出最近大模型读写过的核心代码文件路径（最多 5 个）。
    *
    * @param messages 待扫描的历史消息数组
    * @returns 收集到的核心代码文件路径数组（去重后）
@@ -420,7 +397,9 @@ ${previewEnd}
   private collectReadToolFilePaths(messages: ChatCompletionMessageParam[]): string[] {
     const files = new Set<string>();
 
-    for (const msg of messages) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (files.size >= 5) break;
+      const msg = messages[i];
       const customMsg = msg as {
         tool_calls?: Array<{
           function?: {
@@ -436,6 +415,7 @@ ${previewEnd}
               const args = JSON.parse(tc.function.arguments || '{}');
               if (args && typeof args.targetPath === 'string') {
                 files.add(args.targetPath);
+                if (files.size >= 5) break;
               }
             } catch {
               // 忽略参数反序列化失败的异常
@@ -483,8 +463,8 @@ ${previewEnd}
         const estimatedTokens = this.context.estimateSnapshotTokens(snapshotContext);
         this.lastEstimatedUsage = estimatedTokens;
 
-        // 动态执行 Token 占用水位校验，一旦超出最大窗口的 75% 阈值则静默触发压缩逻辑
-        const threshold = this.context.getCompactionThreshold(this.llmConfig);
+        // 动态执行 Token 占用水位校验，一旦超出最大窗口的 80% 阈值则触发无延迟截断
+        const threshold = this.context.getCompactionThreshold(this.llmConfig, 0.8);
         if (estimatedTokens.total > threshold) {
           yield {
             type: 'thinking',
@@ -691,7 +671,8 @@ ${previewEnd}
               actual_tokens: event.usage
             });
             
-            // 自然终止前，主动触发一次状态静默持久化
+            // 自然终止前，主动触发一次后台提炼检查
+            this.triggerAsyncCompactionIfNeeded().catch(() => {});
             await this.context.saveState();
             // 彻底退出生成器生命周期
             return;
@@ -711,6 +692,7 @@ ${previewEnd}
         if (errorMsg.includes('APIUserAbortError') || errorMsg.includes('abort') || (apiError instanceof Error && apiError.name === 'AbortError')) {
           yield { type: 'error', message: '已收到中断指令，强行终止推理生成。' };
           // 意外终止时同样要落盘截至目前的半截上下文
+          this.triggerAsyncCompactionIfNeeded().catch(() => {});
           await this.context.saveState();
           return;
         }

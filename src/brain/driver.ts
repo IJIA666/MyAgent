@@ -301,4 +301,28 @@ export class LlmDriver {
       this.abortController = null;
     }
   }
+
+  /**
+   * 非阻塞的异步摘要生成方法，挂载至后台任务执行。
+   * 为防止与主线程的流式/同步调用在 `abortController` 上发生竞争，
+   * 此方法内部维护局部的中止控制器。
+   * 
+   * @param messages 提炼提示词上下文
+   * @returns 大模型生成的提炼文本
+   */
+  public async generateSummaryAsync(messages: ChatCompletionMessageParam[]): Promise<string> {
+    const localAbortController = new AbortController();
+    const response = await this.client.chat.completions.create(
+      {
+        model: this.modelName,
+        messages: messages,
+        max_tokens: this.llmConfig.maxTokens,
+        stream: false,
+        ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
+        ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions) : {})
+      },
+      { signal: localAbortController.signal }
+    );
+    return response.choices[0]?.message?.content || '';
+  }
 }

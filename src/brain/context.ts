@@ -296,6 +296,18 @@ export class SessionContext {
   }
 
   /**
+   * 指针级硬截断（无延迟截断）。
+   * 丢弃中间的消息数组，保留 system prompt (index 0) 以及最后的 keepLastN 条消息。
+   * @param keepLastN 保留的最近消息数量
+   */
+  public truncateHistory(keepLastN: number): void {
+    if (this.messageHistory.length <= keepLastN + 1) return;
+    const systemMsg = this.messageHistory[0];
+    const keptMsgs = this.messageHistory.slice(this.messageHistory.length - keepLastN);
+    this.messageHistory = [systemMsg, ...keptMsgs];
+  }
+
+  /**
    * 将当前上下文静默序列化落盘到工作区文件
    */
   public async saveState(): Promise<void> {

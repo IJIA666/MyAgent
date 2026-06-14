@@ -2,6 +2,8 @@ import type { ChatCompletionMessageParam, ChatCompletionUserMessageParam } from 
 import type { ContextAdapter } from './ContextAdapter.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { countTokens } from '../context.js';
+import { HANDOFF_INSTRUCTION } from '../prompts.js';
 
 /**
  * 默认上下文适配器实现类。
@@ -34,15 +36,35 @@ export class DefaultContextAdapter implements ContextAdapter {
     if (summary) {
       headInjections.push({
         role: 'user',
-        content: `<conversation-checkpoint>\n${summary}\n</conversation-checkpoint>`
+        content: `<conversation-checkpoint>\n${summary}\n</conversation-checkpoint>\n\n${HANDOFF_INSTRUCTION}`
       });
     }
+
+    let totalPinnedTokens = 0;
+    const MAX_TOTAL_TOKENS = 25000;
+    const MAX_SINGLE_TOKENS = 5000;
+
     if (recentFiles && recentFiles.length > 0) {
       for (const filePath of recentFiles) {
+        if (totalPinnedTokens >= MAX_TOTAL_TOKENS) break;
         try {
           const absolutePath = join(process.cwd(), filePath);
           if (existsSync(absolutePath)) {
-            const fileContent = readFileSync(absolutePath, 'utf-8');
+            let fileContent = readFileSync(absolutePath, 'utf-8');
+            let fileTokens = countTokens(fileContent);
+
+            if (fileTokens > MAX_SINGLE_TOKENS) {
+              const ratio = MAX_SINGLE_TOKENS / fileTokens;
+              const keepLen = Math.floor(fileContent.length * ratio / 2);
+              fileContent = fileContent.substring(0, keepLen) + '\n...[内容过长，已被 Token 预算系统硬性截断]...\n' + fileContent.substring(fileContent.length - keepLen);
+              fileTokens = MAX_SINGLE_TOKENS;
+            }
+
+            if (totalPinnedTokens + fileTokens > MAX_TOTAL_TOKENS) {
+              continue;
+            }
+
+            totalPinnedTokens += fileTokens;
             headInjections.push({
               role: 'system',
               content: `<transient_file path="${filePath}">\n${fileContent}\n</transient_file>`
