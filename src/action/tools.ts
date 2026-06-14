@@ -48,6 +48,12 @@ export function secureResolvePath(targetPath: string): string {
 }
 
 /**
+ * 记录 readFileTool 读取快照的内存字典，用于实现基于 mtime 的缓存拦截去重机制。
+ * 键为文件绝对路径，值为对应的快照记录。
+ */
+export const readFileState = new Map<string, { lineStart?: number; lineEnd?: number; mtimeMs: number }>();
+
+/**
  * 文件读取适配封装组件。
  * 支持可选的 lineStart 和 lineEnd 参数来实现指定行号区间（从 1 开始计数，闭区间）的精读。
  * 
@@ -65,42 +71,60 @@ export function readFileTool(targetPath: string, lineStart?: number, lineEnd?: n
     throw new Error(`未找到文件："${targetPath}"`);
   }
 
+  const fileStat = statSync(safePath);
   // 实施资产类别约束（规避将目录资源视作标准文件而引发的读取层级瘫痪）
-  if (statSync(safePath).isDirectory()) {
+  if (fileStat.isDirectory()) {
     throw new Error(`路径 "${targetPath}" 是一个目录，不能作为普通文本文件进行读取。`);
+  }
+
+  const currentMtimeMs = fileStat.mtimeMs;
+  const cachedState = readFileState.get(safePath);
+
+  // 校验拦截逻辑：只有完全相同的读取范围且文件未被修改时才拦截
+  if (
+    cachedState &&
+    cachedState.lineStart === lineStart &&
+    cachedState.lineEnd === lineEnd &&
+    cachedState.mtimeMs === currentMtimeMs
+  ) {
+    return "File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.";
   }
 
   // 输出序列化文件流
   const content = readFileSync(safePath, 'utf-8');
 
+  let resultText: string;
   // 若均未指定行范围，则返回全量文件文本
   if (lineStart === undefined && lineEnd === undefined) {
-    return content;
+    resultText = content;
+  } else {
+    // 按行切分，兼容不同平台的换行符
+    const lines = content.split(/\r?\n/);
+    const totalLines = lines.length;
+
+    const start = lineStart !== undefined ? Math.max(1, lineStart) : 1;
+    const end = lineEnd !== undefined ? Math.min(totalLines, lineEnd) : totalLines;
+
+    if (start > totalLines) {
+      resultText = `[提示：起始行 ${start} 超过了文件的总行数 ${totalLines}]`;
+    } else if (end < start) {
+      throw new Error(`结束行 lineEnd (${end}) 必须大于或等于起始行 lineStart (${start})`);
+    } else {
+      // 转换 1-indexed 到 0-indexed 进行切片
+      const sliceStart = start - 1;
+      const sliceEnd = end;
+      const slicedLines = lines.slice(sliceStart, sliceEnd);
+
+      // 组装带有行范围说明的头部前缀
+      const prefix = `[文件：${targetPath} 第 ${start} 至 ${end} 行，总共 ${totalLines} 行]\n`;
+      resultText = prefix + slicedLines.join('\n');
+    }
   }
 
-  // 按行切分，兼容不同平台的换行符
-  const lines = content.split(/\r?\n/);
-  const totalLines = lines.length;
+  // 记录本次成功读取的快照到内存字典
+  readFileState.set(safePath, { lineStart, lineEnd, mtimeMs: currentMtimeMs });
 
-  const start = lineStart !== undefined ? Math.max(1, lineStart) : 1;
-  const end = lineEnd !== undefined ? Math.min(totalLines, lineEnd) : totalLines;
-
-  if (start > totalLines) {
-    return `[提示：起始行 ${start} 超过了文件的总行数 ${totalLines}]`;
-  }
-
-  if (end < start) {
-    throw new Error(`结束行 lineEnd (${end}) 必须大于或等于起始行 lineStart (${start})`);
-  }
-
-  // 转换 1-indexed 到 0-indexed 进行切片
-  const sliceStart = start - 1;
-  const sliceEnd = end;
-  const slicedLines = lines.slice(sliceStart, sliceEnd);
-
-  // 组装带有行范围说明的头部前缀
-  const prefix = `[文件：${targetPath} 第 ${start} 至 ${end} 行，总共 ${totalLines} 行]\n`;
-  return prefix + slicedLines.join('\n');
+  return resultText;
 }
 
 /**
