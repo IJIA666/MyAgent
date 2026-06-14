@@ -1,4 +1,4 @@
-import { toolsDefinition, readFileTool, writeFileTool, listFilesTool, readTempFileByLinesTool } from './tools.js';
+import { toolsDefinition, readFileTool, writeFileTool, listFilesTool, grepSearchTool, globSearchTool } from './tools.js';
 import { loadSkillContent } from '../brain/contextLoader.js';
 
 /**
@@ -50,12 +50,15 @@ export class LocalFileSystemMcpServer {
 
       // 根据请求的工具名称，路由到对应的本地函数
       switch (request.name) {
-        case 'readFile':
+        case 'readFile': {
           // 校验目标路径参数的类型合法性
           if (typeof args.targetPath !== 'string') throw new Error("targetPath 必须是字符串");
+          const lineStart = typeof args.lineStart === 'number' ? args.lineStart : undefined;
+          const lineEnd = typeof args.lineEnd === 'number' ? args.lineEnd : undefined;
           // 调用底层文件读取工具
-          resultText = readFileTool(args.targetPath);
+          resultText = readFileTool(args.targetPath, lineStart, lineEnd);
           break;
+        }
 
         case 'writeFile':
           // 校验必填参数
@@ -86,11 +89,34 @@ export class LocalFileSystemMcpServer {
           break;
         }
 
-        case 'read_temp_file_by_lines': {
-          if (typeof args.targetPath !== 'string') throw new Error("targetPath 必须是字符串");
-          if (typeof args.lineStart !== 'number') throw new Error("lineStart 必须是数字");
-          if (typeof args.lineEnd !== 'number') throw new Error("lineEnd 必须是数字");
-          resultText = readTempFileByLinesTool(args.targetPath, args.lineStart, args.lineEnd);
+
+        case 'grepSearch': {
+          if (typeof args.query !== 'string') throw new Error("query 必须是字符串");
+          if (args.searchPath !== undefined && typeof args.searchPath !== 'string') {
+            throw new Error("searchPath 必须是字符串");
+          }
+          if (args.isRegex !== undefined && typeof args.isRegex !== 'boolean') {
+            throw new Error("isRegex 必须是布尔值");
+          }
+          if (args.includes !== undefined && typeof args.includes !== 'string') {
+            throw new Error("includes 必须是字符串");
+          }
+          if (args.countOnly !== undefined && typeof args.countOnly !== 'boolean') {
+            throw new Error("countOnly 必须是布尔值");
+          }
+          resultText = grepSearchTool(
+            args.query,
+            args.searchPath as string | undefined,
+            args.isRegex as boolean | undefined,
+            args.includes as string | undefined,
+            args.countOnly as boolean | undefined
+          );
+          break;
+        }
+
+        case 'globSearch': {
+          if (typeof args.pattern !== 'string') throw new Error("pattern 必须是字符串");
+          resultText = globSearchTool(args.pattern);
           break;
         }
 

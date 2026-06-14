@@ -6,7 +6,7 @@ import { SessionContext, computeStringHash, ApiUsage, ContextTokenUsage } from '
 import { LlmDriver } from './driver.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve, relative } from 'path';
 import { buildCompactionSummaryPrompt } from './prompts.js';
 import { purifyContent } from '../utils/purify.js';
 
@@ -243,7 +243,78 @@ ${previewStart}
 ...
 [后 1000 字符预览]：
 ${previewEnd}
-[提示：若要调阅上述完整或指定行范围的内容，请调用 "read_temp_file_by_lines" 工具，传入 "targetPath": "${relativePath}" 并指定起始和结束行。]`;
+[提示：若要调阅上述完整或指定行范围的内容，请调用 "readFile" 工具，传入 "targetPath": "${relativePath}" 并指定 lineStart 和 lineEnd。]`;
+  }
+
+  /**
+   * JIT 伴生规范注入处理器。
+   * 沿着目标文件的目录树递归向上寻路，查找 README.md 或 .rules 文件。
+   * 遵循以下规则防洪防爆：
+   * 1. 排除根目录寻路（寻路截止于根目录的直接子级，current !== root）。
+   * 2. 全会话历史去重（解析 messages 排除曾经注入过的规则文件路径）。
+   * 3. 单轮交互内去重（Turn Deduplication，Set 拦截）。
+   * 
+   * @param targetPath 被读取的目标文件路径
+   * @param injectedJitPaths 当前交互轮次中已注入的规范文件相对路径集合
+   * @returns 组装好的 <system-reminder> 提示词文本，若无需注入则返回空字符串
+   */
+  private resolveJitContext(targetPath: string, injectedJitPaths: Set<string>): string {
+    const root = process.cwd();
+    const targetAbs = resolve(root, targetPath);
+    let current = dirname(targetAbs);
+
+    // 收集历史消息中已经成功加载过的 JIT 规则（全局去重）
+    const alreadyInjectedGlobally = new Set<string>();
+    const history = this.context.getHistory();
+    for (const msg of history) {
+      if (typeof msg.content === 'string') {
+        const regex = /\[JIT 规则已加载: ([^\]]+)\]/g;
+        let match;
+        while ((match = regex.exec(msg.content)) !== null) {
+          alreadyInjectedGlobally.add(match[1]);
+        }
+      }
+    }
+
+    const ruleFiles = ['README.md', '.rules'];
+    let JITText = '';
+
+    // 递归向上遍历，直至根目录前级（排除 root 根目录本身）
+    while (current.startsWith(root) && current !== root) {
+      let foundRuleFile: string | null = null;
+      for (const ruleFile of ruleFiles) {
+        const potentialPath = resolve(current, ruleFile);
+        if (existsSync(potentialPath)) {
+          foundRuleFile = potentialPath;
+          break;
+        }
+      }
+
+      if (foundRuleFile) {
+        const relRulePath = relative(root, foundRuleFile).replace(/\\/g, '/');
+
+        // 执行双重去重（全局历史与当前 Turn）
+        if (!alreadyInjectedGlobally.has(relRulePath) && !injectedJitPaths.has(relRulePath)) {
+          try {
+            const ruleContent = readFileSync(foundRuleFile, 'utf-8');
+            if (ruleContent.trim()) {
+              JITText += `\n\n---\n[JIT 规则已加载: ${relRulePath}]\n<system-reminder>\n${ruleContent}\n</system-reminder>`;
+              injectedJitPaths.add(relRulePath);
+            }
+          } catch {
+            // 忽略异常，安全过滤
+          }
+        }
+        // 第一 project-level 优先级匹配成功后，跳出不再向上追溯（对齐 Opencode 机制）
+        break;
+      }
+
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+
+    return JITText;
   }
 
   /**
@@ -387,6 +458,10 @@ ${previewEnd}
   public async *chat(transientSkillContent?: string): AsyncGenerator<AgentEvent, void, unknown> {
     // 初始化重试与工具循环计数器，用于监控防范模型陷入死循环
     let iteration = 0;
+    // 用于 Loop Prevention 的工具调用计数器
+    const toolCallCounter = new Map<string, number>();
+    // 用于当前交互（单轮）JIT 伴生注入的路径记录
+    const injectedJitPaths = new Set<string>();
 
     // 构建带有硬上限的安全递归闭环
     while (iteration < this.maxIterations) {
@@ -506,6 +581,14 @@ ${previewEnd}
                 yield { type: 'error', message: `解析工具参数失败：${errorMsg}`, cause: parseError };
               }
 
+              // 1. Loop Prevention 熔断检测
+              const argsFingerprint = `${functionName}:${toolCall.function.arguments}`;
+              const callCount = toolCallCounter.get(argsFingerprint) || 0;
+              if (callCount >= 4) {
+                throw new Error(`[HARD BLOCK] 工具 "${functionName}" 携带完全一致的参数连续调用达 5 次，系统判定其已陷入死循环，强行触发熔断打断！`);
+              }
+              toolCallCounter.set(argsFingerprint, callCount + 1);
+
               // 对外抛出工具开始执行前的挂起信号，通知 UI 层切换状态
               yield { type: 'tool_call_start', functionName, functionArgs };
 
@@ -514,6 +597,25 @@ ${previewEnd}
               try {
                 // 统一通过中央工具注册表进行物理/虚拟工具的函数路由分发
                 const mcpResult = await this.toolRegistry.callTool(functionName, functionArgs);
+
+                // 2. Gated JIT Context 注入拦截（针对本地的 readFile 工具且执行成功时）
+                const res = mcpResult as { content?: Array<{ type: string; text?: string }>; isError?: boolean };
+                if (
+                  functionName === 'readFile' &&
+                  res &&
+                  Array.isArray(res.content) &&
+                  res.content.length > 0 &&
+                  !res.isError &&
+                  typeof functionArgs.targetPath === 'string'
+                ) {
+                  const firstContent = res.content[0];
+                  if (firstContent && typeof firstContent.text === 'string') {
+                    const jitText = this.resolveJitContext(functionArgs.targetPath, injectedJitPaths);
+                    if (jitText) {
+                      firstContent.text += jitText;
+                    }
+                  }
+                }
 
                 // 将执行得到的原始结果转为字符串存储
                 const rawResult = JSON.stringify(mcpResult);
