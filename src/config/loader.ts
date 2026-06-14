@@ -12,7 +12,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { AppConfig, McpConfig } from './types.js';
 import { getModelConfig } from './models.js';
 import { interpolateEnvVars } from '../utils/env.js';
-import { theme } from '../interface/theme.js';
+import { theme } from '../utils/theme.js';
 
 /**
  * 检查配置文件是否存在，缺失时从 .example 模板自动复制。

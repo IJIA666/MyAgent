@@ -2,7 +2,7 @@ import { SessionManager } from './brain/index.js';
 import { McpToolManager, initWorkspace } from './action/index.js';
 import { loadConfig } from './config/index.js';
 import { startCli } from './interface/index.js';
-import { theme } from './interface/theme.js';
+import { theme } from './utils/theme.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。

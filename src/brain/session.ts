@@ -7,6 +7,7 @@ import { LlmDriver } from './driver.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 import { purifyContent } from '../utils/purify.js';
 import { TokenEstimator } from './TokenEstimator.js';
+import { loadSkillContent } from './contextLoader.js';
 
 // 导入领域服务
 import { RuleManager } from './services/RuleManager.js';
@@ -81,7 +82,9 @@ export class SessionManager {
   constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager, contextAdapter?: ContextAdapter) {
     this.llmConfig = llmConfig;
     this.mcpManager = mcpManager;
-    this.toolRegistry = new ToolRegistry(mcpManager);
+    this.toolRegistry = new ToolRegistry(mcpManager, {
+      loadSkill: (name) => loadSkillContent(name)
+    });
     this.context = new SessionContext();
     this.driver = new LlmDriver(llmConfig);
     this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());

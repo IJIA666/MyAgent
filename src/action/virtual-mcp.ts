@@ -1,5 +1,5 @@
 import { toolsDefinition, readFileTool, writeFileTool, listFilesTool, grepSearchTool, globSearchTool } from './tools.js';
-import { loadSkillContent } from '../brain/contextLoader.js';
+
 
 /**
  * 虚拟 MCP 调用请求接口定义
@@ -22,11 +22,20 @@ export interface CallToolResult {
   isError?: boolean; // 标识此次执行是否遭遇错误
 }
 
+export interface LocalServerOptions {
+  loadSkill?: (name: string) => string | null;
+}
+
 /**
  * 虚拟 MCP Server，负责在进程内提供文件系统的 MCP 标准操作。
  * 实现了标准的 MCP callTool 和工具声明接口，但通过直接内存调用绕开了实际的子进程通信开销。
  */
 export class LocalFileSystemMcpServer {
+  private loadSkill?: (name: string) => string | null;
+
+  constructor(options?: LocalServerOptions) {
+    this.loadSkill = options?.loadSkill;
+  }
   /**
    * 获取此虚拟 Server 暴露的工具列表。
    * 直接复用 tools.ts 中原本的 toolsDefinition。
@@ -81,7 +90,10 @@ export class LocalFileSystemMcpServer {
 
         case 'load_skill': {
           if (typeof args.name !== 'string') throw new Error("name 必须是字符串");
-          const body = loadSkillContent(args.name);
+          if (!this.loadSkill) {
+            throw new Error("当前系统未配置 loadSkill 解析器，无法执行 load_skill。");
+          }
+          const body = this.loadSkill(args.name);
           if (!body) {
             throw new Error(`未找到名为 "${args.name}" 的技能，请检查名称是否在 <available_skills> 中。`);
           }

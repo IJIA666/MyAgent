@@ -1,5 +1,5 @@
 import { ICommand, CommandContext } from './base.js';
-import { theme } from '../theme.js';
+import { theme } from '../../utils/theme.js';
 import * as p from '@clack/prompts';
 import { getModelConfig, BUILTIN_MODELS } from '../../config/index.js';
 import { updateEnvVariable } from '../../utils/env.js';

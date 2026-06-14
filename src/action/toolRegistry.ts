@@ -18,12 +18,13 @@ export class ToolRegistry {
    * 初始化工具注册表。
    *
    * @param mcpManager 外部的 MCP 工具管理器（可选）
+   * @param options 本地虚拟服务器的附加配置（可选）
    */
-  constructor(mcpManager?: McpToolManager) {
+  constructor(mcpManager?: McpToolManager, options?: { loadSkill?: (name: string) => string | null }) {
     // 注入可选的外部 MCP 工具管理器
     this.mcpManager = mcpManager;
     // 实例化本地文件系统的虚拟 MCP 服务
-    this.localMcpServer = new LocalFileSystemMcpServer();
+    this.localMcpServer = new LocalFileSystemMcpServer(options);
   }
 
   /**

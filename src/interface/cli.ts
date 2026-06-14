@@ -8,7 +8,7 @@ import { SessionManager } from '../brain/index.js';
 import { dispatchCommand } from './command.js';
 import { loadSkills } from '../brain/contextLoader.js';
 
-import { theme } from './theme.js';
+import { theme } from '../utils/theme.js';
 
 async function showInteractiveMenu(): Promise<string | null> {
   console.log();

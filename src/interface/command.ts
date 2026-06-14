@@ -11,7 +11,7 @@ import {
   ToolCommand, 
   ModelCommand 
 } from './commands/index.js';
-import { theme } from './theme.js';
+import { theme } from '../utils/theme.js';
 
 export { CommandContext, CommandResult };
 

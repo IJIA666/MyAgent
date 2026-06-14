@@ -1,5 +1,5 @@
 import { ICommand } from './base.js';
-import { theme } from '../theme.js';
+import { theme } from '../../utils/theme.js';
 
 export class HelpCommand implements ICommand {
   name = 'help';

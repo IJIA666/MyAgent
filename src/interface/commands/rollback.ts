@@ -1,5 +1,5 @@
 import { ICommand, CommandContext } from './base.js';
-import { theme } from '../theme.js';
+import { theme } from '../../utils/theme.js';
 import { redrawHistory } from '../cli.js';
 
 export class RollbackCommand implements ICommand {
