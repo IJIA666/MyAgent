@@ -67,7 +67,9 @@ export const BUILTIN_MODELS: Record<string, ModelProfile> = {
 
 /**
  * 解析各种形式的上下文窗口大小配置（支持数字或类似 1m、128k 的单位缩写形式）。
- * @param val 配置字符串
+ *
+ * @param val - 配置字符串
+ * @returns 解析出的上下文窗口数字大小
  */
 export function parseContextWindow(val: string): number {
   const clean = val.trim().toLowerCase();
@@ -86,7 +88,9 @@ export function parseContextWindow(val: string): number {
 
 /**
  * 根据模型 ID 动态构建大语言模型连接配置，支持通过环境变量进行高优先级覆写。
- * @param id 模型在 BUILTIN_MODELS 中的 ID
+ *
+ * @param id - 模型在 BUILTIN_MODELS 中的 ID
+ * @returns 构建完成的大语言模型连接配置对象
  */
 export function getModelConfig(id: string): LlmConfig {
   const profile = BUILTIN_MODELS[id];

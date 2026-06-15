@@ -8,6 +8,11 @@ import { SessionContext } from '../context.js';
  * 2. 对需要上下文陪伴响应的代码文件进行 JIT（Just-In-Time）规则注入。
  */
 export class ToolDispatcher {
+  /**
+   * 实例初始化。
+   *
+   * @param context - 会话上下文管理实例
+   */
   constructor(private context: SessionContext) {}
 
   /**
@@ -15,8 +20,8 @@ export class ToolDispatcher {
    * 如果输出长度超过 8000 字符，执行落盘到工作区内的 .myagent/temp/ 目录，
    * 并将内容替换为带有首尾预览及分页读取引导的占位符。
    * 
-   * @param functionName 被调用的工具名称
-   * @param toolResult 原始工具输出结果
+   * @param functionName - 被调用的工具名称
+   * @param toolResult - 原始工具输出结果
    * @returns 过滤或拦截后的工具输出结果
    */
   public handleLargeToolOutput(functionName: string, toolResult: string): string {
@@ -64,9 +69,9 @@ ${previewEnd}
    * 2. 全会话历史去重（解析 messages 排除曾经注入过的规则文件路径）。
    * 3. 单轮交互内去重（Turn Deduplication，Set 拦截）。
    * 
-   * @param targetPath 被读取的目标文件路径
-   * @param injectedJitPaths 当前交互轮次中已注入的规范文件相对路径集合
-   * @returns 组装好的 <system-reminder> 提示词文本，若无需注入则返回空字符串
+   * @param targetPath - 被读取的目标文件路径
+   * @param injectedJitPaths - 当前交互轮次中已注入的规范文件相对路径集合
+   * @returns 组装好的 `<system-reminder>` 提示词文本，若无需注入则返回空字符串
    */
   public resolveJitContext(targetPath: string, injectedJitPaths: Set<string>): string {
     const root = process.cwd();

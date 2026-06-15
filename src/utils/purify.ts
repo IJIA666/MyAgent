@@ -5,7 +5,7 @@
 /**
  * 净化文本内容，将庞大的局部规则和技能全文替换为精简的占位符标记，用于日志记录和会话审计。
  * 
- * @param content 原始的包含 XML 注入的文本内容
+ * @param content - 原始的包含 XML 注入的文本内容
  * @returns 替换后的净化文本
  */
 export function purifyContent(content: string): string {

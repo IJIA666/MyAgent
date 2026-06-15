@@ -15,7 +15,8 @@ export { renderContentWithWidgets };
 
 /**
  * 兼容原有的 redrawHistory 接口，接受 SessionManager 并将其内部数据转发给无状态渲染工具。
- * @param session 会话管理器实例
+ *
+ * @param session - 会话管理器实例
  */
 export function redrawHistory(session: SessionManager): void {
   redrawHistoryImpl(session.getHistory(), session.getModelName());
@@ -24,7 +25,8 @@ export function redrawHistory(session: SessionManager): void {
 /**
  * 初始化并启动基于 readline 的 REPL 交互式解释器。
  * 委托给 CliFacade 执行。
- * @param session 已在系统启动层装配完毕的会话管理器实例
+ *
+ * @param session - 已在系统启动层装配完毕的会话管理器实例
  */
 export function startCli(session: SessionManager): void {
   const facade = new CliFacade(session);

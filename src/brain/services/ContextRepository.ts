@@ -5,10 +5,17 @@ import { SessionContext } from '../context.js';
  * 负责会话状态的物理落盘生命周期与上下文回溯。
  */
 export class ContextRepository {
+  /**
+   * 实例初始化。
+   *
+   * @param context - 会话上下文管理实例
+   */
   constructor(private context: SessionContext) {}
 
   /**
    * 将当前上下文静默序列化落盘到工作区文件。
+   *
+   * @returns 无返回值的 Promise
    */
   public async saveState(): Promise<void> {
     await this.context.saveState();
@@ -16,7 +23,8 @@ export class ContextRepository {
 
   /**
    * 恢复指定的会话持久化数据覆盖当前内存上下文。
-   * @param targetSessionId 需要恢复的目标会话 ID
+   *
+   * @param targetSessionId - 需要恢复加载的目标会话 ID
    * @returns 成功返回 true，否则返回 false
    */
   public async loadState(targetSessionId: string): Promise<boolean> {
@@ -25,7 +33,8 @@ export class ContextRepository {
 
   /**
    * 执行上下文记忆截断（Context Rollback），安全丢弃最近数轮对话。
-   * @param turns 需要丢弃的交互轮次
+   *
+   * @param turns - 需要丢弃的交互轮次
    * @returns 返回被弹栈丢弃的历史消息数组（按原本对话顺序排列）
    */
   public rollback(turns: number): ChatCompletionMessageParam[] {

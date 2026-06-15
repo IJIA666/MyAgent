@@ -8,7 +8,10 @@ export { ApiUsage, ContextTokenUsage } from './TokenEstimator.js';
 import { ApiUsage } from './TokenEstimator.js';
 
 /**
- * 计算字符串的 MD5 哈希
+ * 计算字符串的 MD5 哈希。
+ *
+ * @param text - 待计算哈希的原始文本
+ * @returns 32 位的十六进制 MD5 哈希字符串
  */
 export function computeStringHash(text: string): string {
   return createHash('md5').update(text).digest('hex');
@@ -33,7 +36,8 @@ export class SessionContext {
 
   /**
    * 实例初始化。
-   * @param sessionId 可选的会话标识，若不传则自动按当前时间戳生成。
+   *
+   * @param sessionId - 可选的会话标识，若不传则自动按当前时间戳生成
    */
   constructor(sessionId?: string) {
     // 如果没有传入 sessionId，则使用当前时间戳作为默认会话标识
@@ -47,12 +51,12 @@ export class SessionContext {
       content: systemPrompt
     });
   }
-  
+
   /**
    * 重新组装并更新会话消息历史中的首条系统提示词（System Prompt）。
    * 此方法保持消息历史中的第 0 个系统消息节点，直接覆写其 content，常用于规则热重载。
    *
-   * @param customGlobalRules 可选的全局规则内容缓存，用于覆盖并锁定
+   * @param customGlobalRules - 可选的全局规则内容缓存，用于覆盖并锁定
    */
   public updateSystemPrompt(customGlobalRules?: string): void {
     const systemPrompt = buildSystemPrompt(customGlobalRules);
@@ -82,7 +86,7 @@ export class SessionContext {
   /**
    * 设定当前物理会话所关联的 Checkpoint 提炼摘要。
    *
-   * @param summary 提炼的摘要内容
+   * @param summary - 提炼的摘要内容
    */
   public setCheckpointSummary(summary: string | null): void {
     this.checkpointSummary = summary;
@@ -100,14 +104,16 @@ export class SessionContext {
   /**
    * 设定最近读写的文件记忆列表。
    *
-   * @param files 最近访问的文件相对路径列表
+   * @param files - 最近访问的文件相对路径列表
    */
   public setRecentFiles(files: string[]): void {
     this.recentFiles = files;
   }
 
   /**
-   * 获取当前 System Prompt 的哈希值（用于缓存抖动监测）
+   * 获取当前 System Prompt 的哈希值（用于缓存抖动监测）。
+   *
+   * @returns 系统提示词的 MD5 哈希字符串，若不存在则返回空字符串
    */
   public getSystemPromptHash(): string {
     if (this.messageHistory.length > 0 && this.messageHistory[0].role === 'system') {
@@ -118,7 +124,10 @@ export class SessionContext {
   }
 
   /**
-   * 更新最近一次大模型的 API 结算 Usage
+   * 更新最近一次大模型的 API 结算 Usage。
+   *
+   * @param usage - 最近一次 API 结算的真实用量
+   * @param historyLength - 上次调用时的历史数组长度
    */
   public updateLastApiUsage(usage: ApiUsage, historyLength: number): void {
     this.lastApiUsage = usage;
@@ -126,15 +135,19 @@ export class SessionContext {
   }
 
   /**
-   * 获取最近一次 API 的 Usage 基准值
+   * 获取最近一次 API 的 Usage 基准值。
+   *
+   * @returns 最近一次 API 结算的真实用量，若无则返回 null
    */
   public getLastApiUsage(): ApiUsage | null {
     return this.lastApiUsage;
   }
 
   /**
-   * 获取最近一轮的真实 API Usage 数据与历史数组长度基准
-   * （此方法专供 TokenEstimator 在增量计算时获取基准）
+   * 获取最近一轮的真实 API Usage 数据与历史数组长度基准。
+   * 此方法专供 TokenEstimator 在增量计算时获取基准。
+   *
+   * @returns 包含上次用量与历史长度的基准对象
    */
   public getLastApiUsageBaseline(): { usage: ApiUsage | null; historyLength: number } {
     return {
@@ -153,9 +166,9 @@ export class SessionContext {
   }
 
   /**
-   * 增加一条上下文消息
+   * 增加一条上下文消息。
    *
-   * @param message 待追加的标准模型消息载体对象
+   * @param message - 待追加的标准模型消息载体对象
    */
   public addMessage(message: ChatCompletionMessageParam): void {
     // 将新消息追加到历史记录末尾
@@ -175,7 +188,8 @@ export class SessionContext {
   /**
    * 指针级硬截断（无延迟截断）。
    * 丢弃中间的消息数组，保留 system prompt (index 0) 以及最后的 keepLastN 条消息。
-   * @param keepLastN 保留的最近消息数量
+   *
+   * @param keepLastN - 保留的最近消息数量
    */
   public truncateHistory(keepLastN: number): void {
     if (this.messageHistory.length <= keepLastN + 1) return;
@@ -185,7 +199,9 @@ export class SessionContext {
   }
 
   /**
-   * 将当前上下文静默序列化落盘到工作区文件
+   * 将当前上下文静默序列化落盘到工作区文件。
+   *
+   * @returns 无返回值的 Promise
    */
   public async saveState(): Promise<void> {
     try {
@@ -209,10 +225,10 @@ export class SessionContext {
   }
 
   /**
-   * 恢复指定的会话持久化数据覆盖当前内存上下文
+   * 恢复指定的会话持久化数据覆盖当前内存上下文。
    *
-   * @param targetSessionId 需要恢复加载的目标会话标识符
-   * @returns 布尔值。如果成功读取文件并解析恢复返回 true，文件不存在或解析失败返回 false
+   * @param targetSessionId - 需要恢复加载的目标会话标识符
+   * @returns 如果成功读取文件并解析恢复返回 true，文件不存在或解析失败返回 false
    */
   public async loadState(targetSessionId: string): Promise<boolean> {
     try {

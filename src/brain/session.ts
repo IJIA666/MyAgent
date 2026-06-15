@@ -51,9 +51,10 @@ export class SessionManager {
 
   /**
    * 实例初始化。
-   * @param llmConfig 大语言模型连接配置
-   * @param mcpManager 可选的 MCP 客户端管理器，用于挂载外部扩展能力
-   * @param contextAdapter 可选的上下文适配器，若未传则默认使用 DefaultContextAdapter
+   *
+   * @param llmConfig - 大语言模型连接配置
+   * @param mcpManager - 可选的 MCP 客户端管理器，用于挂载外部扩展能力
+   * @param contextAdapter - 可选的上下文适配器，若未传则默认使用 DefaultContextAdapter
    */
   constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager, contextAdapter?: ContextAdapter) {
     this.llmConfig = llmConfig;
@@ -88,7 +89,8 @@ export class SessionManager {
 
   /**
    * 将新到达的用户指令同步到会话状态链。
-   * @param content 用户侧的原始输入数据
+   *
+   * @param content - 用户侧的原始输入数据
    */
   public addUserMessage(content: string): void {
     this.context.addMessage({ role: 'user', content });
@@ -96,6 +98,7 @@ export class SessionManager {
 
   /**
    * 输出当前关联的上下文状态数据。
+   *
    * @returns 包含对话历史的消息参数数组
    */
   public getHistory(): ChatCompletionMessageParam[] {
@@ -104,6 +107,7 @@ export class SessionManager {
 
   /**
    * 获取当前激活的模型名称。
+   *
    * @returns 当前会话绑定的模型名称字符串
    */
   public getModelName(): string {
@@ -112,6 +116,7 @@ export class SessionManager {
 
   /**
    * 获取当前会话唯一标识。
+   *
    * @returns 会话 ID 字符串
    */
   public getSessionId(): string {
@@ -120,6 +125,8 @@ export class SessionManager {
 
   /**
    * 将当前上下文静默序列化落盘到工作区文件。
+   *
+   * @returns 无返回值的 Promise
    */
   public async saveState(): Promise<void> {
     await this.contextRepo.saveState();
@@ -127,7 +134,8 @@ export class SessionManager {
 
   /**
    * 恢复指定的会话持久化数据覆盖当前内存上下文。
-   * @param targetSessionId 需要恢复的目标会话 ID
+   *
+   * @param targetSessionId - 需要恢复加载的目标会话 ID
    * @returns 成功返回 true，否则返回 false
    */
   public async loadState(targetSessionId: string): Promise<boolean> {
@@ -141,8 +149,9 @@ export class SessionManager {
 
   /**
    * 动态切换当前会话的大模型配置。
-   * @param newConfig 新的大语言模型配置
-   * @param options 额外的运行时交互配置选项
+   *
+   * @param newConfig - 新的大语言模型配置
+   * @param options - 额外的运行时交互配置选项
    */
   public switchModel(newConfig: LlmConfig, options?: Record<string, unknown>): void {
     this.llmConfig = newConfig;
@@ -158,7 +167,8 @@ export class SessionManager {
 
   /**
    * 执行上下文记忆截断（Context Rollback），安全丢弃最近数轮对话。
-   * @param turns 需要丢弃的交互轮次
+   *
+   * @param turns - 需要丢弃的交互轮次
    * @returns 返回被弹栈丢弃的历史消息数组（按原本对话顺序排列）
    */
   public rollback(turns: number): ChatCompletionMessageParam[] {
@@ -174,7 +184,8 @@ export class SessionManager {
   }
 
   /**
-   * 手动触发当前活跃会话的上下文压缩与物理会话轮换
+   * 手动触发当前活跃会话的上下文压缩与物理会话轮换。
+   *
    * @returns 是否压缩成功
    */
   public async compact(): Promise<boolean> {
@@ -185,29 +196,35 @@ export class SessionManager {
    * 处理单次对话请求的完整生命周期。
    * 委托给底层的 AgentLoop 执行器进行推理。
    * 
-   * @param transientSkillContent 可选。当前请求独占的临时技能规范内容。
-   * @returns 抛出 AgentEvent 流，由外部消费者负责呈现。
+   * @param transientSkillContent - 可选。当前请求独占的临时技能规范内容
+   * @returns 抛出 AgentEvent 流，由外部消费者负责呈现
    */
   public async *chat(transientSkillContent?: string): AsyncGenerator<AgentEvent, void, unknown> {
     yield* this.agentLoop.chat(transientSkillContent, this.tracer, this.llmConfig);
   }
 
   /**
-   * 获取最近一次大模型的 API 结算 Usage
+   * 获取最近一次大模型的 API 结算 Usage。
+   *
+   * @returns 最近一次 API 结算的真实用量，若无则返回 null
    */
   public getLastApiUsage(): ApiUsage | null {
     return this.context.getLastApiUsage();
   }
 
   /**
-   * 获取最近一轮大模型请求前的 Token 估算明细
+   * 获取最近一轮大模型请求前的 Token 估算明细。
+   *
+   * @returns Token 估算明细，若无则返回 null
    */
   public getLastEstimatedUsage(): ContextTokenUsage | null {
     return this.agentLoop.getLastEstimatedUsage();
   }
 
   /**
-   * 获取当前 System Prompt 的哈希值
+   * 获取当前 System Prompt 的哈希值。
+   *
+   * @returns 缓存的 System Prompt 哈希值字符串
    */
   public getSystemPromptHash(): string {
     return this.agentLoop.getSystemPromptHash();

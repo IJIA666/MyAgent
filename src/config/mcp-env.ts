@@ -52,7 +52,7 @@ export const SAFE_ENV_WHITELIST: ReadonlyArray<string> = [
  *
  * 配置优先级：白名单系统变量 < Python 编码默认值 < 用户自定义 env
  *
- * @param userEnv 用户在 mcp_config.json 中配置的自定义环境变量
+ * @param userEnv - 用户在 mcp_config.json 中配置的自定义环境变量
  * @returns 适用于 StdioClientTransport 的安全环境变量对象
  */
 export function buildSubprocessEnv(userEnv?: Record<string, string>): Record<string, string> {

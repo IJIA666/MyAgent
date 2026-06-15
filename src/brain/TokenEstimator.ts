@@ -5,7 +5,10 @@ import { LlmConfig } from '../config/types.js';
 const encoder = getEncoding('cl100k_base');
 
 /**
- * 计算文本的 Token 数量
+ * 计算文本的 Token 数量。
+ *
+ * @param text - 待计算 Token 数量的原始文本
+ * @returns 计算得到的 Token 数量
  */
 export function countTokens(text: string): number {
   if (!text) return 0;
@@ -13,7 +16,10 @@ export function countTokens(text: string): number {
 }
 
 /**
- * 估算单个 Chat Message 的 Token 数量
+ * 估算单个 Chat Message 的 Token 数量。
+ *
+ * @param message - 标准模型消息载体对象
+ * @returns 估算的 Token 数量
  */
 export function estimateMessageTokens(message: ChatCompletionMessageParam): number {
   let tokens = 4; // 消息框架基础开销
@@ -68,15 +74,15 @@ export interface ContextTokenUsage {
 }
 
 /**
- * Token 消耗预估与水位计算服务
+ * Token 消耗预估与水位计算服务。
  */
 export class TokenEstimator {
   /**
-   * 基于“锚点基准 + 增量计算”来预测当前拼装后的完整上下文 Token
+   * 基于“锚点基准 + 增量计算”来预测当前拼装后的完整上下文 Token。
    * 
-   * @param snapshotContext 组装完成的待发送消息数组
-   * @param lastApiUsage 上次 API 结算的真实用量
-   * @param lastApiHistoryLength 上次调用时的历史数组长度
+   * @param snapshotContext - 组装完成的待发送消息数组
+   * @param lastApiUsage - 上次 API 结算的真实用量，可为 null
+   * @param lastApiHistoryLength - 上次调用时的历史数组长度
    * @returns 预测的各分块 Token 数量
    */
   public static estimateSnapshotTokens(
@@ -116,16 +122,16 @@ export class TokenEstimator {
     if (lastApiUsage) {
       const anchorBase = lastApiUsage.input_tokens + lastApiUsage.output_tokens;
       let incrementalTokens = 0;
-      
+
       const lastNonSystemCount = Math.max(0, lastApiHistoryLength - 1);
-      
+
       if (nonSystemMessages.length > lastNonSystemCount) {
         const incrementalMessages = nonSystemMessages.slice(lastNonSystemCount);
         for (const msg of incrementalMessages) {
           incrementalTokens += estimateMessageTokens(msg);
         }
       }
-      
+
       // 历史 Token = 锚点 Base - 当前 System Tokens + 增量 Tokens
       historyTokens += Math.max(0, anchorBase - systemTokens + incrementalTokens);
     } else {
@@ -149,8 +155,8 @@ export class TokenEstimator {
   /**
    * 基于激活模型的连接配置及其关联的最大上下文窗口，计算触发压缩的 Token 阈值。
    *
-   * @param config 激活的模型连接配置或激活的模型名称
-   * @param ratio 触发压缩的水位线比例，默认 0.75
+   * @param config - 激活的模型连接配置或激活的模型名称
+   * @param ratio - 触发压缩的水位线比例，默认 0.75
    * @returns 触发压缩的 Token 数量阈值
    */
   public static getCompactionThreshold(config: LlmConfig | string, ratio: number = 0.75): number {

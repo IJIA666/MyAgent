@@ -58,8 +58,10 @@ export class AgentTracer {
   private traceFile: string;
 
   /**
-   * @param workspaceDir 当前授权工作区的根目录，用于拼接 .myagent 存放路径
-   * @param sessionId 本次会话的唯一标识，防止覆盖历史日志
+   * 实例初始化。
+   *
+   * @param workspaceDir - 当前授权工作区的根目录，用于拼接 .myagent 存放路径
+   * @param sessionId - 本次会话的唯一标识，防止覆盖历史日志
    */
   constructor(workspaceDir: string, sessionId: string) {
     const traceDir = resolve(workspaceDir, '.myagent', 'traces');
@@ -72,7 +74,8 @@ export class AgentTracer {
 
   /**
    * 将一个完整的交互轮次快照写入持久化存储。
-   * @param record 结构化的快照记录对象
+   *
+   * @param record - 结构化的快照记录对象
    */
   public logInteraction(record: InteractionRecord): void {
     try {

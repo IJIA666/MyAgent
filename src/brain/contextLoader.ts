@@ -1,11 +1,11 @@
+/**
+ * 核心上下文加载器模块。
+ * 负责从物理磁盘中动态加载并缓存全局规则、项目局部规则和扩展沙盒技能。
+ */
+
 import { existsSync, readFileSync, readdirSync, lstatSync, watch } from 'fs';
 import { join } from 'path';
 import matter from 'gray-matter';
-
-/**
- * 核心上下文加载器
- * 负责从文件系统中动态加载全局规则、局部规则和扩展技能。
- */
 
 // 开发环境硬编码路径，用于获取各项规则和技能
 const DEV_GLOBAL_RULES_PATH = 'D:\\Projects\\MyAgent\\.agent\\global_rules.md';
@@ -13,7 +13,7 @@ const DEV_LOCAL_RULES_PATH = 'D:\\Projects\\MyAgent\\.agent\\rules\\guize.md';
 const DEV_SKILLS_DIR = 'D:\\Projects\\MyAgent\\.agent\\skills';
 
 /**
- * 加载全局规则 (Global Rules)
+ * 加载全局规则 (Global Rules)。
  * 
  * @returns 成功读取时返回全局规则内容的字符串，否则返回空字符串
  */
@@ -29,7 +29,7 @@ export function loadGlobalRules(): string {
 }
 
 /**
- * 加载局部/工作区规则 (Local Rules)
+ * 加载局部/工作区规则 (Local Rules)。
  * 
  * @returns 成功读取时返回局部规则内容的字符串，否则返回空字符串
  */
@@ -60,9 +60,9 @@ const skillsCache = new Map<string, SkillMetadata>();
 let isWatching = false;
 
 /**
- * 使用 gray-matter 剥离并解析文件中的 YAML Frontmatter 元数据
+ * 使用 gray-matter 剥离并解析文件中的 YAML Frontmatter 元数据。
  * 
- * @param content 包含 YAML 头部和 Markdown 正文的原始文件内容
+ * @param content - 包含 YAML 头部和 Markdown 正文的原始文件内容
  * @returns 提取出名称、描述和纯净的正文主体
  */
 function parseSkillFrontmatter(content: string): { name: string, description: string, body: string } {
@@ -80,12 +80,12 @@ function parseSkillFrontmatter(content: string): { name: string, description: st
 }
 
 /**
- * 递归寻找指定目录下的所有 SKILL.md 文件，自带层级保护与防死循环机制
+ * 递归寻找指定目录下的所有 SKILL.md 文件，自带层级保护与防死循环机制。
  * 
- * @param dir 需要遍历的目标目录路径
- * @param fileList 收集结果的文件路径数组引用（默认值为空数组）
- * @param currentDepth 当前遍历的深度级别（默认值为 1）
- * @param maxDepth 允许向下遍历的最大深度上限（默认值为 3）
+ * @param dir - 需要遍历的目标目录路径
+ * @param fileList - 收集结果的文件路径数组引用（默认值为空数组）
+ * @param currentDepth - 当前遍历的深度级别（默认值为 1）
+ * @param maxDepth - 允许向下遍历的最大深度上限（默认值为 3）
  * @returns 返回所有找到的 SKILL.md 的完整绝对路径数组
  */
 function findSkillFiles(dir: string, fileList: string[] = [], currentDepth: number = 1, maxDepth: number = 3): string[] {
@@ -186,7 +186,7 @@ export function loadSkills(): SkillMetadata[] {
  * 懒加载获取特定技能的完整 Markdown 内容。
  * 该方法仅在当前会话明确需要某技能（例如工具被调用）时才会真正发生磁盘 I/O。
  * 
- * @param name 待拉取详情的技能名称
+ * @param name - 待拉取详情的技能名称
  * @returns 成功读取并解析后返回技能的纯正文内容，若找不到或出错则返回 null
  */
 export function loadSkillContent(name: string): string | null {

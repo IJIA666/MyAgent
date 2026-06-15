@@ -1,3 +1,8 @@
+/**
+ * 本地文件系统原子操作工具集。
+ * 提供路径安全校验约束下的文本读取（支持行范围精读）、文件写入、特征匹配增量编辑以及目录清单列举功能。
+ */
+
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { dirname } from 'path';
 import { secureResolvePath } from './base.js';

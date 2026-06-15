@@ -1,3 +1,8 @@
+/**
+ * 本地文件检索与文本匹配工具集。
+ * 提供基于 glob 的快速路径匹配、基于 grep 的正则/纯文本检索，以及快速判定二进制文件的底层辅助函数。
+ */
+
 import { resolve, basename, relative } from 'path';
 import { existsSync, statSync, readdirSync, openSync, readSync, closeSync, readFileSync } from 'fs';
 import { secureResolvePath, getAuthorizedDir } from './base.js';

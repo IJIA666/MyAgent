@@ -117,10 +117,10 @@ export function loadConfig(): AppConfig {
 }
 
 /**
- * 更新指定 MCP Server 的启用状态并持久化写回 mcp_config.json
+ * 更新指定 MCP Server 的启用状态并持久化写回 mcp_config.json。
  * 
- * @param name 服务名称
- * @param enabled 是否启用
+ * @param name - 服务名称
+ * @param enabled - 是否启用
  */
 export function updateMcpServerStatus(name: string, enabled: boolean): void {
   const configPath = resolve('mcp_config.json');

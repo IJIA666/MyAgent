@@ -62,8 +62,8 @@ const registry = new CommandRegistry();
 /**
  * 分发执行系统级的 Slash Command。
  *
- * @param input 原始输入字符串（以 / 开头）
- * @param context 命令执行上下文
+ * @param input - 原始输入字符串（以 / 开头）
+ * @param context - 命令执行上下文
  */
 export async function dispatchCommand(input: string, context: CommandContext): Promise<CommandResult | void> {
   return await registry.dispatch(input, context);

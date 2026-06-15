@@ -11,15 +11,30 @@ export class RuleManager {
   /** 缓存的局部项目规则内容 */
   private cachedLocalRules: string | null = null;
 
+  /**
+   * 实例初始化，并首次将规则加载到缓存中。
+   *
+   * @param context - 会话上下文管理实例
+   */
   constructor(private context: SessionContext) {
     this.loadRulesToCache();
     this.context.updateSystemPrompt(this.cachedGlobalRules || undefined);
   }
 
+  /**
+   * 获取缓存的全局规则内容。
+   *
+   * @returns 全局规则字符串，若无则返回 null
+   */
   public getGlobalRules(): string | null {
     return this.cachedGlobalRules;
   }
 
+  /**
+   * 获取缓存的局部项目规则内容。
+   *
+   * @returns 局部项目规则字符串，若无则返回 null
+   */
   public getLocalRules(): string | null {
     return this.cachedLocalRules;
   }
@@ -57,7 +72,7 @@ export class RuleManager {
   }
 
   /**
-   * 清除全局 and 局部规则的内存缓存，并重新从磁盘中加载。
+   * 清除全局与局部规则的内存缓存，并重新从磁盘中加载。
    * 会在下一轮交互时强制生效最新的规则内容。
    */
   public reloadRules(): void {

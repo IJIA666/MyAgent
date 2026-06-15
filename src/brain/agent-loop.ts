@@ -89,7 +89,8 @@ export class AgentLoop {
 
   /**
    * 构造函数，装配核心服务依赖。
-   * @param options 传入初始化依赖项
+   *
+   * @param options - 传入初始化依赖项
    */
   constructor(options: AgentLoopOptions) {
     this.toolRegistry = options.toolRegistry;
@@ -105,6 +106,8 @@ export class AgentLoop {
 
   /**
    * 获取当前 System Prompt 的哈希值。
+   *
+   * @returns 缓存的 System Prompt 哈希值字符串
    */
   public getSystemPromptHash(): string {
     return this.lastSystemPromptHash;
@@ -112,6 +115,8 @@ export class AgentLoop {
 
   /**
    * 获取最近一轮大模型请求前的 Token 估算明细。
+   *
+   * @returns Token 估算明细，若无则返回 null
    */
   public getLastEstimatedUsage(): ContextTokenUsage | null {
     return this.lastEstimatedUsage;
@@ -119,10 +124,11 @@ export class AgentLoop {
 
   /**
    * 处理单次对话请求的完整 ReAct 推理生命周期。
-   * @param transientSkillContent 可选。当前请求独占的临时技能规范内容。
-   * @param tracer 活动的日志跟踪器，运行时动态传入以防止引用过期。
-   * @param llmConfig 活动的大模型连接配置，运行时动态传入以保障实时状态等同。
-   * @returns 抛出 AgentEvent 流，由外部消费者负责呈现。
+   *
+   * @param transientSkillContent - 当前请求独占的临时技能规范内容
+   * @param tracer - 活动的日志跟踪器，运行时动态传入以防止引用过期
+   * @param llmConfig - 活动的大模型连接配置，运行时动态传入以保障实时状态等同
+   * @returns 异步生成 AgentEvent 流，由外部消费者负责呈现
    */
   public async *chat(
     transientSkillContent: string | undefined,
@@ -214,7 +220,7 @@ export class AgentLoop {
         // 标记在当前响应块中是否嗅探到了动作指令（工具调用）
         let hasToolCalls = false;
         // 格式化后的工具清单集合，准备记录落盘
-        let finalToolCalls: Array<{name: string, arguments: string, result?: string, error?: string}> = [];
+        let finalToolCalls: Array<{ name: string, arguments: string, result?: string, error?: string }> = [];
 
         // 持续消费下层透传回来的解析事件
         for await (const event of stream) {
@@ -231,7 +237,7 @@ export class AgentLoop {
             if (event.usage) {
               yield* this.checkCacheAndCalibrate(event.usage);
             }
-            
+
             // 初始化本次将要记录的格式化工具清单
             finalToolCalls = event.toolCalls.map((tc) => ({
               name: tc.function.name,
@@ -346,7 +352,7 @@ export class AgentLoop {
             if (event.usage) {
               yield* this.checkCacheAndCalibrate(event.usage);
             }
-            
+
             const purifiedContext = snapshotContext.map(msg => {
               if (typeof msg.content === 'string') {
                 return {
@@ -366,9 +372,9 @@ export class AgentLoop {
               estimated_tokens: estimatedTokens,
               actual_tokens: event.usage
             });
-            
+
             // 自然终止前，主动触发一次后台提炼检查
-            this.compactionService.triggerAsyncCompactionIfNeeded(this.lastEstimatedUsage?.total || 0).catch(() => {});
+            this.compactionService.triggerAsyncCompactionIfNeeded(this.lastEstimatedUsage?.total || 0).catch(() => { });
             await this.contextRepo.saveState();
             // 彻底退出生成器生命周期
             return;
@@ -388,7 +394,7 @@ export class AgentLoop {
         if (errorMsg.includes('APIUserAbortError') || errorMsg.includes('abort') || (apiError instanceof Error && apiError.name === 'AbortError')) {
           yield { type: 'error', message: '已收到中断指令，强行终止推理生成。' };
           // 意外终止时同样要触发后台提炼检查与物理落盘
-          this.compactionService.triggerAsyncCompactionIfNeeded(this.lastEstimatedUsage?.total || 0).catch(() => {});
+          this.compactionService.triggerAsyncCompactionIfNeeded(this.lastEstimatedUsage?.total || 0).catch(() => { });
           await this.contextRepo.saveState();
           return;
         }
@@ -408,14 +414,17 @@ export class AgentLoop {
   }
 
   /**
-   * 后置缓存失效检测与归因校准逻辑
+   * 后置缓存失效检测与归因校准逻辑。
+   *
+   * @param usage - 大模型返回的真实 API 用量结算数据
+   * @returns 抛出缓存抖动或击穿诊断事件的生成器
    */
   private *checkCacheAndCalibrate(usage: ApiUsage): Generator<AgentEvent, void, unknown> {
     if (!usage) return;
-    
+
     // 获取本次真实缓存命中数
     const currentCacheRead = usage.prompt_tokens_details?.cached_tokens ?? 0;
-    
+
     // 若不是首次调用，且有上次的缓存读取基准，则进行击穿校验
     if (!this.isFirstCall && this.lastCacheReadTokens !== null) {
       const tokenDrop = this.lastCacheReadTokens - currentCacheRead;
@@ -440,7 +449,7 @@ export class AgentLoop {
         };
       }
     }
-    
+
     // 更新状态基准
     this.lastCacheReadTokens = currentCacheRead;
     this.pendingChanges = [];

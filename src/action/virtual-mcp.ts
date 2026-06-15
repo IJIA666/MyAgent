@@ -39,6 +39,8 @@ export class LocalFileSystemMcpServer {
   /**
    * 获取此虚拟 Server 暴露的工具列表。
    * 直接复用 tools.ts 中原本的 toolsDefinition。
+   *
+   * @returns 工具定义数组 Promise
    */
   async getTools(): Promise<Record<string, unknown>[]> {
     // 拷贝并返回内置的工具定义数组
@@ -48,7 +50,7 @@ export class LocalFileSystemMcpServer {
   /**
    * 遵循 MCP 标准格式调用本地工具。
    *
-   * @param request 符合 MCP CallToolRequest 结构的请求对象
+   * @param request - 符合 MCP CallToolRequest 结构的请求对象
    * @returns 符合 MCP CallToolResult 结构的结果对象
    */
   async callTool(request: CallToolRequest): Promise<CallToolResult> {

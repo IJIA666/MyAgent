@@ -14,6 +14,12 @@ export class CompactionService {
   /** 后台提炼是否在途 */
   private isCompacting = false;
 
+  /**
+   * 实例初始化。
+   *
+   * @param context - 会话上下文管理实例
+   * @param driver - 大语言模型驱动接口
+   */
   constructor(private context: SessionContext, private driver: LlmDriver) {}
 
   /**
@@ -45,7 +51,10 @@ export class CompactionService {
   }
 
   /**
-   * 触发后台异步提炼摘要 (afterTurn 机制)
+   * 触发后台异步提炼摘要（afterTurn 机制）。
+   *
+   * @param currentTokens - 当前的 Token 数量
+   * @returns 无返回值的 Promise
    */
   public async triggerAsyncCompactionIfNeeded(currentTokens: number): Promise<void> {
     if (this.isCompacting) return;
@@ -85,7 +94,7 @@ export class CompactionService {
   /**
    * 从待剔除的历史消息中，反向扫描找出最近大模型读写过的核心代码文件路径（最多 5 个）。
    *
-   * @param messages 待扫描的历史消息数组
+   * @param messages - 待扫描的历史消息数组
    * @returns 收集到的核心代码文件路径数组（去重后）
    */
   public collectReadToolFilePaths(messages: ChatCompletionMessageParam[]): string[] {

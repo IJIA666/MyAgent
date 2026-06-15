@@ -52,8 +52,9 @@ export class LlmDriver {
 
   /**
    * 实例初始化。
-   * @param llmConfig 大模型连接配置（由外部 config 层统一加载）。
-   * @param modelOptions 额外的运行时交互配置选项（如思考等级）。
+   *
+   * @param llmConfig - 大模型连接配置（由外部 config 层统一加载）
+   * @param modelOptions - 额外的运行时交互配置选项（如思考等级）
    */
   constructor(llmConfig: LlmConfig, modelOptions?: Record<string, unknown>) {
     // 注入全局的大语言模型配置
@@ -92,8 +93,8 @@ export class LlmDriver {
   /**
    * 动态切换当前会话的大模型配置。
    *
-   * @param newConfig 新的大语言模型连接配置
-   * @param options 可选的运行时交互配置选项
+   * @param newConfig - 新的大语言模型连接配置
+   * @param options - 可选的运行时交互配置选项
    */
   public switchModel(newConfig: LlmConfig, options?: Record<string, unknown>): void {
     // 覆盖当前的全局配置
@@ -136,8 +137,8 @@ export class LlmDriver {
   /**
    * 发起与大模型的流式对话请求，并返回异步事件生成器。
    *
-   * @param messages 当前已发送给大模型的完整上下文历史数组
-   * @param tools 注册到大模型的可用工具集合
+   * @param messages - 当前已发送给大模型的完整上下文历史数组
+   * @param tools - 注册到大模型的可用工具集合
    * @returns 生成包含思考、文本片段、工具调用指令或完成状态的异步事件流
    */
   public async *streamChat(
@@ -275,7 +276,7 @@ export class LlmDriver {
   /**
    * 发起非流式的大模型交互请求（常用于背景分析、上下文提炼与摘要归纳等同步辅助计算场景）。
    * 
-   * @param messages 大模型所需的消息上下文序列
+   * @param messages - 大模型所需的消息上下文序列
    * @returns 大模型生成的完整文本回复内容
    */
   public async chat(messages: ChatCompletionMessageParam[]): Promise<string> {
@@ -307,7 +308,7 @@ export class LlmDriver {
    * 为防止与主线程的流式/同步调用在 `abortController` 上发生竞争，
    * 此方法内部维护局部的中止控制器。
    * 
-   * @param messages 提炼提示词上下文
+   * @param messages - 提炼提示词上下文
    * @returns 大模型生成的提炼文本
    */
   public async generateSummaryAsync(messages: ChatCompletionMessageParam[]): Promise<string> {

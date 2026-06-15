@@ -18,7 +18,8 @@ export class CliFacade {
 
   /**
    * 构造函数，建立与 SessionManager 的绑定，并实例化键盘输入监听器。
-   * @param session 大脑层会话管理器实例
+   *
+   * @param session - 大脑层会话管理器实例
    */
   constructor(session: SessionManager) {
     this.session = session;
@@ -57,7 +58,8 @@ export class CliFacade {
 
   /**
    * 处理整行控制台输入的总控决策。
-   * @param line 原始输入文本
+   *
+   * @param line - 原始输入文本
    */
   private async handleLineSubmit(line: string): Promise<void> {
     let input = line.trim();
@@ -119,7 +121,8 @@ export class CliFacade {
 
   /**
    * 订阅并渲染底层的流式推理会话事件。
-   * @param transientSkill 可选的沙盒技能规范内容
+   *
+   * @param transientSkill - 可选的沙盒技能规范内容
    */
   private async runStreamLoop(transientSkill?: string): Promise<void> {
     this.isGenerating = true;

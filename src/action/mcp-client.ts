@@ -25,7 +25,9 @@ export class McpToolManager {
   };
 
   /**
-   * @param config 已完成环境变量插值的 MCP 配置对象
+   * 实例初始化。
+   *
+   * @param config - 已完成环境变量插值的 MCP 配置对象
    */
   constructor(config: McpConfig) {
     this.config = config;
@@ -39,6 +41,8 @@ export class McpToolManager {
   /**
    * 根据已注入的配置连接所有 MCP Server。
    * 配置的加载和解析已由 config.ts 完成，此处仅负责建立连接。
+   *
+   * @returns 无返回值的 Promise
    */
   async connectAll() {
     const servers = this.config.mcpServers;
@@ -92,6 +96,9 @@ export class McpToolManager {
   /**
    * 动态建立单一 MCP 服务的连接（如果尚未连接），
    * 用于支持运行时的服务启停指令。
+   *
+   * @param name - 目标 MCP 服务名称
+   * @returns 无返回值的 Promise
    */
   async connectServer(name: string): Promise<void> {
     if (this.connections.has(name)) {
@@ -107,6 +114,9 @@ export class McpToolManager {
   /**
    * 主动销毁单一 MCP 服务的连接，并从路由总线中剔除该服务名下的全部工具签名元数据，
    * 采用优雅超时断开机制，防范残留子进程。
+   *
+   * @param name - 目标 MCP 服务名称
+   * @returns 无返回值的 Promise
    */
   async disconnectServer(name: string): Promise<void> {
     const connection = this.connections.get(name);
@@ -129,6 +139,8 @@ export class McpToolManager {
   /**
    * 获取当前所有 MCP 服务的配置清单及其运行状态，
    * 每次调用都会读取最新配置，以确保 enabled 标志位准确。
+   *
+   * @returns 所有 MCP 服务的运行状态数组 Promise
    */
   async getMcpServersStatus(): Promise<Array<{ name: string; command: string; enabled: boolean; connected: boolean }>> {
     const { loadMcpConfig } = await import('../config/index.js');
@@ -147,7 +159,9 @@ export class McpToolManager {
   }
 
   /**
-   * 请求所有远端 Server 暴露的工具，建立路由表，并将其转换为符合 OpenAI Function Calling 标准的格式
+   * 请求所有远端 Server 暴露的工具，建立路由表，并将其转换为符合 OpenAI Function Calling 标准的格式。
+   *
+   * @returns 符合 OpenAI 格式的工具定义数组 Promise
    */
   async getMcpTools(): Promise<Record<string, unknown>[]> {
     if (this.isClosed || this.connections.size === 0) {
@@ -196,7 +210,11 @@ export class McpToolManager {
   }
 
   /**
-   * 透传执行指定的外部工具，根据内部路由表找到对应的 Server
+   * 透传执行指定的外部工具，根据内部路由表找到对应的 Server。
+   *
+   * @param name - 工具名称
+   * @param args - 工具参数键值对
+   * @returns 工具执行后的返回结果 Promise
    */
   async callMcpTool(name: string, args: Record<string, unknown>) {
     if (this.isClosed) {
@@ -221,6 +239,8 @@ export class McpToolManager {
 
   /**
    * 安全断开所有连接并回收子进程，解除全局退出信号监听。
+   *
+   * @returns 无返回值的 Promise
    */
   async close(): Promise<void> {
     if (this.isClosed) {
@@ -248,8 +268,8 @@ export class McpToolManager {
    * 优雅销毁单一 MCP 服务连接。
    * 包含 Stdin EOF 触发、3 秒异步自毁等待和 client 连接释放三个完整执行动作。
    * 
-   * @param name 被销毁服务的名称
-   * @param conn 客户端与传输层句柄对象
+   * @param name - 被销毁服务的名称
+   * @param conn - 客户端与传输层句柄对象
    */
   private async shutdownConnection(name: string, conn: { client: Client; transport?: StdioClientTransport }): Promise<void> {
     console.log(`[MCP Client] 正在优雅关闭服务: [${name}]`);

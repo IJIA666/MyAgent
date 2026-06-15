@@ -17,8 +17,8 @@ export class ToolRegistry {
   /**
    * 初始化工具注册表。
    *
-   * @param mcpManager 外部的 MCP 工具管理器（可选）
-   * @param options 本地虚拟服务器的附加配置（可选）
+   * @param mcpManager - 外部的 MCP 工具管理器（可选）
+   * @param options - 本地虚拟服务器的附加配置（可选）
    */
   constructor(mcpManager?: McpToolManager, options?: { loadSkill?: (name: string) => string | null }) {
     // 注入可选的外部 MCP 工具管理器
@@ -53,8 +53,8 @@ export class ToolRegistry {
    * 统一路由并执行指定的工具调用请求。
    * 优先匹配本地工具，若未命中则下发至外部 MCP 管理器执行。
    *
-   * @param functionName 要调用的目标工具名称
-   * @param functionArgs 传递给目标工具的动态参数键值对
+   * @param functionName - 要调用的目标工具名称
+   * @param functionArgs - 传递给目标工具的动态参数键值对
    * @returns 工具执行完毕后返回的序列化/结构化数据
    * @throws 当指定的工具在本地和外部均未找到时，抛出未知工具异常
    */

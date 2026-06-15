@@ -22,8 +22,8 @@ import { loadGlobalRules, loadSkills } from './contextLoader.js';
  * 此方法允许接收外部已加载的全局规则缓存，以维持会话锁定的 Byte-stable 哈希前缀。
  * 注意：项目局部规则已剥离，改为在 ContextAdapter 中动态注入至 user 消息前，以防破坏前置缓存。
  * 
- * @param customGlobalRules 可选的全局规则内容缓存，若不传则从磁盘加载最新的规则状态
- * @returns 完整的、准备用于发送给 LLM 的全局静态基线系统提示词字符串。
+ * @param customGlobalRules - 可选的全局规则内容缓存，若不传则从磁盘加载最新的规则状态
+ * @returns 完整的、准备用于发送给 LLM 的全局静态基线系统提示词字符串
  */
 export function buildSystemPrompt(customGlobalRules?: string): string {
   // 使用数组收集所有区块片段
@@ -50,7 +50,7 @@ export function buildSystemPrompt(customGlobalRules?: string): string {
 /**
  * 组装大模型上下文压缩摘要的提炼提示词，返回供 LlmDriver 直接调用的 messages 数组。
  * 
- * @param messagesToCompact 需要被压缩提炼的历史消息数组
+ * @param messagesToCompact - 需要被压缩提炼的历史消息数组
  * @returns 组装好的、用于调用总结模型的 messages 数组
  */
 export function buildCompactionSummaryPrompt(
@@ -124,6 +124,10 @@ export const HANDOFF_INSTRUCTION = `【最高指挥官（LEADER）交接声明�
 /**
  * 本地原生函数生成的确定性兜底摘要（防死锁变砖）。
  * 当异步总结连续失败、且即将爆仓时，强行构造此静态文本截断历史。
+ *
+ * @param lastToolName - 最近一次系统调用的核心工具名称
+ * @param lastUserPrompt - 最近一次用户下发的原始指令
+ * @returns 格式化后的静态兜底摘要文本
  */
 export function buildStaticFallbackSummary(
   lastToolName: string | undefined,

@@ -1,13 +1,18 @@
+/**
+ * 环境变量解析与热修改工具集。
+ * 提供对环境变量的非破坏性修改更新、必填项 Fail-fast 校验以及环境变量插值表达式的递归解析。
+ */
+
 import fs from 'fs';
 import path from 'path';
 
 /**
  * 更新 .env 文件中指定键的值。
- * 使用基于正则的非破坏性替换策略，安全保留原有的注释和排版结构。
+ * 使用基于正则的非破坏性替换策略，安全保留原有的注释 and 排版结构。
  * 若键不存在，则在文件末尾追加。
  *
- * @param key 环境变量名（例如 'DEEPSEEK_MODEL'）
- * @param value 新的环境变量值
+ * @param key - 环境变量名（例如 'DEEPSEEK_MODEL'）
+ * @param value - 新的环境变量值
  */
 export function updateEnvVariable(key: string, value: string): void {
   const envPath = path.resolve(process.cwd(), '.env');
@@ -46,7 +51,7 @@ export function updateEnvVariable(key: string, value: string): void {
  * 读取必填环境变量，缺失时抛出包含变量名的明确错误。
  * 实现 fail-fast 策略，阻止在缺少关键配置时继续启动。
  *
- * @param name 环境变量名称
+ * @param name - 环境变量名称
  * @returns 环境变量的值
  * @throws 当环境变量未设置或为空字符串时
  */
@@ -64,7 +69,7 @@ export function requireEnv(name: string): string {
  * 递归扫描配置值，将 ${VAR} 格式的占位符替换为 process.env 中的实际值。
  * 若对应的环境变量不存在，保留占位符原文不做替换。
  *
- * @param value 待处理的配置值（支持字符串、对象、数组的递归处理）
+ * @param value - 待处理的配置值（支持字符串、对象、数组的递归处理）
  * @returns 完成插值替换后的配置值
  */
 export function interpolateEnvVars(value: unknown): unknown {
