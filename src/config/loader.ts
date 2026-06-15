@@ -89,10 +89,17 @@ export function loadConfig(): AppConfig {
   const mcp = loadMcpConfig();
 
   // 6. 组装配置对象
+  const workModeEnv = process.env.AGENT_WORK_MODE;
+  const workMode: 'Safe' | 'Auto' | 'YOLO' = 
+    (workModeEnv === 'Safe' || workModeEnv === 'Auto' || workModeEnv === 'YOLO') 
+      ? workModeEnv 
+      : 'Auto';
+
   const config: AppConfig = {
     llm,
     workspace,
     mcp,
+    workMode,
   };
 
   // 7. 深度冻结，防止业务代码意外修改

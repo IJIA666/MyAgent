@@ -1,4 +1,4 @@
-import { toolsDefinition, readFileTool, writeFileTool, listFilesTool, grepSearchTool, globSearchTool } from './tools.js';
+import { toolsDefinition, readFileTool, writeFileTool, listFilesTool, grepSearchTool, globSearchTool, executeCommandTool } from './tools.js';
 
 
 /**
@@ -129,6 +129,22 @@ export class LocalFileSystemMcpServer {
         case 'globSearch': {
           if (typeof args.pattern !== 'string') throw new Error("pattern 必须是字符串");
           resultText = globSearchTool(args.pattern);
+          break;
+        }
+
+        case 'execute_command': {
+          if (typeof args.command !== 'string') throw new Error("command 必须是字符串");
+          if (args.cwd !== undefined && typeof args.cwd !== 'string') {
+            throw new Error("cwd 必须是字符串");
+          }
+          if (args.isBackground !== undefined && typeof args.isBackground !== 'boolean') {
+            throw new Error("isBackground 必须是布尔值");
+          }
+          resultText = await executeCommandTool(
+            args.command,
+            args.cwd as string | undefined,
+            args.isBackground as boolean | undefined
+          );
           break;
         }
 

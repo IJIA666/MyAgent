@@ -1,6 +1,7 @@
 export { initWorkspace, secureResolvePath, getAuthorizedDir } from './native-tools/base.js';
 export { readFileState, readFileTool, writeFileTool, editFileTool, listFilesTool } from './native-tools/file-system.js';
 export { grepSearchTool, globSearchTool } from './native-tools/search.js';
+export { executeCommandTool } from './native-tools/terminal.js';
 
 /**
  * 基于 OpenAI Function Calling 协议构建的工具集。
@@ -162,6 +163,31 @@ export const toolsDefinition = [
           }
         },
         required: ["pattern"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "execute_command",
+      description: "在受限的工作区沙箱内执行一条原子终端命令（如 npm run build、vitest 等）。禁止使用 &、|、; 等复合拼接符，禁止读写工作区外部路径。若命令执行时间较长，会自动切入后台托管并返回任务ID。",
+      parameters: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            description: "要执行的原子命令字符串（例如 'npm run test'）。"
+          },
+          cwd: {
+            type: "string",
+            description: "命令执行的子目录路径（可选，相对于工作区根目录的相对路径，例如 'src'）。"
+          },
+          isBackground: {
+            type: "boolean",
+            description: "是否显式指示在后台运行。对于长时间挂起的服务，必须设为 true。"
+          }
+        },
+        required: ["command"]
       }
     }
   }

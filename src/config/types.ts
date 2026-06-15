@@ -89,4 +89,6 @@ export interface AppConfig {
   workspace: string;
   /** MCP Server 连接配置（可能为空对象） */
   mcp: McpConfig;
+  /** 终端安全执行工作模式 */
+  workMode?: 'Safe' | 'Auto' | 'YOLO';
 }
