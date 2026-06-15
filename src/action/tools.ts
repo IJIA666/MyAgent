@@ -1,5 +1,5 @@
 export { initWorkspace, secureResolvePath, getAuthorizedDir } from './native-tools/base.js';
-export { readFileState, readFileTool, writeFileTool, listFilesTool } from './native-tools/file-system.js';
+export { readFileState, readFileTool, writeFileTool, editFileTool, listFilesTool } from './native-tools/file-system.js';
 export { grepSearchTool, globSearchTool } from './native-tools/search.js';
 
 /**
@@ -36,7 +36,7 @@ export const toolsDefinition = [
     type: "function",
     function: {
       name: "writeFile",
-      description: "向授权工作区内的指定文件写入或覆盖文本内容。会自动创建缺失的父级目录。",
+      description: "向授权工作区内的指定文件全量写入或覆盖文本内容。会自动创建缺失的父级目录。【警告：此操作会彻底覆盖原文件！仅在创建新文件或必须进行全文件重写时使用。对已有文件的局部修改请必须优先使用 editFile 工具】",
       parameters: {
         type: "object",
         properties: {
@@ -50,6 +50,35 @@ export const toolsDefinition = [
           }
         },
         required: ["targetPath", "content"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "editFile",
+      description: "基于纯文本特征精确匹配的局部文件增量修改工具。用于在不覆盖整个文件的情况下修改指定的代码段，这是修改已有文件的首选和最佳途径。为确保唯一性和准确命中，old_string 必须保持与原文件精确一致并包含足够的前后上下文。",
+      parameters: {
+        type: "object",
+        properties: {
+          targetPath: {
+            type: "string",
+            description: "要修改的目标文件路径（相对于工作区根目录，例如 'src/index.ts'）。"
+          },
+          old_string: {
+            type: "string",
+            description: "需要被替换的原文片段。必须与原文件中的内容在字符级别上（包括空格、缩进和换行符）完全精确一致。"
+          },
+          new_string: {
+            type: "string",
+            description: "用于替换 old_string 的全新内容文本。若希望删除 old_string，可传入空字符串。"
+          },
+          replace_all: {
+            type: "boolean",
+            description: "是否全局替换。如果设置为 true，则会替换文件中所有匹配到的 old_string；默认为 false，此时如果匹配到多处相同的 old_string 会为了安全而抛出错误拦截。"
+          }
+        },
+        required: ["targetPath", "old_string", "new_string"]
       }
     }
   },
