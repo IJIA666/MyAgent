@@ -13,6 +13,7 @@ import { AppConfig, McpConfig } from './types.js';
 import { getModelConfig } from './models.js';
 import { interpolateEnvVars } from '../utils/env.js';
 import { theme } from '../utils/theme.js';
+import { loadWorkMode } from '../action/native-tools/terminal-config.js';
 
 /**
  * 检查配置文件是否存在，缺失时从 .example 模板自动复制。
@@ -88,12 +89,8 @@ export function loadConfig(): AppConfig {
   // 5. 加载 MCP 配置（含环境变量插值）
   const mcp = loadMcpConfig();
 
-  // 6. 组装配置对象
-  const workModeEnv = process.env.AGENT_WORK_MODE;
-  const workMode: 'Safe' | 'Auto' | 'YOLO' = 
-    (workModeEnv === 'Safe' || workModeEnv === 'Auto' || workModeEnv === 'YOLO') 
-      ? workModeEnv 
-      : 'Auto';
+  // 6. 组装配置对象，优先从持久化配置与环境变量中加载终端工作模式
+  const workMode = loadWorkMode();
 
   const config: AppConfig = {
     llm,

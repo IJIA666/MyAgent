@@ -17,6 +17,7 @@ import {
   saveWorkMode,
   loadWorkMode
 } from '../../src/action/native-tools/terminal.js';
+import { validateCommand, validateCwd } from '../../src/action/native-tools/terminal-guard.js';
 
 describe('Terminal Tool 单元测试', () => {
   const mockRootDir = resolve('D:\\authorized\\path_terminal_test');
@@ -115,5 +116,20 @@ describe('Terminal Tool 单元测试', () => {
     const longRunningCommand = 'node -e "setTimeout(function(){}, 2000)"';
     const resultValid = await executeCommandTool(longRunningCommand, undefined, true);
     expect(resultValid).toContain('任务已在后台成功启动并存活超过 200ms');
+  });
+
+  test('7. 独立安全网关 terminal-guard.ts 细粒度校验测试', () => {
+    // 独立测试正则拦截
+    expect(() => validateCommand('echo 1 & echo 2')).toThrow('拒绝执行');
+    expect(() => validateCommand('cat file | grep text')).toThrow('拒绝执行');
+    expect(() => validateCommand('ls')).not.toThrow();
+
+    // 独立测试 cwd 沙箱边界
+    expect(() => validateCwd('../../etc')).toThrow('Operation not permitted');
+    expect(() => validateCwd('C:\\Windows')).toThrow('Operation not permitted');
+    
+    // 正确路径不报错
+    const correctPath = validateCwd('src');
+    expect(correctPath).toContain('path_terminal_test');
   });
 });
