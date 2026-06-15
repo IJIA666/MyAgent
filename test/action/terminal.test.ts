@@ -1,7 +1,5 @@
 /**
- * @file terminal.test.ts
- * @description 终端执行工具 terminal.ts 的功能性与安全性单元测试
- * @author wangjia
+ * 终端执行工具 terminal.ts 的功能性与安全性单元测试。
  */
 
 import { describe, test, expect, beforeAll, beforeEach } from 'vitest';

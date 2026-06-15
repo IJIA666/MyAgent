@@ -15,7 +15,7 @@ const DEV_SKILLS_DIR = 'D:\\Projects\\MyAgent\\.agent\\skills';
 /**
  * 加载全局规则 (Global Rules)
  * 
- * @returns {string} 成功读取时返回全局规则内容的字符串，否则返回空字符串
+ * @returns 成功读取时返回全局规则内容的字符串，否则返回空字符串
  */
 export function loadGlobalRules(): string {
   if (existsSync(DEV_GLOBAL_RULES_PATH)) {
@@ -31,7 +31,7 @@ export function loadGlobalRules(): string {
 /**
  * 加载局部/工作区规则 (Local Rules)
  * 
- * @returns {string} 成功读取时返回局部规则内容的字符串，否则返回空字符串
+ * @returns 成功读取时返回局部规则内容的字符串，否则返回空字符串
  */
 export function loadLocalRules(): string {
   if (existsSync(DEV_LOCAL_RULES_PATH)) {
@@ -62,8 +62,8 @@ let isWatching = false;
 /**
  * 使用 gray-matter 剥离并解析文件中的 YAML Frontmatter 元数据
  * 
- * @param {string} content 包含 YAML 头部和 Markdown 正文的原始文件内容
- * @returns {{ name: string, description: string, body: string }} 提取出名称、描述和纯净的正文主体
+ * @param content 包含 YAML 头部和 Markdown 正文的原始文件内容
+ * @returns 提取出名称、描述和纯净的正文主体
  */
 function parseSkillFrontmatter(content: string): { name: string, description: string, body: string } {
   try {
@@ -82,11 +82,11 @@ function parseSkillFrontmatter(content: string): { name: string, description: st
 /**
  * 递归寻找指定目录下的所有 SKILL.md 文件，自带层级保护与防死循环机制
  * 
- * @param {string} dir 需要遍历的目标目录路径
- * @param {string[]} fileList 收集结果的文件路径数组引用（默认值为空数组）
- * @param {number} currentDepth 当前遍历的深度级别（默认值为 1）
- * @param {number} maxDepth 允许向下遍历的最大深度上限（默认值为 3）
- * @returns {string[]} 返回所有找到的 SKILL.md 的完整绝对路径数组
+ * @param dir 需要遍历的目标目录路径
+ * @param fileList 收集结果的文件路径数组引用（默认值为空数组）
+ * @param currentDepth 当前遍历的深度级别（默认值为 1）
+ * @param maxDepth 允许向下遍历的最大深度上限（默认值为 3）
+ * @returns 返回所有找到的 SKILL.md 的完整绝对路径数组
  */
 function findSkillFiles(dir: string, fileList: string[] = [], currentDepth: number = 1, maxDepth: number = 3): string[] {
   // 如果达到最大深度或者目录本身不存在，立刻回溯
@@ -123,8 +123,6 @@ function findSkillFiles(dir: string, fileList: string[] = [], currentDepth: numb
 /**
  * 主动扫描文件系统并刷新内存中的技能索引缓存
  * 该方法会清空现有缓存池并从磁盘重构状态。
- * 
- * @returns {void} 无返回值
  */
 export function refreshSkillsCache(): void {
   const skillFiles = findSkillFiles(DEV_SKILLS_DIR);
@@ -151,8 +149,6 @@ export function refreshSkillsCache(): void {
 /**
  * 初始化后台异步监听服务（Watcher）
  * 在第一次请求索引时懒加载调用，保证文件系统发生变动时能够触发缓存的自动刷新。
- * 
- * @returns {void} 无返回值
  */
 export function initSkillsWatcher(): void {
   // 保证只会启动一次监听
@@ -176,7 +172,7 @@ export function initSkillsWatcher(): void {
 /**
  * 极速获取所有已安装技能的索引列表，支持针对 Watcher 的惰性初始化。
  * 
- * @returns {SkillMetadata[]} 返回纯净的技能元数据数组
+ * @returns 返回纯净的技能元数据数组
  */
 export function loadSkills(): SkillMetadata[] {
   if (!isWatching) {
@@ -190,8 +186,8 @@ export function loadSkills(): SkillMetadata[] {
  * 懒加载获取特定技能的完整 Markdown 内容。
  * 该方法仅在当前会话明确需要某技能（例如工具被调用）时才会真正发生磁盘 I/O。
  * 
- * @param {string} name 待拉取详情的技能名称
- * @returns {string | null} 成功读取并解析后返回技能的纯正文内容，若找不到或出错则返回 null
+ * @param name 待拉取详情的技能名称
+ * @returns 成功读取并解析后返回技能的纯正文内容，若找不到或出错则返回 null
  */
 export function loadSkillContent(name: string): string | null {
   const meta = skillsCache.get(name);

@@ -23,7 +23,7 @@ import { loadGlobalRules, loadSkills } from './contextLoader.js';
  * 注意：项目局部规则已剥离，改为在 ContextAdapter 中动态注入至 user 消息前，以防破坏前置缓存。
  * 
  * @param customGlobalRules 可选的全局规则内容缓存，若不传则从磁盘加载最新的规则状态
- * @returns {string} 完整的、准备用于发送给 LLM 的全局静态基线系统提示词字符串。
+ * @returns 完整的、准备用于发送给 LLM 的全局静态基线系统提示词字符串。
  */
 export function buildSystemPrompt(customGlobalRules?: string): string {
   // 使用数组收集所有区块片段
