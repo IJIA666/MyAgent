@@ -11,7 +11,9 @@ import {
   ToolCommand, 
   ModelCommand 
 } from './commands/index.js';
+import * as p from '@clack/prompts';
 import { theme } from '../utils/theme.js';
+import { loadSkills } from '../brain/contextLoader.js';
 
 export { CommandContext, CommandResult };
 
@@ -65,4 +67,88 @@ const registry = new CommandRegistry();
  */
 export async function dispatchCommand(input: string, context: CommandContext): Promise<CommandResult | void> {
   return await registry.dispatch(input, context);
+}
+
+/**
+ * 展示交互式菜单并处理用户选择。
+ * @returns 最终生成的斜杠命令字符串，若取消或无操作则返回 null
+ */
+export async function showInteractiveMenu(): Promise<string | null> {
+  console.log();
+  const mainAction = await p.select({
+    message: '选择要执行的操作:',
+    options: [
+      { value: 'skill', label: '调用特殊技能 (Skill)' },
+      { value: 'model', label: '切换大模型配置 (Model)' },
+      { value: 'rollback', label: '撤销上轮对话 (Rollback)' },
+      { value: 'history', label: '查看历史记录 (History)' },
+      { value: 'resume', label: '恢复历史会话 (Resume)' },
+      { value: 'tool', label: '查看扩展工具清单 (Tool)' },
+      { value: 'mcp', label: '管理 MCP 服务 (MCP)' },
+      { value: 'reload-rules', label: '重载全局和项目规则 (Reload Rules)' },
+      { value: 'help', label: '查看帮助 (Help)' },
+      { value: 'cancel', label: '取消' },
+    ]
+  });
+
+  if (p.isCancel(mainAction) || mainAction === 'cancel') {
+    p.cancel('操作已取消。');
+    return null;
+  }
+
+  if (mainAction === 'skill') {
+    const allSkills = loadSkills();
+    if (allSkills.length === 0) {
+      p.outro(theme.info('未发现任何可用技能。'));
+      return null;
+    }
+
+    const skillSelect = await p.select({
+      message: '请选择要挂载的临时技能:',
+      options: allSkills.map(s => ({
+        value: s.name,
+        label: `${s.name} - ${s.description}`
+      }))
+    });
+
+    if (p.isCancel(skillSelect)) {
+      p.cancel('操作已取消。');
+      return null;
+    }
+
+    const taskText = await p.text({
+      message: '请输入希望技能执行的具体任务:',
+      placeholder: '例如：帮我查一下... / 帮我写一下...',
+      validate(value) {
+        if (!value || !value.trim()) return '任务要求不能为空';
+      }
+    });
+
+    if (p.isCancel(taskText)) {
+      p.cancel('操作已取消。');
+      return null;
+    }
+
+    return `/skill ${skillSelect as string} ${taskText as string}`;
+  }
+
+  if (['model', 'history', 'tool', 'help', 'reload-rules'].includes(mainAction as string)) {
+    return `/${mainAction}`;
+  }
+
+  if (mainAction === 'resume') {
+    const id = await p.text({ message: '请输入要恢复的会话 ID:' });
+    if (p.isCancel(id) || !id) return null;
+    return `/resume ${id}`;
+  }
+
+  if (mainAction === 'mcp') {
+    return `/mcp list`; 
+  }
+
+  if (mainAction === 'rollback') {
+    return `/rollback 1`; 
+  }
+
+  return null;
 }
