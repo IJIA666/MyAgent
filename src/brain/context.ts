@@ -7,6 +7,16 @@ import { buildSystemPrompt } from './prompts.js';
 export { ApiUsage, ContextTokenUsage } from './TokenEstimator.js';
 import { ApiUsage } from './TokenEstimator.js';
 
+export interface PluginPatchGroup {
+  timestamp: string;
+  eventName: string;
+  patches: Array<{
+    op: 'replace' | 'remove' | 'add';
+    path: (string | number)[];
+    value?: unknown;
+  }>;
+}
+
 /**
  * 计算字符串的 MD5 哈希。
  *
@@ -258,5 +268,39 @@ export class SessionContext {
     return false;
   }
 
+  private pluginPatches: PluginPatchGroup[] = [];
 
+  /**
+   * 追加记录插件运行产生的 Immer Patches 变更。
+   *
+   * @param eventName - 变更所在的生命周期事件名称
+   * @param patches - Immer 产生的变更 Patches 数组
+   */
+  public addPluginPatches(eventName: string, patches: PluginPatchGroup['patches']): void {
+    this.pluginPatches.push({
+      timestamp: new Date().toISOString(),
+      eventName,
+      patches
+    });
+  }
+
+  /**
+   * 提取并清空当前已积压的插件变更补丁记录。
+   *
+   * @returns 已记录的插件补丁变更列表
+   */
+  public getAndClearPluginPatches(): PluginPatchGroup[] {
+    const patches = this.pluginPatches;
+    this.pluginPatches = [];
+    return patches;
+  }
+
+  /**
+   * 覆写整个消息历史记录。
+   *
+   * @param history - 新的消息历史数组
+   */
+  public updateHistory(history: ChatCompletionMessageParam[]): void {
+    this.messageHistory = history;
+  }
 }

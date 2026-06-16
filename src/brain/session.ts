@@ -7,6 +7,13 @@ import { LlmDriver } from './driver.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 import { loadSkillContent } from './contextLoader.js';
 import { AgentLoop, AgentEvent } from './agent-loop.js';
+import { PluginRegistry } from './plugin-registry.js';
+import {
+  TokenWatermarkPlugin,
+  JitRulesPlugin,
+  TracerLogPlugin,
+  LoopPreventionPlugin
+} from './plugins/index.js';
 
 // 导入领域服务
 import { RuleManager } from './services/RuleManager.js';
@@ -45,6 +52,8 @@ export class SessionManager {
   private toolDispatcher: ToolDispatcher;
   /** 上下文提炼与截断防爆服务 */
   private compactionService: CompactionService;
+  /** 插件注册中心 */
+  private pluginRegistry: PluginRegistry;
 
   /** 独立的智能体执行循环引擎 */
   private agentLoop: AgentLoop;
@@ -72,6 +81,13 @@ export class SessionManager {
     this.contextRepo = new ContextRepository(this.context);
     this.toolDispatcher = new ToolDispatcher(this.context);
     this.compactionService = new CompactionService(this.context, this.driver);
+    
+    // 初始化并注册拦截插件
+    this.pluginRegistry = new PluginRegistry();
+    this.pluginRegistry.register(new TokenWatermarkPlugin(this.compactionService, () => this.llmConfig));
+    this.pluginRegistry.register(new JitRulesPlugin(this.toolDispatcher));
+    this.pluginRegistry.register(new TracerLogPlugin(() => this.tracer));
+    this.pluginRegistry.register(new LoopPreventionPlugin());
 
     // 初始化独立的执行引擎实例
     this.agentLoop = new AgentLoop({
@@ -83,6 +99,7 @@ export class SessionManager {
       contextRepo: this.contextRepo,
       toolDispatcher: this.toolDispatcher,
       compactionService: this.compactionService,
+      pluginRegistry: this.pluginRegistry,
       maxIterations: this.maxIterations
     });
   }

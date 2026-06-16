@@ -87,4 +87,19 @@ export class AgentTracer {
       console.error('\n[Tracer 故障] 无法写入交互日志:', e);
     }
   }
+
+  /**
+   * 将插件的审计记录写入单独的持久化存储。
+   *
+   * @param record - 插件审计记录对象
+   */
+  public logPluginAudit(record: Record<string, unknown>): void {
+    try {
+      const auditFile = this.traceFile.replace('trace_', 'plugin_audit_');
+      const line = JSON.stringify(record) + '\n';
+      appendFileSync(auditFile, line, 'utf-8');
+    } catch (e) {
+      console.error('\n[Tracer 故障] 无法写入插件审计日志:', e);
+    }
+  }
 }

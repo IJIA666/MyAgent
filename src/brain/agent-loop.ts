@@ -1,12 +1,14 @@
-import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
+import type { ChatCompletionTool, ChatCompletionMessageParam, ChatCompletionCreateParams } from 'openai/resources/chat/completions.js';
 import { ToolRegistry } from '../action/index.js';
 import { LlmConfig } from '../config/index.js';
 import { AgentTracer } from './tracer.js';
-import { SessionContext, computeStringHash, ApiUsage, ContextTokenUsage } from './context.js';
+import { SessionContext, ApiUsage, ContextTokenUsage } from './context.js';
 import { LlmDriver } from './driver.js';
 import { ContextAdapter } from './adapters/index.js';
 import { purifyContent } from '../utils/purify.js';
-import { TokenEstimator } from './TokenEstimator.js';
+import { PluginRegistry } from './plugin-registry.js';
+import { HookEventName } from './plugin-types.js';
+import { runHookPipeline } from './plugin-runner.js';
 
 // 导入领域服务
 import { RuleManager } from './services/RuleManager.js';
@@ -44,6 +46,8 @@ export interface AgentLoopOptions {
   toolDispatcher: ToolDispatcher;
   /** 上下文提炼与截断防爆服务 */
   compactionService: CompactionService;
+  /** 插件注册管理器 */
+  pluginRegistry: PluginRegistry;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
   maxIterations?: number;
 }
@@ -68,6 +72,8 @@ export class AgentLoop {
   private toolDispatcher: ToolDispatcher;
   /** 上下文提炼与截断防爆服务 */
   private compactionService: CompactionService;
+  /** 插件注册管理器 */
+  private pluginRegistry: PluginRegistry;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
   private maxIterations: number;
 
@@ -101,6 +107,7 @@ export class AgentLoop {
     this.contextRepo = options.contextRepo;
     this.toolDispatcher = options.toolDispatcher;
     this.compactionService = options.compactionService;
+    this.pluginRegistry = options.pluginRegistry;
     this.maxIterations = options.maxIterations ?? 10;
   }
 
@@ -135,21 +142,62 @@ export class AgentLoop {
     tracer: AgentTracer,
     llmConfig: LlmConfig
   ): AsyncGenerator<AgentEvent, void, unknown> {
-    // 初始化重试与工具循环计数器，用于监控防范模型陷入死循环
+    // 初始化迭代计数器
     let iteration = 0;
-    // 用于 Loop Prevention 的工具调用计数器
-    const toolCallCounter = new Map<string, number>();
-    // 用于当前交互（单轮）JIT 伴生注入的路径记录
-    const injectedJitPaths = new Set<string>();
 
-    // 构建带有硬上限的安全递归闭环
+    // 事件中转队列及推送回调，供插件安全发射流式交互事件
+    const eventQueue: AgentEvent[] = [];
+    const emitEvent = (event: unknown) => {
+      eventQueue.push(event as AgentEvent);
+    };
+
+    // 触发 SessionStart 钩子
+    const sessionStartResult = await runHookPipeline(
+      HookEventName.SessionStart,
+      this.context,
+      this.pluginRegistry.getPluginsForEvent(HookEventName.SessionStart),
+      { emitEvent }
+    );
+    while (eventQueue.length > 0) {
+      yield eventQueue.shift()!;
+    }
+
+    if (sessionStartResult.control.action === 'abort') {
+      yield { type: 'error', message: `[插件终止] 会话启动被拦截：${sessionStartResult.control.reason ?? '无原因'}` };
+      return;
+    }
+
+    // 构建带有硬上限的安全推理大循环
     while (iteration < this.maxIterations) {
       iteration++;
 
       try {
-        // 懒加载获取当前系统内所有处于激活状态的工具集合
+        // 获取所有激活状态的工具集合
         const allTools = await this.toolRegistry.getTools();
-        // 委托上下文适配器进行历史记录的组装和临时技能的动态挂载，避免污染原始会话记录并防范协议交错风险
+
+        // 触发 BeforeToolSelection 过滤并挑选工具
+        const selectionResult = await runHookPipeline(
+          HookEventName.BeforeToolSelection,
+          this.context,
+          this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeToolSelection),
+          { llmRequest: { tools: allTools as ChatCompletionTool[] } as ChatCompletionCreateParams, emitEvent }
+        );
+        while (eventQueue.length > 0) {
+          yield eventQueue.shift()!;
+        }
+
+        if (selectionResult.control.action === 'abort') {
+          yield { type: 'error', message: `[插件终止] 触发终止信号：${selectionResult.control.reason ?? '无原因'}` };
+          return;
+        }
+        if (selectionResult.control.action === 'restart') {
+          iteration = Math.max(0, iteration - 1);
+          continue;
+        }
+
+        const filteredTools = selectionResult.llmRequest?.tools ?? allTools;
+
+        // 委托上下文适配器进行历史记录的组装和临时技能的挂载
         const snapshotContext = this.contextAdapter.assemble(
           this.context.getHistory(),
           transientSkillContent,
@@ -158,168 +206,191 @@ export class AgentLoop {
           this.context.getRecentFiles()
         );
 
-        // 前置计算当前上下文的预测 Token 预算
-        const baseline = this.context.getLastApiUsageBaseline();
-        const estimatedTokens = TokenEstimator.estimateSnapshotTokens(snapshotContext, baseline.usage, baseline.historyLength);
-        this.lastEstimatedUsage = estimatedTokens;
-
-        // 动态执行 Token 占用水位校验，一旦超出最大窗口的 80% 阈值则触发无延迟截断
-        const threshold = TokenEstimator.getCompactionThreshold(llmConfig, 0.8);
-        if (estimatedTokens.total > threshold) {
-          yield {
-            type: 'thinking',
-            content: `[系统检测] 当前上下文 Token 估算数 (${estimatedTokens.total}) 已超出模型安全阈值 (${threshold})，正在执行静默压缩与物理会话轮换...`
-          };
-          const compactSuccess = await this.compactionService.compact();
-          if (compactSuccess) {
-            // 物理会话轮换成功，回退迭代轮数限制，并重新开始装配上下文
-            iteration = Math.max(0, iteration - 1);
-            continue;
-          } else {
-            yield {
-              type: 'error',
-              message: `[系统警报] 上下文自动压缩失败，将继续以当前历史深度进行后续生成。`
-            };
-          }
-        }
-
-        // 前置计算 System Prompt 和 Tools 的哈希值以做一致性比对
-        const currentSystemPrompt = (snapshotContext.length > 0 && snapshotContext[0].role === 'system')
-          ? (typeof snapshotContext[0].content === 'string' ? snapshotContext[0].content : '')
-          : '';
-        const currentSystemPromptHash = computeStringHash(currentSystemPrompt);
-        const currentToolsHash = computeStringHash(JSON.stringify(allTools));
-
-        if (!this.isFirstCall) {
-          const changes: string[] = [];
-          if (this.lastSystemPromptHash && currentSystemPromptHash !== this.lastSystemPromptHash) {
-            changes.push(`System Prompt 变更 (哈希: ${this.lastSystemPromptHash.slice(0, 8)} -> ${currentSystemPromptHash.slice(0, 8)})`);
-          }
-          if (this.lastToolsHash && currentToolsHash !== this.lastToolsHash) {
-            changes.push(`可用工具集变更 (哈希: ${this.lastToolsHash.slice(0, 8)} -> ${currentToolsHash.slice(0, 8)})`);
-          }
-          if (changes.length > 0) {
-            this.pendingChanges.push(...changes);
-            yield {
-              type: 'error',
-              message: `[缓存抖动警报] 发现非预期的前缀哈希变更，将导致缓存一致性前缀失效！变更项: ${changes.join(', ')}`
-            };
-          }
-        }
-
-        // 更新本次会话的哈希基准
-        this.lastSystemPromptHash = currentSystemPromptHash;
-        this.lastToolsHash = currentToolsHash;
-
-        // 委托 driver 层拉起底层流式请求，注意此处传递的是动态入栈后的 snapshotContext
-        const stream = this.driver.streamChat(
-          snapshotContext,
-          allTools as unknown as ChatCompletionTool[]
+        // 触发 BeforeModel 拦截并重写大模型入参
+        const beforeModelResult = await runHookPipeline(
+          HookEventName.BeforeModel,
+          this.context,
+          this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeModel),
+          { llmRequest: { model: llmConfig.model, messages: snapshotContext, tools: filteredTools as ChatCompletionTool[] } as ChatCompletionCreateParams, emitEvent }
         );
+        while (eventQueue.length > 0) {
+          yield eventQueue.shift()!;
+        }
+
+        if (beforeModelResult.estimatedUsage) {
+          this.lastEstimatedUsage = beforeModelResult.estimatedUsage;
+        }
+
+        if (beforeModelResult.control.action === 'abort') {
+          yield { type: 'error', message: `[插件终止] 触发终止信号：${beforeModelResult.control.reason ?? '无原因'}` };
+          return;
+        }
+        if (beforeModelResult.control.action === 'restart') {
+          iteration = Math.max(0, iteration - 1);
+          continue;
+        }
+
+        const actualRequest = beforeModelResult.llmRequest ?? {
+          model: llmConfig.model,
+          messages: snapshotContext,
+          tools: filteredTools as ChatCompletionTool[]
+        };
+
+        // 获取底层的 Stream 响应
+        let stream: ReturnType<LlmDriver['streamChat']>;
+        if (beforeModelResult.llmResponse) {
+          // 如果插件直接 Mock 了相应，利用生成器做模拟回包
+          const mockResponse = beforeModelResult.llmResponse;
+          stream = (async function* () {
+            yield mockResponse;
+          })() as unknown as ReturnType<LlmDriver['streamChat']>;
+        } else {
+          stream = this.driver.streamChat(
+            actualRequest.messages,
+            actualRequest.tools as ChatCompletionTool[]
+          );
+        }
 
         // 标记在当前响应块中是否嗅探到了动作指令（工具调用）
         let hasToolCalls = false;
-        // 格式化后的工具清单集合，准备记录落盘
+        // 格式化后的工具清单集合
         let finalToolCalls: Array<{ name: string, arguments: string, result?: string, error?: string }> = [];
 
-        // 持续消费下层透传回来的解析事件
+        // 持续消费解析事件
         for await (const event of stream) {
           if (event.type === 'thinking' || event.type === 'content') {
-            // 普通的思考与内容输出事件直接透传抛出给上层终端
             yield event;
           } else if (event.type === 'tool_calls') {
-            // 接收到完整的工具指令流
             hasToolCalls = true;
-            // 将包含待执行工具调用的助手消息压入上下文堆栈
-            this.context.addMessage(event.assistantMessage);
 
-            // 后置执行缓存分析与校准逻辑
-            if (event.usage) {
-              yield* this.checkCacheAndCalibrate(event.usage);
+            // 触发 AfterModel 钩子，对模型返回的助理消息做拦截和改写
+            const afterModelResult = await runHookPipeline(
+              HookEventName.AfterModel,
+              this.context,
+              this.pluginRegistry.getPluginsForEvent(HookEventName.AfterModel),
+              { llmResponse: event.assistantMessage, emitEvent }
+            );
+            while (eventQueue.length > 0) {
+              yield eventQueue.shift()!;
             }
 
-            // 初始化本次将要记录的格式化工具清单
-            finalToolCalls = event.toolCalls.map((tc) => ({
+            if (afterModelResult.control.action === 'abort') {
+              yield { type: 'error', message: `[插件终止] 触发终止信号：${afterModelResult.control.reason ?? '无原因'}` };
+              return;
+            }
+            if (afterModelResult.control.action === 'restart') {
+              iteration = Math.max(0, iteration - 1);
+              break; // 退出当前 stream 消费，重新开始大循环
+            }
+
+            const finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatCompletionMessageParam;
+            this.context.addMessage(finalAssistantMessage);
+
+            // 更新真实 API 用量数据
+            if (event.usage) {
+              this.context.updateLastApiUsage(event.usage, this.context.getHistory().length);
+            }
+
+            finalToolCalls = event.toolCalls.map((tc: { function: { name: string; arguments: string } }) => ({
               name: tc.function.name,
               arguments: tc.function.arguments
             }));
 
-            // 遍历并串行处理该批次中出现的所有工具调用请求
+            // 遍历并串行处理工具调用请求
             for (let i = 0; i < event.toolCalls.length; i++) {
               const toolCall = event.toolCalls[i];
               const functionName = toolCall.function.name;
-              let functionArgs: { targetPath?: string; content?: string;[key: string]: unknown } = {};
+              let functionArgs: Record<string, unknown> = {};
 
               try {
-                // 尝试反序列化模型生成的工具参数 JSON
                 functionArgs = JSON.parse(toolCall.function.arguments);
               } catch (parseError: unknown) {
-                // 如果参数解析失败，记录异常详情
                 const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
                 finalToolCalls[i].error = `解析参数失败：${errorMsg}`;
-                // 抛出解析异常事件到外部终端
                 yield { type: 'error', message: `解析工具参数失败：${errorMsg}`, cause: parseError };
               }
 
-              // 1. Loop Prevention 熔断检测
-              const argsFingerprint = `${functionName}:${toolCall.function.arguments}`;
-              const callCount = toolCallCounter.get(argsFingerprint) || 0;
-              if (callCount >= 4) {
-                throw new Error(`[HARD BLOCK] 工具 "${functionName}" 携带完全一致的参数连续调用达 5 次，系统判定其已陷入死循环，强行触发熔断打断！`);
+              // 触发 BeforeTool 钩子
+              const beforeToolResult = await runHookPipeline(
+                HookEventName.BeforeTool,
+                this.context,
+                this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeTool),
+                { toolCall: { name: functionName, arguments: functionArgs }, emitEvent }
+              );
+              while (eventQueue.length > 0) {
+                yield eventQueue.shift()!;
               }
-              toolCallCounter.set(argsFingerprint, callCount + 1);
 
-              // 对外抛出工具开始执行前的挂起信号，通知 UI 层切换状态
-              yield { type: 'tool_call_start', functionName, functionArgs };
+              if (beforeToolResult.control.action === 'abort') {
+                const toolResult = `错误：工具调用被插件拦截拦截：${beforeToolResult.control.reason ?? '安全策略限制'}`;
+                finalToolCalls[i].error = beforeToolResult.control.reason ?? '安全策略限制';
+                yield { type: 'error', message: `[插件拦截] 工具调用被拦截阻断：${beforeToolResult.control.reason ?? '策略安全限制'}` };
+                yield { type: 'tool_call_result', functionName, result: toolResult };
+                this.context.addMessage({
+                  role: 'tool',
+                  tool_call_id: toolCall.id,
+                  content: toolResult
+                });
+                continue; // 跳过物理执行
+              }
+
+              const actualArgs = beforeToolResult.toolCall?.arguments ?? functionArgs;
+              yield { type: 'tool_call_start', functionName, functionArgs: actualArgs };
 
               let toolResult = '';
-
               try {
-                // 统一通过中央工具注册表进行物理/虚拟工具的函数路由分发
-                const mcpResult = await this.toolRegistry.callTool(functionName, functionArgs);
-
-                // 2. Gated JIT Context 注入拦截（针对本地的 readFile 工具且执行成功时）
-                const res = mcpResult as { content?: Array<{ type: string; text?: string }>; isError?: boolean };
-                if (
-                  functionName === 'readFile' &&
-                  res &&
-                  Array.isArray(res.content) &&
-                  res.content.length > 0 &&
-                  !res.isError &&
-                  typeof functionArgs.targetPath === 'string'
-                ) {
-                  const firstContent = res.content[0];
-                  if (firstContent && typeof firstContent.text === 'string') {
-                    // 动态注入 JIT 上下文规范
-                    const jitText = this.toolDispatcher.resolveJitContext(functionArgs.targetPath, injectedJitPaths);
-                    if (jitText) {
-                      firstContent.text += jitText;
-                    }
-                  }
-                }
-
-                // 将执行得到的原始结果转为字符串存储
+                const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs);
                 const rawResult = JSON.stringify(mcpResult);
-                // 对超大输出执行拦截并落盘
                 toolResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
-                finalToolCalls[i].result = toolResult;
               } catch (toolError: unknown) {
-                // 捕获应用侧物理执行引发的致命异常，并予以无害化处理（转为大模型可见的报错）
                 const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
                 toolResult = `错误：${errorMsg}`;
                 finalToolCalls[i].error = errorMsg;
-                // 抛出执行异常事件到外部终端
                 yield { type: 'error', message: `工具执行失败：${errorMsg}`, cause: toolError };
               }
 
-              // 对外抛出该单一工具执行完毕的反馈事件
-              yield { type: 'tool_call_result', functionName, result: toolResult };
+              // 触发 AfterTool 钩子，支持对结果改写以及尾随工具调用
+              const afterToolResult = await runHookPipeline(
+                HookEventName.AfterTool,
+                this.context,
+                this.pluginRegistry.getPluginsForEvent(HookEventName.AfterTool),
+                {
+                  toolCall: { name: functionName, arguments: actualArgs },
+                  toolResult: { content: toolResult },
+                  emitEvent
+                }
+              );
+              while (eventQueue.length > 0) {
+                yield eventQueue.shift()!;
+              }
 
-              // 将此工具的执行结果打包为标准模型协议格式并卷入状态空间，以备模型审查
+              if (afterToolResult.control.action === 'abort') {
+                yield { type: 'error', message: `[插件终止] 触发终止信号：${afterToolResult.control.reason ?? '无原因'}` };
+                return;
+              }
+
+              const finalToolResultContent = afterToolResult.toolResult?.content ?? toolResult;
+              finalToolCalls[i].result = finalToolResultContent;
+
+              // 检查是否有尾随工具请求
+              if (afterToolResult.tailToolCallRequest) {
+                const tailCall = afterToolResult.tailToolCallRequest;
+                yield { type: 'thinking', content: `[尾随调用] 插件触发尾随工具链调用: ${tailCall.name}` };
+                try {
+                  const tailResultRaw = await this.toolRegistry.callTool(tailCall.name, tailCall.args);
+                  finalToolCalls[i].result = JSON.stringify(tailResultRaw);
+                } catch (tailError: unknown) {
+                  const errorMsg = tailError instanceof Error ? tailError.message : String(tailError);
+                  finalToolCalls[i].result = `错误：尾随工具执行失败：${errorMsg}`;
+                }
+              }
+
+              yield { type: 'tool_call_result', functionName, result: finalToolCalls[i].result ?? '' };
+
               this.context.addMessage({
                 role: 'tool',
                 tool_call_id: toolCall.id,
-                content: toolResult
+                content: finalToolCalls[i].result ?? ''
               });
             }
 
@@ -333,7 +404,7 @@ export class AgentLoop {
               return msg;
             });
 
-            // 当前批次工具指令流转完毕，落盘本次带有工具动作快照的详细交互日志
+            // 触发审计落盘切面
             tracer.logInteraction({
               timestamp: new Date().toISOString(),
               iteration,
@@ -341,16 +412,36 @@ export class AgentLoop {
               reasoning: event.assistantMessage.reasoning_content || '',
               content: event.assistantMessage.content || '',
               tool_calls: finalToolCalls,
-              estimated_tokens: estimatedTokens,
+              estimated_tokens: this.lastEstimatedUsage ?? undefined,
               actual_tokens: event.usage
             });
-          } else if (event.type === 'complete') {
-            // 普通文本回复已全量返回，无任何动作触发
-            this.context.addMessage(event.assistantMessage);
 
-            // 后置执行缓存分析与校准逻辑
+          } else if (event.type === 'complete') {
+            // 触发 AfterModel 钩子，对模型返回的助理消息做拦截和改写
+            const afterModelResult = await runHookPipeline(
+              HookEventName.AfterModel,
+              this.context,
+              this.pluginRegistry.getPluginsForEvent(HookEventName.AfterModel),
+              { llmResponse: event.assistantMessage, emitEvent }
+            );
+            while (eventQueue.length > 0) {
+              yield eventQueue.shift()!;
+            }
+
+            if (afterModelResult.control.action === 'abort') {
+              yield { type: 'error', message: `[插件终止] 触发终止信号：${afterModelResult.control.reason ?? '无原因'}` };
+              return;
+            }
+            if (afterModelResult.control.action === 'restart') {
+              iteration = Math.max(0, iteration - 1);
+              break;
+            }
+
+            const finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatCompletionMessageParam;
+            this.context.addMessage(finalAssistantMessage);
+
             if (event.usage) {
-              yield* this.checkCacheAndCalibrate(event.usage);
+              this.context.updateLastApiUsage(event.usage, this.context.getHistory().length);
             }
 
             const purifiedContext = snapshotContext.map(msg => {
@@ -362,21 +453,18 @@ export class AgentLoop {
               }
               return msg;
             });
-            // 写入本次无动作纯回复的交互日志
+
             tracer.logInteraction({
               timestamp: new Date().toISOString(),
               iteration,
               context: purifiedContext,
               reasoning: event.reasoning,
               content: event.content,
-              estimated_tokens: estimatedTokens,
+              estimated_tokens: this.lastEstimatedUsage ?? undefined,
               actual_tokens: event.usage
             });
 
-            // 自然终止前，主动触发一次后台提炼检查
-            this.compactionService.triggerAsyncCompactionIfNeeded(this.lastEstimatedUsage?.total || 0).catch(() => { });
             await this.contextRepo.saveState();
-            // 彻底退出生成器生命周期
             return;
           }
         }
@@ -404,6 +492,16 @@ export class AgentLoop {
         yield { type: 'error', message: fullErrorMsg, cause: apiError };
         throw new Error(fullErrorMsg, { cause: apiError });
       } finally {
+        // 触发 SessionEnd 钩子以作清理和最后的 patches 审计
+        await runHookPipeline(
+          HookEventName.SessionEnd,
+          this.context,
+          this.pluginRegistry.getPluginsForEvent(HookEventName.SessionEnd),
+          { emitEvent }
+        );
+        while (eventQueue.length > 0) {
+          yield eventQueue.shift()!;
+        }
         // 无论正常结束还是抛错中断，强制性确保当前上下文得到文件落盘保存
         await this.contextRepo.saveState();
       }

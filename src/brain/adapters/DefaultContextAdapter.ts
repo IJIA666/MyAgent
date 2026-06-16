@@ -111,9 +111,9 @@ export class DefaultContextAdapter implements ContextAdapter {
           content: injectedText.trim()
         });
       } else {
-        // 4. 核心逻辑：安全地深拷贝最后一条 user 消息，防止污染 baseHistory 引用
+        // 4. 核心逻辑：使用原生 structuredClone 内存拷贝最后一条 user 消息，防止污染 baseHistory 引用
         const originalUserMsg = historySnapshot[lastUserIndex];
-        const copiedUserMsg = JSON.parse(JSON.stringify(originalUserMsg)) as ChatCompletionUserMessageParam;
+        const copiedUserMsg = structuredClone(originalUserMsg) as ChatCompletionUserMessageParam;
 
         const originalContent = originalUserMsg.content;
         if (typeof originalContent === 'string') {
