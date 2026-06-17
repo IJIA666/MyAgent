@@ -22,7 +22,8 @@ export type AgentEvent =
   | { type: 'content'; content: string }
   | { type: 'tool_call_start'; functionName: string; functionArgs: Record<string, unknown> }
   | { type: 'tool_call_result'; functionName: string; result: string }
-  | { type: 'error'; message: string; cause?: unknown };
+  | { type: 'error'; message: string; cause?: unknown }
+  | { type: 'suspend'; id: string; toolCall: { name: string; arguments: Record<string, unknown> }; allowedPrefix: string | null };
 
 /**
  * 实例化 AgentLoop 所需的依赖配置项。

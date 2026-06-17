@@ -1,8 +1,10 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { buildSystemPrompt } from './prompts.js';
+import { ApprovalService } from './services/ApprovalService.js';
 
 export { ApiUsage, ContextTokenUsage } from './TokenEstimator.js';
 import { ApiUsage } from './TokenEstimator.js';
@@ -43,6 +45,11 @@ export class SessionContext {
   private lastApiUsage: ApiUsage | null = null;
   private lastApiHistoryLength: number = 0;
 
+  /** 用于控制危险操作挂起与恢复的人机协同审批服务 */
+  public readonly approvalService: ApprovalService;
+  /** 内存缓存的允许执行命令安全白名单 */
+  private securityAllowlist: string[] = [];
+
 
   /**
    * 实例初始化。
@@ -52,6 +59,8 @@ export class SessionContext {
   constructor(sessionId?: string) {
     // 如果没有传入 sessionId，则使用当前时间戳作为默认会话标识
     this.sessionId = sessionId || Date.now().toString();
+    // 实例化独立的人机协同审批协调服务
+    this.approvalService = new ApprovalService();
 
     // 初始化系统指令，确立智能体的工作边界与行为准则
     const systemPrompt = buildSystemPrompt();
@@ -60,6 +69,58 @@ export class SessionContext {
       role: 'system',
       content: systemPrompt
     });
+  }
+
+  /**
+   * 从工作区磁盘配置文件中重载命令安全白名单。
+   *
+   * @returns 最新加载的白名单规则列表
+   */
+  public loadSecurityAllowlist(): string[] {
+    try {
+      const filePath = path.resolve(process.cwd(), '.agent/allowed_commands.json');
+      if (existsSync(filePath)) {
+        const data = readFileSync(filePath, 'utf-8');
+        this.securityAllowlist = JSON.parse(data) as string[];
+        return this.securityAllowlist;
+      }
+    } catch {
+      // 忽略文件读取异常，回退为空列表
+    }
+    this.securityAllowlist = [];
+    return [];
+  }
+
+  /**
+   * 将更新后的安全命令白名单持久化存盘，并更新内存缓存。
+   *
+   * @param commands - 新的白名单规则列表
+   */
+  public saveSecurityAllowlist(commands: string[]): void {
+    try {
+      this.securityAllowlist = commands;
+      const filePath = path.resolve(process.cwd(), '.agent/allowed_commands.json');
+      const dir = path.dirname(filePath);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+      writeFileSync(filePath, JSON.stringify(commands, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('保存命令安全白名单至磁盘失败:', err);
+    }
+  }
+
+  /**
+   * 获取当前有效的安全命令白名单列表。
+   * 若内存缓存为空，则触发一次磁盘加载。
+   *
+   * @returns 安全命令白名单列表
+   */
+  public getSecurityAllowlist(): string[] {
+    if (this.securityAllowlist.length === 0) {
+      this.loadSecurityAllowlist();
+    }
+    return this.securityAllowlist;
   }
 
   /**

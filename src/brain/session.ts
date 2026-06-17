@@ -12,7 +12,8 @@ import {
   TokenWatermarkPlugin,
   JitRulesPlugin,
   TracerLogPlugin,
-  LoopPreventionPlugin
+  LoopPreventionPlugin,
+  HumanApprovalPlugin
 } from './plugins/index.js';
 
 // 导入领域服务
@@ -20,6 +21,7 @@ import { RuleManager } from './services/RuleManager.js';
 import { ContextRepository } from './services/ContextRepository.js';
 import { ToolDispatcher } from './services/ToolDispatcher.js';
 import { CompactionService } from './services/CompactionService.js';
+import { ApprovalService } from './services/ApprovalService.js';
 
 /**
  * 会话管理与模型交互调度中心。
@@ -88,6 +90,7 @@ export class SessionManager {
     this.pluginRegistry.register(new JitRulesPlugin(this.toolDispatcher));
     this.pluginRegistry.register(new TracerLogPlugin(() => this.tracer));
     this.pluginRegistry.register(new LoopPreventionPlugin());
+    this.pluginRegistry.register(new HumanApprovalPlugin());
 
     // 初始化独立的执行引擎实例
     this.agentLoop = new AgentLoop({
@@ -138,6 +141,15 @@ export class SessionManager {
    */
   public getSessionId(): string {
     return this.context.getSessionId();
+  }
+
+  /**
+   * 获取当前会话绑定的人机协同审批协调服务。
+   *
+   * @returns 审批服务实例
+   */
+  public get approvalService(): ApprovalService {
+    return this.context.approvalService;
   }
 
   /**

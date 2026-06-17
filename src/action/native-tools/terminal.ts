@@ -6,15 +6,6 @@
  */
 
 import { validateCommand, validateCwd } from './terminal-guard.js';
-import {
-  loadWorkMode,
-  getWorkMode,
-  checkWhitelist,
-  extractSafePrefix,
-  loadAllowedCommands,
-  saveAllowedCommands
-} from './terminal-config.js';
-import { askUserPermission } from './terminal-interactive.js';
 import { runCommandEngine } from './terminal-engine.js';
 
 /**
@@ -37,38 +28,7 @@ export async function executeCommandTool(
   // 2. 沙箱隔离：校验 cwd 范围并获取规范绝对路径
   const targetCwd = validateCwd(cwd);
 
-  // 3. 安全审判：从磁盘重载工作模式并判断是否需要人工干预
-  loadWorkMode(); 
-  const workMode = getWorkMode();
-  let needApproval = true;
-
-  if (workMode === 'YOLO') {
-    needApproval = false;
-  } else if (workMode === 'Auto') {
-    if (checkWhitelist(command)) {
-      needApproval = false;
-    }
-  }
-
-  // 4. 交互反馈：调起全局排队交互窗口询问用户
-  if (needApproval) {
-    const safePrefix = extractSafePrefix(command);
-    const userChoice = await askUserPermission(command, safePrefix);
-    if (userChoice === 'deny') {
-      throw new Error('Command execution denied by user');
-    }
-    // 始终放行前缀，则持久化写入白名单文件
-    if (userChoice === 'always' && safePrefix) {
-      const allowed = loadAllowedCommands();
-      const prefixRule = `${safePrefix}:*`;
-      if (!allowed.includes(prefixRule)) {
-        allowed.push(prefixRule);
-        saveAllowedCommands(allowed);
-      }
-    }
-  }
-
-  // 5. 进程执行：交给底座无状态进程引擎进行 spawn 调度
+  // 3. 进程执行：交给底座无状态进程引擎进行 spawn 调度
   return runCommandEngine(command, targetCwd, isBackground, options);
 }
 

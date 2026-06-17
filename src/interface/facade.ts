@@ -1,3 +1,4 @@
+import readline from 'readline';
 import { SessionManager } from '../brain/index.js';
 import { InputListener } from './io/input-listener.js';
 import { redrawHistory, renderTokenPanel } from './views/widget-renderer.js';
@@ -147,6 +148,77 @@ export class CliFacade {
             }
             process.stdout.write(event.content);
             break;
+          case 'suspend': {
+            // 挂起 InputListener 常规输入监听以防 stdin 抢占
+            this.listener.pause();
+            const toolCall = event.toolCall;
+            const command = toolCall.arguments.command as string;
+            const allowedPrefix = event.allowedPrefix;
+
+            const decision = await new Promise<'once' | 'always' | 'deny'>((resolve) => {
+              const rl = readline.createInterface({
+                input: process.stdin,
+                output: process.stdout
+              });
+
+              console.log(`\n⚠️  ${theme.warning('[安全提示] Agent 企图执行以下终端命令：')}`);
+              console.log(`   👉  \x1b[33m${command}\x1b[0m`);
+
+              if (allowedPrefix) {
+                console.log('选择操作:');
+                console.log('  [1] 单次放行 (Allow Once)');
+                console.log(`  [2] 始终放行该前缀命令 (Always Allow "${allowedPrefix}:*")`);
+                console.log('  [3] 拒绝执行 (Deny)');
+
+                const ask = () => {
+                  rl.question('请选择 [1/2/3]: ', (answer) => {
+                    const ans = answer.trim();
+                    if (ans === '1') {
+                      rl.close();
+                      resolve('once');
+                    } else if (ans === '2') {
+                      rl.close();
+                      resolve('always');
+                    } else if (ans === '3') {
+                      rl.close();
+                      resolve('deny');
+                    } else {
+                      console.log('无效选择，请重新输入。');
+                      ask();
+                    }
+                  });
+                };
+                ask();
+              } else {
+                console.log('选择操作:');
+                console.log('  [1] 单次放行 (Allow Once)');
+                console.log('  [2] 拒绝执行 (Deny)');
+
+                const ask = () => {
+                  rl.question('请选择 [1/2]: ', (answer) => {
+                    const ans = answer.trim();
+                    if (ans === '1') {
+                      rl.close();
+                      resolve('once');
+                    } else if (ans === '2') {
+                      rl.close();
+                      resolve('deny');
+                    } else {
+                      console.log('无效选择，请重新输入。');
+                      ask();
+                    }
+                  });
+                };
+                ask();
+              }
+            });
+
+            // 注入决策唤醒内核
+            this.session.approvalService.resolve(event.id, { action: decision });
+            // 恢复键盘常规输入监听
+            this.listener.resume();
+            break;
+          }
           case 'tool_call_start':
             process.stdout.write(`\n\n${theme.info(`[⚡ 正在调用工具 "${event.functionName}"]`)}\n`);
             console.log(theme.highlight(`[调度参数] ${JSON.stringify(event.functionArgs)}`));

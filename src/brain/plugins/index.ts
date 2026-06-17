@@ -13,3 +13,4 @@ export { TokenWatermarkPlugin } from './TokenWatermarkPlugin.js';
 export { JitRulesPlugin } from './JitRulesPlugin.js';
 export { TracerLogPlugin } from './TracerLogPlugin.js';
 export { LoopPreventionPlugin } from './LoopPreventionPlugin.js';
+export { HumanApprovalPlugin } from './HumanApprovalPlugin.js';
