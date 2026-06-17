@@ -1,11 +1,13 @@
 /**
  * @file 智能体 Hook 插件库统一导出索引文件。
  * 核心职责：
- * 1. 导出 Token 水位监测插件。
- * 2. 导出 JIT 规则动态伴生注入插件。
- * 3. 导出执行足迹与 Immer patches 审计日志插件。
- * 4. 导出工具死循环与熔断防护插件。
+ * 1. 统一对外提供插件强类型定义与中间件运行管道。
+ * 2. 导出 Token 水位监测、JIT 规则伴生、Trace 审计与死循环熔断等四个切面业务插件。
  */
+
+export * from './plugin-types.js';
+export { PluginRegistry } from './plugin-registry.js';
+export { runHookPipeline } from './plugin-runner.js';
 
 export { TokenWatermarkPlugin } from './TokenWatermarkPlugin.js';
 export { JitRulesPlugin } from './JitRulesPlugin.js';

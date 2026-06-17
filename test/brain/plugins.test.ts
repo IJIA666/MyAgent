@@ -8,12 +8,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { HookEventName, HookContext } from '../../src/brain/plugin-types.js';
+import { HookEventName, HookContext, TokenWatermarkPlugin, JitRulesPlugin, TracerLogPlugin, LoopPreventionPlugin } from '../../src/brain/plugins/index.js';
 import { SessionContext } from '../../src/brain/context.js';
-import { TokenWatermarkPlugin } from '../../src/brain/plugins/TokenWatermarkPlugin.js';
-import { JitRulesPlugin } from '../../src/brain/plugins/JitRulesPlugin.js';
-import { TracerLogPlugin } from '../../src/brain/plugins/TracerLogPlugin.js';
-import { LoopPreventionPlugin } from '../../src/brain/plugins/LoopPreventionPlugin.js';
 import type { CompactionService } from '../../src/brain/services/CompactionService.js';
 import type { LlmConfig } from '../../src/config/index.js';
 import type { ToolDispatcher } from '../../src/brain/services/ToolDispatcher.js';

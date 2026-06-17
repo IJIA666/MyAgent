@@ -6,9 +6,7 @@ import { SessionContext, ApiUsage, ContextTokenUsage } from './context.js';
 import { LlmDriver } from './driver.js';
 import { ContextAdapter } from './adapters/index.js';
 import { purifyContent } from '../utils/purify.js';
-import { PluginRegistry } from './plugin-registry.js';
-import { HookEventName } from './plugin-types.js';
-import { runHookPipeline } from './plugin-runner.js';
+import { PluginRegistry, HookEventName, runHookPipeline } from './plugins/index.js';
 
 // 导入领域服务
 import { RuleManager } from './services/RuleManager.js';

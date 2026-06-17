@@ -1,5 +1,5 @@
-import type { HookContext, Plugin } from '../plugin-types.js';
-import { HookEventName } from '../plugin-types.js';
+import type { HookContext, Plugin } from './plugin-types.js';
+import { HookEventName } from './plugin-types.js';
 import { TokenEstimator } from '../TokenEstimator.js';
 import type { CompactionService } from '../services/CompactionService.js';
 import type { LlmConfig } from '../../config/index.js';

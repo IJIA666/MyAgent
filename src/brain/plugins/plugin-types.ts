@@ -7,7 +7,7 @@
  */
 
 import type { ChatCompletionCreateParams } from 'openai/resources/chat/completions.js';
-import type { SessionContext, ContextTokenUsage } from './context.js';
+import type { SessionContext, ContextTokenUsage } from '../context.js';
 
 /**
  * 智能体 Hook 生命周期的事件枚举。

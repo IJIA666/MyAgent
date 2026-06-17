@@ -1,5 +1,5 @@
-import type { HookContext, Plugin } from '../plugin-types.js';
-import { HookEventName } from '../plugin-types.js';
+import type { HookContext, Plugin } from './plugin-types.js';
+import { HookEventName } from './plugin-types.js';
 import type { ToolDispatcher } from '../services/ToolDispatcher.js';
 
 /**

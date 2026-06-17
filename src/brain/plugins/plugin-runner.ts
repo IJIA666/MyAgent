@@ -11,7 +11,7 @@ import { enablePatches, produceWithPatches } from 'immer';
 import type { Patch } from 'immer';
 import type { ChatCompletionMessageParam, ChatCompletionCreateParams } from 'openai/resources/chat/completions.js';
 import type { HookContext, HookEventName, HookMiddleware } from './plugin-types.js';
-import type { SessionContext } from './context.js';
+import type { SessionContext } from '../context.js';
 
 // 显式启用 Immer 的变更补丁功能，以支持局部变更溯源
 enablePatches();

@@ -7,8 +7,8 @@ import { LlmDriver } from './driver.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 import { loadSkillContent } from './contextLoader.js';
 import { AgentLoop, AgentEvent } from './agent-loop.js';
-import { PluginRegistry } from './plugin-registry.js';
 import {
+  PluginRegistry,
   TokenWatermarkPlugin,
   JitRulesPlugin,
   TracerLogPlugin,
