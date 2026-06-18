@@ -15,7 +15,8 @@ import * as p from '@clack/prompts';
 import { theme } from '../utils/theme.js';
 import { loadSkills } from '../brain/contextLoader.js';
 
-export { CommandContext, CommandResult };
+// 显式重导出 CommandContext 和 CommandResult 接口类型，避免在 ESM 下因类型擦除引发运行时加载错误
+export type { CommandContext, CommandResult };
 
 /**
  * Slash 命令注册与路由分发器。

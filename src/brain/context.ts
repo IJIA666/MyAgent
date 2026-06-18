@@ -6,7 +6,8 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { buildSystemPrompt } from './prompts.js';
 import { ApprovalService } from './services/ApprovalService.js';
 
-export { ApiUsage, ContextTokenUsage } from './TokenEstimator.js';
+// 显式重导出 ApiUsage 和 ContextTokenUsage 类型，避免在 ESM 下因类型擦除引发运行时加载错误
+export type { ApiUsage, ContextTokenUsage } from './TokenEstimator.js';
 import { ApiUsage } from './TokenEstimator.js';
 
 export interface PluginPatchGroup {

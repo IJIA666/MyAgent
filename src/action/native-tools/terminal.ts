@@ -35,7 +35,8 @@ export async function executeCommandTool(
 // 导出配置管理与进程引擎相关的公共类型及工具函数
 
 export {
-  WorkMode,
+  // 显式以 type 导出 WorkMode 类型，防止 ESM 环境下类型擦除后运行时解析报错
+  type WorkMode,
   getWorkMode,
   setWorkMode,
   loadWorkMode,
@@ -47,6 +48,7 @@ export {
 } from './terminal-config.js';
 
 export {
-  TaskInfo,
+  // 显式以 type 导出 TaskInfo 接口类型，防止 ESM 静态校验失败
+  type TaskInfo,
   activeTasks
 } from './terminal-engine.js';
