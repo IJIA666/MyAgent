@@ -7,7 +7,7 @@
  * 4. 落地串行短路（ Fail-Fast ）拦截决策，并输出 Patch 变更日志以供 Trace 审计。
  */
 
-import { enablePatches, produceWithPatches } from 'immer';
+import { enablePatches, createDraft, finishDraft } from 'immer';
 import type { Patch } from 'immer';
 import type { ChatCompletionMessageParam, ChatCompletionCreateParams } from 'openai/resources/chat/completions.js';
 import type { HookContext, HookEventName, HookMiddleware } from './plugin-types.js';
@@ -16,13 +16,7 @@ import type { SessionContext } from '../context.js';
 // 显式启用 Immer 的变更补丁功能，以支持局部变更溯源
 enablePatches();
 
-/**
- * Immer 异步 produceWithPatches 的强类型包装定义。
- */
-const asyncProduceWithPatches = produceWithPatches as unknown as <T>(
-  base: T,
-  recipe: (draft: T) => Promise<void>
-) => Promise<[T, Patch[]]>;
+
 
 /**
  * 包装在 Immer 隔离沙箱中的纯状态数据结构。
@@ -83,69 +77,86 @@ export async function runHookPipeline(
     tailToolCallRequest: undefined
   };
 
-  // 3. 在 Immer 的异步生产环境中，链式调度串行中间件
-  const [finalState, patches] = await asyncProduceWithPatches(baseState, async (draft) => {
-    // 代理原有的 SessionContext，重定向其对 messageHistory 的所有改写和读取至 Immer 的 Draft 状态上
-    const sandboxedSessionContext = new Proxy(sessionContext, {
-      get(target, prop, receiver) {
-        if (prop === 'getHistory') {
-          return () => draft.history;
-        }
-        if (prop === 'addMessage') {
-          return (msg: ChatCompletionMessageParam) => {
-            draft.history.push(msg);
-          };
-        }
-        if (prop === 'popMessage') {
-          return () => draft.history.pop();
-        }
-        if (prop === 'truncateHistory') {
-          return (keepLastN: number) => {
-            if (draft.history.length <= keepLastN + 1) return;
-            const systemMsg = draft.history[0];
-            const keptMsgs = draft.history.slice(draft.history.length - keepLastN);
-            draft.history = [systemMsg, ...keptMsgs];
-          };
-        }
-        // 其它普通属性和未拦截方法反射并绑定执行
-        const value = Reflect.get(target, prop, receiver);
-        return typeof value === 'function' ? value.bind(target) : value;
+  // 3. 启用忙锁并创建沙箱隔离 Draft
+  sessionContext.isProcessing = true;
+  const draft = createDraft(baseState);
+
+  // 代理原有的 SessionContext，重定向其对 messageHistory 的所有改写和读取至 Immer 的 Draft 状态上
+  const sandboxedSessionContext = new Proxy(sessionContext, {
+    get(target, prop, receiver) {
+      if (prop === 'getHistory') {
+        return () => draft.history;
       }
-    });
-
-    const sandboxContext: HookContext = {
-      sessionContext: sandboxedSessionContext,
-      eventName: context.eventName,
-      llmRequest: draft.llmRequest,
-      llmResponse: draft.llmResponse,
-      toolCall: draft.toolCall,
-      toolResult: draft.toolResult,
-      control: context.control, // 共享同一个控制信号引用
-      emitEvent: context.emitEvent
-    };
-
-    // 洋葱模型串行递归分发
-    const dispatch = async (i: number): Promise<void> => {
-      // 遇中断即短路（ Fail-Fast ）：当前任一插件触发了非 continue 指令时，立即截断
-      if (sandboxContext.control.action !== 'continue') {
-        return;
+      if (prop === 'addMessage') {
+        return (msg: ChatCompletionMessageParam) => {
+          draft.history.push(msg);
+        };
       }
-
-      // 递归终止条件
-      if (i >= middlewares.length) {
-        return;
+      if (prop === 'popMessage') {
+        return () => draft.history.pop();
       }
+      if (prop === 'truncateHistory') {
+        return (keepLastN: number) => {
+          if (draft.history.length <= keepLastN + 1) return;
+          const systemMsg = draft.history[0];
+          const keptMsgs = draft.history.slice(draft.history.length - keepLastN);
+          draft.history = [systemMsg, ...keptMsgs];
+        };
+      }
+      // 其它普通属性和未拦截方法反射并绑定执行
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    }
+  });
 
-      const middleware = middlewares[i];
-      // 递归执行下一个中间件，利用 await 保证严格的串行时序
-      await middleware(sandboxContext, () => dispatch(i + 1));
-    };
+  const sandboxContext: HookContext = {
+    sessionContext: sandboxedSessionContext,
+    eventName: context.eventName,
+    llmRequest: draft.llmRequest,
+    llmResponse: draft.llmResponse,
+    toolCall: draft.toolCall,
+    toolResult: draft.toolResult,
+    control: context.control, // 共享同一个控制信号引用
+    emitEvent: context.emitEvent
+  };
 
+  // 洋葱模型串行递归分发
+  const dispatch = async (i: number): Promise<void> => {
+    // 遇中断即短路（ Fail-Fast ）：当前任一插件触发了非 continue 指令时，立即截断
+    if (sandboxContext.control.action !== 'continue') {
+      return;
+    }
+
+    // 递归终止条件
+    if (i >= middlewares.length) {
+      return;
+    }
+
+    const middleware = middlewares[i];
+    // 递归执行下一个中间件，利用 await 保证严格的串行时序
+    await middleware(sandboxContext, () => dispatch(i + 1));
+  };
+
+  let finalState: BaseState;
+  const patches: Patch[] = [];
+
+  try {
+    // 异步执行洋葱链，由 Try-Catch-Finally 提供稳固的异常熔断和忙锁释放防护
     await dispatch(0);
-
     // 将中间件中填写的尾随工具请求与控制指令提取到最终合并状态中
     draft.tailToolCallRequest = sandboxContext.tailToolCallRequest;
-  });
+    // 冻结 Draft 状态并捕获 patches 补丁
+    finalState = finishDraft(draft, (p) => {
+      patches.push(...p);
+    }) as BaseState;
+  } catch (error) {
+    // 发生异常时，直接丢弃该 Draft，坚决不提交，防止脏写
+    console.error(`[Plugin Error] Hook ${eventName} failed:`, error);
+    throw error;
+  } finally {
+    // 强制还原并释放并发忙状态锁，杜绝死锁风险
+    sessionContext.isProcessing = false;
+  }
 
   // 4. 一次性安全提交 Immer 生成的不可变状态至外层 SessionContext 属性
   // 只有当控制指令没有触发 abort（ 强行终止 ）时，修改才会被确认落盘，防止脏写

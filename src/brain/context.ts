@@ -42,6 +42,8 @@ export class SessionContext {
   private sessionId: string;
   private checkpointSummary: string | null = null;
   private recentFiles: string[] = [];
+  /** 会话是否正在处理生命周期 Hook 中间件（忙状态并发锁） */
+  public isProcessing = false;
 
   private lastApiUsage: ApiUsage | null = null;
   private lastApiHistoryLength: number = 0;
@@ -131,6 +133,10 @@ export class SessionContext {
    * @param customGlobalRules - 可选的全局规则内容缓存，用于覆盖并锁定
    */
   public updateSystemPrompt(customGlobalRules?: string): void {
+    // 忙状态并发锁断言保护
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
     const systemPrompt = buildSystemPrompt(customGlobalRules);
     if (this.messageHistory.length > 0 && this.messageHistory[0].role === 'system') {
       this.messageHistory[0].content = systemPrompt;
@@ -243,6 +249,10 @@ export class SessionContext {
    * @param message - 待追加的标准模型消息载体对象
    */
   public addMessage(message: ChatCompletionMessageParam): void {
+    // 忙状态并发锁断言保护
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
     // 将新消息追加到历史记录末尾
     this.messageHistory.push(message);
   }
@@ -253,6 +263,10 @@ export class SessionContext {
    * @returns 从队尾弹出的最新一条消息，若历史为空则返回 undefined
    */
   public popMessage(): ChatCompletionMessageParam | undefined {
+    // 忙状态并发锁断言保护
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
     // 从历史记录末尾移除并返回该消息
     return this.messageHistory.pop();
   }
@@ -264,6 +278,10 @@ export class SessionContext {
    * @param keepLastN - 保留的最近消息数量
    */
   public truncateHistory(keepLastN: number): void {
+    // 忙状态并发锁断言保护
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
     if (this.messageHistory.length <= keepLastN + 1) return;
     const systemMsg = this.messageHistory[0];
     const keptMsgs = this.messageHistory.slice(this.messageHistory.length - keepLastN);
@@ -303,6 +321,10 @@ export class SessionContext {
    * @returns 如果成功读取文件并解析恢复返回 true，文件不存在或解析失败返回 false
    */
   public async loadState(targetSessionId: string): Promise<boolean> {
+    // 忙状态并发锁断言保护
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
     try {
       // 构造目标会话状态的文件路径
       const file = path.join(process.cwd(), '.myagent/sessions', `${targetSessionId}.json`);
@@ -363,6 +385,10 @@ export class SessionContext {
    * @param history - 新的消息历史数组
    */
   public updateHistory(history: ChatCompletionMessageParam[]): void {
+    // 忙状态并发锁断言保护
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
     this.messageHistory = history;
   }
 }

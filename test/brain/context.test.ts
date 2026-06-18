@@ -78,4 +78,22 @@ describe('SessionContext Token & Hash Tests', () => {
     // 确保整个估算逻辑在存在基准锚点时稳定且不会出错
     expect(estimate.total).toBeGreaterThan(1200);
   });
+
+  it('应该在并发忙状态锁激活时，阻断状态修改与存档载入操作', async () => {
+    // 激活并发忙状态锁
+    context.isProcessing = true;
+
+    // 验证直接修改历史的各个方法均被拦截
+    expect(() => context.addMessage({ role: 'user', content: 'test' })).toThrow('Cannot modify SessionContext: session is currently busy processing hooks.');
+    expect(() => context.popMessage()).toThrow('Cannot modify SessionContext: session is currently busy processing hooks.');
+    expect(() => context.truncateHistory(1)).toThrow('Cannot modify SessionContext: session is currently busy processing hooks.');
+    expect(() => context.updateHistory([])).toThrow('Cannot modify SessionContext: session is currently busy processing hooks.');
+    expect(() => context.updateSystemPrompt('new rules')).toThrow('Cannot modify SessionContext: session is currently busy processing hooks.');
+
+    // 验证 loadState 存档载入操作同样被忙锁拦截
+    await expect(context.loadState('target-session')).rejects.toThrow('Cannot modify SessionContext: session is currently busy processing hooks.');
+
+    // 恢复锁状态
+    context.isProcessing = false;
+  });
 });
