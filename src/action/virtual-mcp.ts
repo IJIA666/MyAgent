@@ -1,4 +1,5 @@
 import { toolsDefinition, readFileTool, writeFileTool, listFilesTool, grepSearchTool, globSearchTool, executeCommandTool } from './tools.js';
+import { ToolConstants } from '../common/constants.js';
 
 
 /**
@@ -61,7 +62,7 @@ export class LocalFileSystemMcpServer {
 
       // 根据请求的工具名称，路由到对应的本地函数
       switch (request.name) {
-        case 'readFile': {
+        case ToolConstants.READ_FILE: {
           // 校验目标路径参数的类型合法性
           if (typeof args.targetPath !== 'string') throw new Error("targetPath 必须是字符串");
           const lineStart = typeof args.lineStart === 'number' ? args.lineStart : undefined;
@@ -71,7 +72,7 @@ export class LocalFileSystemMcpServer {
           break;
         }
 
-        case 'writeFile':
+        case ToolConstants.WRITE_FILE:
           // 校验必填参数
           if (typeof args.targetPath !== 'string') throw new Error("targetPath 必须是字符串");
           if (typeof args.content !== 'string') throw new Error("content 必须是字符串");
@@ -79,7 +80,7 @@ export class LocalFileSystemMcpServer {
           resultText = writeFileTool(args.targetPath, args.content);
           break;
 
-        case 'listFiles': {
+        case ToolConstants.LIST_FILES: {
           // 校验可选参数 targetPath 的类型
           if (args.targetPath !== undefined && typeof args.targetPath !== 'string') {
             throw new Error("targetPath 必须是字符串");
@@ -134,7 +135,7 @@ export class LocalFileSystemMcpServer {
           break;
         }
 
-        case 'execute_command': {
+        case ToolConstants.EXECUTE_COMMAND: {
           if (typeof args.command !== 'string') throw new Error("command 必须是字符串");
           if (args.cwd !== undefined && typeof args.cwd !== 'string') {
             throw new Error("cwd 必须是字符串");

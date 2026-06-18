@@ -41,6 +41,86 @@ export class CliFacade {
         await this.handleLineSubmit(line);
       }
     });
+
+    // 注册底座的审批卡关回调，实现实时非阻塞终端交互，防止 Generator 原地挂起造成死锁
+    this.session.approvalService.registerApprovalHandler(async (id, toolCall, allowedPrefix, message) => {
+      // 物理注销全局监听器，彻底隔离 Stdin，杜绝回显污染与事件穿透
+      this.listener.close();
+
+      const decision = await new Promise<'once' | 'always' | 'deny'>((resolve) => {
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout
+        });
+        // 智能展示提示信息，增强文件越界卡关的可读性
+        if (message) {
+          console.log(`\n⚠️  ${theme.warning('[安全提示] ')}${message}`);
+        }
+
+        // 如果是终端命令，则额外高亮打印要执行的完整指令
+        const command = toolCall.arguments?.command as string | undefined;
+        if (command) {
+          if (!message) {
+            console.log(`\n⚠️  ${theme.warning('[安全提示] Agent 企图执行以下终端命令：')}`);
+          }
+          console.log(`   👉  \x1b[33m${command}\x1b[0m`);
+        }
+
+        if (allowedPrefix) {
+          console.log('选择操作:');
+          console.log('  [1] 单次放行 (Allow Once)');
+          console.log(`  [2] 始终放行该前缀命令 (Always Allow "${allowedPrefix}:*")`);
+          console.log('  [3] 拒绝执行 (Deny)');
+
+          const ask = () => {
+            rl.question('请选择 [1/2/3]: ', (answer) => {
+              const ans = answer.trim();
+              if (ans === '1') {
+                rl.close();
+                resolve('once');
+              } else if (ans === '2') {
+                rl.close();
+                resolve('always');
+              } else if (ans === '3') {
+                rl.close();
+                resolve('deny');
+              } else {
+                console.log('无效选择，请重新输入。');
+                ask();
+              }
+            });
+          };
+          ask();
+        } else {
+          console.log('选择操作:');
+          console.log('  [1] 单次放行 (Allow Once)');
+          console.log('  [2] 拒绝执行 (Deny)');
+
+          const ask = () => {
+            rl.question('请选择 [1/2]: ', (answer) => {
+              const ans = answer.trim();
+              if (ans === '1') {
+                rl.close();
+                resolve('once');
+              } else if (ans === '2') {
+                rl.close();
+                resolve('deny');
+              } else {
+                console.log('无效选择，请重新输入。');
+                ask();
+              }
+            });
+          };
+          ask();
+        }
+      });
+
+      // 直接将外部用户的决策通过 resolve 回传至 ApprovalService 唤醒内核
+      this.session.approvalService.resolve(id, { action: decision });
+
+      // 物理重建全局监听器，由于当前还在生成推理中，重建后的实例会自动保持 pause 状态，不会展示 Prompt 提示符
+      this.listener.start();
+    });
   }
 
   /**
@@ -115,9 +195,13 @@ export class CliFacade {
     }
 
     // 5. 常规对话处理
-    this.session.addUserMessage(input);
-    await this.runStreamLoop();
-    this.listener.prompt();
+    this.listener.pause();
+    try {
+      this.session.addUserMessage(input);
+      await this.runStreamLoop();
+    } finally {
+      this.listener.resume();
+    }
   }
 
   /**
@@ -149,74 +233,8 @@ export class CliFacade {
             process.stdout.write(event.content);
             break;
           case 'suspend': {
-            // 挂起 InputListener 常规输入监听以防 stdin 抢占
-            this.listener.pause();
-            const toolCall = event.toolCall;
-            const command = toolCall.arguments.command as string;
-            const allowedPrefix = event.allowedPrefix;
-
-            const decision = await new Promise<'once' | 'always' | 'deny'>((resolve) => {
-              const rl = readline.createInterface({
-                input: process.stdin,
-                output: process.stdout
-              });
-
-              console.log(`\n⚠️  ${theme.warning('[安全提示] Agent 企图执行以下终端命令：')}`);
-              console.log(`   👉  \x1b[33m${command}\x1b[0m`);
-
-              if (allowedPrefix) {
-                console.log('选择操作:');
-                console.log('  [1] 单次放行 (Allow Once)');
-                console.log(`  [2] 始终放行该前缀命令 (Always Allow "${allowedPrefix}:*")`);
-                console.log('  [3] 拒绝执行 (Deny)');
-
-                const ask = () => {
-                  rl.question('请选择 [1/2/3]: ', (answer) => {
-                    const ans = answer.trim();
-                    if (ans === '1') {
-                      rl.close();
-                      resolve('once');
-                    } else if (ans === '2') {
-                      rl.close();
-                      resolve('always');
-                    } else if (ans === '3') {
-                      rl.close();
-                      resolve('deny');
-                    } else {
-                      console.log('无效选择，请重新输入。');
-                      ask();
-                    }
-                  });
-                };
-                ask();
-              } else {
-                console.log('选择操作:');
-                console.log('  [1] 单次放行 (Allow Once)');
-                console.log('  [2] 拒绝执行 (Deny)');
-
-                const ask = () => {
-                  rl.question('请选择 [1/2]: ', (answer) => {
-                    const ans = answer.trim();
-                    if (ans === '1') {
-                      rl.close();
-                      resolve('once');
-                    } else if (ans === '2') {
-                      rl.close();
-                      resolve('deny');
-                    } else {
-                      console.log('无效选择，请重新输入。');
-                      ask();
-                    }
-                  });
-                };
-                ask();
-              }
-            });
-
-            // 注入决策唤醒内核
-            this.session.approvalService.resolve(event.id, { action: decision });
-            // 恢复键盘常规输入监听
-            this.listener.resume();
+            // 由于底座在 wait 前已通过 registerApprovalHandler 同步拉起交互并完成决策，
+            // 局部 eventQueue 中的 suspend 事件滞后到达时无需重复触发，直接跳过即可。
             break;
           }
           case 'tool_call_start':

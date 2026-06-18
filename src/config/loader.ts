@@ -6,8 +6,9 @@
  */
 
 import { resolve } from 'path';
-import { existsSync, copyFileSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, copyFileSync, readFileSync, writeFileSync, realpathSync } from 'fs';
 import { config as dotenvConfig } from 'dotenv';
+
 
 import { AppConfig, McpConfig } from './types.js';
 import { getModelConfig } from './models.js';
@@ -84,8 +85,8 @@ export function loadConfig(): AppConfig {
   const defaultModelId = rawModelId.replace(/\[\d+[km]\]/i, '');
   const llm = getModelConfig(defaultModelId);
 
-  // 4. 工作区路径解析
-  const workspace = resolve(process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd());
+  // 4. 工作区路径解析：在初始化阶段强制调用 realpathSync 进行物理路径解析与展开，锁定绝对物理路径，防止路径漂移与挂载逃逸风险。
+  const workspace = realpathSync(resolve(process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd()));
 
   // 5. 加载 MCP 配置（含环境变量插值）
   const mcp = loadMcpConfig();

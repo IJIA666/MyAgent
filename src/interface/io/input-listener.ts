@@ -32,6 +32,8 @@ export interface InputListenerOptions {
 export class InputListener {
   /** 内部维护的 active readline 接口实例 */
   private rl: ReturnType<typeof createInterface> | null = null;
+  /** 当前监听器是否处于挂起暂停状态，物理隔离多路复用 Stdin 被意外唤醒后的 line 事件穿透 */
+  private isPaused = false;
   /** 获取当前是否生成中的 Getter 回调 */
   private isGenerating: () => boolean;
   /** 获取当前模型名称的 Getter 回调 */
@@ -68,6 +70,7 @@ export class InputListener {
    * 初始化并启动基于 stdin/stdout 的交互监听。
    */
   public start(): void {
+    this.isPaused = false;
     const completer = (line: string) => {
       if (line.startsWith('/')) {
         const commands = ['/model', '/rollback', '/help', '/history', '/resume', '/mcp', '/tool', '/skill'];
@@ -86,8 +89,11 @@ export class InputListener {
 
     this.updatePrompt();
 
-    // 绑定回车提交监听
+    // 绑定回车提交监听，在挂起期间物理拦截并强行丢弃共享 Stdin 导致的任何残留回车
     this.rl.on('line', (line) => {
+      if (this.isPaused) {
+        return;
+      }
       this.onLineSubmit(line);
     });
 
@@ -101,7 +107,12 @@ export class InputListener {
     // 监听底层按键以捕捉全局 ESC 按键
     process.stdin.on('keypress', this.keypressHandler);
 
-    this.rl.prompt();
+    // 尊重挂起状态：若当前处于挂起状态则不主动展示提示符，否则正常展示
+    if (this.isPaused) {
+      this.rl.pause();
+    } else {
+      this.rl.prompt();
+    }
   }
 
   /**
@@ -124,9 +135,10 @@ export class InputListener {
 
   /**
    * 暂时挂起输入监听。
-   * 当调起 @clack/prompts 等独占 stdin 的第三方菜单时，必须调用此方法释放监听。
+   * 当调起 @clack/prompts 等独占 stdin 的第三方菜单或进行人机审批交互时，必须调用此方法释放监听。
    */
   public pause(): void {
+    this.isPaused = true;
     if (this.rl) {
       this.rl.pause();
     }
@@ -137,6 +149,7 @@ export class InputListener {
    * 从挂起中恢复输入监听。
    */
   public resume(): void {
+    this.isPaused = false;
     if (this.rl) {
       this.rl.resume();
     }
@@ -150,6 +163,11 @@ export class InputListener {
    */
   public close(): void {
     if (this.rl) {
+      // 备份历史记录，防止实例物理销毁时记忆丢失
+      const hist = (this.rl as unknown as { history?: string[] }).history;
+      if (Array.isArray(hist)) {
+        this.commandHistory = [...hist];
+      }
       this.rl.close();
       this.rl = null;
     }
@@ -192,7 +210,8 @@ export class InputListener {
 
       // 抹除当前输入行的残留
       process.stdout.write('\r' + ' '.repeat(50) + '\r');
-      this.pause(); // 二次提问期间挂起常规监听
+      // 物理注销以防 Stdin 共享回显污染
+      this.close();
 
       const tempRl = createInterface({
         input: process.stdin,
@@ -206,7 +225,8 @@ export class InputListener {
         } else {
           console.log(theme.dim('[系统] 已取消回滚。'));
         }
-        this.resume(); // 二次提问完毕，恢复监听
+        // 物理重建并启动常规监听
+        this.start();
       });
     }
   }

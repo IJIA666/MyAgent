@@ -5,7 +5,8 @@
 
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { dirname } from 'path';
-import { secureResolvePath } from './base.js';
+import { secureResolveReadPath, secureResolveWritePath } from './base.js';
+
 
 /**
  * 记录 readFileTool 读取快照的内存字典，用于实现基于 mtime 的缓存拦截去重机制。
@@ -24,7 +25,7 @@ export const readFileState = new Map<string, { lineStart?: number; lineEnd?: num
  */
 export function readFileTool(targetPath: string, lineStart?: number, lineEnd?: number): string {
   // 获取已脱敏的请求资源定位符
-  const safePath = secureResolvePath(targetPath);
+  const safePath = secureResolveReadPath(targetPath);
 
   // 检查目标资产的存在性
   if (!existsSync(safePath)) {
@@ -112,7 +113,7 @@ export function editFileTool(
   }
 
   // 获取已脱敏的请求资源定位符
-  const safePath = secureResolvePath(targetPath);
+  const safePath = secureResolveWritePath(targetPath);
 
   // 检查目标资产的存在性
   if (!existsSync(safePath)) {
@@ -175,7 +176,7 @@ export function editFileTool(
  */
 export function writeFileTool(targetPath: string, content: string): string {
   // 获取已脱敏的请求资源定位符
-  const safePath = secureResolvePath(targetPath);
+  const safePath = secureResolveWritePath(targetPath);
 
   // 强制前置校验：如果文件已存在，为了避免恶意全量覆盖，必须先阅读过该文件
   if (existsSync(safePath) && !readFileState.has(safePath)) {
@@ -203,7 +204,7 @@ export function writeFileTool(targetPath: string, content: string): string {
  */
 export function listFilesTool(targetPath: string = '.'): string[] {
   // 获取已脱敏的请求资源定位符
-  const safePath = secureResolvePath(targetPath);
+  const safePath = secureResolveReadPath(targetPath);
 
   // 检查目标资产的存在性
   if (!existsSync(safePath)) {

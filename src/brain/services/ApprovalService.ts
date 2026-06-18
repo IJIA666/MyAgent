@@ -24,6 +24,24 @@ export class ApprovalService {
   /** 是否启用自动放行 (Bypass) 模式，常用于非 TTY 的 CI 自动化测试流水线 */
   private isBypassMode = false;
 
+  /** 同步/异步审批提问事件处理器回调函数，用于绕开 Generator 原地阻塞时的事件延迟 */
+  private onNeedApprovalHandler?: (
+    id: string,
+    toolCall: { name: string; arguments: Record<string, unknown> },
+    allowedPrefix?: string,
+    message?: string
+  ) => void | Promise<void>;
+
+  /**
+   * 注册审批提问事件处理器。
+   * 用于终端 UI 层直接绑定其交互问答渲染接口，实现非阻塞同步通知。
+   *
+   * @param handler - 审批事件回调函数
+   */
+  public registerApprovalHandler(handler: typeof this.onNeedApprovalHandler): void {
+    this.onNeedApprovalHandler = handler;
+  }
+
   /**
    * 构造函数，初始化服务状态并判定 TTY 环境。
    *
@@ -44,15 +62,37 @@ export class ApprovalService {
 
   /**
    * 原地异步挂起并等待外部决策返回。
+   * 支持同步触发已注册的审批通知回调。
    *
    * @param id - 每次审批任务的唯一标识 ID
+   * @param toolCall - 触发审批的工具调用详情，包含名称和参数
+   * @param allowedPrefix - 可选的自动放行命令前缀匹配
+   * @param message - 可选的卡关提示信息，用于告知用户越界或风险类型
    * @param timeoutMs - 审批超时限制毫秒数，默认 5 分钟 (300,000ms)
    * @returns 外部人机交互最终做出的审批决策
    */
-  public async wait(id: string, timeoutMs = 300000): Promise<ApprovalDecision> {
+  public async wait(
+    id: string,
+    toolCall: { name: string; arguments: Record<string, unknown> },
+    allowedPrefix?: string,
+    message?: string,
+    timeoutMs = 300000
+  ): Promise<ApprovalDecision> {
     // 若处于 Bypass 模式，立即以 once 单次放行回复，保障 CI/测试顺畅
     if (this.isBypassMode) {
       return { action: 'once' };
+    }
+
+    // 同步触发已注册的审批问答界面，传入完整的审批元数据
+    if (this.onNeedApprovalHandler) {
+      try {
+        const res = this.onNeedApprovalHandler(id, toolCall, allowedPrefix, message);
+        if (res instanceof Promise) {
+          res.catch((err) => console.error('Approval handler async error:', err));
+        }
+      } catch (err) {
+        console.error('Approval handler sync error:', err);
+      }
     }
 
     return new Promise<ApprovalDecision>((resolve, reject) => {

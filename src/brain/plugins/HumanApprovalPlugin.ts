@@ -1,6 +1,17 @@
+import { resolve, sep } from 'path';
 import type { Plugin, HookContext } from './plugin-types.js';
 import { HookEventName } from './plugin-types.js';
 import { getWorkMode, extractSafePrefix, loadWorkMode } from '../../action/native-tools/terminal-config.js';
+import { checkCommandSafetyLevel } from '../../action/native-tools/terminal-guard.js';
+import { 
+  getAuthorizedDir, 
+  getPhysicalRealPath, 
+  addTemporaryReadWhitelist, 
+  addTemporaryWriteWhitelist, 
+  hasTemporaryReadWhitelist, 
+  hasTemporaryWriteWhitelist
+} from '../../action/native-tools/base.js';
+import { ToolConstants } from '../../common/constants.js';
 
 /**
  * 毁灭性高危命令敏感匹配正则。
@@ -29,9 +40,9 @@ function isCommandAllowed(command: string, whitelist: string[]): boolean {
 /**
  * 人机协同审批插件。
  * 核心职责：
- * 1. 挂载于 BeforeTool 生命周期钩子，对 executeCommandTool 工具调用进行安全审查；
- * 2. 对高危操作实施双重保险正则匹配；
- * 3. 抛出挂起事件，并调用 ApprovalService 原地异步阻塞大循环，等待外部决断。
+ * 1. 挂载于 BeforeTool 生命周期钩子，对 executeCommandTool 工具调用进行安全审查与别名卡关；
+ * 2. 拦截并预审 readFile/writeFile/editFile/listFiles 等文件操作的沙箱物理路径越界行为，实现 Ask 动态授权；
+ * 3. 抛出挂起事件并原地异步阻塞，等待用户裁决，批准后追加到 Session 临时白名单。
  */
 export class HumanApprovalPlugin implements Plugin {
   /** 插件在系统内的唯一标识名 */
@@ -46,25 +57,37 @@ export class HumanApprovalPlugin implements Plugin {
   /** BeforeTool 钩子中间件处理逻辑。 */
   private async beforeToolMiddleware(context: HookContext, next: () => Promise<void>): Promise<void> {
     const toolCall = context.toolCall;
+    if (!toolCall) {
+      await next();
+      return;
+    }
 
-    // 仅针对终端命令执行工具进行拦截审查
-    if (toolCall && toolCall.name === 'executeCommandTool') {
+    // 重载当前物理配置文件的安全工作模式
+    loadWorkMode();
+    const workMode = getWorkMode();
+
+    // =========================================================
+    // 1. 终端执行（executeCommandTool）审批与安全降级校验
+    // =========================================================
+    // 基于特征能力集比对终端工具，包含常量契约及常见别名以防大小写或重名漏判
+    const TERMINAL_TOOL_NAMES = [ToolConstants.EXECUTE_COMMAND, 'bash', 'run_command', 'sh', 'executeCommandTool'];
+    if (TERMINAL_TOOL_NAMES.includes(toolCall.name)) {
       const command = toolCall.arguments.command as string;
-
-      // 重载当前物理配置文件的安全工作模式
-      loadWorkMode();
-      const workMode = getWorkMode();
       let needApproval = true;
 
-      // 1. 根据工作模式和白名单判断是否需要确认
+      // 1. 根据工作模式与只读/别名审查判断是否需要确认
       if (workMode === 'YOLO') {
         needApproval = false;
-      } else if (workMode === 'Auto') {
-        // 从 SessionContext 读取解耦后的安全白名单
-        const sessionContext = context.sessionContext;
-        const whitelist = sessionContext.getSecurityAllowlist();
-        if (isCommandAllowed(command, whitelist)) {
-          needApproval = false;
+      } else {
+        // 执行 Windows/PowerShell 别名及写倾向安全等级初筛
+        const safetyLevel = checkCommandSafetyLevel(command);
+        if (safetyLevel === 'allow' && workMode === 'Auto') {
+          // 只放行只读白名单内的无风险指令
+          const sessionContext = context.sessionContext;
+          const whitelist = sessionContext.getSecurityAllowlist();
+          if (isCommandAllowed(command, whitelist)) {
+            needApproval = false;
+          }
         }
       }
 
@@ -86,7 +109,8 @@ export class HumanApprovalPlugin implements Plugin {
             name: toolCall.name,
             arguments: toolCall.arguments
           },
-          allowedPrefix: safePrefix
+          allowedPrefix: safePrefix,
+          message: `智能体试图在终端执行写倾向或未识别命令: "${command}"`
         });
 
         const sessionContext = context.sessionContext;
@@ -97,11 +121,13 @@ export class HumanApprovalPlugin implements Plugin {
           context.control.reason = 'Missing ApprovalService in SessionContext';
           return;
         }
-
-        // 原地挂起并等待外部决策
-        const decision = await service.wait(approvalId);
-
-        // 处理审批被拒绝分支
+        // 原地挂起并等待外部决策，同时将相关元数据传给 wait 以触发事件分发
+        const decision = await service.wait(
+          approvalId,
+          { name: toolCall.name, arguments: toolCall.arguments },
+          safePrefix ?? undefined,
+          `智能体试图在终端执行写倾向或未识别命令: "${command}"`
+        );        // 处理审批被拒绝分支
         if (decision.action === 'deny') {
           context.control.action = 'abort';
           context.control.reason = 'Command execution denied by user';
@@ -114,6 +140,90 @@ export class HumanApprovalPlugin implements Plugin {
           const prefixRule = `${safePrefix}:*`;
           if (!whitelist.includes(prefixRule)) {
             sessionContext.saveSecurityAllowlist([...whitelist, prefixRule]);
+          }
+        }
+      }
+    }
+
+    // =========================================================
+    // 2. 文件 API 物理越界前置拦截与交互授权（Ask 提问）
+    // =========================================================
+    // 基于特征能力集比对文件只读工具，支持标准契约与大小写别名
+    const FILE_READ_TOOL_NAMES = [ToolConstants.READ_FILE, ToolConstants.LIST_FILES, 'read_file', 'list_files'];
+    // 基于特征能力集比对文件写入工具，支持标准契约与大小写别名
+    const FILE_WRITE_TOOL_NAMES = [ToolConstants.WRITE_FILE, ToolConstants.EDIT_FILE, 'write_file', 'edit_file'];
+
+    const isReadTool = FILE_READ_TOOL_NAMES.includes(toolCall.name);
+    const isWriteTool = FILE_WRITE_TOOL_NAMES.includes(toolCall.name);
+
+    if (isReadTool || isWriteTool) {
+      const args = toolCall.arguments || {};
+      const targetPath = (args.targetPath || args.path || args.file || args.directoryPath || args.targetFile) as string;
+      const rootDir = getAuthorizedDir();
+
+      if (rootDir && typeof targetPath === 'string') {
+        const rawPath = resolve(rootDir, targetPath);
+        const resolvedPath = getPhysicalRealPath(rawPath);
+
+        // 验证目标路径物理真实绝对路径是否超出常规工作区范围
+        const isAuthorized = resolvedPath === rootDir || resolvedPath.startsWith(rootDir + sep);
+
+        if (!isAuthorized) {
+          let hasAuth: boolean;
+          let accessType: 'read' | 'write';
+
+          // 检索当前 Session 周期内的内存临时授权白名单
+          if (isReadTool) {
+            hasAuth = hasTemporaryReadWhitelist(resolvedPath);
+            accessType = 'read';
+          } else {
+            hasAuth = hasTemporaryWriteWhitelist(resolvedPath);
+            accessType = 'write';
+          }
+
+          // 若路径溢出且此前未获得用户动态授权，挂起进程并提示用户确认
+          if (!hasAuth) {
+            const approvalId = `approve_${Math.random().toString(36).substring(2, 9)}`;
+
+            // 广播文件安全越界授权 suspend 事件
+            context.emitEvent?.({
+              type: 'suspend',
+              id: approvalId,
+              toolCall: {
+                name: toolCall.name,
+                arguments: toolCall.arguments
+              },
+              message: `智能体试图访问工作区外部的安全区，需要执行【${accessType === 'read' ? '只读' : '修改写入'}】授权。目标路径: "${resolvedPath}"`
+            });
+
+            const sessionContext = context.sessionContext;
+            const service = sessionContext.approvalService;
+            if (!service) {
+              context.control.action = 'abort';
+              context.control.reason = 'Missing ApprovalService in SessionContext';
+              return;
+            }
+
+            // 原地挂起等待用户裁决，同时将相关元数据传给 wait 以触发事件分发
+            const decision = await service.wait(
+              approvalId,
+              { name: toolCall.name, arguments: toolCall.arguments },
+              undefined,
+              `智能体试图访问工作区外部的安全区，需要执行【${accessType === 'read' ? '只读' : '修改写入'}】授权。目标路径: "${resolvedPath}"`
+            );
+
+            if (decision.action === 'deny') {
+              context.control.action = 'abort';
+              context.control.reason = `File ${accessType} access denied by user for path: ${resolvedPath}`;
+              return;
+            }
+
+            // 用户通过，在内存临时白名单中追加物理授权（本次 Session 运行周期生效）
+            if (accessType === 'read') {
+              addTemporaryReadWhitelist(resolvedPath);
+            } else {
+              addTemporaryWriteWhitelist(resolvedPath);
+            }
           }
         }
       }
