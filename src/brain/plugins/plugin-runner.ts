@@ -7,11 +7,14 @@
  * 4. 落地串行短路（ Fail-Fast ）拦截决策，并输出 Patch 变更日志以供 Trace 审计。
  */
 
-import { enablePatches, createDraft, finishDraft } from 'immer';
+import { enablePatches, createDraft, finishDraft, setAutoFreeze } from 'immer';
 import type { Patch } from 'immer';
 import type { ChatCompletionMessageParam, ChatCompletionCreateParams } from 'openai/resources/chat/completions.js';
 import type { HookContext, HookEventName, HookMiddleware } from './plugin-types.js';
 import type { SessionContext } from '../context.js';
+
+// 全局禁用 Immer 的自动冻结机制，以适配 SessionContext 底层的面向对象可变状态（Mutable State）架构设计，防止外部操作被冻结的会话消息历史或工具属性时崩溃
+setAutoFreeze(false);
 
 // 显式启用 Immer 的变更补丁功能，以支持局部变更溯源
 enablePatches();
