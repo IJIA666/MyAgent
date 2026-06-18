@@ -15,4 +15,35 @@ export class ToolConstants {
   public static readonly LIST_FILES = 'listFiles';
   /** 文件增量编辑修改工具名称 */
   public static readonly EDIT_FILE = 'editFile';
+  /** 技能载入工具名称 */
+  public static readonly LOAD_SKILL = 'load_skill';
+  /** 正则全文检索工具名称 */
+  public static readonly GREP_SEARCH = 'grepSearch';
+  /** 通配符文件检索工具名称 */
+  public static readonly GLOB_SEARCH = 'globSearch';
+
+  /** 终端工具判定别名集合 */
+  public static readonly TERMINAL_ALIASES = [
+    ToolConstants.EXECUTE_COMMAND,
+    'bash',
+    'run_command',
+    'sh',
+    'executeCommandTool'
+  ] as const;
+
+  /** 文件只读工具判定别名集合 */
+  public static readonly FILE_READ_ALIASES = [
+    ToolConstants.READ_FILE,
+    ToolConstants.LIST_FILES,
+    'read_file',
+    'list_files'
+  ] as const;
+
+  /** 文件写入与修改工具判定别名集合 */
+  public static readonly FILE_WRITE_ALIASES = [
+    ToolConstants.WRITE_FILE,
+    ToolConstants.EDIT_FILE,
+    'write_file',
+    'edit_file'
+  ] as const;
 }

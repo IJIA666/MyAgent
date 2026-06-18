@@ -70,8 +70,7 @@ export class HumanApprovalPlugin implements Plugin {
     // 1. 终端执行（executeCommandTool）审批与安全降级校验
     // =========================================================
     // 基于特征能力集比对终端工具，包含常量契约及常见别名以防大小写或重名漏判
-    const TERMINAL_TOOL_NAMES = [ToolConstants.EXECUTE_COMMAND, 'bash', 'run_command', 'sh', 'executeCommandTool'];
-    if (TERMINAL_TOOL_NAMES.includes(toolCall.name)) {
+    if ((ToolConstants.TERMINAL_ALIASES as readonly string[]).includes(toolCall.name)) {
       const command = toolCall.arguments.command as string;
       let needApproval = true;
 
@@ -148,13 +147,8 @@ export class HumanApprovalPlugin implements Plugin {
     // =========================================================
     // 2. 文件 API 物理越界前置拦截与交互授权（Ask 提问）
     // =========================================================
-    // 基于特征能力集比对文件只读工具，支持标准契约与大小写别名
-    const FILE_READ_TOOL_NAMES = [ToolConstants.READ_FILE, ToolConstants.LIST_FILES, 'read_file', 'list_files'];
-    // 基于特征能力集比对文件写入工具，支持标准契约与大小写别名
-    const FILE_WRITE_TOOL_NAMES = [ToolConstants.WRITE_FILE, ToolConstants.EDIT_FILE, 'write_file', 'edit_file'];
-
-    const isReadTool = FILE_READ_TOOL_NAMES.includes(toolCall.name);
-    const isWriteTool = FILE_WRITE_TOOL_NAMES.includes(toolCall.name);
+    const isReadTool = (ToolConstants.FILE_READ_ALIASES as readonly string[]).includes(toolCall.name);
+    const isWriteTool = (ToolConstants.FILE_WRITE_ALIASES as readonly string[]).includes(toolCall.name);
 
     if (isReadTool || isWriteTool) {
       const args = toolCall.arguments || {};

@@ -91,7 +91,7 @@ export class LocalFileSystemMcpServer {
           break;
         }
 
-        case 'load_skill': {
+        case ToolConstants.LOAD_SKILL: {
           if (typeof args.name !== 'string') throw new Error("name 必须是字符串");
           if (!this.loadSkill) {
             throw new Error("当前系统未配置 loadSkill 解析器，无法执行 load_skill。");
@@ -105,7 +105,7 @@ export class LocalFileSystemMcpServer {
         }
 
 
-        case 'grepSearch': {
+        case ToolConstants.GREP_SEARCH: {
           if (typeof args.query !== 'string') throw new Error("query 必须是字符串");
           if (args.searchPath !== undefined && typeof args.searchPath !== 'string') {
             throw new Error("searchPath 必须是字符串");
@@ -129,7 +129,7 @@ export class LocalFileSystemMcpServer {
           break;
         }
 
-        case 'globSearch': {
+        case ToolConstants.GLOB_SEARCH: {
           if (typeof args.pattern !== 'string') throw new Error("pattern 必须是字符串");
           resultText = globSearchTool(args.pattern);
           break;

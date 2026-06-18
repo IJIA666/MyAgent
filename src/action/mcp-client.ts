@@ -1,9 +1,15 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { McpConfig, McpServerEntry, buildSubprocessEnv } from '../config/index.js';
+import { ToolConstants } from '../common/constants.js';
 
 // 系统本地内置文件操作及技能载入工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
-const BUILTIN_TOOL_NAMES = new Set(['readFile', 'writeFile', 'listFiles', 'load_skill']);
+const BUILTIN_TOOL_NAMES = new Set([
+  ToolConstants.READ_FILE,
+  ToolConstants.WRITE_FILE,
+  ToolConstants.LIST_FILES,
+  ToolConstants.LOAD_SKILL
+]);
 
 /**
  * MCP (Model Context Protocol) 客户端管理类。
