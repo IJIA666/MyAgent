@@ -23,6 +23,10 @@ export interface InputListenerOptions {
   onRollback: () => void;
   /** 当用户提交一整行有效控制台输入时的提交回调 */
   onLineSubmit: (line: string) => void;
+  /** 可选注入的输入流，测试时使用隔离的 Mock 流，默认回退至 process.stdin */
+  input?: NodeJS.ReadableStream;
+  /** 可选注入的输出流，测试时使用隔离的 Mock 流，默认回退至 process.stdout */
+  output?: NodeJS.WritableStream;
 }
 
 /**
@@ -34,6 +38,10 @@ export class InputListener {
   private rl: ReturnType<typeof createInterface> | null = null;
   /** 当前监听器是否处于挂起暂停状态，物理隔离多路复用 Stdin 被意外唤醒后的 line 事件穿透 */
   private isPaused = false;
+  /** 实际使用的输入流，默认 process.stdin */
+  private inputStream: NodeJS.ReadableStream;
+  /** 实际使用的输出流，默认 process.stdout */
+  private outputStream: NodeJS.WritableStream;
   /** 获取当前是否生成中的 Getter 回调 */
   private isGenerating: () => boolean;
   /** 获取当前模型名称的 Getter 回调 */
@@ -62,6 +70,8 @@ export class InputListener {
     this.onAbort = options.onAbort;
     this.onRollback = options.onRollback;
     this.onLineSubmit = options.onLineSubmit;
+    this.inputStream = options.input || process.stdin;
+    this.outputStream = options.output || process.stdout;
 
     this.keypressHandler = (str, key) => this.handleKeyPress(str, key);
   }
@@ -71,6 +81,12 @@ export class InputListener {
    */
   public start(): void {
     this.isPaused = false;
+    try {
+      // 在创建新 readline 之前，同步排空物理输入流中所有积压的数据，防止重建后的积压数据溢出
+      while (this.inputStream.read() !== null);
+    } catch {
+      // 容错
+    }
     const completer = (line: string) => {
       if (line.startsWith('/')) {
         const commands = ['/model', '/rollback', '/help', '/history', '/resume', '/mcp', '/tool', '/skill'];
@@ -81,8 +97,8 @@ export class InputListener {
     };
 
     this.rl = createInterface({
-      input: process.stdin,
-      output: process.stdout,
+      input: this.inputStream,
+      output: this.outputStream,
       completer: completer,
       history: this.commandHistory
     });
@@ -105,7 +121,7 @@ export class InputListener {
     });
 
     // 监听底层按键以捕捉全局 ESC 按键
-    process.stdin.on('keypress', this.keypressHandler);
+    this.inputStream.on('keypress', this.keypressHandler);
 
     // 尊重挂起状态：若当前处于挂起状态则不主动展示提示符，否则正常展示
     if (this.isPaused) {
@@ -142,20 +158,30 @@ export class InputListener {
     if (this.rl) {
       this.rl.pause();
     }
-    process.stdin.removeListener('keypress', this.keypressHandler);
+    this.inputStream.removeListener('keypress', this.keypressHandler);
   }
 
   /**
    * 从挂起中恢复输入监听。
    */
   public resume(): void {
-    this.isPaused = false;
+    try {
+      // 在恢复监听之前，物理同步排空流中所有挂起期间意外积压的垃圾输入，以保持缓冲区物理洁净
+      while (this.inputStream.read() !== null);
+    } catch {
+      // 容错
+    }
     if (this.rl) {
       this.rl.resume();
     }
-    process.stdin.on('keypress', this.keypressHandler);
+    this.inputStream.on('keypress', this.keypressHandler);
     this.updatePrompt();
     this.prompt();
+
+    // 延迟一个 tick 恢复 isPaused 状态，确保在恢复瞬间排空并丢弃 readline 内部积压的所有垃圾事件
+    setImmediate(() => {
+      this.isPaused = false;
+    });
   }
 
   /**
@@ -171,7 +197,7 @@ export class InputListener {
       this.rl.close();
       this.rl = null;
     }
-    process.stdin.removeListener('keypress', this.keypressHandler);
+    this.inputStream.removeListener('keypress', this.keypressHandler);
   }
 
   /**
@@ -209,13 +235,13 @@ export class InputListener {
       if (!this.rl) return;
 
       // 抹除当前输入行的残留
-      process.stdout.write('\r' + ' '.repeat(50) + '\r');
+      this.outputStream.write('\r' + ' '.repeat(50) + '\r');
       // 物理注销以防 Stdin 共享回显污染
       this.close();
 
       const tempRl = createInterface({
-        input: process.stdin,
-        output: process.stdout
+        input: this.inputStream,
+        output: this.outputStream
       });
 
       tempRl.question(theme.highlight('\n[系统] 确定要撤销上一轮对话吗？(y/N) > '), (answer) => {
