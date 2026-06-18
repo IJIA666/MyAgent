@@ -16,11 +16,12 @@ async function main() {
   // 2. 初始化工作区沙箱路径
   initWorkspace(appConfig.workspace);
 
-  // 3. 打印系统启动与配置信息
+  // 3. 打印系统启动与配置信息，在 Banner 中追加展示当前的上下文窗口总大小限制
   const banner = `====================================================
 [系统] IJIA Agent 启动完成
 [配置] 授权工作区目录：${appConfig.workspace}
 [配置] 模型：${appConfig.llm.model}
+[配置] 上下文窗口限制：${appConfig.llm.contextWindow?.toLocaleString() ?? '未知'} tokens
 [配置] 接口端点：${appConfig.llm.baseUrl}
 ====================================================`;
   console.log(theme.success(banner));

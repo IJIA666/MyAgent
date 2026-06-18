@@ -127,11 +127,24 @@ export class SessionManager {
 
   /**
    * 获取当前激活的模型名称。
+   * 会基于当前会话绑定的 llmConfig.contextWindow 动态拼装类似于 [1m]、[128k] 的窗口大小后缀，
+   * 用于提示符（Prompt）等视图上的状态信息展示。
    *
-   * @returns 当前会话绑定的模型名称字符串
+   * @returns 带上下文限制后缀的模型名称字符串
    */
   public getModelName(): string {
-    return this.driver.getModelName();
+    // 获取基础模型名称
+    const baseName = this.driver.getModelName();
+    // 级联读取内存配置中的上下文限制，动态拼接换算后的后缀标签
+    const window = this.llmConfig.contextWindow;
+    if (window) {
+      if (window >= 1000000) {
+        return `${baseName}[${Math.round(window / 1000000)}m]`;
+      } else if (window >= 1000) {
+        return `${baseName}[${Math.round(window / 1000)}k]`;
+      }
+    }
+    return baseName;
   }
 
   /**

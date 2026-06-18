@@ -79,8 +79,9 @@ export function loadConfig(): AppConfig {
   dotenvConfig();
 
   // 3. 必填环境变量校验（fail-fast）
-  // 默认使用 deepseek-v4-flash
-  const defaultModelId = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+  // 优先从环境变量加载大模型名称，若包含窗口后缀（如 [1m]、[128k] 等）自动剥离为内置模型 ID 进行预检
+  const rawModelId = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+  const defaultModelId = rawModelId.replace(/\[\d+[km]\]/i, '');
   const llm = getModelConfig(defaultModelId);
 
   // 4. 工作区路径解析
