@@ -36,6 +36,7 @@ export function computeStringHash(text: string): string {
 export class SessionContext {
   private messageHistory: ChatMessage[] = [];
   private sessionId: string;
+  private tenantId: string;
   private checkpointSummary: string | null = null;
   private recentFiles: string[] = [];
   /** 会话是否正在处理生命周期 Hook 中间件（忙状态并发锁） */
@@ -52,10 +53,12 @@ export class SessionContext {
    * 实例初始化。
    *
    * @param sessionId - 可选的会话标识，若不传则自动按当前时间戳生成
+   * @param tenantId - 可选的租户标识，若不传则默认为 'default'
    */
-  constructor(sessionId?: string) {
+  constructor(sessionId?: string, tenantId?: string) {
     // 如果没有传入 sessionId，则使用当前时间戳作为默认会话标识
     this.sessionId = sessionId || Date.now().toString();
+    this.tenantId = tenantId || 'default';
     // 实例化独立的人机协同审批协调服务
     this.approvalService = new ApprovalService();
 
@@ -94,6 +97,27 @@ export class SessionContext {
    */
   public getSessionId(): string {
     return this.sessionId;
+  }
+
+  /**
+   * 获取当前会话所关联的租户标识（Tenant ID）。
+   *
+   * @returns 租户 ID 字符串
+   */
+  public getTenantId(): string {
+    return this.tenantId;
+  }
+
+  /**
+   * 设定当前会话所关联的租户标识（Tenant ID）。
+   *
+   * @param tenantId - 租户唯一标识符
+   */
+  public setTenantId(tenantId: string): void {
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
+    this.tenantId = tenantId;
   }
 
   /**

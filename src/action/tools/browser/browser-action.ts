@@ -2,6 +2,7 @@
 import { chromium, BrowserContext, Page } from 'playwright';
 import { BrowserDetector } from './browser-detector.js';
 import { resolve } from 'path';
+import { existsSync, rmSync } from 'fs';
 import readline from 'readline';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 
@@ -13,76 +14,175 @@ import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
  * 3. 实现数据状态清理与优雅关闭。
  */
 export class BrowserSession {
-  private static context: BrowserContext | null = null;
-  private static page: Page | null = null;
+  private static contextsMap = new Map<string, BrowserContext>();
+  private static pagesMap = new Map<string, Page>();
 
   /** 允许注册的命令行阻塞拦截干预回调函数 */
   public static userInterventionHandler: ((message: string) => Promise<void>) | null = null;
+
+  private static hasRegisteredExitHandlers = false;
+
+  /**
+   * 注册对 Node.js 进程意外强退信号的全局监听拦截，确保退出前强行释放所有浏览器上下文
+   */
+  public static registerExitHandlers(): void {
+    if (this.hasRegisteredExitHandlers) {
+      return;
+    }
+    this.hasRegisteredExitHandlers = true;
+
+    const cleanup = async () => {
+      const tenantIds = Array.from(this.contextsMap.keys());
+      for (const tenantId of tenantIds) {
+        await this.closeTenant(tenantId, false);
+      }
+    };
+
+    const sigHandler = async (signal: string) => {
+      console.log(`[BrowserSession] 接收到信号 ${signal}，正在释放所有浏览器上下文并退出进程...`);
+      await cleanup();
+      process.exit(0);
+    };
+
+    process.on('exit', () => {
+      for (const tenantId of this.contextsMap.keys()) {
+        const page = this.pagesMap.get(tenantId);
+        if (page) {
+          try {
+            void page.close();
+          } catch (e) {
+            void e;
+          }
+        }
+        const context = this.contextsMap.get(tenantId);
+        if (context) {
+          try {
+            void context.close();
+          } catch (e) {
+            void e;
+          }
+        }
+      }
+    });
+
+    process.on('SIGINT', () => sigHandler('SIGINT'));
+    process.on('SIGTERM', () => sigHandler('SIGTERM'));
+  }
+
+  /**
+   * 从传入的 SessionContext 中提取 tenantId。
+   *
+   * @param sessionContext - 传入的会话上下文
+   * @returns 租户 ID 字符串，默认为 'default'
+   */
+  public static getTenantIdFromContext(sessionContext?: unknown): string {
+    if (
+      sessionContext &&
+      typeof sessionContext === 'object' &&
+      'getTenantId' in sessionContext &&
+      typeof (sessionContext as Record<string, unknown>).getTenantId === 'function'
+    ) {
+      return (sessionContext as { getTenantId: () => string }).getTenantId();
+    }
+    return 'default';
+  }
 
   /**
    * 获取或初始化当前的浏览器页面（Page）实例。
    *
    * @param cdpUrl - 可选的远程调试端口地址（如 http://127.0.0.1:9222），若提供则直接通过 connectOverCDP 直连
+   * @param tenantId - 租户标识，默认为 'default'
    * @returns 正在运行的 Playwright Page 实例
    */
-  public static async getPage(cdpUrl?: string): Promise<Page> {
-    if (this.page && !this.page.isClosed()) {
-      return this.page;
+  public static async getPage(cdpUrl?: string, tenantId: string = 'default'): Promise<Page> {
+    this.registerExitHandlers();
+
+    const activePage = this.pagesMap.get(tenantId);
+    if (activePage && !activePage.isClosed()) {
+      return activePage;
     }
 
-    // 执行环境清理以防残留
-    await this.close();
+    // 执行当前租户的环境清理以防残留
+    await this.closeTenant(tenantId);
 
-    if (cdpUrl) {
+    const actualCdpUrl = cdpUrl || process.env.BROWSER_CDP_URL;
+    if (actualCdpUrl) {
       // 1. 直连现有 Chrome 的 CDP 调试通道
-      const browser = await chromium.connectOverCDP(cdpUrl);
+      const browser = await chromium.connectOverCDP(actualCdpUrl);
       const contexts = browser.contexts();
-      let activePage = contexts[0]?.pages()[0];
-      if (!activePage) {
+      let page = contexts[0]?.pages()[0];
+      if (!page) {
         const ctx = contexts[0] || await browser.newContext();
-        activePage = await ctx.newPage();
+        page = await ctx.newPage();
       }
-      this.page = activePage;
-      this.context = activePage.context();
+      this.pagesMap.set(tenantId, page);
+      this.contextsMap.set(tenantId, page.context());
     } else {
       // 2. 本地持久化上下文通道
-      const userDataDir = process.env.BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
+      const baseDir = process.env.BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
+      const userDataDir = resolve(baseDir, tenantId);
       const executablePath = BrowserDetector.detectExecutablePath() || undefined;
       const isHeadless = process.env.BROWSER_HEADLESS !== 'false';
 
-      this.context = await chromium.launchPersistentContext(userDataDir, {
+      const context = await chromium.launchPersistentContext(userDataDir, {
         executablePath,
         headless: isHeadless,
         viewport: { width: 1280, height: 800 }
       });
       
-      const activePage = this.context.pages()[0] || await this.context.newPage();
-      this.page = activePage;
+      const page = context.pages()[0] || await context.newPage();
+      this.pagesMap.set(tenantId, page);
+      this.contextsMap.set(tenantId, context);
     }
 
-    return this.page;
+    return this.pagesMap.get(tenantId)!;
+  }
+
+  /**
+   * 关闭指定的租户会话，释放底层物理流资源。
+   *
+   * @param tenantId - 租户标识
+   * @param cleanup - 是否在关闭时清除该租户的物理 Profile 缓存
+   */
+  public static async closeTenant(tenantId: string, cleanup: boolean = false): Promise<void> {
+    const page = this.pagesMap.get(tenantId);
+    if (page) {
+      try {
+        await page.close();
+      } catch {
+        // 忽略关闭异常
+      }
+      this.pagesMap.delete(tenantId);
+    }
+
+    const context = this.contextsMap.get(tenantId);
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // 忽略关闭异常
+      }
+      this.contextsMap.delete(tenantId);
+    }
+
+    if (cleanup) {
+      const baseDir = process.env.BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
+      const userDataDir = resolve(baseDir, tenantId);
+      try {
+        if (existsSync(userDataDir)) {
+          rmSync(userDataDir, { recursive: true, force: true });
+        }
+      } catch (err) {
+        console.error(`[BrowserSession] 清理租户 [${tenantId}] 的 Profile 文件夹失败:`, err);
+      }
+    }
   }
 
   /**
    * 关闭当前的浏览器实例与会话，释放所有的底层物理流资源。
    */
   public static async close(): Promise<void> {
-    if (this.page) {
-      try {
-        await this.page.close();
-      } catch {
-        // 忽略关闭异常
-      }
-      this.page = null;
-    }
-    if (this.context) {
-      try {
-        await this.context.close();
-      } catch {
-        // 忽略关闭异常
-      }
-      this.context = null;
-    }
+    await this.closeTenant('default');
   }
 }
 
@@ -252,14 +352,15 @@ export class BrowserNavigateTool implements NativeTool {
    * @param args - 参数字典
    * @returns 导航跳转完毕后的精简元素标号快照
    */
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
     const url = args.url;
     const cdpUrl = typeof args.cdpUrl === 'string' ? args.cdpUrl : process.env.BROWSER_CDP_URL;
     if (typeof url !== 'string') {
       throw new Error("url 必须是字符串");
     }
+    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
 
-    const page = await BrowserSession.getPage(cdpUrl);
+    const page = await BrowserSession.getPage(cdpUrl, tenantId);
     await page.goto(url, { waitUntil: 'load', timeout: 30000 });
     return await generateAriaSnapshot(page);
   }
@@ -301,15 +402,16 @@ export class BrowserClickTool implements NativeTool {
    * @param args - 参数字典
    * @returns 点击执行完毕并等待 1 秒后的最新页面编号快照
    */
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
     const ref = args.ref;
     if (typeof ref !== 'string') {
       throw new Error("ref 必须是字符串");
     }
     const cleanId = ref.replace('@', '').trim();
     const selector = `[data-myagent-id="${cleanId}"]`;
+    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
 
-    const page = await BrowserSession.getPage();
+    const page = await BrowserSession.getPage(undefined, tenantId);
     const element = await page.$(selector);
     if (!element) {
       throw new Error(`未找到编号为 "${ref}" 的元素。请确认之前获取的网页快照中包含此编号，或者页面是否已经发生变化。`);
@@ -361,7 +463,7 @@ export class BrowserTypeTool implements NativeTool {
    * @param args - 参数字典
    * @returns 输入完成后最新页面快照
    */
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
     const ref = args.ref;
     const text = args.text;
     if (typeof ref !== 'string') {
@@ -372,8 +474,9 @@ export class BrowserTypeTool implements NativeTool {
     }
     const cleanId = ref.replace('@', '').trim();
     const selector = `[data-myagent-id="${cleanId}"]`;
+    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
 
-    const page = await BrowserSession.getPage();
+    const page = await BrowserSession.getPage(undefined, tenantId);
     const element = await page.$(selector);
     if (!element) {
       throw new Error(`未找到编号为 "${ref}" 的输入框元素。`);
@@ -426,13 +529,14 @@ export class BrowserScrollTool implements NativeTool {
    * @param args - 参数字典
    * @returns 滚动后的网页快照
    */
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
     const direction = args.direction;
     if (direction !== 'up' && direction !== 'down') {
       throw new Error("direction 必须是 'up' 或 'down'");
     }
+    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
 
-    const page = await BrowserSession.getPage();
+    const page = await BrowserSession.getPage(undefined, tenantId);
     await page.evaluate((dir) => {
       const scrollHeight = window.innerHeight * 0.8;
       window.scrollBy(0, dir === 'up' ? -scrollHeight : scrollHeight);
@@ -472,8 +576,9 @@ export class BrowserBackTool implements NativeTool {
    *
    * @returns 后退完成后的最新网页快照
    */
-  async execute(): Promise<string> {
-    const page = await BrowserSession.getPage();
+  async execute(_args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
+    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const page = await BrowserSession.getPage(undefined, tenantId);
     await page.goBack({ timeout: 10000 });
     await page.waitForTimeout(1000);
     return await generateAriaSnapshot(page);
@@ -516,13 +621,14 @@ export class BrowserPressTool implements NativeTool {
    * @param args - 参数字典
    * @returns 状态反馈快照
    */
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
     const key = args.key;
     if (typeof key !== 'string') {
       throw new Error("key 必须是字符串");
     }
+    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
 
-    const page = await BrowserSession.getPage();
+    const page = await BrowserSession.getPage(undefined, tenantId);
     await page.keyboard.press(key);
     await page.waitForTimeout(500);
     return await generateAriaSnapshot(page);
@@ -564,8 +670,9 @@ export class BrowserVisionTool implements NativeTool {
    * @param args - 参数字典
    * @returns 截图物理落盘后的存放路径说明
    */
-  async execute(args: Record<string, unknown>): Promise<string> {
-    const page = await BrowserSession.getPage();
+  async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
+    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const page = await BrowserSession.getPage(undefined, tenantId);
     const annotate = typeof args.annotate === 'boolean' ? args.annotate : false;
 
     // 建立专用的临时截图存放目录
@@ -696,11 +803,12 @@ export class BrowserEnsureLoginTool implements NativeTool {
    * @param args - 参数字典
    * @returns 登录完毕并释放阻塞后的最新页面标号快照
    */
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
     const reason = typeof args.reason === 'string' ? args.reason : '检测到需要人机登录验证';
+    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
     
     // 1. 获取当前页面实例
-    let page = await BrowserSession.getPage();
+    let page = await BrowserSession.getPage(undefined, tenantId);
 
     // 2. 如果当前是无头模式（headless），我们需要以有头模式重建浏览器以供用户手动操作
     const isHeadless = process.env.BROWSER_HEADLESS !== 'false';
@@ -713,7 +821,7 @@ export class BrowserEnsureLoginTool implements NativeTool {
       
       // 临时开启有头模式
       process.env.BROWSER_HEADLESS = 'false';
-      page = await BrowserSession.getPage();
+      page = await BrowserSession.getPage(undefined, tenantId);
       
       // 导航到先前的页面
       if (currentUrl && currentUrl !== 'about:blank') {
