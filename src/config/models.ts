@@ -4,7 +4,7 @@
  * 提供依据模型 ID 动态生成标准化连接配置（LlmConfig）的工厂函数。
  */
 
-import { ModelProfile, LlmConfig } from './types.js';
+import { ModelProfile, LlmConfig, VALID_REASONING_EFFORTS, ReasoningEffort } from './types.js';
 
 /**
  * 系统内置支持的大模型特征清单。
@@ -13,8 +13,8 @@ import { ModelProfile, LlmConfig } from './types.js';
 export const BUILTIN_MODELS: Record<string, ModelProfile> = {
   'deepseek-v4-flash': {
     id: 'deepseek-v4-flash',
-    envKeyName: 'DEEPSEEK_API_KEY',
-    envUrlName: 'DEEPSEEK_API_URL',
+    envKeyName: 'AGENT_LLM_API_KEY',
+    envUrlName: 'AGENT_LLM_BASE_URL',
     defaultBaseUrl: 'https://api.deepseek.com',
     defaultModel: 'deepseek-v4-flash[1m]',
     /** 预设上下文最大窗口为 1000000 tokens */
@@ -40,8 +40,8 @@ export const BUILTIN_MODELS: Record<string, ModelProfile> = {
   },
   'deepseek-v4-pro': {
     id: 'deepseek-v4-pro',
-    envKeyName: 'DEEPSEEK_API_KEY',
-    envUrlName: 'DEEPSEEK_API_URL',
+    envKeyName: 'AGENT_LLM_API_KEY',
+    envUrlName: 'AGENT_LLM_BASE_URL',
     defaultBaseUrl: 'https://api.deepseek.com',
     defaultModel: 'deepseek-v4-pro[1m]',
     /** 预设上下文最大窗口为 1000000 tokens */
@@ -108,8 +108,8 @@ export function getModelConfig(id: string, env: Record<string, string | undefine
   }
 
   // 优先读取环境变量进行模型名称与最大输出 Tokens 的覆盖
-  const rawModel = env.DEEPSEEK_MODEL || profile.defaultModel;
-  const maxTokens = parseInt(env.DEEPSEEK_MAX_TOKENS || '4096', 10);
+  const rawModel = env.AGENT_LLM_MODEL || profile.defaultModel;
+  const maxTokens = parseInt(env.AGENT_LLM_MAX_TOKENS || '4096', 10);
 
   // 匹配并剥除模型名中的窗口尺寸后缀（如 [1m]、[128k] 等）
   let model = rawModel;
@@ -129,31 +129,31 @@ export function getModelConfig(id: string, env: Record<string, string | undefine
   }
 
   // 级联读取环境变量或使用模型预设的默认值。若检测到模型名已被覆写但缺失窗口环境变量配置且无后缀特征，主动退化至 32000 保守值防爆
-  const isModelOverridden = env.DEEPSEEK_MODEL !== undefined && env.DEEPSEEK_MODEL !== profile.defaultModel;
+  const isModelOverridden = env.AGENT_LLM_MODEL !== undefined && env.AGENT_LLM_MODEL !== profile.defaultModel;
   let contextWindow = profile.contextWindow || 1000000;
-  if (env.DEEPSEEK_CONTEXT_WINDOW) {
-    contextWindow = parseContextWindow(env.DEEPSEEK_CONTEXT_WINDOW);
+  if (env.AGENT_LLM_CONTEXT_WINDOW) {
+    contextWindow = parseContextWindow(env.AGENT_LLM_CONTEXT_WINDOW);
   } else if (extractedWindow !== null) {
     contextWindow = extractedWindow;
   } else if (isModelOverridden) {
     contextWindow = 32000;
   }
 
-  const temperature = env.DEEPSEEK_TEMPERATURE
-    ? parseFloat(env.DEEPSEEK_TEMPERATURE)
+  const temperature = env.AGENT_LLM_TEMPERATURE
+    ? parseFloat(env.AGENT_LLM_TEMPERATURE)
     : profile.temperature;
 
-  const timeout = env.DEEPSEEK_TIMEOUT
-    ? parseInt(env.DEEPSEEK_TIMEOUT, 10)
+  const timeout = env.AGENT_LLM_TIMEOUT
+    ? parseInt(env.AGENT_LLM_TIMEOUT, 10)
     : (profile.timeout || 600000);
 
-  const maxRetries = env.DEEPSEEK_MAX_RETRIES
-    ? parseInt(env.DEEPSEEK_MAX_RETRIES, 10)
+  const maxRetries = env.AGENT_LLM_MAX_RETRIES
+    ? parseInt(env.AGENT_LLM_MAX_RETRIES, 10)
     : (profile.maxRetries || 3);
 
   // 解析自定义请求头环境变量，支持分号或换行符分割的名值对
   let headers: Record<string, string> | undefined = profile.headers;
-  const envHeaders = env.DEEPSEEK_HEADERS;
+  const envHeaders = env.AGENT_LLM_HEADERS;
   if (envHeaders) {
     headers = { ...(headers || {}) };
     const lines = envHeaders.split(/[;\n\r]+/);
@@ -170,6 +170,17 @@ export function getModelConfig(id: string, env: Record<string, string | undefine
     }
   }
 
+  // 提取推理努力度并执行值域 Fail-Fast 校验
+  const reasoningEffort = env.AGENT_LLM_REASONING_EFFORT;
+  let validatedEffort: ReasoningEffort | undefined = undefined;
+  if (reasoningEffort !== undefined && reasoningEffort.trim() !== '') {
+    const trimmedEffort = reasoningEffort.trim();
+    if (!(VALID_REASONING_EFFORTS as readonly string[]).includes(trimmedEffort)) {
+      throw new Error(`[配置] 不合法的 AGENT_LLM_REASONING_EFFORT 值: "${reasoningEffort}"。仅允许 ${VALID_REASONING_EFFORTS.map(e => `'${e}'`).join(' | ')}。`);
+    }
+    validatedEffort = trimmedEffort as ReasoningEffort;
+  }
+
   return {
     apiKey,
     baseUrl,
@@ -180,6 +191,7 @@ export function getModelConfig(id: string, env: Record<string, string | undefine
     temperature,
     timeout,
     maxRetries,
-    headers
+    headers,
+    reasoningEffort: validatedEffort
   };
 }

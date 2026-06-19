@@ -27,8 +27,8 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
 
   it('当没有配置 AUTHORIZED_WORKSPACE_DIR 时，默认工作区应回退到当前工作目录 (process.cwd)', () => {
     const mockEnv = {
-      DEEPSEEK_MODEL: 'deepseek-v4-flash',
-      DEEPSEEK_API_KEY: 'mock-api-key-123'
+      AGENT_LLM_MODEL: 'deepseek-v4-flash',
+      AGENT_LLM_API_KEY: 'mock-api-key-123'
     };
     const config = loadConfig(mockEnv);
     expect(config.workspace).toBe(realpathSync(process.cwd()));
@@ -37,8 +37,8 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
   it('应当正确读取并解析隐式环境变量 AUTHORIZED_WORKSPACE_DIR 的重定向值', () => {
     const expectedPath = realpathSync(tempTestDir);
     const mockEnv = {
-      DEEPSEEK_MODEL: 'deepseek-v4-flash',
-      DEEPSEEK_API_KEY: 'mock-api-key-123',
+      AGENT_LLM_MODEL: 'deepseek-v4-flash',
+      AGENT_LLM_API_KEY: 'mock-api-key-123',
       AUTHORIZED_WORKSPACE_DIR: tempTestDir
     };
     const config = loadConfig(mockEnv);
@@ -51,8 +51,8 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
     beforeEach(() => {
       // 故意在真实全局 process.env 中注入冲突的环境变量
       process.env.AGENT_WORK_MODE = 'YOLO';
-      process.env.DEEPSEEK_REASONING_EFFORT = 'disabled';
-      process.env.DEEPSEEK_API_KEY = 'global-real-key-must-not-use';
+      process.env.AGENT_LLM_REASONING_EFFORT = 'disabled';
+      process.env.AGENT_LLM_API_KEY = 'global-real-key-must-not-use';
     });
 
     afterEach(() => {
@@ -62,10 +62,10 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
 
     it('当向 loadConfig(env) 注入局部 Mock 环境时，各项配置解析决不能穿透读取真实的全局 process.env 变量', () => {
       const mockEnv = {
-        DEEPSEEK_API_KEY: 'mock-isolated-api-key',
-        DEEPSEEK_MODEL: 'deepseek-v4-flash',
+        AGENT_LLM_API_KEY: 'mock-isolated-api-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash',
         AGENT_WORK_MODE: 'Safe',
-        DEEPSEEK_REASONING_EFFORT: 'high'
+        AGENT_LLM_REASONING_EFFORT: 'high'
       };
 
       const config = loadConfig(mockEnv);

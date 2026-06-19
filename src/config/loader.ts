@@ -89,19 +89,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
   // 2. 必填环境变量校验（fail-fast）
   // 优先从环境变量加载大模型名称，若包含窗口后缀（如 [1m]、[128k] 等）自动剥离为内置模型 ID 进行预检
-  const rawModelId = env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+  const rawModelId = env.AGENT_LLM_MODEL || 'deepseek-v4-flash';
   const defaultModelId = rawModelId.replace(/\[\d+[km]\]/i, '');
   const llm = getModelConfig(defaultModelId, env);
-
-  // 2.1 推理努力度（思考等级）校验：可选配置，若未指定或为空放行；若指定则执行值域 Fail-Fast 校验
-  const reasoningEffort = env.DEEPSEEK_REASONING_EFFORT;
-  if (reasoningEffort !== undefined && reasoningEffort.trim() !== '') {
-    const validEfforts = ['low', 'medium', 'high', 'max', 'disabled'];
-    if (!validEfforts.includes(reasoningEffort)) {
-      throw new Error(`[配置] 不合法的 DEEPSEEK_REASONING_EFFORT 值: "${reasoningEffort}"。仅允许 'low' | 'medium' | 'high' | 'max' | 'disabled'。`);
-    }
-    llm.reasoningEffort = reasoningEffort;
-  }
 
   // 3. 工作区路径解析：在初始化阶段强制调用 realpathSync 进行物理路径解析与展开，锁定绝对物理路径，防止路径漂移与挂载逃逸风险。
   // ====================================================================================

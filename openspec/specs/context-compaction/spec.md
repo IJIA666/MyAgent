@@ -56,9 +56,9 @@
 #### 场景: Claude Code 式模型与网络配置环境变量覆写
 - **WHEN** 从 `BUILTIN_MODELS` 工厂解析模型连接配置（`getModelConfig`）时
 - **THEN** 系统必须支持通过 `process.env` 进行动态覆写：
-  1. 支持通过 `process.env.DEEPSEEK_MODEL`（或对应的其他模型覆写变量）动态改写最终发送给 API 的模型标识符名称，允许使用第三方兼容端点。同时，系统必须支持匹配并自动剥除模型名中的 `[1m]`、`[128k]` 等窗口后缀（以防第三方 API 接收到带后缀的模型名发生校验报错），并将解析出来的物理窗口大小在系统内自适应应用；
-  2. 支持通过 `process.env.DEEPSEEK_CONTEXT_WINDOW` 动态覆写上下文物理窗口大小，系统必须支持对其指定的文本缩写（如 `1m` / `1M` 代表 1000000；`128k` / `128K` 代表 128000）进行解析还原。如果检测到模型名称被覆写但缺失窗口环境变量及后缀匹配时，系统必须自动将其退化至保守的上下文物理窗口限制（32k，即 32000 tokens）以防由于第三方小模型限制而导致溢出；
-  3. 支持通过 `process.env.DEEPSEEK_TEMPERATURE` 动态覆写采样温度；
-  4. 支持通过 `process.env.DEEPSEEK_TIMEOUT`（毫秒）动态覆写网络超时限制；
-  5. 支持通过 `process.env.DEEPSEEK_MAX_RETRIES` 动态覆写网络请求的最大重试次数；
-  6. 支持通过 `process.env.DEEPSEEK_HEADERS`（以换行符或分号分隔的名值对）动态覆写并解析为自定义 HTTP 请求头合并注入。
+  1. 支持通过 `process.env.AGENT_LLM_MODEL`（或对应的其他模型覆写变量）动态改写最终发送给 API 的模型标识符名称，允许使用第三方兼容端点。同时，系统必须支持匹配并自动剥除模型名中的 `[1m]`、`[128k]` 等窗口后缀（以防第三方 API 接收到带后缀的模型名发生校验报错），并将解析出来的物理窗口大小在系统内自适应应用；
+  2. 支持通过 `process.env.AGENT_LLM_CONTEXT_WINDOW` 动态覆写上下文物理窗口大小，系统必须支持对其指定的文本缩写（如 `1m` / `1M` 代表 1000000；`128k` / `128K` 代表 128000）进行解析还原。如果检测到模型名称被覆写但缺失窗口环境变量及后缀匹配时，系统必须自动将其退化至保守的上下文物理窗口限制（32k，即 32000 tokens）以防由于第三方小模型限制而导致溢出；
+  3. 支持通过 `process.env.AGENT_LLM_TEMPERATURE` 动态覆写采样温度；
+  4. 支持通过 `process.env.AGENT_LLM_TIMEOUT`（毫秒）动态覆写网络超时限制；
+  5. 支持通过 `process.env.AGENT_LLM_MAX_RETRIES` 动态覆写网络请求的最大重试次数；
+  6. 支持通过 `process.env.AGENT_LLM_HEADERS`（以换行符或分号分隔的名值对）动态覆写并解析为自定义 HTTP 请求头合并注入。

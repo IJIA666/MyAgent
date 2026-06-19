@@ -62,8 +62,8 @@ export class ModelCommand implements ICommand {
       context.session.switchModel(newConfig, { reasoning_effort: reasoningEffort });
 
       if (saveDefault) {
-        updateEnvVariable('DEEPSEEK_MODEL', targetModelId);
-        updateEnvVariable('DEEPSEEK_REASONING_EFFORT', reasoningEffort);
+        updateEnvVariable('AGENT_LLM_MODEL', targetModelId);
+        updateEnvVariable('AGENT_LLM_REASONING_EFFORT', reasoningEffort);
       }
 
       p.outro(theme.success(`配置已生效！当前激活模型：${targetModelId}`));

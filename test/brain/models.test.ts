@@ -7,7 +7,7 @@ describe('Model Configuration & Window Parsing Tests', () => {
 
   beforeEach(() => {
     // 预设默认的 API key 环境变量以防抛出未配置错误
-    process.env.DEEPSEEK_API_KEY = 'mock-api-key-123';
+    process.env.AGENT_LLM_API_KEY = 'mock-api-key-123';
   });
 
   afterEach(() => {
@@ -42,14 +42,14 @@ describe('Model Configuration & Window Parsing Tests', () => {
     });
 
     it('当覆写模型名称但未指定窗口限制时，自适应窗口应退化为保守的 32000', () => {
-      process.env.DEEPSEEK_MODEL = 'custom-model-without-window';
+      process.env.AGENT_LLM_MODEL = 'custom-model-without-window';
       const config = getModelConfig('deepseek-v4-flash');
       expect(config.model).toBe('custom-model-without-window');
       expect(config.contextWindow).toBe(32000);
     });
 
     it('当覆写模型名携带 [1m] 等后缀时，应自动剥除后缀并将自适应窗口识别为 1000000', () => {
-      process.env.DEEPSEEK_MODEL = 'my-custom-deepseek[1m]';
+      process.env.AGENT_LLM_MODEL = 'my-custom-deepseek[1m]';
       const config = getModelConfig('deepseek-v4-flash');
       // 最终大模型标识中应该已经把 [1m] 后缀剥离以防报错
       expect(config.model).toBe('my-custom-deepseek');
@@ -57,15 +57,15 @@ describe('Model Configuration & Window Parsing Tests', () => {
     });
 
     it('当覆写模型名携带 [128k] 等后缀时，应自动剥除后缀并将自适应窗口识别为 128000', () => {
-      process.env.DEEPSEEK_MODEL = 'llama-3-8b[128k]';
+      process.env.AGENT_LLM_MODEL = 'llama-3-8b[128k]';
       const config = getModelConfig('deepseek-v4-flash');
       expect(config.model).toBe('llama-3-8b');
       expect(config.contextWindow).toBe(128000);
     });
 
     it('当通过环境变量显式指定缩写窗口大小时，应该优先采用', () => {
-      process.env.DEEPSEEK_MODEL = 'custom-model';
-      process.env.DEEPSEEK_CONTEXT_WINDOW = '128k';
+      process.env.AGENT_LLM_MODEL = 'custom-model';
+      process.env.AGENT_LLM_CONTEXT_WINDOW = '128k';
       const config = getModelConfig('deepseek-v4-flash');
       expect(config.model).toBe('custom-model');
       expect(config.contextWindow).toBe(128000);

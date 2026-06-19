@@ -52,9 +52,19 @@ export interface LlmConfig {
   maxRetries?: number;
   /** 自定义请求头 */
   headers?: Record<string, string>;
-  /** 推理努力度（思考等级），仅在支持推理模式的模型上生效，可选值为 'high' | 'medium' | 'low' | 'disabled' */
-  reasoningEffort?: string;
+  /** 推理努力度（思考等级），仅在支持推理模式的模型上生效 */
+  reasoningEffort?: ReasoningEffort;
 }
+
+/**
+  * 支持的推理努力度（思考等级）字面量列表。
+  */
+export const VALID_REASONING_EFFORTS = ['low', 'medium', 'high', 'max', 'disabled'] as const;
+
+/**
+  * 推理努力度（思考等级）字面量联合类型。
+  */
+export type ReasoningEffort = typeof VALID_REASONING_EFFORTS[number];
 
 /**
  * 单个 MCP Server 的连接配置条目。
