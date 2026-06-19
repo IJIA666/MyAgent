@@ -16,6 +16,7 @@ import {
   loadWorkMode
 } from '../../src/action/tools/system/terminal.js';
 import { validateCommand, validateCwd } from '../../src/action/tools/system/terminal-guard.js';
+import { SessionContext } from '../../src/brain/context.js';
 
 describe('Terminal Tool 单元测试', () => {
   const mockRootDir = resolve('D:\\authorized\\path_terminal_test');
@@ -109,10 +110,10 @@ describe('Terminal Tool 单元测试', () => {
     setWorkMode('YOLO');
     
     // 场景 A: 在 200ms 内立即报错退出的命令，executeCommandTool 应同步返回错误结果，而不是后台 ID 提示
-    const invalidCommand = 'node --invalid-flag-non-existent';
+    const invalidCommand = 'non_existent_command_xxxx';
     const resultInvalid = await executeCommandToolInstance.execute({ command: invalidCommand, isBackground: true });
     expect(resultInvalid).not.toContain('任务已在后台成功启动');
-    expect(resultInvalid).toContain('退出');
+    expect(resultInvalid).toContain('错误');
 
     // 场景 B: 存活时间超过 200ms 的后台任务，应该返回后台 ID 成功启动的提示
     const longRunningCommand = 'node -e "setTimeout(function(){}, 2000)"';
@@ -133,5 +134,32 @@ describe('Terminal Tool 单元测试', () => {
     // 正确路径不报错
     const correctPath = validateCwd('src');
     expect(correctPath).toContain('path_terminal_test');
+  });
+
+  test('8. Plan 模式写指令拦截与底线黑名单拦截测试', () => {
+    // A. 测试 Plan 模式下拒绝写倾向指令
+    const mockSession = new SessionContext();
+    mockSession.setWorkMode('Plan');
+
+    // 写倾向指令，应被 deny 拦截
+    const safetyDev = executeCommandToolInstance.checkSafety({ command: 'npm run dev' }, mockSession);
+    expect(safetyDev.status).toBe('deny');
+    expect(safetyDev.message).toContain('BLOCKED (Plan Mode Only)');
+
+    // 只读白名单指令（如 git log），应返回 suspend 挂起人工审批
+    const safetyLog = executeCommandToolInstance.checkSafety({ command: 'git log' }, mockSession);
+    expect(safetyLog.status).toBe('suspend');
+
+    // B. 测试底线拦截黑名单 rm -rf /，无论在 YOLO 还是其他模式下都应被绝对拒绝
+    mockSession.setWorkMode('YOLO');
+    const safetyRm = executeCommandToolInstance.checkSafety({ command: 'rm -rf /' }, mockSession);
+    expect(safetyRm.status).toBe('deny');
+    expect(safetyRm.message).toContain('BLOCKED (Hardline Blocklist)');
+
+    // 即使在没有 SessionContext（退化为全局配置 YOLO）时，也应绝对拦截
+    setWorkMode('YOLO');
+    const safetyRmGlobal = executeCommandToolInstance.checkSafety({ command: 'rm -rf /' });
+    expect(safetyRmGlobal.status).toBe('deny');
+    expect(safetyRmGlobal.message).toContain('BLOCKED (Hardline Blocklist)');
   });
 });

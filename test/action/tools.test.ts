@@ -2,6 +2,8 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { resolve, join } from 'path';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { initWorkspace, secureResolvePath, ReadFileTool } from '../../src/action/tools.js';
+import { WriteFileTool, EditFileTool } from '../../src/action/tools/filesystem/file-system.js';
+import { SessionContext } from '../../src/brain/context.js';
 
 describe('安全沙箱 tools.ts 单元测试', () => {
   const mockRootDir = resolve('D:\\authorized\\path');
@@ -93,5 +95,86 @@ describe('ReadFileTool 缓存拦截去重机制测试', () => {
     const res2 = readFileToolInstance.execute({ targetPath: testFile, lineStart: 2, lineEnd: 3 });
     expect(res2).toContain('line3');
     expect(res2).not.toContain('File unchanged');
+  });
+});
+
+describe('机密环境文件分级保护审计测试', () => {
+  const testDir = resolve(__dirname, 'temp_env_test_dir');
+  let readFileTool: ReadFileTool;
+  let writeFileTool: WriteFileTool;
+  let editFileTool: EditFileTool;
+
+  beforeAll(() => {
+    if (!existsSync(testDir)) {
+      mkdirSync(testDir, { recursive: true });
+    }
+    initWorkspace(testDir);
+  });
+
+  afterAll(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  beforeEach(() => {
+    ReadFileTool.readFileState.clear();
+    readFileTool = new ReadFileTool();
+    writeFileTool = new WriteFileTool();
+    editFileTool = new EditFileTool();
+  });
+
+  test('1. 敏感机密文件读写在 YOLO 模式下强制降级 Safe 卡关与披露测试', () => {
+    const mockSession = new SessionContext();
+    mockSession.setWorkMode('YOLO');
+
+    // A. ReadFileTool.checkSafety 读取 .env 触发降级 suspend
+    const readSafety = readFileTool.checkSafety({ targetPath: '.env' }, mockSession);
+    expect(readSafety.status).toBe('suspend');
+    expect(readSafety.message).toContain('【机密文件审计】');
+
+    // B. WriteFileTool.checkSafety 写入 .env 触发降级 suspend，并明文披露内容
+    const writeSafety = writeFileTool.checkSafety({ targetPath: '.env', content: 'SECRET_KEY=12345' }, mockSession);
+    expect(writeSafety.status).toBe('suspend');
+    expect(writeSafety.message).toContain('【机密文件修改审计】');
+    expect(writeSafety.message).toContain('SECRET_KEY=12345');
+
+    // C. EditFileTool.checkSafety 修改 .env 触发降级 suspend，并披露 Diff 差分
+    const editSafety = editFileTool.checkSafety(
+      {
+        targetPath: '.env',
+        old_string: 'SECRET_KEY=12345',
+        new_string: 'SECRET_KEY=abcde'
+      },
+      mockSession
+    );
+    expect(editSafety.status).toBe('suspend');
+    expect(editSafety.message).toContain('【机密文件编辑审计】');
+    expect(editSafety.message).toContain('SECRET_KEY=12345');
+    expect(editSafety.message).toContain('SECRET_KEY=abcde');
+  });
+
+  test('2. 样例配置文件 .env.example 不降级 YOLO 直接放行测试', () => {
+    const mockSession = new SessionContext();
+    mockSession.setWorkMode('YOLO');
+
+    // A. ReadFileTool.checkSafety 读取 .env.example 应直接 pass
+    const readSafety = readFileTool.checkSafety({ targetPath: '.env.example' }, mockSession);
+    expect(readSafety.status).toBe('pass');
+
+    // B. WriteFileTool.checkSafety 写入 .env.example 应直接 pass
+    const writeSafety = writeFileTool.checkSafety({ targetPath: '.env.example', content: 'KEY=' }, mockSession);
+    expect(writeSafety.status).toBe('pass');
+
+    // C. EditFileTool.checkSafety 修改 .env.example 应直接 pass
+    const editSafety = editFileTool.checkSafety(
+      {
+        targetPath: '.env.example',
+        old_string: 'KEY=',
+        new_string: 'KEY=val'
+      },
+      mockSession
+    );
+    expect(editSafety.status).toBe('pass');
   });
 });

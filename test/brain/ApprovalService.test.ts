@@ -85,4 +85,46 @@ describe('ApprovalService Unit Tests', () => {
     service.rejectAll('会话紧急注销');
     await expect(waitPromise2).rejects.toThrow('Approval cancelled: 会话紧急注销');
   });
+
+  it('应该支持通过 sessionId 执行级联熔断 (rejectBySessionId) 且并发会话隔离不被干扰', async () => {
+    // 挂起属于会话 A 的两个待审批项
+    const waitPromiseA1 = service.wait(
+      'task-a1',
+      { name: 'read_file', arguments: { path: 'a1' } },
+      undefined,
+      undefined,
+      300000,
+      'session-a'
+    );
+    const waitPromiseA2 = service.wait(
+      'task-a2',
+      { name: 'read_file', arguments: { path: 'a2' } },
+      undefined,
+      undefined,
+      300000,
+      'session-a'
+    );
+
+    // 挂起属于会话 B 的一个待审批项
+    const waitPromiseB1 = service.wait(
+      'task-b1',
+      { name: 'read_file', arguments: { path: 'b1' } },
+      undefined,
+      undefined,
+      300000,
+      'session-b'
+    );
+
+    // 对会话 A 执行级联熔断，抛出熔断拒绝异常
+    service.rejectBySessionId('session-a', new Error('HaltedByReject: User rejected session-a'));
+
+    // 验证：会话 A 的两个挂起项被同时熔断
+    await expect(waitPromiseA1).rejects.toThrow('HaltedByReject: User rejected session-a');
+    await expect(waitPromiseA2).rejects.toThrow('HaltedByReject: User rejected session-a');
+
+    // 验证：会话 B 的挂起项没有被熔断，仍然能够正常 resolve
+    service.resolve('task-b1', { action: 'once' });
+    const resB1 = await waitPromiseB1;
+    expect(resB1.action).toBe('once');
+  });
 });
