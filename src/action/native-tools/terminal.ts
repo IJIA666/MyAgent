@@ -1,41 +1,81 @@
 /**
- * 终端组件门面。
- * 核心职责：
- * 1. 汇集安全网关、配置持久化、人工确认交互和底层执行引擎；
- * 2. 编排生成完整的终端工具执行流生命周期。
+ * 终端指令执行工具类。
+ * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
  */
 
 import { validateCommand, validateCwd } from './terminal-guard.js';
 import { runCommandEngine } from './terminal-engine.js';
+import type { NativeTool } from '../virtual-mcp.js';
+import { ToolConstants } from '../../common/constants.js';
 
 /**
- * 终端指令执行核心入口（集成沙箱隔离、流式截断、自动后台化及人工交互确认等高级机制）
- * @param command 要执行的命令行
- * @param cwd 命令启动的目录（相对/绝对，会自动锁死在工作区安全区内）
- * @param isBackground 是否显式启动为后台驻留任务
- * @param options 超时配置选项
- * @returns 执行结果摘要以及带有 <shell_metadata> 的元数据文本
+ * 终端指令执行工具类。
+ * 实现了 NativeTool 契约，支持在受限的工作区沙箱内执行原子终端命令。
  */
-export async function executeCommandTool(
-  command: string,
-  cwd?: string,
-  isBackground?: boolean,
-  options?: { timeoutMs?: number; noOutputTimeoutMs?: number }
-): Promise<string> {
-  // 1. 安全网关：校验复合拼接符与命令注入风险
-  validateCommand(command);
+export class ExecuteCommandTool implements NativeTool {
+  /**
+   * 工具的名称。
+   */
+  readonly name = ToolConstants.EXECUTE_COMMAND;
 
-  // 2. 沙箱隔离：校验 cwd 范围并获取规范绝对路径
-  const targetCwd = validateCwd(cwd);
+  /**
+   * 工具的 OpenAI Function Calling 声明定义。
+   */
+  readonly definition = {
+    type: "function" as const,
+    function: {
+      name: ToolConstants.EXECUTE_COMMAND,
+      description: "在受限的工作区沙箱内执行一条原子终端命令（如 npm run build、vitest 等）。禁止使用 &、|、; 等复合拼接符，禁止读写工作区外部路径。若命令执行时间较长，会自动切入后台托管并返回任务ID。",
+      parameters: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            description: "要执行的原子命令字符串（例如 'npm run test'）。"
+          },
+          cwd: {
+            type: "string",
+            description: "命令执行的子目录路径（可选，相对于工作区根目录的相对路径，例如 'src'）。"
+          },
+          isBackground: {
+            type: "boolean",
+            description: "是否显式指示在后台运行。对于长时间挂起的服务，必须设为 true。"
+          }
+        },
+        required: ["command"]
+      }
+    }
+  };
 
-  // 3. 进程执行：交给底座无状态进程引擎进行 spawn 调度
-  return runCommandEngine(command, targetCwd, isBackground, options);
+  /**
+   * 执行终端命令行指令。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 终端输出摘要结果
+   */
+  async execute(args: Record<string, unknown>): Promise<string> {
+    const command = args.command;
+    if (typeof command !== 'string') {
+      throw new Error("command 必须是字符串");
+    }
+
+    const cwd = typeof args.cwd === 'string' ? args.cwd : undefined;
+    const isBackground = typeof args.isBackground === 'boolean' ? args.isBackground : false;
+
+    // 1. 安全网关：校验复合拼接符与命令注入风险
+    validateCommand(command);
+
+    // 2. 沙箱隔离：校验 cwd 范围并获取规范绝对路径
+    const targetCwd = validateCwd(cwd);
+
+    // 3. 进程执行：交给底座无状态进程引擎进行 spawn 调度
+    return await runCommandEngine(command, targetCwd, isBackground);
+  }
 }
 
 // 导出配置管理与进程引擎相关的公共类型及工具函数
 
 export {
-  // 显式以 type 导出 WorkMode 类型，防止 ESM 环境下类型擦除后运行时解析报错
   type WorkMode,
   getWorkMode,
   setWorkMode,
@@ -48,7 +88,6 @@ export {
 } from './terminal-config.js';
 
 export {
-  // 显式以 type 导出 TaskInfo 接口类型，防止 ESM 静态校验失败
   type TaskInfo,
   activeTasks
 } from './terminal-engine.js';
