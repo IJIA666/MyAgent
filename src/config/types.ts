@@ -36,7 +36,7 @@ export interface LlmConfig {
   apiKey: string;
   /** API 接口基础地址（兼容 OpenAI 协议） */
   baseUrl: string;
-  /** 目标模型名称（如 deepseek-chat、deepseek-v4-flash） */
+  /** 目标模型名称（如 deepseek-v4-pro、deepseek-v4-flash） */
   model: string;
   /** 关联的模型特征档案 */
   profile: ModelProfile;
@@ -103,4 +103,22 @@ export interface AppConfig {
   mcp: McpConfig;
   /** 终端安全执行工作模式 */
   workMode?: 'Safe' | 'Auto' | 'YOLO';
+  /** 运行资源与行为限制配置 */
+  runtimeLimits: RuntimeLimitsConfig;
+}
+
+/**
+ * 智能体运行行为与资源控制限制配置。
+ */
+export interface RuntimeLimitsConfig {
+  /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
+  maxIterations: number;
+  /** 工具返回结果超长自动落盘的阈值限制（字符数） */
+  largeToolOutputLimit: number;
+  /** 批量读取文件时体积安全熔断字符阈值 */
+  readManyFilesLimit: number;
+  /** 文件/文本检索匹配结果最大展示数限制 */
+  searchLimit: number;
+  /** Token 水位自动压缩阈值比例（浮点型，例如 0.8） */
+  compactionWatermarkFactor: number;
 }

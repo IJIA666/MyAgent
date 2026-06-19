@@ -134,7 +134,7 @@ export class GrepSearchTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 匹配到的行内容或数量汇总 JSON 文本
    */
-  execute(args: Record<string, unknown>): string {
+  execute(args: Record<string, unknown>, sessionContext?: unknown): string {
     const query = args.query;
     if (typeof query !== 'string') {
       throw new Error("query 必须是字符串");
@@ -174,6 +174,9 @@ export class GrepSearchTool implements NativeTool {
       }
     }
 
+    const context = sessionContext as { appConfig?: { runtimeLimits?: { searchLimit?: number } } } | undefined;
+    const limit = context?.appConfig?.runtimeLimits?.searchLimit ?? 100;
+
     const matches: Array<{ file: string; line: number; content: string }> = [];
     let totalMatchLines = 0;
     const authorizedDir = getAuthorizedDir();
@@ -203,7 +206,7 @@ export class GrepSearchTool implements NativeTool {
 
           if (isMatch) {
             totalMatchLines++;
-            if (matches.length < 100) {
+            if (matches.length < limit) {
               const truncatedLine = line.length > 500 ? line.substring(0, 500) + '... [单行过长被截断]' : line;
               matches.push({
                 file: relPath,
@@ -226,14 +229,14 @@ export class GrepSearchTool implements NativeTool {
       }, null, 2);
     }
 
-    const isTruncated = totalMatchLines > 100;
+    const isTruncated = totalMatchLines > limit;
     const result = {
       matches,
       totalMatches: totalMatchLines,
       shownMatches: matches.length,
       isTruncated,
       status: "success",
-      notice: isTruncated ? "匹配结果过多，已自动限制仅展示前 100 项，请使用更精准的关键词进行搜索。" : undefined
+      notice: isTruncated ? `匹配结果过多，已自动限制仅展示前 ${limit} 项，请使用更精准的关键词进行搜索。` : undefined
     };
 
     return JSON.stringify(result, null, 2);
@@ -290,7 +293,7 @@ export class GlobSearchTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 匹配的相对文件路径列表 JSON 文本
    */
-  execute(args: Record<string, unknown>): string {
+  execute(args: Record<string, unknown>, sessionContext?: unknown): string {
     const pattern = args.pattern;
     if (typeof pattern !== 'string') {
       throw new Error("pattern 必须是字符串");
@@ -317,10 +320,11 @@ export class GlobSearchTool implements NativeTool {
       }
     }
 
-    const LIMIT = 100;
+    const context = sessionContext as { appConfig?: { runtimeLimits?: { searchLimit?: number } } } | undefined;
+    const limit = context?.appConfig?.runtimeLimits?.searchLimit ?? 100;
     const totalCount = matchedPaths.length;
-    const slicedPaths = matchedPaths.slice(0, LIMIT);
-    const isTruncated = totalCount > LIMIT;
+    const slicedPaths = matchedPaths.slice(0, limit);
+    const isTruncated = totalCount > limit;
 
     const result = {
       paths: slicedPaths,
@@ -328,7 +332,7 @@ export class GlobSearchTool implements NativeTool {
       shownPaths: slicedPaths.length,
       isTruncated,
       status: "success",
-      notice: isTruncated ? `匹配到的文件数过多（共 ${totalCount} 个），已限制仅展示前 ${LIMIT} 个，请尝试缩窄搜索通配符。` : undefined
+      notice: isTruncated ? `匹配到的文件数过多（共 ${totalCount} 个），已限制仅展示前 ${limit} 个，请尝试缩窄搜索通配符。` : undefined
     };
 
     return JSON.stringify(result, null, 2);

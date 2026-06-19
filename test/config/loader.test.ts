@@ -78,4 +78,44 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
       expect(config.workMode).toBe('Safe');
     });
   });
+
+  describe('新增运行资源限制配置的安全解析与兜底测试', () => {
+    it('当传入有效的限制参数时，应能正确解析并转化为数字类型', () => {
+      const mockEnv = {
+        AGENT_LLM_API_KEY: 'mock-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash',
+        AGENT_MAX_ITERATIONS: '35',
+        AGENT_LARGE_TOOL_OUTPUT_LIMIT: '10000',
+        AGENT_READ_MANY_FILES_LIMIT: '60000',
+        AGENT_SEARCH_LIMIT: '150',
+        AGENT_COMPACTION_WATERMARK_FACTOR: '0.85'
+      };
+
+      const config = loadConfig(mockEnv);
+      expect(config.runtimeLimits.maxIterations).toBe(35);
+      expect(config.runtimeLimits.largeToolOutputLimit).toBe(10000);
+      expect(config.runtimeLimits.readManyFilesLimit).toBe(60000);
+      expect(config.runtimeLimits.searchLimit).toBe(150);
+      expect(config.runtimeLimits.compactionWatermarkFactor).toBe(0.85);
+    });
+
+    it('当配置项缺失或输入非法格式时，应能自动回退到默认常量值兜底而不会崩溃', () => {
+      const mockEnv = {
+        AGENT_LLM_API_KEY: 'mock-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash',
+        AGENT_MAX_ITERATIONS: 'invalid-int',
+        AGENT_LARGE_TOOL_OUTPUT_LIMIT: '  ',
+        AGENT_READ_MANY_FILES_LIMIT: 'abc',
+        AGENT_SEARCH_LIMIT: 'xyz',
+        AGENT_COMPACTION_WATERMARK_FACTOR: 'invalid-float'
+      };
+
+      const config = loadConfig(mockEnv);
+      expect(config.runtimeLimits.maxIterations).toBe(20);
+      expect(config.runtimeLimits.largeToolOutputLimit).toBe(8000);
+      expect(config.runtimeLimits.readManyFilesLimit).toBe(50000);
+      expect(config.runtimeLimits.searchLimit).toBe(100);
+      expect(config.runtimeLimits.compactionWatermarkFactor).toBe(0.8);
+    });
+  });
 });

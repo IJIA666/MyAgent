@@ -81,7 +81,7 @@ export class ReadManyFilesTool implements NativeTool {
    * @param sessionContext - 可选的会话上下文
    * @returns 拼接后的文件内容，或在总体积超限时抛出熔断的结构化大纲详情
    */
-  execute(args: Record<string, unknown>): string {
+  execute(args: Record<string, unknown>, sessionContext?: unknown): string {
     const targetPaths = args.targetPaths;
     if (typeof targetPaths !== 'string') {
       throw new Error("targetPaths 必须是字符串");
@@ -134,8 +134,11 @@ export class ReadManyFilesTool implements NativeTool {
       });
     }
 
-    // 触发体积熔断机制（50,000 字符限制）
-    if (totalChars > 50000) {
+    // 触发体积熔断机制
+    const context = sessionContext as { appConfig?: { runtimeLimits?: { readManyFilesLimit?: number } } } | undefined;
+    const limit = context?.appConfig?.runtimeLimits?.readManyFilesLimit ?? 50000;
+
+    if (totalChars > limit) {
       const detailsList = filesData.map((fd) => {
         const lines = fd.content.split(/\r?\n/);
         const { outlineType, outline } = extractFileOutline(fd.relativePath, fd.content);
@@ -151,7 +154,7 @@ export class ReadManyFilesTool implements NativeTool {
 
       const errResult = {
         error: "Size limit exceeded",
-        message: `请求的文件总体积为 ${totalChars} 字符，超出了 50,000 字符的安全熔断限制。`,
+        message: `请求的文件总体积为 ${totalChars} 字符，超出了 ${limit.toLocaleString()} 字符的安全熔断限制。`,
         files: detailsList
       };
 

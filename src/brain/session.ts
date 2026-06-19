@@ -1,5 +1,5 @@
 import { McpToolManager, ToolRegistry } from '../action/index.js';
-import { LlmConfig } from '../config/index.js';
+import { AppConfig, LlmConfig } from '../config/index.js';
 import { AgentTracer } from './tracer.js';
 import { SessionContext, ContextTokenUsage } from './context.js';
 import type { ChatMessage, LlmPort } from './ports/LlmPort.js';
@@ -75,7 +75,8 @@ export class SessionManager {
     driver: LlmPort,
     estimator: TokenEstimatorPort,
     mcpManager?: McpToolManager,
-    contextAdapter?: ContextAdapter
+    contextAdapter?: ContextAdapter,
+    appConfig?: AppConfig
   ) {
     this.llmConfig = llmConfig;
     this.mcpManager = mcpManager;
@@ -83,6 +84,10 @@ export class SessionManager {
       loadSkill: (name) => loadSkillContent(name)
     });
     this.context = new SessionContext();
+    if (appConfig) {
+      this.context.appConfig = appConfig;
+      this.maxIterations = appConfig.runtimeLimits.maxIterations;
+    }
     this.driver = driver;
     this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());
     this.contextAdapter = contextAdapter || new DefaultContextAdapter(estimator);

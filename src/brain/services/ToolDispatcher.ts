@@ -25,8 +25,8 @@ export class ToolDispatcher {
    * @returns 过滤或拦截后的工具输出结果
    */
   public handleLargeToolOutput(functionName: string, toolResult: string): string {
-    const LIMIT = 8000;
-    if (toolResult.length <= LIMIT) {
+    const limit = this.context.appConfig?.runtimeLimits.largeToolOutputLimit ?? 8000;
+    if (toolResult.length <= limit) {
       return toolResult;
     }
 

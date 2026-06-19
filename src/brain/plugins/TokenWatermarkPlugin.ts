@@ -62,7 +62,8 @@ export class TokenWatermarkPlugin implements Plugin {
     context.estimatedUsage = estimatedTokens;
 
     const llmConfig = this.configProvider();
-    const threshold = this.tokenEstimator.getCompactionThreshold(llmConfig, 0.8);
+    const watermarkFactor = context.sessionContext.appConfig?.runtimeLimits.compactionWatermarkFactor ?? 0.8;
+    const threshold = this.tokenEstimator.getCompactionThreshold(llmConfig, watermarkFactor);
 
     if (estimatedTokens.total > threshold) {
       context.emitEvent?.({

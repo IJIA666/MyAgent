@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import type { ChatMessage } from './ports/LlmPort.js';
 import { buildSystemPrompt } from './prompts/prompts.js';
 import { ApprovalService } from './services/ApprovalService.js';
+import { AppConfig } from '../config/index.js';
 
 // 显式重导出 ApiUsage 和 ContextTokenUsage 类型，避免在 ESM 下因类型擦除引发运行时加载错误
 export type { ApiUsage, ContextTokenUsage } from './ports/TokenEstimatorPort.js';
@@ -47,6 +48,8 @@ export class SessionContext {
 
   /** 用于控制危险操作挂起与恢复的人机协同审批服务 */
   public readonly approvalService: ApprovalService;
+  /** 全局配置对象（用于将配置项注入给具体的工具和插件） */
+  public appConfig?: AppConfig;
 
 
   /**

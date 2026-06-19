@@ -40,7 +40,7 @@ async function main() {
     await mcpManager.connectAll();
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
-    session = new SessionManager(appConfig.llm, llmAdapter, tokenEstimator, mcpManager);
+    session = new SessionManager(appConfig.llm, llmAdapter, tokenEstimator, mcpManager, undefined, appConfig);
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);
     console.log(theme.error(`[错误] 初始化会话管理器失败：${errorMsg}`));

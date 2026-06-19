@@ -74,6 +74,36 @@ export function loadMcpConfig(env: Record<string, string | undefined> = process.
 }
 
 /**
+ * 安全解析整数环境变量，解析失败或为空时退化到指定的默认值。
+ *
+ * @param val - 待解析的环境变量值
+ * @param defaultValue - 降级兜底的默认整数值
+ * @returns 解析得到的安全整数
+ */
+function parseEnvInt(val: string | undefined, defaultValue: number): number {
+  if (val === undefined || val.trim() === '') {
+    return defaultValue;
+  }
+  const parsed = parseInt(val, 10);
+  return isNaN(parsed) ? defaultValue : parsed;
+}
+
+/**
+ * 安全解析浮点数环境变量，解析失败或为空时退化到指定的默认值。
+ *
+ * @param val - 待解析的环境变量值
+ * @param defaultValue - 降级兜底的默认浮点数值
+ * @returns 解析得到的安全浮点数
+ */
+function parseEnvFloat(val: string | undefined, defaultValue: number): number {
+  if (val === undefined || val.trim() === '') {
+    return defaultValue;
+  }
+  const parsed = parseFloat(val);
+  return isNaN(parsed) ? defaultValue : parsed;
+}
+
+/**
  * 应用配置加载主入口。
  * 支持环境变量的依赖注入，隔离物理 dotenv 读写文件副作用。
  *
@@ -108,17 +138,31 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   // 5. 组装配置对象，优先从持久化配置与环境变量中加载终端工作模式
   const workMode = loadWorkMode(env);
 
+  const maxIterations = parseEnvInt(env.AGENT_MAX_ITERATIONS, 20);
+  const largeToolOutputLimit = parseEnvInt(env.AGENT_LARGE_TOOL_OUTPUT_LIMIT, 8000);
+  const readManyFilesLimit = parseEnvInt(env.AGENT_READ_MANY_FILES_LIMIT, 50000);
+  const searchLimit = parseEnvInt(env.AGENT_SEARCH_LIMIT, 100);
+  const compactionWatermarkFactor = parseEnvFloat(env.AGENT_COMPACTION_WATERMARK_FACTOR, 0.8);
+
   const config: AppConfig = {
     llm,
     workspace,
     mcp,
     workMode,
+    runtimeLimits: {
+      maxIterations,
+      largeToolOutputLimit,
+      readManyFilesLimit,
+      searchLimit,
+      compactionWatermarkFactor,
+    }
   };
 
   // 6. 深度冻结，防止业务代码意外修改
   Object.freeze(config);
   Object.freeze(config.llm);
   Object.freeze(config.mcp);
+  Object.freeze(config.runtimeLimits);
   // mcpServers 内的每个 entry 也需要冻结
   if (config.mcp.mcpServers) {
     Object.freeze(config.mcp.mcpServers);
