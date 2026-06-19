@@ -2,6 +2,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { SessionContext } from '../context.js';
 import { LlmDriver } from '../driver.js';
 import { buildCompactionSummaryPrompt, buildStaticFallbackSummary } from '../prompts.js';
+import { ContextRepository } from './ContextRepository.js';
 
 /**
  * 负责防范 Token 爆仓及上下文的截断与提炼。
@@ -19,8 +20,13 @@ export class CompactionService {
    *
    * @param context - 会话上下文管理实例
    * @param driver - 大语言模型驱动接口
+   * @param contextRepo - 会话状态仓储实例
    */
-  constructor(private context: SessionContext, private driver: LlmDriver) {}
+  constructor(
+    private context: SessionContext,
+    private driver: LlmDriver,
+    private contextRepo: ContextRepository
+  ) {}
 
   /**
    * 执行无延迟硬截断（Pointer-based Truncation）。
@@ -42,7 +48,7 @@ export class CompactionService {
         this.context.setCheckpointSummary(fallback);
       }
 
-      await this.context.saveState();
+      await this.contextRepo.saveState();
       return true;
     } catch (e) {
       console.warn(`[CompactionService] 上下文硬截断失败: ${e}`);
@@ -74,7 +80,7 @@ export class CompactionService {
           this.lastSummaryTokenLevel = currentTokens;
           const recentFiles = this.collectReadToolFilePaths(messagesToCompact);
           this.context.setRecentFiles(recentFiles);
-          await this.context.saveState();
+          await this.contextRepo.saveState();
           this.compactionFailures = 0;
         }
       } catch (e) {

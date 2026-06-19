@@ -1,3 +1,5 @@
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { SessionContext } from '../context.js';
 
@@ -18,7 +20,19 @@ export class ContextRepository {
    * @returns 无返回值的 Promise
    */
   public async saveState(): Promise<void> {
-    await this.context.saveState();
+    try {
+      const dir = path.join(process.cwd(), '.myagent/sessions');
+      await fs.mkdir(dir, { recursive: true });
+      const file = path.join(dir, `${this.context.getSessionId()}.json`);
+      const stateToSave = {
+        messages: this.context.getHistory(),
+        checkpointSummary: this.context.getCheckpointSummary(),
+        recentFiles: this.context.getRecentFiles()
+      };
+      await fs.writeFile(file, JSON.stringify(stateToSave, null, 2), 'utf-8');
+    } catch {
+      // 捕获并吞掉异常，静默落盘失败不应阻断核心流程
+    }
   }
 
   /**
@@ -28,7 +42,25 @@ export class ContextRepository {
    * @returns 成功返回 true，否则返回 false
    */
   public async loadState(targetSessionId: string): Promise<boolean> {
-    return await this.context.loadState(targetSessionId);
+    try {
+      const file = path.join(process.cwd(), '.myagent/sessions', `${targetSessionId}.json`);
+      const data = await fs.readFile(file, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) {
+        this.context.updateHistory(parsed);
+        this.context.setSessionId(targetSessionId);
+        return true;
+      } else if (parsed && Array.isArray(parsed.messages)) {
+        this.context.updateHistory(parsed.messages);
+        this.context.setSessionId(targetSessionId);
+        this.context.setCheckpointSummary(parsed.checkpointSummary || null);
+        this.context.setRecentFiles(parsed.recentFiles || []);
+        return true;
+      }
+    } catch {
+      // 忽略文件不存在或解析失败的异常，恢复失败时不抛出
+    }
+    return false;
   }
 
   /**
@@ -61,7 +93,7 @@ export class ContextRepository {
     }
 
     // 状态发生变化后进行静默落盘（后台异步执行，忽略可能产生的文件 IO 异常）
-    this.context.saveState().catch(() => {});
+    this.saveState().catch(() => {});
 
     // 因为是倒序弹出，此处反转数组恢复原有对话的时序逻辑
     return dropped.reverse();

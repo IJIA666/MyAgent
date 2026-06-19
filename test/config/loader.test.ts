@@ -10,35 +10,37 @@ import { resolve } from 'path';
 import { loadConfig } from '../../src/config/loader.js';
 
 describe('Global Config Loader Workspace Relocation Tests', () => {
-  const originalEnv = { ...process.env };
   const tempTestDir = resolve('test-temp-workspace');
 
   beforeEach(() => {
-    // 预设默认的 API key 环境变量以防抛出未配置错误
-    process.env.DEEPSEEK_API_KEY = 'mock-api-key-123';
     if (!existsSync(tempTestDir)) {
       mkdirSync(tempTestDir);
     }
   });
 
   afterEach(() => {
-    // 恢复环境变量以防污染其他测试
-    process.env = { ...originalEnv };
     if (existsSync(tempTestDir)) {
       rmdirSync(tempTestDir);
     }
   });
 
   it('当没有配置 AUTHORIZED_WORKSPACE_DIR 时，默认工作区应回退到当前工作目录 (process.cwd)', () => {
-    delete process.env.AUTHORIZED_WORKSPACE_DIR;
-    const config = loadConfig();
+    const mockEnv = {
+      DEEPSEEK_MODEL: 'deepseek-v4-flash',
+      DEEPSEEK_API_KEY: 'mock-api-key-123'
+    };
+    const config = loadConfig(mockEnv);
     expect(config.workspace).toBe(realpathSync(process.cwd()));
   });
 
   it('应当正确读取并解析隐式环境变量 AUTHORIZED_WORKSPACE_DIR 的重定向值', () => {
     const expectedPath = realpathSync(tempTestDir);
-    process.env.AUTHORIZED_WORKSPACE_DIR = tempTestDir;
-    const config = loadConfig();
+    const mockEnv = {
+      DEEPSEEK_MODEL: 'deepseek-v4-flash',
+      DEEPSEEK_API_KEY: 'mock-api-key-123',
+      AUTHORIZED_WORKSPACE_DIR: tempTestDir
+    };
+    const config = loadConfig(mockEnv);
     expect(config.workspace).toBe(expectedPath);
   });
 });

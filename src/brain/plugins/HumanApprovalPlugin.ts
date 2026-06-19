@@ -1,6 +1,7 @@
 import { resolve, sep } from 'path';
 import type { Plugin, HookContext } from './plugin-types.js';
 import { HookEventName } from './plugin-types.js';
+import { SecurityService } from '../services/SecurityService.js';
 import { getWorkMode, extractSafePrefix, loadWorkMode } from '../../action/native-tools/terminal-config.js';
 import { checkCommandSafetyLevel } from '../../action/native-tools/terminal-guard.js';
 import { 
@@ -82,8 +83,7 @@ export class HumanApprovalPlugin implements Plugin {
         const safetyLevel = checkCommandSafetyLevel(command);
         if (safetyLevel === 'allow' && workMode === 'Auto') {
           // 只放行只读白名单内的无风险指令
-          const sessionContext = context.sessionContext;
-          const whitelist = sessionContext.getSecurityAllowlist();
+          const whitelist = SecurityService.getInstance().getSecurityAllowlist();
           if (isCommandAllowed(command, whitelist)) {
             needApproval = false;
           }
@@ -135,10 +135,11 @@ export class HumanApprovalPlugin implements Plugin {
 
         // 处理始终放行分支，持久化写入安全白名单规则
         if (decision.action === 'always' && safePrefix) {
-          const whitelist = sessionContext.getSecurityAllowlist();
+          const securityService = SecurityService.getInstance();
+          const whitelist = securityService.getSecurityAllowlist();
           const prefixRule = `${safePrefix}:*`;
           if (!whitelist.includes(prefixRule)) {
-            sessionContext.saveSecurityAllowlist([...whitelist, prefixRule]);
+            securityService.saveSecurityAllowlist([...whitelist, prefixRule]);
           }
         }
       }

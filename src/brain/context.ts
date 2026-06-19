@@ -1,6 +1,3 @@
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { buildSystemPrompt } from './prompts.js';
@@ -35,7 +32,6 @@ export function computeStringHash(text: string): string {
  * 核心职责：
  * 1. 维护当前会话的消息历史（Message History）。
  * 2. 管理会话唯一标识（Session ID）。
- * 3. 负责会话状态的文件系统持久化读写。
  */
 export class SessionContext {
   private messageHistory: ChatCompletionMessageParam[] = [];
@@ -50,8 +46,6 @@ export class SessionContext {
 
   /** 用于控制危险操作挂起与恢复的人机协同审批服务 */
   public readonly approvalService: ApprovalService;
-  /** 内存缓存的允许执行命令安全白名单 */
-  private securityAllowlist: string[] = [];
 
 
   /**
@@ -74,57 +68,7 @@ export class SessionContext {
     });
   }
 
-  /**
-   * 从工作区磁盘配置文件中重载命令安全白名单。
-   *
-   * @returns 最新加载的白名单规则列表
-   */
-  public loadSecurityAllowlist(): string[] {
-    try {
-      const filePath = path.resolve(process.cwd(), '.agent/allowed_commands.json');
-      if (existsSync(filePath)) {
-        const data = readFileSync(filePath, 'utf-8');
-        this.securityAllowlist = JSON.parse(data) as string[];
-        return this.securityAllowlist;
-      }
-    } catch {
-      // 忽略文件读取异常，回退为空列表
-    }
-    this.securityAllowlist = [];
-    return [];
-  }
 
-  /**
-   * 将更新后的安全命令白名单持久化存盘，并更新内存缓存。
-   *
-   * @param commands - 新的白名单规则列表
-   */
-  public saveSecurityAllowlist(commands: string[]): void {
-    try {
-      this.securityAllowlist = commands;
-      const filePath = path.resolve(process.cwd(), '.agent/allowed_commands.json');
-      const dir = path.dirname(filePath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-      writeFileSync(filePath, JSON.stringify(commands, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('保存命令安全白名单至磁盘失败:', err);
-    }
-  }
-
-  /**
-   * 获取当前有效的安全命令白名单列表。
-   * 若内存缓存为空，则触发一次磁盘加载。
-   *
-   * @returns 安全命令白名单列表
-   */
-  public getSecurityAllowlist(): string[] {
-    if (this.securityAllowlist.length === 0) {
-      this.loadSecurityAllowlist();
-    }
-    return this.securityAllowlist;
-  }
 
   /**
    * 重新组装并更新会话消息历史中的首条系统提示词（System Prompt）。
@@ -289,67 +233,15 @@ export class SessionContext {
   }
 
   /**
-   * 将当前上下文静默序列化落盘到工作区文件。
+   * 设定当前会话唯一标识（用于恢复会话状态重新绑定）。
    *
-   * @returns 无返回值的 Promise
+   * @param id - 新的会话唯一标识符
    */
-  public async saveState(): Promise<void> {
-    try {
-      // 确定会话文件的存储目录
-      const dir = path.join(process.cwd(), '.myagent/sessions');
-      // 递归创建存储目录，确保路径存在
-      await fs.mkdir(dir, { recursive: true });
-      // 根据 sessionId 构造具体的文件路径
-      const file = path.join(dir, `${this.sessionId}.json`);
-      // 包装数据，不再保存 activeSkills（强制挂载属于单次会话临时状态）
-      const stateToSave = {
-        messages: this.messageHistory,
-        checkpointSummary: this.checkpointSummary,
-        recentFiles: this.recentFiles
-      };
-      // 将历史快照格式化为 JSON 字符串并写入文件（指定 UTF-8 编码）
-      await fs.writeFile(file, JSON.stringify(stateToSave, null, 2), 'utf-8');
-    } catch {
-      // 捕获并吞掉异常，静默落盘失败不应阻断核心流程
-    }
-  }
-
-  /**
-   * 恢复指定的会话持久化数据覆盖当前内存上下文。
-   *
-   * @param targetSessionId - 需要恢复加载的目标会话标识符
-   * @returns 如果成功读取文件并解析恢复返回 true，文件不存在或解析失败返回 false
-   */
-  public async loadState(targetSessionId: string): Promise<boolean> {
-    // 忙状态并发锁断言保护
+  public setSessionId(id: string): void {
     if (this.isProcessing) {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
-    try {
-      // 构造目标会话状态的文件路径
-      const file = path.join(process.cwd(), '.myagent/sessions', `${targetSessionId}.json`);
-      // 读取文件内容为文本数据
-      const data = await fs.readFile(file, 'utf-8');
-      // 将文本数据解析为 JSON 对象
-      const parsed = JSON.parse(data);
-      // 如果解析出的是数组格式，则认为是旧版本合法的历史记录
-      if (Array.isArray(parsed)) {
-        this.messageHistory = parsed;
-        this.sessionId = targetSessionId;
-        return true;
-      } else if (parsed && Array.isArray(parsed.messages)) {
-        // 新版本读取，恢复状态
-        this.messageHistory = parsed.messages;
-        this.sessionId = targetSessionId;
-        this.checkpointSummary = parsed.checkpointSummary || null;
-        this.recentFiles = parsed.recentFiles || [];
-        return true;
-      }
-    } catch {
-      // 忽略文件不存在或解析失败的异常，恢复失败时不抛出
-    }
-    // 恢复失败，返回 false
-    return false;
+    this.sessionId = id;
   }
 
   private pluginPatches: PluginPatchGroup[] = [];

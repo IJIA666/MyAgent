@@ -66,30 +66,31 @@ export function requireEnv(name: string): string {
 }
 
 /**
- * 递归扫描配置值，将 ${VAR} 格式的占位符替换为 process.env 中的实际值。
+ * 递归扫描配置值，将 ${VAR} 格式的占位符替换为指定 env 环境对象中的实际值。
  * 若对应的环境变量不存在，保留占位符原文不做替换。
  *
  * @param value - 待处理的配置值（支持字符串、对象、数组的递归处理）
+ * @param env - 可选的环境变量数据源，默认使用 process.env
  * @returns 完成插值替换后的配置值
  */
-export function interpolateEnvVars(value: unknown): unknown {
+export function interpolateEnvVars(value: unknown, env: Record<string, string | undefined> = process.env): unknown {
   if (typeof value === 'string') {
     // 匹配 ${VAR_NAME} 格式的占位符
     return value.replace(/\$\{([^}]+)}/g, (original, varName: string) => {
-      const envValue = process.env[varName];
+      const envValue = env[varName];
       // 环境变量存在则替换，不存在则保留原文
       return envValue !== undefined ? envValue : original;
     });
   }
 
   if (Array.isArray(value)) {
-    return value.map(item => interpolateEnvVars(item));
+    return value.map(item => interpolateEnvVars(item, env));
   }
 
   if (value !== null && typeof value === 'object') {
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      result[key] = interpolateEnvVars(val);
+      result[key] = interpolateEnvVars(val, env);
     }
     return result;
   }

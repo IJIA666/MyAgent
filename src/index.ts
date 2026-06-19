@@ -1,6 +1,6 @@
 import { SessionManager } from './brain/index.js';
 import { McpToolManager, initWorkspace } from './action/index.js';
-import { loadConfig } from './config/index.js';
+import { loadConfig, ensureConfigFiles } from './config/index.js';
 import { startCli } from './interface/index.js';
 import { theme } from './utils/theme.js';
 
@@ -10,7 +10,10 @@ import { theme } from './utils/theme.js';
 async function main() {
   console.clear();
 
-  // 1. 统一加载全部配置（文件引导 → dotenv → 必填校验 → MCP 加载 → 冻结）
+  // 1. 文件引导：确保配置文件存在
+  ensureConfigFiles();
+
+  // 2. 统一加载全部配置（dotenv → 必填校验 → MCP 加载 → 冻结）
   const appConfig = loadConfig();
 
   // 2. 初始化工作区沙箱路径

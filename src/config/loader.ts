@@ -44,7 +44,14 @@ export function ensureConfigFiles(): void {
  *
  * @returns 完成插值替换后的 MCP 配置对象
  */
-export function loadMcpConfig(): McpConfig {
+/**
+ * 读取 mcp_config.json 配置文件，解析 JSON 并执行环境变量插值。
+ * 文件不存在时返回空配置（不报错，MCP 为可选功能）。
+ *
+ * @param env - 可选的环境变量数据源，默认使用 process.env
+ * @returns 完成插值替换后的 MCP 配置对象
+ */
+export function loadMcpConfig(env: Record<string, string | undefined> = process.env): McpConfig {
   const configPath = resolve('mcp_config.json');
 
   if (!existsSync(configPath)) {
@@ -56,7 +63,7 @@ export function loadMcpConfig(): McpConfig {
     const parsed = JSON.parse(raw) as McpConfig;
 
     // 对整个配置对象执行环境变量插值
-    const interpolated = interpolateEnvVars(parsed) as McpConfig;
+    const interpolated = interpolateEnvVars(parsed, env) as McpConfig;
 
     return interpolated.mcpServers ? interpolated : { mcpServers: {} };
   } catch (e) {
@@ -68,24 +75,24 @@ export function loadMcpConfig(): McpConfig {
 
 /**
  * 应用配置加载主入口。
- * 按序执行：文件引导 → dotenv 加载 → 必填校验 → MCP 加载 → 对象冻结。
+ * 支持环境变量的依赖注入，隔离物理 dotenv 读写文件副作用。
  *
+ * @param env - 注入的环境变量键值字典，默认使用全局 process.env
  * @returns 深度冻结的全局配置对象
  */
-export function loadConfig(): AppConfig {
-  // 1. 文件引导：确保配置文件存在
-  ensureConfigFiles();
+export function loadConfig(env: Record<string, string | undefined> = process.env): AppConfig {
+  // 1. 如果是全局 process.env，则加载本地 .env 环境变量文件。若是 Mock 环境对象，则不加载物理文件以保持测试隔离。
+  if (env === process.env) {
+    dotenvConfig();
+  }
 
-  // 2. 加载 .env 环境变量
-  dotenvConfig();
-
-  // 3. 必填环境变量校验（fail-fast）
+  // 2. 必填环境变量校验（fail-fast）
   // 优先从环境变量加载大模型名称，若包含窗口后缀（如 [1m]、[128k] 等）自动剥离为内置模型 ID 进行预检
-  const rawModelId = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+  const rawModelId = env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
   const defaultModelId = rawModelId.replace(/\[\d+[km]\]/i, '');
-  const llm = getModelConfig(defaultModelId);
+  const llm = getModelConfig(defaultModelId, env);
 
-  // 4. 工作区路径解析：在初始化阶段强制调用 realpathSync 进行物理路径解析与展开，锁定绝对物理路径，防止路径漂移与挂载逃逸风险。
+  // 3. 工作区路径解析：在初始化阶段强制调用 realpathSync 进行物理路径解析与展开，锁定绝对物理路径，防止路径漂移与挂载逃逸风险。
   // ====================================================================================
   // 【核心安全警示 - 严禁删除或重构此行】
   // 此处隐式读取 process.env.AUTHORIZED_WORKSPACE_DIR 是为了兼容自动化评测靶场（如 test/scripts/run_testbed.ts）。
@@ -93,12 +100,12 @@ export function loadConfig(): AppConfig {
   // 所有公开的配置文件（.env, .env.example）中均已隐去此项，以保持配置界面纯净，属于开发者/测试专用隐式变量。
   // 若误删此逻辑，自动化测试时智能体将在宿主机原目录运行并修改真实源码，产生毁灭性风险。
   // ====================================================================================
-  const workspace = realpathSync(resolve(process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd()));
+  const workspace = realpathSync(resolve(env.AUTHORIZED_WORKSPACE_DIR || process.cwd()));
 
-  // 5. 加载 MCP 配置（含环境变量插值）
-  const mcp = loadMcpConfig();
+  // 4. 加载 MCP 配置（含环境变量插值）
+  const mcp = loadMcpConfig(env);
 
-  // 6. 组装配置对象，优先从持久化配置与环境变量中加载终端工作模式
+  // 5. 组装配置对象，优先从持久化配置与环境变量中加载终端工作模式
   const workMode = loadWorkMode();
 
   const config: AppConfig = {
@@ -108,7 +115,7 @@ export function loadConfig(): AppConfig {
     workMode,
   };
 
-  // 7. 深度冻结，防止业务代码意外修改
+  // 6. 深度冻结，防止业务代码意外修改
   Object.freeze(config);
   Object.freeze(config.llm);
   Object.freeze(config.mcp);

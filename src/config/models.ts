@@ -92,23 +92,23 @@ export function parseContextWindow(val: string): number {
  * @param id - 模型在 BUILTIN_MODELS 中的 ID
  * @returns 构建完成的大语言模型连接配置对象
  */
-export function getModelConfig(id: string): LlmConfig {
+export function getModelConfig(id: string, env: Record<string, string | undefined> = process.env): LlmConfig {
   const profile = BUILTIN_MODELS[id];
   if (!profile) {
     throw new Error(`未知的模型 ID: ${id}`);
   }
-  const apiKey = process.env[profile.envKeyName];
+  const apiKey = env[profile.envKeyName];
   if (!apiKey || apiKey.trim() === '') {
     throw new Error(`缺失模型 ${id} 的 API Key: 请在 .env 中配置 ${profile.envKeyName}`);
   }
   let baseUrl = profile.defaultBaseUrl;
-  if (profile.envUrlName && process.env[profile.envUrlName]) {
-    baseUrl = process.env[profile.envUrlName]!;
+  if (profile.envUrlName && env[profile.envUrlName]) {
+    baseUrl = env[profile.envUrlName]!;
   }
 
   // 优先读取环境变量进行模型名称与最大输出 Tokens 的覆盖
-  const rawModel = process.env.DEEPSEEK_MODEL || profile.defaultModel;
-  const maxTokens = parseInt(process.env.DEEPSEEK_MAX_TOKENS || '4096', 10);
+  const rawModel = env.DEEPSEEK_MODEL || profile.defaultModel;
+  const maxTokens = parseInt(env.DEEPSEEK_MAX_TOKENS || '4096', 10);
 
   // 匹配并剥除模型名中的窗口尺寸后缀（如 [1m]、[128k] 等）
   let model = rawModel;
@@ -128,31 +128,31 @@ export function getModelConfig(id: string): LlmConfig {
   }
 
   // 级联读取环境变量或使用模型预设的默认值。若检测到模型名已被覆写但缺失窗口环境变量配置且无后缀特征，主动退化至 32000 保守值防爆
-  const isModelOverridden = process.env.DEEPSEEK_MODEL !== undefined && process.env.DEEPSEEK_MODEL !== profile.defaultModel;
+  const isModelOverridden = env.DEEPSEEK_MODEL !== undefined && env.DEEPSEEK_MODEL !== profile.defaultModel;
   let contextWindow = profile.contextWindow || 1000000;
-  if (process.env.DEEPSEEK_CONTEXT_WINDOW) {
-    contextWindow = parseContextWindow(process.env.DEEPSEEK_CONTEXT_WINDOW);
+  if (env.DEEPSEEK_CONTEXT_WINDOW) {
+    contextWindow = parseContextWindow(env.DEEPSEEK_CONTEXT_WINDOW);
   } else if (extractedWindow !== null) {
     contextWindow = extractedWindow;
   } else if (isModelOverridden) {
     contextWindow = 32000;
   }
 
-  const temperature = process.env.DEEPSEEK_TEMPERATURE
-    ? parseFloat(process.env.DEEPSEEK_TEMPERATURE)
+  const temperature = env.DEEPSEEK_TEMPERATURE
+    ? parseFloat(env.DEEPSEEK_TEMPERATURE)
     : profile.temperature;
 
-  const timeout = process.env.DEEPSEEK_TIMEOUT
-    ? parseInt(process.env.DEEPSEEK_TIMEOUT, 10)
+  const timeout = env.DEEPSEEK_TIMEOUT
+    ? parseInt(env.DEEPSEEK_TIMEOUT, 10)
     : (profile.timeout || 600000);
 
-  const maxRetries = process.env.DEEPSEEK_MAX_RETRIES
-    ? parseInt(process.env.DEEPSEEK_MAX_RETRIES, 10)
+  const maxRetries = env.DEEPSEEK_MAX_RETRIES
+    ? parseInt(env.DEEPSEEK_MAX_RETRIES, 10)
     : (profile.maxRetries || 3);
 
   // 解析自定义请求头环境变量，支持分号或换行符分割的名值对
   let headers: Record<string, string> | undefined = profile.headers;
-  const envHeaders = process.env.DEEPSEEK_HEADERS;
+  const envHeaders = env.DEEPSEEK_HEADERS;
   if (envHeaders) {
     headers = { ...(headers || {}) };
     const lines = envHeaders.split(/[;\n\r]+/);
