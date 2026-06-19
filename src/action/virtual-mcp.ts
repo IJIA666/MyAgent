@@ -3,6 +3,16 @@ import { fileSystemTools } from './tools/filesystem/index.js';
 import { systemTools } from './tools/system/index.js';
 import { getSkillTools } from './tools/skill/index.js';
 import type { SafetyCheckResult } from '../brain/plugins/plugin-types.js';
+import {
+  BrowserNavigateTool,
+  BrowserClickTool,
+  BrowserTypeTool,
+  BrowserScrollTool,
+  BrowserBackTool,
+  BrowserPressTool,
+  BrowserVisionTool,
+  BrowserEnsureLoginTool
+} from './tools/browser/browser-action.js';
 export type { SafetyCheckResult };
 
 /**
@@ -91,7 +101,15 @@ export class LocalFileSystemMcpServer {
       ...gitTools,
       ...fileSystemTools,
       ...systemTools,
-      ...getSkillTools(options?.loadSkill)
+      ...getSkillTools(options?.loadSkill),
+      new BrowserNavigateTool(),
+      new BrowserClickTool(),
+      new BrowserTypeTool(),
+      new BrowserScrollTool(),
+      new BrowserBackTool(),
+      new BrowserPressTool(),
+      new BrowserVisionTool(),
+      new BrowserEnsureLoginTool()
     ];
 
     // 循环迭代注册到本地虚拟服务器中

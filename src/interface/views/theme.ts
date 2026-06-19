@@ -43,7 +43,13 @@ export const theme = {
   warning: (text: string) => `${COLOR_YELLOW}${text}${COLOR_RESET}`,
 
   /**
+   * 人机协作黄色高亮提示（黄色）
+   */
+  intervention: (text: string) => `${COLOR_YELLOW}⚠️  [人机风控协作] ${text}${COLOR_RESET}`,
+
+  /**
    * 系统响应边界（洋红色）
    */
   divider: (text: string) => `${COLOR_MAGENTA}${text}${COLOR_RESET}`
 };
+

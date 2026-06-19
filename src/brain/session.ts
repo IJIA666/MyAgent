@@ -7,6 +7,7 @@ import type { TokenEstimatorPort, ApiUsage } from './ports/TokenEstimatorPort.js
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 import { loadSkillContent } from './contextLoader.js';
 import { AgentLoop, AgentEvent } from './agent-loop.js';
+import { BrowserSession } from '../action/tools/browser/browser-action.js';
 import {
   PluginRegistry,
   TokenWatermarkPlugin,
@@ -180,6 +181,15 @@ export class SessionManager {
    */
   public async saveState(): Promise<void> {
     await this.contextRepo.saveState();
+  }
+
+  /**
+   * 注册浏览器人机协作风控的干预回调函数，将其绑定到 BrowserSession 生命周期。
+   *
+   * @param handler - 用户干预等待处理器
+   */
+  public registerInterventionHandler(handler: (message: string) => Promise<void>): void {
+    BrowserSession.userInterventionHandler = handler;
   }
 
   /**

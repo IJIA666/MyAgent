@@ -4,6 +4,7 @@ import { InputListener } from './io/input-listener.js';
 import { redrawHistory, renderTokenPanel } from './views/widget-renderer.js';
 import { dispatchCommand, showInteractiveMenu } from './command.js';
 import { theme } from './views/theme.js';
+import { waitUserIntervention } from './cli.js';
 
 /**
  * 终端界面控制门面（Facade）。
@@ -120,6 +121,19 @@ export class CliFacade {
 
       // 物理重建全局监听器，由于当前还在生成推理中，重建后的实例会自动保持 pause 状态，不会展示 Prompt 提示符
       this.listener.start();
+    });
+
+    // 注册浏览器人机风控协作的黄色高亮阻塞干预回调
+    this.session.registerInterventionHandler(async (message) => {
+      // 1. 挂起全局 InputListener 监听器以释放 stdin
+      this.listener.close();
+      try {
+        // 2. 调用 CLI 专属的黄色阻塞高亮 UI 和 stdin 阻塞函数
+        await waitUserIntervention(message);
+      } finally {
+        // 3. 阻塞释放后重建全局监听器，并恢复其正确的 start 状态
+        this.listener.start();
+      }
     });
   }
 
