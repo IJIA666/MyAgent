@@ -102,19 +102,26 @@ export class HumanApprovalPlugin implements Plugin {
         return;
       }
 
-      // 原地挂起并等待外部决策
+      // 原地挂起并等待外部决策，并强绑定当前会话 ID
       const decision = await service.wait(
         approvalId,
         { name: toolCall.name, arguments: toolCall.arguments },
         safePrefix,
-        message
+        message,
+        300000,
+        sessionContext.getSessionId()
       );
 
       // 处理审批被拒绝分支
       if (decision.action === 'deny') {
+        // 创建结构化中断重塑错误
+        const haltError = new Error('HaltedByReject: Operation rejected by user, and all subsequent pending actions have been cancelled.');
+        // 级联熔断同会话下其余 pending 挂起请求
+        service.rejectBySessionId(sessionContext.getSessionId(), haltError);
+
         context.control.action = 'abort';
-        context.control.reason = `${toolCall.name} execution denied by user`;
-        return;
+        context.control.reason = 'HaltedByReject: Operation rejected by user';
+        throw haltError;
       }
 
       // 处理始终放行分支，如果是终端指令，持久化写入安全白名单规则

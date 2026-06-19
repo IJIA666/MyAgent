@@ -91,6 +91,15 @@ export interface McpConfig {
 }
 
 /**
+ * 终端安全执行工作模式：
+ * - Safe: 每次执行写倾向/高危工具都必须人工审批
+ * - Auto: 智能根据命令白名单放行
+ * - YOLO: 全自动免密放行，只受黑名单与机密分级降级拦截约束
+ * - Plan: 只读计划模式，直接阻断任何写入/修改等副作用操作
+ */
+export type WorkMode = 'Safe' | 'Auto' | 'YOLO' | 'Plan';
+
+/**
  * 应用全局配置的聚合对象。
  * 由 loadConfig() 一次性构建并冻结，贯穿整个应用生命周期。
  */
@@ -102,7 +111,7 @@ export interface AppConfig {
   /** MCP Server 连接配置（可能为空对象） */
   mcp: McpConfig;
   /** 终端安全执行工作模式 */
-  workMode?: 'Safe' | 'Auto' | 'YOLO';
+  workMode?: WorkMode;
   /** 运行资源与行为限制配置 */
   runtimeLimits: RuntimeLimitsConfig;
 }

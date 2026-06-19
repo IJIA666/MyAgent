@@ -15,6 +15,7 @@ export class ApprovalService {
   private pendingApprovals = new Map<
     string,
     {
+      sessionId?: string;
       resolve: (value: ApprovalDecision) => void;
       reject: (reason: Error) => void;
       timeoutId: NodeJS.Timeout;
@@ -76,7 +77,8 @@ export class ApprovalService {
     toolCall: { name: string; arguments: Record<string, unknown> },
     allowedPrefix?: string,
     message?: string,
-    timeoutMs = 300000
+    timeoutMs = 300000,
+    sessionId?: string
   ): Promise<ApprovalDecision> {
     // 若处于 Bypass 模式，立即以 once 单次放行回复，保障 CI/测试顺畅
     if (this.isBypassMode) {
@@ -102,8 +104,8 @@ export class ApprovalService {
         resolve({ action: 'deny' });
       }, timeoutMs);
 
-      // 将控制权 resolve/reject 以及定时器指针存入内存映射表中
-      this.pendingApprovals.set(id, { resolve, reject, timeoutId });
+      // 将控制权 resolve/reject 以及定时器指针存入内存映射表中，并强绑定 sessionId
+      this.pendingApprovals.set(id, { resolve, reject, timeoutId, sessionId });
     });
   }
 
@@ -145,6 +147,22 @@ export class ApprovalService {
 
     pending.reject(error);
     return true;
+  }
+
+  /**
+   * 批量异常终止特定会话对应的所有挂起审批任务（级联安全熔断）。
+   *
+   * @param sessionId - 会话唯一标识 ID
+   * @param error - 异常终止的错误原因
+   */
+  public rejectBySessionId(sessionId: string, error: Error): void {
+    for (const [id, pending] of this.pendingApprovals.entries()) {
+      if (pending.sessionId === sessionId) {
+        clearTimeout(pending.timeoutId);
+        pending.reject(error);
+        this.pendingApprovals.delete(id);
+      }
+    }
   }
 
   /**

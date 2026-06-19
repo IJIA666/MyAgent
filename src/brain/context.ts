@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import type { ChatMessage } from './ports/LlmPort.js';
 import { buildSystemPrompt } from './prompts/prompts.js';
 import { ApprovalService } from './services/ApprovalService.js';
-import { AppConfig } from '../config/index.js';
+import { AppConfig, WorkMode, getDefaultWorkMode } from '../config/index.js';
 
 // 显式重导出 ApiUsage 和 ContextTokenUsage 类型，避免在 ESM 下因类型擦除引发运行时加载错误
 export type { ApiUsage, ContextTokenUsage } from './ports/TokenEstimatorPort.js';
@@ -40,6 +40,8 @@ export class SessionContext {
   private tenantId: string;
   private checkpointSummary: string | null = null;
   private recentFiles: string[] = [];
+  /** 当前会话持有的工作安全模式，初始时从全局默认配置中拷贝 */
+  private workMode: WorkMode;
   /** 会话是否正在处理生命周期 Hook 中间件（忙状态并发锁） */
   public isProcessing = false;
 
@@ -64,6 +66,8 @@ export class SessionContext {
     this.tenantId = tenantId || 'default';
     // 实例化独立的人机协同审批协调服务
     this.approvalService = new ApprovalService();
+    // 拷贝全局只读的默认安全模式作为该会话的局部安全级别副本
+    this.workMode = getDefaultWorkMode();
 
     // 初始化系统指令，确立智能体的工作边界与行为准则
     const systemPrompt = buildSystemPrompt();
@@ -269,6 +273,27 @@ export class SessionContext {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
     this.sessionId = id;
+  }
+
+  /**
+   * 获取当前会话私有的安全工作模式。
+   *
+   * @returns 当前会话的工作安全模式
+   */
+  public getWorkMode(): WorkMode {
+    return this.workMode;
+  }
+
+  /**
+   * 设定当前会话私有的安全工作模式。
+   *
+   * @param mode - 目标工作安全模式
+   */
+  public setWorkMode(mode: WorkMode): void {
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
+    this.workMode = mode;
   }
 
   private pluginPatches: PluginPatchGroup[] = [];

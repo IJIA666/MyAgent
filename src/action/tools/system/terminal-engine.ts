@@ -26,6 +26,8 @@ export interface TaskInfo {
   logPath: string;
   headText: string;
   tailText: string;
+  /** 可选的任务所属会话唯一 ID，用于生命周期回收 */
+  sessionId?: string;
 }
 
 /**
@@ -168,7 +170,8 @@ export async function runCommandEngine(
   command: string,
   targetCwd: string,
   isBackground?: boolean,
-  options?: { timeoutMs?: number; noOutputTimeoutMs?: number }
+  options?: { timeoutMs?: number; noOutputTimeoutMs?: number },
+  sessionId?: string
 ): Promise<string> {
   // 解析命令行程序与参数
   const cmdArgs = parseCommandLine(command);
@@ -256,7 +259,8 @@ export async function runCommandEngine(
     headText: '',
     tailText: '',
     child,
-    logStream
+    logStream,
+    sessionId
   };
   activeTasks.set(taskId, taskInfo);
 
@@ -394,4 +398,23 @@ export async function runCommandEngine(
   return promise.finally(() => {
     clearTimeout(bgTimer);
   });
+}
+
+/**
+ * 批量中止属于特定会话的全部活动后台子进程与任务。
+ *
+ * @param sessionId - 会话唯一标识 ID
+ */
+export async function abortSessionTasks(sessionId: string): Promise<void> {
+  const killPromises: Promise<void>[] = [];
+  for (const [taskId, task] of activeTasks.entries()) {
+    if (task.sessionId === sessionId && task.status === 'running') {
+      task.status = 'failed';
+      if (task.child && typeof task.child.pid === 'number') {
+        killPromises.push(killProcessTree(task.child.pid));
+      }
+      activeTasks.delete(taskId);
+    }
+  }
+  await Promise.all(killPromises);
 }

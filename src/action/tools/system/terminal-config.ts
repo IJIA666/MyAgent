@@ -15,7 +15,7 @@ import { getAuthorizedDir } from '../base.js';
  * Auto: 匹配白名单则自动放行，否则人工确认
  * YOLO: 全部命令直接放行，无视安全风险
  */
-export type WorkMode = 'Safe' | 'Auto' | 'YOLO';
+export type WorkMode = 'Safe' | 'Auto' | 'YOLO' | 'Plan';
 
 /**
  * 全局状态管理接口
@@ -25,14 +25,14 @@ interface GlobalState {
 }
 
 /**
- * 模块内全局工作模式状态，默认设为 Auto 模式
+ * 模块内全局默认工作模式状态（作为缺省兜底值，不推荐运行中直接修改）
  */
 const globalState: GlobalState = {
   workMode: 'Auto'
 };
 
 /**
- * 获取当前内存中的全局安全工作模式
+ * 获取当前内存中的全局默认工作安全模式（兜底回退用）
  * @returns 工作模式
  */
 export function getWorkMode(): WorkMode {
@@ -40,7 +40,7 @@ export function getWorkMode(): WorkMode {
 }
 
 /**
- * 设置内存中的当前全局安全工作模式
+ * 设置内存中的全局默认工作安全模式（兜底回退用）
  * @param mode 目标工作模式
  */
 export function setWorkMode(mode: WorkMode): void {
@@ -118,8 +118,9 @@ export function loadWorkMode(env: Record<string, string | undefined> = process.e
     if (existsSync(configPath)) {
       const data = readFileSync(configPath, 'utf-8');
       const parsed = JSON.parse(data);
-      if (parsed.workMode === 'Safe' || parsed.workMode === 'Auto' || parsed.workMode === 'YOLO') {
-        globalState.workMode = parsed.workMode as WorkMode;
+      const val = parsed.workMode;
+      if (val === 'Safe' || val === 'Auto' || val === 'YOLO' || val === 'Plan') {
+        globalState.workMode = val as WorkMode;
         return globalState.workMode;
       }
     }
@@ -129,8 +130,8 @@ export function loadWorkMode(env: Record<string, string | undefined> = process.e
   
   // 备用兜底：尝试从系统环境变量获取
   const envMode = env.AGENT_WORK_MODE;
-  if (envMode === 'Safe' || envMode === 'Auto' || envMode === 'YOLO') {
-    globalState.workMode = envMode;
+  if (envMode === 'Safe' || envMode === 'Auto' || envMode === 'YOLO' || envMode === 'Plan') {
+    globalState.workMode = envMode as WorkMode;
   }
   return globalState.workMode;
 }

@@ -3,11 +3,12 @@
  * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
  */
 
-import { validateCommand, validateCwd, checkCommandSafetyLevel } from './terminal-guard.js';
+import { validateCommand, validateCwd, checkCommandSafetyLevel, isHardlineDangerous } from './terminal-guard.js';
 import { runCommandEngine } from './terminal-engine.js';
-import { getWorkMode, loadWorkMode, extractSafePrefix } from './terminal-config.js';
+import { getWorkMode, extractSafePrefix } from './terminal-config.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import { SecurityService } from '../../../brain/services/SecurityService.js';
+import { SessionContext } from '../../../brain/context.js';
 
 /**
  * 终端指令执行工具类。
@@ -55,27 +56,39 @@ export class ExecuteCommandTool implements NativeTool {
    * 异步或同步审查终端执行调用的安全性。
    *
    * @param args - 工具调用参数字典
-   * @param _sessionContext - 可选的会话上下文
+   * @param sessionContext - 可选的会话上下文
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionContext): SafetyCheckResult {
     const command = args.command;
     if (typeof command !== 'string') {
       return { status: 'deny', message: '拒绝执行：command 必须是字符串。' };
     }
 
-    // 重载并获取工作模式
-    loadWorkMode();
-    const workMode = getWorkMode();
+    // 1. 绝对拦截校验：即使在 YOLO 模式下，毁灭级命令也无权豁免
+    if (isHardlineDangerous(command)) {
+      return { status: 'deny', message: 'BLOCKED (Hardline Blocklist): 拒绝执行毁灭性系统破坏命令。' };
+    }
 
+    // 优先从 Session 取得工作模式，否则回退到全局备用缺省值（用以向下兼容测试流）
+    const workMode = sessionContext ? sessionContext.getWorkMode() : getWorkMode();
+
+    // 2. Plan 模式拦截：禁止任何有写倾向/修改副作用的终端指令
+    if (workMode === 'Plan') {
+      const safetyLevel = checkCommandSafetyLevel(command);
+      if (safetyLevel !== 'allow') {
+        return { status: 'deny', message: 'BLOCKED (Plan Mode Only): 只读模式下禁止执行任何具有写入/修改副作用的指令。' };
+      }
+    }
+
+    // 3. YOLO 模式直接放行（由于绝对黑名单在最外层卡关，这里放行是安全的）
     if (workMode === 'YOLO') {
       return { status: 'pass' };
     }
 
-    const DESTRUCTIVE_REGEX = /\b(rm\s+-(?:[rR][fF]|[fF][rR])\s+(\/|\*|~)|\bdd\s+if=.*of=\/dev\/|\bmkfs\b)/i;
     let needApproval = true;
 
-    // 执行 Windows/PowerShell 别名及写倾向安全等级初筛
+    // 4. Auto 模式且属于只读白名单级别指令，进行已授权白名单的前缀校验
     const safetyLevel = checkCommandSafetyLevel(command);
     if (safetyLevel === 'allow' && workMode === 'Auto') {
       // 校验命令行是否命中白名单规则
@@ -92,11 +105,6 @@ export class ExecuteCommandTool implements NativeTool {
       if (isAllowed) {
         needApproval = false;
       }
-    }
-
-    // 双重保险：即使在 YOLO/Auto 放行状态下，若触碰毁灭级敏感正则，强制开启人工拦截
-    if (!needApproval && DESTRUCTIVE_REGEX.test(command)) {
-      needApproval = true;
     }
 
     if (needApproval) {
@@ -117,7 +125,7 @@ export class ExecuteCommandTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 终端输出摘要结果
    */
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(args: Record<string, unknown>, sessionContext?: SessionContext): Promise<string> {
     const command = args.command;
     if (typeof command !== 'string') {
       throw new Error("command 必须是字符串");
@@ -132,8 +140,9 @@ export class ExecuteCommandTool implements NativeTool {
     // 2. 沙箱隔离：校验 cwd 范围并获取规范绝对路径
     const targetCwd = validateCwd(cwd);
 
-    // 3. 进程执行：交给底座无状态进程引擎进行 spawn 调度
-    return await runCommandEngine(command, targetCwd, isBackground);
+    // 3. 进程执行：交给底座无状态进程引擎进行 spawn 调度，传入会话 ID
+    const sessionId = sessionContext ? sessionContext.getSessionId() : undefined;
+    return await runCommandEngine(command, targetCwd, isBackground, undefined, sessionId);
   }
 }
 

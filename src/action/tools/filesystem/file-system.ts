@@ -4,10 +4,20 @@
  */
 
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
-import { dirname, resolve } from 'path';
+import { dirname, resolve, basename } from 'path';
 import { secureResolveReadPath, secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
-import { getWorkMode, loadWorkMode } from '../system/terminal.js';
+import { getWorkMode } from '../system/terminal.js';
+import { SessionContext } from '../../../brain/context.js';
+
+/** 判断给定的文件路径是否属于敏感的环境变量配置文件 */
+function isSensitiveEnvFile(filePath: string): boolean {
+  const name = basename(filePath).toLowerCase();
+  if (name === '.env.example') {
+    return false;
+  }
+  return name === '.env' || name.startsWith('.env.');
+}
 
 /**
  * 文件读取工具类。
@@ -60,12 +70,24 @@ export class ReadFileTool implements NativeTool {
    * 审查文件读取调用的安全性。
    *
    * @param args - 工具调用参数字典
+   * @param sessionContext - 可选的会话上下文
    * @returns 安全评估结论
    */
   checkSafety(args: Record<string, unknown>): SafetyCheckResult {
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
       return { status: 'deny', message: 'targetPath 必须是字符串' };
+    }
+    // 机密文件特殊卡关审计
+    if (isSensitiveEnvFile(targetPath)) {
+      const rootDir = getAuthorizedDir() || process.cwd();
+      const rawPath = resolve(rootDir, targetPath);
+      const resolvedPath = existsSync(rawPath) ? getPhysicalRealPath(rawPath) : rawPath;
+      return {
+        status: 'suspend',
+        message: `【机密文件审计】智能体试图读取敏感的环境变量机密文件 "${targetPath}"，该操作在任何工作模式下均需人工审批。`,
+        targetPath: resolvedPath
+      };
     }
     try {
       secureResolveReadPath(targetPath);
@@ -192,17 +214,38 @@ export class WriteFileTool implements NativeTool {
    * 审查文件写入调用的安全性。
    *
    * @param args - 工具调用参数字典
+   * @param sessionContext - 可选的会话上下文
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
-    loadWorkMode();
-    if (getWorkMode() === 'YOLO') {
-      return { status: 'pass' };
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionContext): SafetyCheckResult {
+    const mode = sessionContext ? sessionContext.getWorkMode() : getWorkMode();
+    if (mode === 'Plan') {
+      return { status: 'deny', message: '只读【Plan】模式下，严禁执行任何文件写入或修改操作。' };
     }
+
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
       return { status: 'deny', message: 'targetPath 必须是字符串' };
     }
+
+    // 机密文件特殊卡关审计
+    if (isSensitiveEnvFile(targetPath)) {
+      const rootDir = getAuthorizedDir() || process.cwd();
+      const rawPath = resolve(rootDir, targetPath);
+      const resolvedPath = existsSync(rawPath) ? getPhysicalRealPath(rawPath) : rawPath;
+      const content = typeof args.content === 'string' ? args.content : '';
+      return {
+        status: 'suspend',
+        message: `【机密文件修改审计】智能体试图写入/覆盖敏感的机密配置文件 "${targetPath}"，该操作在任何工作模式下均需人工审批。\n待写入的明文内容如下：\n----------------------------------------\n${content}\n----------------------------------------`,
+        targetPath: resolvedPath
+      };
+    }
+
+    // YOLO 模式下，非机密文件静默放行
+    if (mode === 'YOLO') {
+      return { status: 'pass' };
+    }
+
     let isOutOfSandbox = false;
     let resolvedPath = '';
     try {
@@ -301,17 +344,39 @@ export class EditFileTool implements NativeTool {
    * 审查文件局部增量修改调性的安全性。
    *
    * @param args - 工具调用参数字典
+   * @param sessionContext - 可选的会话上下文
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
-    loadWorkMode();
-    if (getWorkMode() === 'YOLO') {
-      return { status: 'pass' };
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionContext): SafetyCheckResult {
+    const mode = sessionContext ? sessionContext.getWorkMode() : getWorkMode();
+    if (mode === 'Plan') {
+      return { status: 'deny', message: '只读【Plan】模式下，严禁执行任何文件写入或修改操作。' };
     }
+
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
       return { status: 'deny', message: 'targetPath 必须是字符串' };
     }
+
+    // 机密文件特殊卡关审计
+    if (isSensitiveEnvFile(targetPath)) {
+      const rootDir = getAuthorizedDir() || process.cwd();
+      const rawPath = resolve(rootDir, targetPath);
+      const resolvedPath = existsSync(rawPath) ? getPhysicalRealPath(rawPath) : rawPath;
+      const oldString = typeof args.old_string === 'string' ? args.old_string : '';
+      const newString = typeof args.new_string === 'string' ? args.new_string : '';
+      return {
+        status: 'suspend',
+        message: `【机密文件编辑审计】智能体试图修改敏感的环境变量机密文件 "${targetPath}"，该操作在任何工作模式下均需人工审批。\n修改 Diff 差分细节如下：\n- 替换原文：\n"""\n${oldString}\n"""\n+ 替换新文：\n"""\n${newString}\n"""`,
+        targetPath: resolvedPath
+      };
+    }
+
+    // YOLO 模式下，非机密文件静默放行
+    if (mode === 'YOLO') {
+      return { status: 'pass' };
+    }
+
     let isOutOfSandbox = false;
     let resolvedPath = '';
     try {

@@ -11,10 +11,9 @@ import { existsSync, copyFileSync, readFileSync, writeFileSync, realpathSync } f
 import { config as dotenvConfig } from 'dotenv';
 
 
-import { AppConfig, McpConfig } from './types.js';
+import { AppConfig, McpConfig, WorkMode } from './types.js';
 import { getModelConfig } from './models.js';
 import { interpolateEnvVars } from './env.js';
-import { loadWorkMode } from '../action/tools/system/terminal-config.js';
 
 /**
  * 检查配置文件是否存在，缺失时从 .example 模板自动复制。
@@ -135,8 +134,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   // 4. 加载 MCP 配置（含环境变量插值）
   const mcp = loadMcpConfig(env);
 
-  // 5. 组装配置对象，优先从持久化配置与环境变量中加载终端工作模式
-  const workMode = loadWorkMode(env);
+  // 5. 组装配置对象，只读加载系统默认安全工作模式，但不进行全局状态的硬回写
+  const workMode = loadDefaultWorkMode(env);
+  cachedDefaultWorkMode = workMode;
 
   const maxIterations = parseEnvInt(env.AGENT_MAX_ITERATIONS, 20);
   const largeToolOutputLimit = parseEnvInt(env.AGENT_LARGE_TOOL_OUTPUT_LIMIT, 8000);
@@ -198,4 +198,55 @@ export function updateMcpServerStatus(name: string, enabled: boolean): void {
   parsed.mcpServers[name].enabled = enabled;
 
   writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
+}
+
+/** 缓存当前配置加载期计算出的默认系统安全工作模式 */
+let cachedDefaultWorkMode: WorkMode = 'Auto';
+
+/**
+ * 获取当前系统加载的默认安全工作模式。
+ *
+ * @returns 默认安全工作模式
+ */
+export function getDefaultWorkMode(): WorkMode {
+  return cachedDefaultWorkMode;
+}
+
+/**
+ * 辅助获取当前工作区配置文件的绝对路径。
+ *
+ * @param env - 环境配置字典
+ * @returns 配置文件的绝对物理路径
+ */
+function getAgentConfigPath(env: Record<string, string | undefined> = process.env): string {
+  const rootDir = env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+  return resolve(rootDir, '.agent/config.json');
+}
+
+/**
+ * 从环境变量或配置文件只读加载默认工作模式（支持 Plan 模式且废除全局硬回写）。
+ *
+ * @param env - 环境配置上下文对象
+ * @returns 加载出的工作安全模式
+ */
+export function loadDefaultWorkMode(env: Record<string, string | undefined> = process.env): WorkMode {
+  try {
+    const configPath = getAgentConfigPath(env);
+    if (existsSync(configPath)) {
+      const data = readFileSync(configPath, 'utf-8');
+      const parsed = JSON.parse(data);
+      const val = parsed.workMode;
+      if (val === 'Safe' || val === 'Auto' || val === 'YOLO' || val === 'Plan') {
+        return val as WorkMode;
+      }
+    }
+  } catch {
+    // 忽略加载读取错误，由环境变量或默认值兜底
+  }
+
+  const envMode = env.AGENT_WORK_MODE;
+  if (envMode === 'Safe' || envMode === 'Auto' || envMode === 'YOLO' || envMode === 'Plan') {
+    return envMode as WorkMode;
+  }
+  return 'Auto';
 }

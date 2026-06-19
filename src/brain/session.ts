@@ -8,6 +8,7 @@ import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 import { loadSkillContent } from './contextLoader.js';
 import { AgentLoop, AgentEvent } from './agent-loop.js';
 import { BrowserSession } from '../action/tools/browser/browser-action.js';
+import { abortSessionTasks } from '../action/tools/system/terminal-engine.js';
 import {
   PluginRegistry,
   TokenWatermarkPlugin,
@@ -224,10 +225,24 @@ export class SessionManager {
   }
 
   /**
-   * 中断当前正在进行的大模型推理流或网络请求。
+   * 中断当前正在进行的大模型推理流或网络请求，并异步终止该会话的后台任务。
    */
   public abort(): void {
     this.driver.abort();
+    abortSessionTasks(this.context.getSessionId()).catch((err) => {
+      console.error('Failed to abort session tasks on session abort:', err);
+    });
+  }
+
+  /**
+   * 关闭会话，终止推理流、清理挂起审批并强制终止所有后台子进程。
+   *
+   * @returns 无返回值的 Promise
+   */
+  public async close(): Promise<void> {
+    this.abort();
+    this.approvalService.rejectAll('Session is closing');
+    await abortSessionTasks(this.context.getSessionId());
   }
 
   /**

@@ -1,5 +1,6 @@
 import { LocalFileSystemMcpServer, NativeTool } from './virtual-mcp.js';
 import { McpToolManager } from './mcp-client.js';
+import { SessionContext } from '../brain/context.js';
 
 /**
  * 工具注册表管理类。
@@ -71,7 +72,7 @@ export class ToolRegistry {
   public async callTool(
     functionName: string,
     functionArgs: { targetPath?: string; content?: string; [key: string]: unknown },
-    sessionContext?: unknown
+    sessionContext?: SessionContext
   ): Promise<unknown> {
     // 先行加载本地工具清单以供比对
     const localToolsDef = await this.localMcpServer.getTools();

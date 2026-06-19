@@ -3,6 +3,7 @@ import { fileSystemTools } from './tools/filesystem/index.js';
 import { systemTools } from './tools/system/index.js';
 import { getSkillTools } from './tools/skill/index.js';
 import type { SafetyCheckResult } from '../brain/plugins/plugin-types.js';
+import { SessionContext } from '../brain/context.js';
 import {
   BrowserNavigateTool,
   BrowserClickTool,
@@ -43,7 +44,7 @@ export interface NativeTool {
    * @param _sessionContext - 可选的智能体会话上下文
    * @returns 工具执行完毕后返回的文本结果
    */
-  execute(args: Record<string, unknown>, _sessionContext?: unknown): Promise<string> | string;
+  execute(args: Record<string, unknown>, _sessionContext?: SessionContext): Promise<string> | string;
 
   /**
    * 异步或同步审查该工具执行调用的安全性。
@@ -53,7 +54,7 @@ export interface NativeTool {
    * @param sessionContext - 可选的会话上下文，用于获取安全状态服务
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>, sessionContext?: unknown): Promise<SafetyCheckResult> | SafetyCheckResult;
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionContext): Promise<SafetyCheckResult> | SafetyCheckResult;
 }
 
 /**
@@ -153,7 +154,7 @@ export class LocalFileSystemMcpServer {
    * @param sessionContext - 可选的智能体会话上下文
    * @returns 符合 MCP CallToolResult 结构的结果对象
    */
-  async callTool(request: CallToolRequest, sessionContext?: unknown): Promise<CallToolResult> {
+  async callTool(request: CallToolRequest, sessionContext?: SessionContext): Promise<CallToolResult> {
     try {
       const args = request.arguments || {};
       const tool = this.toolsMap.get(request.name);

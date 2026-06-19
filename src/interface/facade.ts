@@ -163,6 +163,7 @@ export class CliFacade {
     if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
       console.log(`\n${theme.success('[系统] 进程正在终止，结束会话。')}`);
       this.listener.close();
+      await this.session.close();
       process.exit(0);
     }
 

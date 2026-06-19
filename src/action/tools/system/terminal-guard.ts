@@ -90,3 +90,16 @@ export function checkCommandSafetyLevel(command: string): 'allow' | 'ask' {
   return 'ask';
 }
 
+/** 毁灭性高危命令的底层硬底盘黑名单（即使在 YOLO 模式下也必须绝对阻断执行，包含毁灭级删除、块设备覆写与磁盘格式化） */
+export const HARDLINE_PATTERNS = /\b(rm\s+-(?:[rR][fF]|[fF][rR])\s+(\/|\*|~)|\bdd\s+if=.*of=\/dev\/|\bmkfs\b)/i;
+
+/**
+ * 校验命令行是否命中绝对黑名单。
+ *
+ * @param command - 待执行的命令行文本
+ * @returns 如果命中绝对黑名单则返回 true，否则返回 false
+ */
+export function isHardlineDangerous(command: string): boolean {
+  return HARDLINE_PATTERNS.test(command);
+}
+
