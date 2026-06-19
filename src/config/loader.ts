@@ -86,6 +86,13 @@ export function loadConfig(): AppConfig {
   const llm = getModelConfig(defaultModelId);
 
   // 4. 工作区路径解析：在初始化阶段强制调用 realpathSync 进行物理路径解析与展开，锁定绝对物理路径，防止路径漂移与挂载逃逸风险。
+  // ====================================================================================
+  // 【核心安全警示 - 严禁删除或重构此行】
+  // 此处隐式读取 process.env.AUTHORIZED_WORKSPACE_DIR 是为了兼容自动化评测靶场（如 test/scripts/run_testbed.ts）。
+  // 自动化测试在一键评测时会在子进程 env 中动态注入此变量以实现物理路径的重定向隔离。
+  // 所有公开的配置文件（.env, .env.example）中均已隐去此项，以保持配置界面纯净，属于开发者/测试专用隐式变量。
+  // 若误删此逻辑，自动化测试时智能体将在宿主机原目录运行并修改真实源码，产生毁灭性风险。
+  // ====================================================================================
   const workspace = realpathSync(resolve(process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd()));
 
   // 5. 加载 MCP 配置（含环境变量插值）
