@@ -2,7 +2,7 @@ import { SessionManager } from './brain/index.js';
 import { McpToolManager, initWorkspace } from './action/index.js';
 import { loadConfig, ensureConfigFiles } from './config/index.js';
 import { startCli } from './interface/index.js';
-import { theme } from './utils/theme.js';
+import { theme } from './interface/views/theme.js';
 import { OpenAiLlmAdapter } from './infrastructure/llm/OpenAiLlmAdapter.js';
 import { TiktokenEstimator } from './infrastructure/llm/TiktokenEstimator.js';
 

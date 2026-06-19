@@ -5,7 +5,7 @@ import { SessionContext, ContextTokenUsage } from './context.js';
 import type { ChatMessage, LlmPort, LlmStreamEvent } from './ports/LlmPort.js';
 import type { ApiUsage } from './ports/TokenEstimatorPort.js';
 import { ContextAdapter } from './adapters/index.js';
-import { purifyContent } from '../utils/purify.js';
+import { purifyContent } from '../common/purify.js';
 import { PluginRegistry, HookEventName, runHookPipeline, type LlmRequest } from './plugins/index.js';
 
 // 导入领域服务

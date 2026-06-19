@@ -8,7 +8,7 @@
 
 import type { ChatMessage } from '../../brain/ports/LlmPort.js';
 import type { ApiUsage, ContextTokenUsage } from '../../brain/ports/TokenEstimatorPort.js';
-import { theme } from '../../utils/theme.js';
+import { theme } from './theme.js';
 
 /**
  * 将消息内容中内含的 XML 标签和定界符，解析并折叠转换为具有终端视觉效果的精美标签卡片微件。

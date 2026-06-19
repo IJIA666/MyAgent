@@ -1,5 +1,5 @@
 import { ICommand, CommandContext } from './base.js';
-import { theme } from '../../utils/theme.js';
+import { theme } from '../views/theme.js';
 
 export class ToolCommand implements ICommand {
   name = 'tool';

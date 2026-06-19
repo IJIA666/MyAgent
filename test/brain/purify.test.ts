@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { purifyContent } from '../../src/utils/purify.js';
+import { purifyContent } from '../../src/common/purify.js';
 import { renderContentWithWidgets } from '../../src/interface/cli.js';
 
 describe('净化与折叠微件渲染测试', () => {

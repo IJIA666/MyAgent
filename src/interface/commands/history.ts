@@ -1,5 +1,5 @@
 import { ICommand } from './base.js';
-import { theme } from '../../utils/theme.js';
+import { theme } from '../views/theme.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 

@@ -3,7 +3,7 @@ import { SessionManager } from '../brain/index.js';
 import { InputListener } from './io/input-listener.js';
 import { redrawHistory, renderTokenPanel } from './views/widget-renderer.js';
 import { dispatchCommand, showInteractiveMenu } from './command.js';
-import { theme } from '../utils/theme.js';
+import { theme } from './views/theme.js';
 
 /**
  * 终端界面控制门面（Facade）。

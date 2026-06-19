@@ -13,8 +13,7 @@ import { config as dotenvConfig } from 'dotenv';
 
 import { AppConfig, McpConfig } from './types.js';
 import { getModelConfig } from './models.js';
-import { interpolateEnvVars } from '../utils/env.js';
-import { theme } from '../utils/theme.js';
+import { interpolateEnvVars } from './env.js';
 import { loadWorkMode } from '../action/tools/system/terminal-config.js';
 
 /**
@@ -32,9 +31,9 @@ export function ensureConfigFiles(): void {
     const templatePath = resolve(template);
 
     if (!existsSync(targetPath) && existsSync(templatePath)) {
-      console.log(theme.highlight(`[配置] 缺少 ${label}，正在从模板复制生成。`));
+      console.log(`[配置] 缺少 ${label}，正在从模板复制生成。`);
       copyFileSync(templatePath, targetPath);
-      console.log(theme.success(`[配置] ${label} 创建完毕，请按需调整内部参数。`));
+      console.log(`[配置] ${label} 创建完毕，请按需调整内部参数。`);
     }
   }
 }

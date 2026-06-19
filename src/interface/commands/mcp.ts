@@ -1,5 +1,5 @@
 import { ICommand, CommandContext } from './base.js';
-import { theme } from '../../utils/theme.js';
+import { theme } from '../views/theme.js';
 import { updateMcpServerStatus } from '../../config/index.js';
 
 export class McpCommand implements ICommand {

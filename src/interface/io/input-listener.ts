@@ -7,7 +7,7 @@
  */
 
 import { createInterface } from 'readline';
-import { theme } from '../../utils/theme.js';
+import { theme } from '../views/theme.js';
 
 /**
  * 实例化 InputListener 必须传入的配置与回调接口。

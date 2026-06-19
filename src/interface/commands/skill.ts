@@ -1,5 +1,5 @@
 import { ICommand, CommandResult } from './base.js';
-import { theme } from '../../utils/theme.js';
+import { theme } from '../views/theme.js';
 import { loadSkills, loadSkillContent } from '../../brain/contextLoader.js';
 
 export class SkillCommand implements ICommand {

@@ -1,8 +1,8 @@
 import { ICommand, CommandContext } from './base.js';
-import { theme } from '../../utils/theme.js';
+import { theme } from '../views/theme.js';
 import * as p from '@clack/prompts';
 import { getModelConfig, BUILTIN_MODELS } from '../../config/index.js';
-import { updateEnvVariable } from '../../utils/env.js';
+import { updateEnvVariable } from '../../config/env.js';
 
 export class ModelCommand implements ICommand {
   name = 'model';
