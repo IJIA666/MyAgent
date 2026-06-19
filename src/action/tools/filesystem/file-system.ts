@@ -4,10 +4,10 @@
  */
 
 import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
-import { dirname } from 'path';
-import { secureResolveReadPath, secureResolveWritePath } from './base.js';
-import type { NativeTool } from '../virtual-mcp.js';
-import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { dirname, resolve } from 'path';
+import { secureResolveReadPath, secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import { getWorkMode, loadWorkMode } from '../system/terminal.js';
 
 /**
  * 文件读取工具类。
@@ -25,7 +25,7 @@ export class ReadFileTool implements NativeTool {
   /**
    * 工具的名称。
    */
-  readonly name = ToolConstants.READ_FILE;
+  readonly name = 'readFile';
 
   /**
    * 工具的 OpenAI Function Calling 声明定义。
@@ -33,7 +33,7 @@ export class ReadFileTool implements NativeTool {
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.READ_FILE,
+      name: 'readFile',
       description: "读取授权工作区根目录下的文本文件的内容。支持可选的行范围分页读取，用以精确精读局部代码片段。",
       parameters: {
         type: "object",
@@ -55,6 +55,32 @@ export class ReadFileTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查文件读取调用的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    const targetPath = args.targetPath;
+    if (typeof targetPath !== 'string') {
+      return { status: 'deny', message: 'targetPath 必须是字符串' };
+    }
+    try {
+      secureResolveReadPath(targetPath);
+      return { status: 'pass' };
+    } catch {
+      const rootDir = getAuthorizedDir();
+      const rawPath = resolve(rootDir!, targetPath);
+      const resolvedPath = getPhysicalRealPath(rawPath);
+      return {
+        status: 'suspend',
+        message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
+        targetPath: resolvedPath
+      };
+    }
+  }
 
   /**
    * 执行文件读取操作。
@@ -135,7 +161,7 @@ export class WriteFileTool implements NativeTool {
   /**
    * 工具的名称。
    */
-  readonly name = ToolConstants.WRITE_FILE;
+  readonly name = 'writeFile';
 
   /**
    * 工具的 OpenAI Function Calling 声明定义。
@@ -143,7 +169,7 @@ export class WriteFileTool implements NativeTool {
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.WRITE_FILE,
+      name: 'writeFile',
       description: "向授权工作区内的指定文件全量写入或覆盖文本内容。会自动创建缺失的父级目录。【警告：此操作会彻底覆盖原文件！仅在创建新文件或必须进行全文件重写时使用。对已有文件的局部修改请必须优先使用 editFile 工具】",
       parameters: {
         type: "object",
@@ -161,6 +187,37 @@ export class WriteFileTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查文件写入调用的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    loadWorkMode();
+    if (getWorkMode() === 'YOLO') {
+      return { status: 'pass' };
+    }
+    const targetPath = args.targetPath;
+    if (typeof targetPath !== 'string') {
+      return { status: 'deny', message: 'targetPath 必须是字符串' };
+    }
+    let isOutOfSandbox = false;
+    let resolvedPath = '';
+    try {
+      secureResolveWritePath(targetPath);
+    } catch {
+      isOutOfSandbox = true;
+      const rootDir = getAuthorizedDir();
+      resolvedPath = getPhysicalRealPath(resolve(rootDir!, targetPath));
+    }
+    return {
+      status: 'suspend',
+      message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${targetPath}"`,
+      targetPath: isOutOfSandbox ? resolvedPath : undefined
+    };
+  }
 
   /**
    * 执行文件写入操作。
@@ -205,7 +262,7 @@ export class EditFileTool implements NativeTool {
   /**
    * 工具的名称。
    */
-  readonly name = ToolConstants.EDIT_FILE;
+  readonly name = 'editFile';
 
   /**
    * 工具的 OpenAI Function Calling 声明定义。
@@ -213,7 +270,7 @@ export class EditFileTool implements NativeTool {
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.EDIT_FILE,
+      name: 'editFile',
       description: "基于纯文本特征精确匹配的局部文件增量修改工具。用于在不覆盖整个文件的情况下修改指定的代码段，这是修改已有文件的首选和最佳途径。为确保唯一性和准确命中，old_string 必须保持与原文件精确一致并包含足够的前后上下文。",
       parameters: {
         type: "object",
@@ -239,6 +296,37 @@ export class EditFileTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查文件局部增量修改调性的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    loadWorkMode();
+    if (getWorkMode() === 'YOLO') {
+      return { status: 'pass' };
+    }
+    const targetPath = args.targetPath;
+    if (typeof targetPath !== 'string') {
+      return { status: 'deny', message: 'targetPath 必须是字符串' };
+    }
+    let isOutOfSandbox = false;
+    let resolvedPath = '';
+    try {
+      secureResolveWritePath(targetPath);
+    } catch {
+      isOutOfSandbox = true;
+      const rootDir = getAuthorizedDir();
+      resolvedPath = getPhysicalRealPath(resolve(rootDir!, targetPath));
+    }
+    return {
+      status: 'suspend',
+      message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${targetPath}"`,
+      targetPath: isOutOfSandbox ? resolvedPath : undefined
+    };
+  }
 
   /**
    * 执行局部文件编辑操作。
@@ -322,7 +410,7 @@ export class ListFilesTool implements NativeTool {
   /**
    * 工具的名称。
    */
-  readonly name = ToolConstants.LIST_FILES;
+  readonly name = 'listFiles';
 
   /**
    * 工具的 OpenAI Function Calling 声明定义。
@@ -330,7 +418,7 @@ export class ListFilesTool implements NativeTool {
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.LIST_FILES,
+      name: 'listFiles',
       description: "列出工作区根目录下目标文件夹内的所有直接子文件和文件夹名称。",
       parameters: {
         type: "object",
@@ -343,6 +431,29 @@ export class ListFilesTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查目录清单列举的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    const targetPath = typeof args.targetPath === 'string' ? args.targetPath : '.';
+    try {
+      secureResolveReadPath(targetPath);
+      return { status: 'pass' };
+    } catch {
+      const rootDir = getAuthorizedDir();
+      const rawPath = resolve(rootDir!, targetPath);
+      const resolvedPath = getPhysicalRealPath(rawPath);
+      return {
+        status: 'suspend',
+        message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
+        targetPath: resolvedPath
+      };
+    }
+  }
 
   /**
    * 执行列出目录操作。

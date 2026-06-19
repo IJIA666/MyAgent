@@ -1,5 +1,4 @@
-import type { NativeTool } from '../virtual-mcp.js';
-import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 
 /**
  * 扩展技能拉取工具类。
@@ -12,7 +11,7 @@ export class LoadSkillTool implements NativeTool {
   /**
    * 工具的名称.
    */
-  readonly name = ToolConstants.LOAD_SKILL;
+  readonly name = 'load_skill';
 
   /**
    * 工具的 OpenAI Function Calling 声明定义。
@@ -20,7 +19,7 @@ export class LoadSkillTool implements NativeTool {
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.LOAD_SKILL,
+      name: 'load_skill',
       description: "当需要使用特定扩展技能时调用此工具拉取技能全文，技能名称需从 <available_skills> 中选取。",
       parameters: {
         type: "object",
@@ -71,5 +70,15 @@ export class LoadSkillTool implements NativeTool {
     }
 
     return body;
+  }
+
+  /**
+   * 审查技能加载调用的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(): SafetyCheckResult {
+    return { status: 'pass' };
   }
 }

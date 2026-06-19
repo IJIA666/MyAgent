@@ -3,10 +3,11 @@
  * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
  */
 
-import { validateCommand, validateCwd } from './terminal-guard.js';
+import { validateCommand, validateCwd, checkCommandSafetyLevel } from './terminal-guard.js';
 import { runCommandEngine } from './terminal-engine.js';
-import type { NativeTool } from '../virtual-mcp.js';
-import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { getWorkMode, loadWorkMode, extractSafePrefix } from './terminal-config.js';
+import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import { SecurityService } from '../../../brain/services/SecurityService.js';
 
 /**
  * 终端指令执行工具类。
@@ -19,7 +20,7 @@ export class ExecuteCommandTool implements NativeTool {
   /**
    * 工具的名称。
    */
-  readonly name = ToolConstants.EXECUTE_COMMAND;
+  readonly name = 'execute_command';
 
   /**
    * 工具的 OpenAI Function Calling 声明定义。
@@ -27,7 +28,7 @@ export class ExecuteCommandTool implements NativeTool {
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.EXECUTE_COMMAND,
+      name: 'execute_command',
       description: "在受限的工作区沙箱内执行一条原子终端命令（如 npm run build、vitest 等）。禁止使用 &、|、; 等复合拼接符，禁止读写工作区外部路径。若命令执行时间较长，会自动切入后台托管并返回任务ID。",
       parameters: {
         type: "object",
@@ -49,6 +50,66 @@ export class ExecuteCommandTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 异步或同步审查终端执行调用的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @param _sessionContext - 可选的会话上下文
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    const command = args.command;
+    if (typeof command !== 'string') {
+      return { status: 'deny', message: '拒绝执行：command 必须是字符串。' };
+    }
+
+    // 重载并获取工作模式
+    loadWorkMode();
+    const workMode = getWorkMode();
+
+    if (workMode === 'YOLO') {
+      return { status: 'pass' };
+    }
+
+    const DESTRUCTIVE_REGEX = /\b(rm\s+-(?:[rR][fF]|[fF][rR])\s+(\/|\*|~)|\bdd\s+if=.*of=\/dev\/|\bmkfs\b)/i;
+    let needApproval = true;
+
+    // 执行 Windows/PowerShell 别名及写倾向安全等级初筛
+    const safetyLevel = checkCommandSafetyLevel(command);
+    if (safetyLevel === 'allow' && workMode === 'Auto') {
+      // 校验命令行是否命中白名单规则
+      const allowed = SecurityService.getInstance().getSecurityAllowlist();
+      const trimmed = command.trim();
+      const isAllowed = allowed.some(rule => {
+        if (rule.endsWith(':*')) {
+          const prefix = rule.slice(0, -2);
+          return trimmed.startsWith(prefix);
+        }
+        return trimmed === rule;
+      });
+
+      if (isAllowed) {
+        needApproval = false;
+      }
+    }
+
+    // 双重保险：即使在 YOLO/Auto 放行状态下，若触碰毁灭级敏感正则，强制开启人工拦截
+    if (!needApproval && DESTRUCTIVE_REGEX.test(command)) {
+      needApproval = true;
+    }
+
+    if (needApproval) {
+      const safePrefix = extractSafePrefix(command) ?? undefined;
+      return {
+        status: 'suspend',
+        message: `智能体试图在终端执行写倾向或未识别命令: "${command}"`,
+        safePrefix
+      };
+    }
+
+    return { status: 'pass' };
+  }
 
   /**
    * 执行终端命令行指令。

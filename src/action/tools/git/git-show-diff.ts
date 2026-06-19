@@ -1,7 +1,6 @@
 import { execSync } from 'child_process';
-import { getAuthorizedDir, secureResolveReadPath } from './base.js';
-import type { NativeTool } from '../virtual-mcp.js';
-import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { getAuthorizedDir, secureResolveReadPath } from '../base.js';
+import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 
 /**
  * Git 差异查看工具类。
@@ -11,14 +10,14 @@ export class GitShowDiffTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'read';
 
-  /** 工具的名称。 */
-  readonly name = ToolConstants.GIT_SHOW_DIFF;
+  /** 工具 of 名称。 */
+  readonly name = 'gitShowDiff';
 
   /** 工具的 OpenAI Function Calling 声明定义。 */
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.GIT_SHOW_DIFF,
+      name: 'gitShowDiff',
       description: "只读获取当前工作区内的 Git Diff 增量代码差异。会自动清洗 ANSI 颜色控制字符以防文本解析干扰。",
       parameters: {
         type: "object",
@@ -80,5 +79,15 @@ export class GitShowDiffTool implements NativeTool {
       const errorObj = err as { stderr?: string; message?: string };
       throw new Error(`获取 Git Diff 失败：${errorObj.stderr || errorObj.message}`, { cause: err });
     }
+  }
+
+  /**
+   * 审查 Git 差异查看调用的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(): SafetyCheckResult {
+    return { status: 'pass' };
   }
 }

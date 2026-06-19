@@ -5,9 +5,8 @@
 
 import { resolve, basename, relative } from 'path';
 import { existsSync, statSync, readdirSync, openSync, readSync, closeSync, readFileSync } from 'fs';
-import { secureResolvePath, getAuthorizedDir } from './base.js';
-import type { NativeTool } from '../virtual-mcp.js';
-import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { secureResolvePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 
 /** 递归扫描指定目录下的所有文件（自动排除无用及隐藏文件夹） */
 function scanDir(dir: string, fileList: string[] = []): string[] {
@@ -67,7 +66,7 @@ export class GrepSearchTool implements NativeTool {
   /**
    * 工具的名称。
    */
-  readonly name = ToolConstants.GREP_SEARCH;
+  readonly name = 'grepSearch';
 
   /**
    * 工具的 OpenAI Function Calling 声明定义。
@@ -75,7 +74,7 @@ export class GrepSearchTool implements NativeTool {
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.GREP_SEARCH,
+      name: 'grepSearch',
       description: "在授权工作区内执行基于正则表达式或纯文本的全文检索（自动过滤二进制文件与隐藏的版本控制目录）。",
       parameters: {
         type: "object",
@@ -105,6 +104,29 @@ export class GrepSearchTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查正则全文检索的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    const searchPath = typeof args.searchPath === 'string' ? args.searchPath : '.';
+    try {
+      secureResolvePath(searchPath);
+      return { status: 'pass' };
+    } catch {
+      const rootDir = getAuthorizedDir();
+      const rawPath = resolve(rootDir!, searchPath);
+      const resolvedPath = getPhysicalRealPath(rawPath);
+      return {
+        status: 'suspend',
+        message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
+        targetPath: resolvedPath
+      };
+    }
+  }
 
   /**
    * 执行 Grep 文本匹配检索。
@@ -229,7 +251,7 @@ export class GlobSearchTool implements NativeTool {
   /**
    * 工具的名称。
    */
-  readonly name = ToolConstants.GLOB_SEARCH;
+  readonly name = 'globSearch';
 
   /**
    * 工具的 OpenAI Function Calling 声明定义。
@@ -237,7 +259,7 @@ export class GlobSearchTool implements NativeTool {
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.GLOB_SEARCH,
+      name: 'globSearch',
       description: "使用通配符匹配规则快速定位并过滤工作区中符合条件的文件路径列表（最大硬性展示条数限制为 100 条）。",
       parameters: {
         type: "object",
@@ -251,6 +273,16 @@ export class GlobSearchTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查通配符定位检索的安全性。
+   *
+   * @param _args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(): SafetyCheckResult {
+    return { status: 'pass' };
+  }
 
   /**
    * 执行 Glob 文件路径匹配检索。

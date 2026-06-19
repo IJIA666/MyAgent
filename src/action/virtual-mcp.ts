@@ -1,13 +1,9 @@
-import { ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool } from './native-tools/file-system.js';
-import { GrepSearchTool, GlobSearchTool } from './native-tools/search.js';
-import { ExecuteCommandTool } from './native-tools/terminal.js';
-import { LoadSkillTool } from './native-tools/skill.js';
-import { CreateDirectoryTool, DeletePathTool, MovePathTool, CopyPathTool } from './native-tools/directory-manager.js';
-import { ReadManyFilesTool } from './native-tools/read-many-files.js';
-import { ApplyPatchTool } from './native-tools/apply-patch.js';
-import { GitShowStatusTool } from './native-tools/git-show-status.js';
-import { GitShowDiffTool } from './native-tools/git-show-diff.js';
-import { GitShowLogTool } from './native-tools/git-show-log.js';
+import { gitTools } from './tools/git/index.js';
+import { fileSystemTools } from './tools/filesystem/index.js';
+import { systemTools } from './tools/system/index.js';
+import { getSkillTools } from './tools/skill/index.js';
+import type { SafetyCheckResult } from '../brain/plugins/plugin-types.js';
+export type { SafetyCheckResult };
 
 /**
  * 本地内置工具的契约接口。
@@ -37,6 +33,16 @@ export interface NativeTool {
    * @returns 工具执行完毕后返回的文本结果
    */
   execute(args: Record<string, unknown>, _sessionContext?: unknown): Promise<string> | string;
+
+  /**
+   * 异步或同步审查该工具执行调用的安全性。
+   * 为安全控制决策提供统一的多态评估 Ports 接口。
+   *
+   * @param args - 调用工具时传入的参数字典
+   * @param sessionContext - 可选的会话上下文，用于获取安全状态服务
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>, sessionContext?: unknown): Promise<SafetyCheckResult> | SafetyCheckResult;
 }
 
 /**
@@ -80,23 +86,16 @@ export class LocalFileSystemMcpServer {
    * @param options - 附加配置选项，包含可选的 loadSkill 解析器
    */
   constructor(options?: LocalServerOptions) {
-    this.register(new ReadFileTool());
-    this.register(new WriteFileTool());
-    this.register(new EditFileTool());
-    this.register(new ListFilesTool());
-    this.register(new LoadSkillTool(options?.loadSkill));
-    this.register(new GrepSearchTool());
-    this.register(new GlobSearchTool());
-    this.register(new ExecuteCommandTool());
-    this.register(new CreateDirectoryTool());
-    this.register(new DeletePathTool());
-    this.register(new MovePathTool());
-    this.register(new CopyPathTool());
-    this.register(new ReadManyFilesTool());
-    this.register(new ApplyPatchTool());
-    this.register(new GitShowStatusTool());
-    this.register(new GitShowDiffTool());
-    this.register(new GitShowLogTool());
+    // 聚合各业务领域 Feature 原生工具实例列表
+    const allTools: NativeTool[] = [
+      ...gitTools,
+      ...fileSystemTools,
+      ...systemTools,
+      ...getSkillTools(options?.loadSkill)
+    ];
+
+    // 循环迭代注册到本地虚拟服务器中
+    allTools.forEach(tool => this.register(tool));
   }
 
   /**

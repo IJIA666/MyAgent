@@ -1,4 +1,4 @@
-## 新增需求
+## MODIFIED Requirements
 
 ### Requirement: 工具安全类别自声明
 
@@ -10,7 +10,7 @@
 
 ### Requirement: 审批插件动态确权拦截
 
-系统 **MUST** 在运行时动态评估当前被调工具 of `checkSafety` 返回结果，并执行相应的安全前置核准流，网关插件本身保持通用无状态。
+系统 **MUST** 在运行时动态评估当前被调工具的 `checkSafety` 返回结果，并执行相应的安全前置核准流，网关插件本身保持通用无状态。
 
 #### Scenario: 高危写操作确权挂起
 - **WHEN**：智能体尝试执行工具，且该工具的异步 `checkSafety` 结果返回状态为 `'suspend'`。

@@ -7,7 +7,7 @@
 
 import { resolve, dirname } from 'path';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { getAuthorizedDir } from './base.js';
+import { getAuthorizedDir } from '../base.js';
 
 /**
  * 终端执行工作模式定义

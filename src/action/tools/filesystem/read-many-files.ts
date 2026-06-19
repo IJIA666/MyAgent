@@ -1,7 +1,7 @@
 import { existsSync, statSync, readFileSync } from 'fs';
-import { secureResolveReadPath } from './base.js';
-import type { NativeTool } from '../virtual-mcp.js';
-import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { resolve } from 'path';
+import { secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import { extractFileOutline } from './read-many-files-helper.js';
 
 /**
@@ -13,13 +13,13 @@ export class ReadManyFilesTool implements NativeTool {
   readonly securityCategory = 'read';
 
   /** 工具的名称。 */
-  readonly name = ToolConstants.READ_MANY_FILES;
+  readonly name = 'readManyFiles';
 
   /** 工具的 OpenAI Function Calling 声明定义。 */
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.READ_MANY_FILES,
+      name: 'readManyFiles',
       description: "批量读取授权工作区内的多个文件。支持前置体积熔断与拒签大纲概要自适应返回，保障大模型获取上下文的高效与安全。",
       parameters: {
         type: "object",
@@ -33,6 +33,46 @@ export class ReadManyFilesTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查批量文件读取的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    const targetPaths = args.targetPaths;
+    if (typeof targetPaths !== 'string') {
+      return { status: 'deny', message: 'targetPaths 必须是字符串' };
+    }
+    let paths: string[];
+    const trimmed = targetPaths.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        paths = JSON.parse(trimmed);
+      } catch {
+        paths = trimmed.split(',').map(p => p.trim()).filter(Boolean);
+      }
+    } else {
+      paths = trimmed.split(',').map(p => p.trim()).filter(Boolean);
+    }
+
+    const rootDir = getAuthorizedDir();
+    for (const relPath of paths) {
+      try {
+        secureResolveReadPath(relPath);
+      } catch {
+        const rawPath = resolve(rootDir!, relPath);
+        const resolvedPath = getPhysicalRealPath(rawPath);
+        return {
+          status: 'suspend',
+          message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
+          targetPath: resolvedPath
+        };
+      }
+    }
+    return { status: 'pass' };
+  }
 
   /**
    * 执行批量文件读取操作。

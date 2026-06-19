@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { applyPatch } from 'diff';
-import { secureResolveWritePath } from './base.js';
+import { resolve } from 'path';
+import { secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import { ReadFileTool } from './file-system.js';
-import type { NativeTool } from '../virtual-mcp.js';
-import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import { applyReplacePatch } from './apply-patch-helper.js';
+import { getWorkMode, loadWorkMode } from '../system/terminal.js';
 
 /**
  * 局部补丁修补与特征对齐替换工具类。
@@ -15,13 +16,13 @@ export class ApplyPatchTool implements NativeTool {
   readonly securityCategory = 'write';
 
   /** 工具的名称。 */
-  readonly name = ToolConstants.APPLY_PATCH;
+  readonly name = 'applyPatch';
 
   /** 工具的 OpenAI Function Calling 声明定义。 */
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.APPLY_PATCH,
+      name: 'applyPatch',
       description: "应用代码修补。支持标准的严格 Diff 模式，以及通过期望上下文特征签名滑动窗口替换的块模式，能够有效规避行号漂移。",
       parameters: {
         type: "object",
@@ -56,6 +57,37 @@ export class ApplyPatchTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查补丁修补调性的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    loadWorkMode();
+    if (getWorkMode() === 'YOLO') {
+      return { status: 'pass' };
+    }
+    const targetPath = args.targetPath;
+    if (typeof targetPath !== 'string') {
+      return { status: 'deny', message: 'targetPath 必须是字符串' };
+    }
+    let isOutOfSandbox = false;
+    let resolvedPath = '';
+    try {
+      secureResolveWritePath(targetPath);
+    } catch {
+      isOutOfSandbox = true;
+      const rootDir = getAuthorizedDir();
+      resolvedPath = getPhysicalRealPath(resolve(rootDir!, targetPath));
+    }
+    return {
+      status: 'suspend',
+      message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${targetPath}"`,
+      targetPath: isOutOfSandbox ? resolvedPath : undefined
+    };
+  }
 
   /**
    * 执行补丁或块替换修补操作。

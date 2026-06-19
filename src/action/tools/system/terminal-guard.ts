@@ -6,7 +6,7 @@
  */
 
 import { resolve, sep } from 'path';
-import { getAuthorizedDir, getPhysicalRealPath } from './base.js';
+import { getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 
 /**
  * 基于硬编码的正则表达式，防止复合命令（反重定向、反命令拼接注入等）

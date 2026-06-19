@@ -1,9 +1,9 @@
 import { mkdirSync, existsSync, statSync, rmSync, renameSync } from 'fs';
-import { dirname } from 'path';
-import { secureResolveWritePath, secureResolveReadPath } from './base.js';
-import type { NativeTool } from '../virtual-mcp.js';
-import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { dirname, resolve } from 'path';
+import { secureResolveWritePath, secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import { copyRecursiveSync } from './directory-manager-helper.js';
+import { getWorkMode, loadWorkMode } from '../system/terminal.js';
 
 /**
  * 目录创建工具类。
@@ -14,13 +14,13 @@ export class CreateDirectoryTool implements NativeTool {
   readonly securityCategory = 'write';
 
   /** 工具的名称。 */
-  readonly name = ToolConstants.CREATE_DIRECTORY;
+  readonly name = 'createDirectory';
 
   /** 工具的 OpenAI Function Calling 声明定义。 */
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.CREATE_DIRECTORY,
+      name: 'createDirectory',
       description: "递归创建多级目录。可磨平不同操作系统的命令行选项差异并自动校验工作区安全边界。",
       parameters: {
         type: "object",
@@ -34,6 +34,37 @@ export class CreateDirectoryTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查创建文件夹的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    loadWorkMode();
+    if (getWorkMode() === 'YOLO') {
+      return { status: 'pass' };
+    }
+    const directoryPath = args.directoryPath;
+    if (typeof directoryPath !== 'string') {
+      return { status: 'deny', message: 'directoryPath 必须是字符串' };
+    }
+    let isOutOfSandbox = false;
+    let resolvedPath = '';
+    try {
+      secureResolveWritePath(directoryPath);
+    } catch {
+      isOutOfSandbox = true;
+      const rootDir = getAuthorizedDir();
+      resolvedPath = getPhysicalRealPath(resolve(rootDir!, directoryPath));
+    }
+    return {
+      status: 'suspend',
+      message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${directoryPath}"`,
+      targetPath: isOutOfSandbox ? resolvedPath : undefined
+    };
+  }
 
   /**
    * 执行递归创建目录。
@@ -72,13 +103,13 @@ export class DeletePathTool implements NativeTool {
   readonly securityCategory = 'write';
 
   /** 工具的名称。 */
-  readonly name = ToolConstants.DELETE_PATH;
+  readonly name = 'deletePath';
 
   /** 工具的 OpenAI Function Calling 声明定义。 */
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.DELETE_PATH,
+      name: 'deletePath',
       description: "删除工作区内指定的文件或目录（高危操作，会触发控制台审批卡关确权拦截）。",
       parameters: {
         type: "object",
@@ -92,6 +123,37 @@ export class DeletePathTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查安全删除路径的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    loadWorkMode();
+    if (getWorkMode() === 'YOLO') {
+      return { status: 'pass' };
+    }
+    const targetPath = args.targetPath;
+    if (typeof targetPath !== 'string') {
+      return { status: 'deny', message: 'targetPath 必须是字符串' };
+    }
+    let isOutOfSandbox = false;
+    let resolvedPath = '';
+    try {
+      secureResolveWritePath(targetPath);
+    } catch {
+      isOutOfSandbox = true;
+      const rootDir = getAuthorizedDir();
+      resolvedPath = getPhysicalRealPath(resolve(rootDir!, targetPath));
+    }
+    return {
+      status: 'suspend',
+      message: `智能体试图安全删除以下路径: "${targetPath}"`,
+      targetPath: isOutOfSandbox ? resolvedPath : undefined
+    };
+  }
 
   /**
    * 异步执行删除路径。
@@ -150,13 +212,13 @@ export class MovePathTool implements NativeTool {
   readonly securityCategory = 'write';
 
   /** 工具的名称。 */
-  readonly name = ToolConstants.MOVE_PATH;
+  readonly name = 'movePath';
 
   /** 工具的 OpenAI Function Calling 声明定义。 */
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.MOVE_PATH,
+      name: 'movePath',
       description: "移动（重命名）文件或目录，支持跨卷移动并自动创建缺失的目标父级目录。",
       parameters: {
         type: "object",
@@ -174,6 +236,44 @@ export class MovePathTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查移动路径的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    loadWorkMode();
+    if (getWorkMode() === 'YOLO') {
+      return { status: 'pass' };
+    }
+    const sourcePath = args.sourcePath;
+    const destinationPath = args.destinationPath;
+    if (typeof sourcePath !== 'string' || typeof destinationPath !== 'string') {
+      return { status: 'deny', message: 'sourcePath 和 destinationPath 必须是字符串' };
+    }
+    let isOutOfSandbox = false;
+    let resolvedPath = '';
+    try {
+      secureResolveWritePath(sourcePath);
+      secureResolveWritePath(destinationPath);
+    } catch {
+      isOutOfSandbox = true;
+      const rootDir = getAuthorizedDir();
+      try {
+        secureResolveWritePath(sourcePath);
+        resolvedPath = getPhysicalRealPath(resolve(rootDir!, destinationPath));
+      } catch {
+        resolvedPath = getPhysicalRealPath(resolve(rootDir!, sourcePath));
+      }
+    }
+    return {
+      status: 'suspend',
+      message: `智能体试图将 "${sourcePath}" 移动至 "${destinationPath}"`,
+      targetPath: isOutOfSandbox ? resolvedPath : undefined
+    };
+  }
 
   /**
    * 执行路径移动。
@@ -230,13 +330,13 @@ export class CopyPathTool implements NativeTool {
   readonly securityCategory = 'write';
 
   /** 工具的名称。 */
-  readonly name = ToolConstants.COPY_PATH;
+  readonly name = 'copyPath';
 
   /** 工具的 OpenAI Function Calling 声明定义。 */
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.COPY_PATH,
+      name: 'copyPath',
       description: "复制文件或目录到新的位置，支持目录的递归复制。",
       parameters: {
         type: "object",
@@ -254,6 +354,44 @@ export class CopyPathTool implements NativeTool {
       }
     }
   };
+
+  /**
+   * 审查复制路径的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+    loadWorkMode();
+    if (getWorkMode() === 'YOLO') {
+      return { status: 'pass' };
+    }
+    const sourcePath = args.sourcePath;
+    const destinationPath = args.destinationPath;
+    if (typeof sourcePath !== 'string' || typeof destinationPath !== 'string') {
+      return { status: 'deny', message: 'sourcePath 和 destinationPath 必须是字符串' };
+    }
+    let isOutOfSandbox = false;
+    let resolvedPath = '';
+    try {
+      secureResolveReadPath(sourcePath);
+      secureResolveWritePath(destinationPath);
+    } catch {
+      isOutOfSandbox = true;
+      const rootDir = getAuthorizedDir();
+      try {
+        secureResolveReadPath(sourcePath);
+        resolvedPath = getPhysicalRealPath(resolve(rootDir!, destinationPath));
+      } catch {
+        resolvedPath = getPhysicalRealPath(resolve(rootDir!, sourcePath));
+      }
+    }
+    return {
+      status: 'suspend',
+      message: `智能体试图将 "${sourcePath}" 复制至 "${destinationPath}"`,
+      targetPath: isOutOfSandbox ? resolvedPath : undefined
+    };
+  }
 
   /**
    * 执行路径复制。

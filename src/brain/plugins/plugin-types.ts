@@ -109,3 +109,17 @@ export interface Plugin {
     [key in HookEventName]?: HookMiddleware;
   };
 }
+
+/**
+ * 工具安全校验结果契约接口。
+ */
+export interface SafetyCheckResult {
+  /** 安全核查状态：通过（pass）、挂起确认（suspend）或拒绝（deny） */
+  status: 'pass' | 'suspend' | 'deny';
+  /** 用于人机审批时向用户展示的警告提示信息 */
+  message?: string;
+  /** 终端工具特有，用于安全白名单持久化的匹配前缀 */
+  safePrefix?: string;
+  /** 文件工具特有，越界读写的物理目标路径 */
+  targetPath?: string;
+}

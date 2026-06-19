@@ -1,7 +1,6 @@
 import { execSync } from 'child_process';
-import { getAuthorizedDir } from './base.js';
-import type { NativeTool } from '../virtual-mcp.js';
-import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { getAuthorizedDir } from '../base.js';
+import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 
 /**
  * Git 状态查看工具类。
@@ -12,13 +11,13 @@ export class GitShowStatusTool implements NativeTool {
   readonly securityCategory = 'read';
 
   /** 工具的名称。 */
-  readonly name = ToolConstants.GIT_SHOW_STATUS;
+  readonly name = 'gitShowStatus';
 
   /** 工具的 OpenAI Function Calling 声明定义。 */
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.GIT_SHOW_STATUS,
+      name: 'gitShowStatus',
       description: "只读获取当前工作区内的 Git 状态。返回结构化的已修改、未跟踪、已删除等文件的相对路径列表 JSON。",
       parameters: {
         type: "object",
@@ -80,5 +79,15 @@ export class GitShowStatusTool implements NativeTool {
       const errorObj = err as { stderr?: string; message?: string };
       throw new Error(`获取 Git 状态失败：${errorObj.stderr || errorObj.message}`, { cause: err });
     }
+  }
+
+  /**
+   * 审查 Git 状态查看调用的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(): SafetyCheckResult {
+    return { status: 'pass' };
   }
 }

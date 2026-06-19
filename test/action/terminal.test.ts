@@ -14,8 +14,8 @@ import {
   setWorkMode,
   saveWorkMode,
   loadWorkMode
-} from '../../src/action/native-tools/terminal.js';
-import { validateCommand, validateCwd } from '../../src/action/native-tools/terminal-guard.js';
+} from '../../src/action/tools/system/terminal.js';
+import { validateCommand, validateCwd } from '../../src/action/tools/system/terminal-guard.js';
 
 describe('Terminal Tool 单元测试', () => {
   const mockRootDir = resolve('D:\\authorized\\path_terminal_test');

@@ -5,6 +5,7 @@
 
 import { resolve, sep, dirname } from 'path';
 import { realpathSync, existsSync } from 'fs';
+import { SecurityService } from '../../brain/services/SecurityService.js';
 
 /**
  * 授权工作区的绝对物理路径。
@@ -56,35 +57,13 @@ export function initWorkspace(rootDir: string): void {
   // 强制通过 getPhysicalRealPath 对工作区根目录进行符号链接展开与物理定位
   authorizedDir = getPhysicalRealPath(rootDir);
 }
-
-/** 内存缓存的临时只读绝对路径白名单。这些白名单由插件在 BeforeTool 拦截询问后注入。 */
-const temporaryReadWhitelist = new Set<string>();
-/** 内存缓存的临时可写绝对路径白名单。这些白名单由插件在 BeforeTool 拦截询问后注入。 */
-const temporaryWriteWhitelist = new Set<string>();
-
-/**
- * 将指定物理绝对路径加入临时只读白名单。
- * @param pathStr - 物理绝对路径
- */
-export function addTemporaryReadWhitelist(pathStr: string): void {
-  temporaryReadWhitelist.add(resolve(pathStr));
-}
-
-/**
- * 将指定物理绝对路径加入临时可写白名单。
- * @param pathStr - 物理绝对路径
- */
-export function addTemporaryWriteWhitelist(pathStr: string): void {
-  temporaryWriteWhitelist.add(resolve(pathStr));
-}
-
 /**
  * 检查指定路径是否已存在于临时只读白名单中。
  * @param pathStr - 待检查的物理路径
  * @returns 是否在白名单中
  */
 export function hasTemporaryReadWhitelist(pathStr: string): boolean {
-  return temporaryReadWhitelist.has(resolve(pathStr));
+  return SecurityService.getInstance().hasTemporaryReadWhitelist(pathStr);
 }
 
 /**
@@ -93,15 +72,7 @@ export function hasTemporaryReadWhitelist(pathStr: string): boolean {
  * @returns 是否在白名单中
  */
 export function hasTemporaryWriteWhitelist(pathStr: string): boolean {
-  return temporaryWriteWhitelist.has(resolve(pathStr));
-}
-
-/**
- * 清空内存中暂存的所有临时读写白名单。
- */
-export function clearTemporaryWhitelists(): void {
-  temporaryReadWhitelist.clear();
-  temporaryWriteWhitelist.clear();
+  return SecurityService.getInstance().hasTemporaryWriteWhitelist(pathStr);
 }
 
 /**
@@ -166,7 +137,7 @@ export function secureResolveReadPath(targetPath: string): string {
   const resolvedPath = getPhysicalRealPath(rawPath);
 
   // 1. 安全放行：如果目标物理路径已被临时授权加入只读白名单，直接放行
-  if (temporaryReadWhitelist.has(resolvedPath)) {
+  if (SecurityService.getInstance().hasTemporaryReadWhitelist(resolvedPath)) {
     return resolvedPath;
   }
 
@@ -195,7 +166,7 @@ export function secureResolveWritePath(targetPath: string): string {
   const resolvedPath = getPhysicalRealPath(rawPath);
 
   // 1. 安全放行：如果目标物理路径已被临时授权加入可写白名单，直接放行
-  if (temporaryWriteWhitelist.has(resolvedPath)) {
+  if (SecurityService.getInstance().hasTemporaryWriteWhitelist(resolvedPath)) {
     return resolvedPath;
   }
 

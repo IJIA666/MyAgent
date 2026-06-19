@@ -1,11 +1,11 @@
 /**
  * @file tools.ts
- * @description Action 层内置工具的统一导出入口。
- * 集中暴露各本地内置工具的多态类实现以及基座路径安全管理函数。
+ * @description Action 层内置原生工具的统一导出入口。
+ * 集中暴露重构后各 Feature 子包的原生工具类实现与沙箱物理路径验证函数。
  */
 
-export { initWorkspace, secureResolvePath, getAuthorizedDir } from './native-tools/base.js';
-export { ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool } from './native-tools/file-system.js';
-export { GrepSearchTool, GlobSearchTool } from './native-tools/search.js';
-export { ExecuteCommandTool } from './native-tools/terminal.js';
-export { LoadSkillTool } from './native-tools/skill.js';
+export { initWorkspace, secureResolvePath, getAuthorizedDir } from './tools/base.js';
+export { ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool } from './tools/filesystem/file-system.js';
+export { GrepSearchTool, GlobSearchTool } from './tools/filesystem/search.js';
+export { ExecuteCommandTool } from './tools/system/terminal.js';
+export { LoadSkillTool } from './tools/skill/skill.js';

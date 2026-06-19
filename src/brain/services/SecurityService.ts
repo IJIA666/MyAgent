@@ -75,4 +75,55 @@ export class SecurityService {
     }
     return this.securityAllowlist;
   }
+
+  // 内存缓存的临时只读绝对路径白名单
+  private temporaryReadWhitelist = new Set<string>();
+  // 内存缓存的临时可写绝对路径白名单
+  private temporaryWriteWhitelist = new Set<string>();
+
+  /**
+   * 将指定物理绝对路径加入临时只读白名单。
+   *
+   * @param pathStr - 物理绝对路径
+   */
+  public addTemporaryReadWhitelist(pathStr: string): void {
+    this.temporaryReadWhitelist.add(resolve(pathStr));
+  }
+
+  /**
+   * 将指定物理绝对路径加入临时可写白名单。
+   *
+   * @param pathStr - 物理绝对路径
+   */
+  public addTemporaryWriteWhitelist(pathStr: string): void {
+    this.temporaryWriteWhitelist.add(resolve(pathStr));
+  }
+
+  /**
+   * 检查指定路径是否已存在于临时只读白名单中。
+   *
+   * @param pathStr - 待检查的物理路径
+   * @returns 是否在白名单中
+   */
+  public hasTemporaryReadWhitelist(pathStr: string): boolean {
+    return this.temporaryReadWhitelist.has(resolve(pathStr));
+  }
+
+  /**
+   * 检查指定路径是否已存在于临时可写白名单中。
+   *
+   * @param pathStr - 待检查的物理路径
+   * @returns 是否在白名单中
+   */
+  public hasTemporaryWriteWhitelist(pathStr: string): boolean {
+    return this.temporaryWriteWhitelist.has(resolve(pathStr));
+  }
+
+  /**
+   * 清空内存中暂存的所有临时读写白名单。
+   */
+  public clearTemporaryWhitelists(): void {
+    this.temporaryReadWhitelist.clear();
+    this.temporaryWriteWhitelist.clear();
+  }
 }

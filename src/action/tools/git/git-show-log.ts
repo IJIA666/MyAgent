@@ -1,7 +1,6 @@
 import { execSync } from 'child_process';
-import { getAuthorizedDir } from './base.js';
-import type { NativeTool } from '../virtual-mcp.js';
-import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { getAuthorizedDir } from '../base.js';
+import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 
 /**
  * Git 提交日志查看工具类。
@@ -12,13 +11,13 @@ export class GitShowLogTool implements NativeTool {
   readonly securityCategory = 'read';
 
   /** 工具的名称。 */
-  readonly name = ToolConstants.GIT_SHOW_LOG;
+  readonly name = 'gitShowLog';
 
   /** 工具的 OpenAI Function Calling 声明定义。 */
   readonly definition = {
     type: "function" as const,
     function: {
-      name: ToolConstants.GIT_SHOW_LOG,
+      name: 'gitShowLog',
       description: "只读获取最近的 Git 提交日志摘要。用于帮助大模型掌握项目历史变更脉络。",
       parameters: {
         type: "object",
@@ -62,5 +61,15 @@ export class GitShowLogTool implements NativeTool {
       const errorObj = err as { stderr?: string; message?: string };
       throw new Error(`获取 Git 日志失败：${errorObj.stderr || errorObj.message}`, { cause: err });
     }
+  }
+
+  /**
+   * 审查 Git 提交日志查看调用的安全性。
+   *
+   * @param args - 工具调用参数字典
+   * @returns 安全评估结论
+   */
+  checkSafety(): SafetyCheckResult {
+    return { status: 'pass' };
   }
 }

@@ -8,14 +8,14 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { resolve, join } from 'path';
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { initWorkspace } from '../../src/action/tools.js';
-import { CreateDirectoryTool, DeletePathTool, MovePathTool, CopyPathTool } from '../../src/action/native-tools/directory-manager.js';
-import { ReadManyFilesTool } from '../../src/action/native-tools/read-many-files.js';
-import { ApplyPatchTool } from '../../src/action/native-tools/apply-patch.js';
-import { GitShowStatusTool } from '../../src/action/native-tools/git-show-status.js';
-import { GitShowDiffTool } from '../../src/action/native-tools/git-show-diff.js';
-import { GitShowLogTool } from '../../src/action/native-tools/git-show-log.js';
+import { CreateDirectoryTool, DeletePathTool, MovePathTool, CopyPathTool } from '../../src/action/tools/filesystem/directory-manager.js';
+import { ReadManyFilesTool } from '../../src/action/tools/filesystem/read-many-files.js';
+import { ApplyPatchTool } from '../../src/action/tools/filesystem/apply-patch.js';
+import { GitShowStatusTool } from '../../src/action/tools/git/git-show-status.js';
+import { GitShowDiffTool } from '../../src/action/tools/git/git-show-diff.js';
+import { GitShowLogTool } from '../../src/action/tools/git/git-show-log.js';
 import { ApprovalService } from '../../src/brain/services/ApprovalService.js';
-import { ReadFileTool } from '../../src/action/native-tools/file-system.js';
+import { ReadFileTool } from '../../src/action/tools/filesystem/file-system.js';
 
 describe('新增原生内置工具单元测试', () => {
   const testDir = resolve('./test_action_new_tools_temp');
