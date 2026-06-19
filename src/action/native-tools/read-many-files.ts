@@ -1,13 +1,17 @@
 import { existsSync, statSync, readFileSync } from 'fs';
 import { secureResolveReadPath } from './base.js';
 import type { NativeTool } from '../virtual-mcp.js';
-import { ToolConstants } from '../../common/constants.js';
+import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { extractFileOutline } from './read-many-files-helper.js';
 
 /**
  * 批量文件读取工具类。
  * 支持传入多个相对路径并行读取文件，内置最大体积熔断及拒签自适应返回大纲/首尾片段的降级机制。
  */
 export class ReadManyFilesTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'read';
+
   /** 工具的名称。 */
   readonly name = ToolConstants.READ_MANY_FILES;
 
@@ -94,49 +98,14 @@ export class ReadManyFilesTool implements NativeTool {
     if (totalChars > 50000) {
       const detailsList = filesData.map((fd) => {
         const lines = fd.content.split(/\r?\n/);
-        const totalLines = lines.length;
-
-        // 大纲提取逻辑
-        const ext = fd.relativePath.split('.').pop()?.toLowerCase();
-        const isCodeExt = ['ts', 'tsx', 'js', 'jsx', 'py', 'java', 'go', 'c', 'cpp', 'h', 'cs', 'rb', 'php', 'rs'].includes(ext || '');
-
-        let outlineType: 'regex_outline' | 'fallback_snippet';
-        let outlineContent: string;
-
-        if (isCodeExt) {
-          const matchedLines: string[] = [];
-          const codeKeywords = /^\s*(export\s+)?(class|interface|function|const|let|var|async\s+function|export\s+default)\b/;
-          
-          for (let i = 0; i < totalLines; i++) {
-            const line = lines[i];
-            if (codeKeywords.test(line)) {
-              matchedLines.push(`L${i + 1}: ${line.trim()}`);
-            }
-          }
-
-          if (matchedLines.length > 0) {
-            outlineType = 'regex_outline';
-            outlineContent = matchedLines.slice(0, 100).join('\n');
-            if (matchedLines.length > 100) {
-              outlineContent += `\n... (省略余下 ${matchedLines.length - 100} 个匹配项)`;
-            }
-          } else {
-            // 没有正则匹配行，降级首尾 20 行
-            outlineType = 'fallback_snippet';
-            outlineContent = this.getFallbackSnippet(lines);
-          }
-        } else {
-          // 非代码文件直接降级首尾 20 行
-          outlineType = 'fallback_snippet';
-          outlineContent = this.getFallbackSnippet(lines);
-        }
+        const { outlineType, outline } = extractFileOutline(fd.relativePath, fd.content);
 
         return {
           relativePath: fd.relativePath,
           sizeBytes: fd.size,
-          lineCount: totalLines,
+          lineCount: lines.length,
           outlineType,
-          outline: outlineContent
+          outline
         };
       });
 
@@ -155,21 +124,5 @@ export class ReadManyFilesTool implements NativeTool {
       resultText += `=== 文件: ${fd.relativePath} ===\n${fd.content}\n\n`;
     }
     return resultText;
-  }
-
-  /**
-   * 降级提取首尾各 20 行文本。
-   *
-   * @param lines - 文件所有行
-   * @returns 首尾行拼接成的摘要内容
-   */
-  private getFallbackSnippet(lines: string[]): string {
-    const total = lines.length;
-    if (total <= 40) {
-      return lines.join('\n');
-    }
-    const head = lines.slice(0, 20).join('\n');
-    const tail = lines.slice(-20).join('\n');
-    return `[前 20 行]\n${head}\n...\n[后 20 行]\n${tail}`;
   }
 }

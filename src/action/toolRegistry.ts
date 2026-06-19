@@ -1,4 +1,4 @@
-import { LocalFileSystemMcpServer } from './virtual-mcp.js';
+import { LocalFileSystemMcpServer, NativeTool } from './virtual-mcp.js';
 import { McpToolManager } from './mcp-client.js';
 
 /**
@@ -25,6 +25,16 @@ export class ToolRegistry {
     this.mcpManager = mcpManager;
     // 实例化本地文件系统的虚拟 MCP 服务
     this.localMcpServer = new LocalFileSystemMcpServer(options);
+  }
+
+  /**
+   * 根据工具名称获取本地内置的 NativeTool 实例。
+   *
+   * @param name - 工具名称
+   * @returns 工具实例，若未找到则返回 undefined
+   */
+  public getTool(name: string): NativeTool | undefined {
+    return this.localMcpServer.getTool(name);
   }
 
   /**

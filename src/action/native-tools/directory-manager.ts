@@ -1,39 +1,18 @@
-import { mkdirSync, existsSync, statSync, rmSync, readdirSync, copyFileSync, renameSync } from 'fs';
-import { dirname, join } from 'path';
+import { mkdirSync, existsSync, statSync, rmSync, renameSync } from 'fs';
+import { dirname } from 'path';
 import { secureResolveWritePath, secureResolveReadPath } from './base.js';
 import type { NativeTool } from '../virtual-mcp.js';
-import { ToolConstants } from '../../common/constants.js';
-
-/**
- * 递归复制文件或目录的辅助函数。
- * 
- * @param src - 源物理绝对路径
- * @param dest - 目标物理绝对路径
- */
-function copyRecursiveSync(src: string, dest: string): void {
-  const stats = statSync(src);
-  if (stats.isDirectory()) {
-    if (!existsSync(dest)) {
-      mkdirSync(dest, { recursive: true });
-    }
-    const children = readdirSync(src);
-    for (const child of children) {
-      copyRecursiveSync(join(src, child), join(dest, child));
-    }
-  } else {
-    const parentDir = dirname(dest);
-    if (!existsSync(parentDir)) {
-      mkdirSync(parentDir, { recursive: true });
-    }
-    copyFileSync(src, dest);
-  }
-}
+import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { copyRecursiveSync } from './directory-manager-helper.js';
 
 /**
  * 目录创建工具类。
  * 底层调用 fs.mkdirSync 原生递归创建多级文件夹，以支持跨平台一致性。
  */
 export class CreateDirectoryTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'write';
+
   /** 工具的名称。 */
   readonly name = ToolConstants.CREATE_DIRECTORY;
 
@@ -89,6 +68,9 @@ export class CreateDirectoryTool implements NativeTool {
  * 用于安全删除指定的文件或目录，支持在底层接入 ApprovalService 确权拦截机制。
  */
 export class DeletePathTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'write';
+
   /** 工具的名称。 */
   readonly name = ToolConstants.DELETE_PATH;
 
@@ -164,6 +146,9 @@ export class DeletePathTool implements NativeTool {
  * 原生实现文件或目录的移动转移，磨平跨卷/设备移动的平台限制，自动创建目标父目录。
  */
 export class MovePathTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'write';
+
   /** 工具的名称。 */
   readonly name = ToolConstants.MOVE_PATH;
 
@@ -241,6 +226,9 @@ export class MovePathTool implements NativeTool {
  * 原生实现文件或目录的复制，支持递归复制目录并自动创建目标父目录。
  */
 export class CopyPathTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'write';
+
   /** 工具的名称。 */
   readonly name = ToolConstants.COPY_PATH;
 

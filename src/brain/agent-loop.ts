@@ -314,7 +314,7 @@ export class AgentLoop {
                 HookEventName.BeforeTool,
                 this.context,
                 this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeTool),
-                { toolCall: { name: functionName, arguments: functionArgs }, emitEvent }
+                { toolCall: { name: functionName, arguments: functionArgs }, emitEvent, toolRegistry: this.toolRegistry }
               );
               while (eventQueue.length > 0) {
                 yield eventQueue.shift()!;

@@ -1,13 +1,16 @@
 import { execSync } from 'child_process';
 import { getAuthorizedDir, secureResolveReadPath } from './base.js';
 import type { NativeTool } from '../virtual-mcp.js';
-import { ToolConstants } from '../../common/constants.js';
+import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
 
 /**
  * Git 差异查看工具类。
  * 只读拉取工作区内的增量 Diff 结果并过滤 ANSI 颜色转义标记。
  */
 export class GitShowDiffTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'read';
+
   /** 工具的名称。 */
   readonly name = ToolConstants.GIT_SHOW_DIFF;
 

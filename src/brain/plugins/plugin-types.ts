@@ -49,6 +49,8 @@ export interface HookControl {
 export interface HookContext {
   /** 当前智能体会话的 SessionContext */
   sessionContext: SessionContext;
+  /** 当前系统的工具注册管理台 */
+  toolRegistry?: unknown;
   /** 当前触发的生命周期 Hook 事件名 */
   eventName: HookEventName;
   /** 大模型的请求配置项（ 仅在 BeforeModel / BeforeToolSelection 中存在，允许被就地修改 ） */

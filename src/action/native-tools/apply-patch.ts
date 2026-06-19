@@ -3,13 +3,17 @@ import { applyPatch } from 'diff';
 import { secureResolveWritePath } from './base.js';
 import { ReadFileTool } from './file-system.js';
 import type { NativeTool } from '../virtual-mcp.js';
-import { ToolConstants } from '../../common/constants.js';
+import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
+import { applyReplacePatch } from './apply-patch-helper.js';
 
 /**
  * 局部补丁修补与特征对齐替换工具类。
  * 支持严格 Unified Diff 补丁修补以及基于期望上下文签名特征滑动窗口对齐块替换的双轨控制。
  */
 export class ApplyPatchTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'write';
+
   /** 工具的名称。 */
   readonly name = ToolConstants.APPLY_PATCH;
 
@@ -98,59 +102,20 @@ export class ApplyPatchTool implements NativeTool {
     } else {
       // replace 块模式
       const expectedContent = args.expectedContent;
-      if (typeof expectedContent !== 'string' || !expectedContent.trim()) {
-        throw new Error("在 'replace' 模式下，必须提供有意义的 expectedContent 期望原文行特征签名。");
+      if (typeof expectedContent !== 'string') {
+        throw new Error("在 'replace' 模式下，expectedContent 必须是字符串。");
       }
 
-      const fileLines = fileContent.split(/\r?\n/);
-      const totalLines = fileLines.length;
-
-      const start = typeof args.startLine === 'number' ? Math.max(1, args.startLine) : 1;
-      const end = typeof args.endLine === 'number' ? Math.min(totalLines, args.endLine) : totalLines;
-
-      // 在行号 [start, end] 的邻域（上下 50 行）进行特征查找以抵抗漂移
-      const searchStart = Math.max(1, start - 50);
-      const searchEnd = Math.min(totalLines, end + 50);
-
-      const expectedLines = expectedContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-      if (expectedLines.length === 0) {
-        throw new Error("expectedContent 不能全为空格或空行。");
-      }
-
-      const matchIndices: number[] = [];
-      const N = expectedLines.length;
-
-      // 在搜索行号范围内滑动匹配特征行签名（忽略前导和尾随空格）
-      for (let i = searchStart - 1; i <= searchEnd - N; i++) {
-        let isMatch = true;
-        for (let j = 0; j < N; j++) {
-          if (fileLines[i + j].trim() !== expectedLines[j]) {
-            isMatch = false;
-            break;
-          }
-        }
-        if (isMatch) {
-          matchIndices.push(i);
-        }
-      }
-
-      if (matchIndices.length === 0) {
-        throw new Error(`在搜寻行号范围 [${searchStart}, ${searchEnd}] 内，未匹配到 expectedContent 的特征签名行。请提供更多正确的原文特征或拓宽 startLine/endLine 检索边界。`);
-      }
-
-      if (matchIndices.length > 1) {
-        throw new Error(`在搜寻行号范围 [${searchStart}, ${searchEnd}] 内，匹配到了多于 1 处 (${matchIndices.length} 处) 的 expectedContent 特征，位置无法唯一对齐。请提供更长的唯一上下文签名，或者收紧 startLine/endLine 检索边界。`);
-      }
-
-      const targetIndex = matchIndices[0];
-      const newContentLines = [
-        ...fileLines.slice(0, targetIndex),
+      const { newContent, matchedLine, matchedLinesCount } = applyReplacePatch({
+        fileContent,
         patchContent,
-        ...fileLines.slice(targetIndex + N)
-      ];
+        expectedContent,
+        startLine: typeof args.startLine === 'number' ? args.startLine : undefined,
+        endLine: typeof args.endLine === 'number' ? args.endLine : undefined
+      });
 
-      writeFileSync(safePath, newContentLines.join('\n'), 'utf-8');
-      return `通过特征签名对齐块替换成功："${targetPath}"，替换了从第 ${targetIndex + 1} 行开始的 ${N} 行内容。`;
+      writeFileSync(safePath, newContent, 'utf-8');
+      return `通过特征签名对齐块替换成功："${targetPath}"，替换了从第 ${matchedLine} 行开始的 ${matchedLinesCount} 行内容。`;
     }
   }
 }

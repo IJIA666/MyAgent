@@ -7,13 +7,16 @@ import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, readdirSy
 import { dirname } from 'path';
 import { secureResolveReadPath, secureResolveWritePath } from './base.js';
 import type { NativeTool } from '../virtual-mcp.js';
-import { ToolConstants } from '../../common/constants.js';
+import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
 
 /**
  * 文件读取工具类。
  * 实现了 NativeTool 契约，支持可选的行范围分页读取，用以精确精读局部代码片段。
  */
 export class ReadFileTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'read';
+
   /**
    * 记录读取快照的内存字典，用于实现基于 mtime 的缓存拦截去重机制。
    */
@@ -126,6 +129,9 @@ export class ReadFileTool implements NativeTool {
  * 仅用于创建新节点或必须进行全文件覆盖的场景。
  */
 export class WriteFileTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'write';
+
   /**
    * 工具的名称。
    */
@@ -193,6 +199,9 @@ export class WriteFileTool implements NativeTool {
  * 用于在不覆盖整个文件的情况下修改指定的代码段，这是修改已有文件的首选和最佳途径。
  */
 export class EditFileTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'write';
+
   /**
    * 工具的名称。
    */
@@ -307,6 +316,9 @@ export class EditFileTool implements NativeTool {
  * 提供获取授权沙箱内指定目录浅层列表清单的能力。
  */
 export class ListFilesTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'read';
+
   /**
    * 工具的名称。
    */

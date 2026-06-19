@@ -15,6 +15,11 @@ import { GitShowLogTool } from './native-tools/git-show-log.js';
  */
 export interface NativeTool {
   /**
+   * 工具的安全类别，标示是只读（'read'）还是写入/高危操作（'write'）。
+   */
+  readonly securityCategory: 'read' | 'write';
+
+  /**
    * 工具的名称，作为检索和分发的唯一标识。
    */
   readonly name: string;
@@ -101,6 +106,16 @@ export class LocalFileSystemMcpServer {
    */
   register(tool: NativeTool): void {
     this.toolsMap.set(tool.name, tool);
+  }
+
+  /**
+   * 根据工具名称获取 NativeTool 实例。
+   *
+   * @param name - 工具名称
+   * @returns 工具实例，若未找到则返回 undefined
+   */
+  getTool(name: string): NativeTool | undefined {
+    return this.toolsMap.get(name);
   }
 
   /**

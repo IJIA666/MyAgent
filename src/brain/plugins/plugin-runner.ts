@@ -55,7 +55,7 @@ export async function runHookPipeline(
   eventName: HookEventName,
   sessionContext: SessionContext,
   middlewares: HookMiddleware[],
-  extraParams?: Partial<Pick<HookContext, 'llmRequest' | 'llmResponse' | 'toolCall' | 'toolResult' | 'emitEvent'>>
+  extraParams?: Partial<Pick<HookContext, 'llmRequest' | 'llmResponse' | 'toolCall' | 'toolResult' | 'emitEvent' | 'toolRegistry'>>
 ): Promise<HookContext> {
   // 1. 装配外层基础 Context，初始化控制信号为 continue
   const context: HookContext = {
@@ -119,6 +119,7 @@ export async function runHookPipeline(
     llmResponse: draft.llmResponse,
     toolCall: draft.toolCall,
     toolResult: draft.toolResult,
+    toolRegistry: context.toolRegistry,
     control: context.control, // 共享同一个控制信号引用
     emitEvent: context.emitEvent
   };

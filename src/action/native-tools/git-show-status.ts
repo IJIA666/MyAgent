@@ -1,13 +1,16 @@
 import { execSync } from 'child_process';
 import { getAuthorizedDir } from './base.js';
 import type { NativeTool } from '../virtual-mcp.js';
-import { ToolConstants } from '../../common/constants.js';
+import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
 
 /**
  * Git 状态查看工具类。
  * 原生抓取工作区内的 Git 状态变化，将未跟踪、已修改等文件相对路径以结构化 JSON 数据返回。
  */
 export class GitShowStatusTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'read';
+
   /** 工具的名称。 */
   readonly name = ToolConstants.GIT_SHOW_STATUS;
 

@@ -6,13 +6,16 @@
 import { validateCommand, validateCwd } from './terminal-guard.js';
 import { runCommandEngine } from './terminal-engine.js';
 import type { NativeTool } from '../virtual-mcp.js';
-import { ToolConstants } from '../../common/constants.js';
+import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
 
 /**
  * 终端指令执行工具类。
  * 实现了 NativeTool 契约，支持在受限的工作区沙箱内执行原子终端命令。
  */
 export class ExecuteCommandTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'write';
+
   /**
    * 工具的名称。
    */

@@ -1,13 +1,16 @@
 import { execSync } from 'child_process';
 import { getAuthorizedDir } from './base.js';
 import type { NativeTool } from '../virtual-mcp.js';
-import { ToolConstants } from '../../common/constants.js';
+import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
 
 /**
  * Git 提交日志查看工具类。
  * 只读拉取最近的 commit 日志汇总，用于大模型梳理项目重构与提交脉络。
  */
 export class GitShowLogTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'read';
+
   /** 工具的名称。 */
   readonly name = ToolConstants.GIT_SHOW_LOG;
 

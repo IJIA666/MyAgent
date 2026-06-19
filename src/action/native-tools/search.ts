@@ -7,7 +7,7 @@ import { resolve, basename, relative } from 'path';
 import { existsSync, statSync, readdirSync, openSync, readSync, closeSync, readFileSync } from 'fs';
 import { secureResolvePath, getAuthorizedDir } from './base.js';
 import type { NativeTool } from '../virtual-mcp.js';
-import { ToolConstants } from '../../common/constants.js';
+import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
 
 /** 递归扫描指定目录下的所有文件（自动排除无用及隐藏文件夹） */
 function scanDir(dir: string, fileList: string[] = []): string[] {
@@ -61,6 +61,9 @@ function globToRegex(glob: string): RegExp {
  * 实现了 NativeTool 契约，自动拦截二进制文件并隔离沙箱范围。
  */
 export class GrepSearchTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'read';
+
   /**
    * 工具的名称。
    */
@@ -220,6 +223,9 @@ export class GrepSearchTool implements NativeTool {
  * 实现了 NativeTool 契约，基于通配符快速过滤工作区中的文件路径。
  */
 export class GlobSearchTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'read';
+
   /**
    * 工具的名称。
    */

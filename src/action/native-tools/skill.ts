@@ -1,13 +1,16 @@
 import type { NativeTool } from '../virtual-mcp.js';
-import { ToolConstants } from '../../common/constants.js';
+import { NativeToolNames as ToolConstants } from '../constants/native-tool-names.js';
 
 /**
  * 扩展技能拉取工具类。
  * 实现了 NativeTool 契约，支持动态按需加载系统提供的 Markdown 格式技能文档。
  */
 export class LoadSkillTool implements NativeTool {
+  /** 工具的安全类别。 */
+  readonly securityCategory = 'read';
+
   /**
-   * 工具的名称。
+   * 工具的名称.
    */
   readonly name = ToolConstants.LOAD_SKILL;
 
