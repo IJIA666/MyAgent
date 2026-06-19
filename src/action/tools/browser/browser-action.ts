@@ -819,6 +819,9 @@ export class BrowserEnsureLoginTool implements NativeTool {
       const currentUrl = page.url();
       console.log('\n[人机协作] 正在以有头窗口重新调起浏览器，请稍候...');
       
+      // 必须显式关闭当前无头实例，以释放物理锁并清理旧缓存，确保下一次 getPage 正常触发 launch 新实例
+      await BrowserSession.closeTenant(tenantId);
+      
       // 临时开启有头模式
       process.env.BROWSER_HEADLESS = 'false';
       page = await BrowserSession.getPage(undefined, tenantId);

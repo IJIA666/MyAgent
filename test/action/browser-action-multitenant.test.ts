@@ -6,7 +6,8 @@ import { BrowserContext, Page } from 'playwright';
 import { SessionContext } from '../../src/brain/context.js';
 import {
   BrowserSession,
-  generateAriaSnapshot
+  generateAriaSnapshot,
+  BrowserEnsureLoginTool
 } from '../../src/action/tools/browser/browser-action.js';
 
 describe('BrowserSession 多租户隔离集成测试', () => {
@@ -22,6 +23,7 @@ describe('BrowserSession 多租户隔离集成测试', () => {
     await BrowserSession.closeTenant('tenant-a', false);
     await BrowserSession.closeTenant('tenant-b', false);
     await BrowserSession.closeTenant('tenant-temp', false);
+    await BrowserSession.closeTenant('tenant-login', false);
     await BrowserSession.close();
 
     // 清理环境变量
@@ -141,5 +143,62 @@ describe('BrowserSession 多租户隔离集成测试', () => {
     // 还原 process 全局属性
     onSpy.mockRestore();
     exitSpy.mockRestore();
+  });
+
+  /**
+   * 验证人机协作模式下的浏览器实例重建逻辑。
+   * 确保无头模式切换至有头模式时，旧的无头实例能被安全关闭，释放物理锁，并成功以有头模式重建页面。
+   */
+  test('人机协作登录重建：在无头模式下触发确保登录时，应成功关闭无头实例并以有头模式重建页面', async () => {
+    // 1. 设置无头模式环境变量
+    process.env.BROWSER_HEADLESS = 'true';
+
+    // 2. 模拟人机协作用户输入回调，防止 readline 阻塞测试执行
+    const mockHandler = vi.fn().mockResolvedValue(undefined);
+    BrowserSession.userInterventionHandler = mockHandler;
+
+    // 3. 监视 closeTenant 方法的调用
+    const closeTenantSpy = vi.spyOn(BrowserSession, 'closeTenant');
+
+    const tenantId = 'tenant-login';
+    const ctx = new SessionContext('session-login', tenantId);
+
+    try {
+      // 4. 首先拉起无头环境下的页面
+      const pageOld = await BrowserSession.getPage(undefined, tenantId);
+      expect(pageOld).toBeDefined();
+      expect(pageOld.isClosed()).toBe(false);
+
+      // 设置一些 mock 内容以验证页面交互
+      await pageOld.setContent('<html><body><button id="auth">Require Login</button></body></html>');
+
+      // 5. 实例化并执行人机协作登录工具
+      const tool = new BrowserEnsureLoginTool();
+      const result = await tool.execute({ reason: '测试人机验证' }, ctx);
+
+      // 6. 断言 closeTenant 确实以正确的租户 ID 被调用过
+      expect(closeTenantSpy).toHaveBeenCalledWith(tenantId);
+
+      // 7. 断言原先的无头页面实例已经被关闭
+      expect(pageOld.isClosed()).toBe(true);
+
+      // 8. 获取最新的页面实例，验证其已重建且处于活跃状态
+      const pageNew = await BrowserSession.getPage(undefined, tenantId);
+      expect(pageNew).toBeDefined();
+      expect(pageNew.isClosed()).toBe(false);
+      expect(pageNew).not.toBe(pageOld); // 应当是全新实例
+
+      // 9. 验证环境变量已被正确恢复（因为 execute 中是直接 delete）
+      expect(process.env.BROWSER_HEADLESS).toBeUndefined();
+
+      // 10. 验证协作回调确实被触发了
+      expect(mockHandler).toHaveBeenCalled();
+      expect(result).toBeDefined();
+    } finally {
+      // 清理 mock 与测试资源
+      closeTenantSpy.mockRestore();
+      BrowserSession.userInterventionHandler = null;
+      await BrowserSession.closeTenant(tenantId, false);
+    }
   });
 });
