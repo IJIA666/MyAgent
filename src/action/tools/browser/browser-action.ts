@@ -861,3 +861,86 @@ export class BrowserEnsureLoginTool implements NativeTool {
     return snapshot;
   }
 }
+
+/**
+ * 网页文本内容提取工具类。
+ * 针对 SPA 页面或无交互元素的纯展示页面，直接提取指定选择器（默认 body）下的可见纯文本，
+ * 能够自动过滤 script、style 以及隐藏的 HTML 节点，防止智能体“全盲”。
+ */
+export class BrowserGetTextTool implements NativeTool {
+  readonly securityCategory = 'read';
+  readonly name = 'browser_get_text';
+  readonly definition = {
+    type: "function" as const,
+    function: {
+      name: 'browser_get_text',
+      description: "提取当前网页中匹配指定 CSS 选择器的所有可见文本内容。会自动过滤 <script>、<style>、<noscript>、<svg> 等不包含实际可读内容的标签，以及被 CSS 规则隐藏的文本。若需阅读网页整篇文章或列表，请务必传入精确的 CSS Selector（如 '.article-content', '.list-items'）！只有在完全无法定位正文区域时，才允许不传选择器（默认提取全页面 body，风险极高且会消耗大量 Token）。调用此工具前必须已调用 browser_navigate。",
+      parameters: {
+        type: "object",
+        properties: {
+          selector: {
+            type: "string",
+            description: "CSS 选择器。例如 '.chat-message'、'article'。若不传，则默认提取整个页面 'body'。"
+          }
+        }
+      }
+    }
+  };
+
+  /**
+   * 审查网页文本提取操作的安全性。
+   * 只读工具，直接安全放行。
+   *
+   * @param _args - 工具参数字典
+   * @returns 安全审查结论
+   */
+  checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
+    void _args;
+    return { status: 'pass' };
+  }
+
+  /**
+   * 执行网页可见纯文本的提取。
+   *
+   * @param args - 参数字典，可包含可选的 selector
+   * @param sessionContext - 可选的会话上下文
+   * @returns 提取并降噪拼接后的文本字符串（硬截断最大 80,000 字符）
+   */
+  async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
+    const selector = typeof args.selector === 'string' ? args.selector : 'body';
+    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const page = await BrowserSession.getPage(undefined, tenantId);
+
+    // 1. 查找所有匹配选择器的可见元素列表
+    const locators = await page.locator(selector).all();
+    if (locators.length === 0) {
+      throw new Error(`未在页面上找到匹配选择器 "${selector}" 的元素`);
+    }
+
+    const texts: string[] = [];
+
+    // 2. 遍历各元素，先验证可见性再提取 innerText 以防范隐藏节点，防范严格模式冲突
+    for (const loc of locators) {
+      try {
+        // 显式过滤掉被 CSS 隐藏或 bounding box 为 0 的元素
+        if (!(await loc.isVisible())) {
+          continue;
+        }
+        const text = await loc.innerText();
+        const trimmed = text.trim();
+        if (trimmed) {
+          // 压缩元素内部多余的空行，将其折叠至最多双换行，节省大模型 Token
+          const collapsed = trimmed.replace(/\n{3,}/g, '\n\n');
+          texts.push(collapsed);
+        }
+      } catch {
+        // 忽略可能存在的个别元素失效
+      }
+    }
+
+    const mergedText = texts.join('\n\n').trim();
+
+    // 3. 引入物理长度截断防御，限制最终载荷长度，并返回结果
+    return mergedText.slice(0, 80000) || '（该元素中未提取到任何可见文本）';
+  }
+}

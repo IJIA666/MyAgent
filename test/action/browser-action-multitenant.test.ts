@@ -7,7 +7,8 @@ import { SessionContext } from '../../src/brain/context.js';
 import {
   BrowserSession,
   generateAriaSnapshot,
-  BrowserEnsureLoginTool
+  BrowserEnsureLoginTool,
+  BrowserGetTextTool
 } from '../../src/action/tools/browser/browser-action.js';
 
 describe('BrowserSession 多租户隔离集成测试', () => {
@@ -198,6 +199,73 @@ describe('BrowserSession 多租户隔离集成测试', () => {
       // 清理 mock 与测试资源
       closeTenantSpy.mockRestore();
       BrowserSession.userInterventionHandler = null;
+      await BrowserSession.closeTenant(tenantId, false);
+    }
+  });
+
+  test('BrowserGetTextTool 基础网页文本提取功能', async () => {
+    const tenantId = 'tenant-temp';
+    const ctx = new SessionContext('session-temp', tenantId);
+    const tool = new BrowserGetTextTool();
+
+    try {
+      const page = await BrowserSession.getPage(undefined, tenantId);
+      
+      // 设定包含 script, style, display:none 及多个匹配节点的 HTML
+      await page.setContent(`
+        <html>
+          <head>
+            <style>.hidden { display: none; } p { color: red; }</style>
+            <script>console.log("noisy script");</script>
+          </head>
+          <body>
+            <div class="content">第一段内容</div>
+            <div class="content hidden">不可见隐藏内容</div>
+            <div class="content">第二段内容</div>
+            <span>行内干扰项</span>
+          </body>
+        </html>
+      `);
+
+      // 1. 测试指定 selector 提取并规避严格模式冲突和剔除隐藏元素
+      const result1 = await tool.execute({ selector: '.content' }, ctx);
+      expect(result1).toContain('第一段内容');
+      expect(result1).toContain('第二段内容');
+      expect(result1).not.toContain('不可见隐藏内容');
+      expect(result1).toBe('第一段内容\n\n第二段内容');
+
+      // 2. 测试默认无参数提取整个 body 并排除 script/style 噪声
+      const result2 = await tool.execute({}, ctx);
+      expect(result2).toContain('第一段内容');
+      expect(result2).toContain('第二段内容');
+      expect(result2).toContain('行内干扰项');
+      expect(result2).not.toContain('noisy script');
+
+      // 3. 测试选择器匹配不存在时抛出异常报错
+      await expect(tool.execute({ selector: '.non-existent' }, ctx)).rejects.toThrow(
+        '未在页面上找到匹配选择器 ".non-existent" 的元素'
+      );
+    } finally {
+      await BrowserSession.closeTenant(tenantId, false);
+    }
+  });
+
+  test('BrowserGetTextTool 硬截断防护机制', async () => {
+    const tenantId = 'tenant-temp';
+    const ctx = new SessionContext('session-temp', tenantId);
+    const tool = new BrowserGetTextTool();
+
+    try {
+      const page = await BrowserSession.getPage(undefined, tenantId);
+
+      // 构造一个巨型文本（超过 80,000 字符）
+      const largeText = 'A'.repeat(90000);
+      await page.setContent(`<html><body><div id="large">${largeText}</div></body></html>`);
+
+      const result = await tool.execute({ selector: '#large' }, ctx);
+      expect(result.length).toBe(80000);
+      expect(result).toBe('A'.repeat(80000));
+    } finally {
       await BrowserSession.closeTenant(tenantId, false);
     }
   });

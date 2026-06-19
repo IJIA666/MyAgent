@@ -11,7 +11,8 @@ import {
   BrowserBackTool,
   BrowserPressTool,
   BrowserVisionTool,
-  BrowserEnsureLoginTool
+  BrowserEnsureLoginTool,
+  BrowserGetTextTool
 } from './tools/browser/browser-action.js';
 export type { SafetyCheckResult };
 
@@ -109,7 +110,8 @@ export class LocalFileSystemMcpServer {
       new BrowserBackTool(),
       new BrowserPressTool(),
       new BrowserVisionTool(),
-      new BrowserEnsureLoginTool()
+      new BrowserEnsureLoginTool(),
+      new BrowserGetTextTool()
     ];
 
     // 循环迭代注册到本地虚拟服务器中
