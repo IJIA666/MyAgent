@@ -182,14 +182,14 @@ describe('BrowserSession 多租户隔离集成测试', () => {
       // 7. 断言原先的无头页面实例已经被关闭
       expect(pageOld.isClosed()).toBe(true);
 
-      // 8. 获取最新的页面实例，验证其已重建且处于活跃状态
+      // 8. 重新获取页面实例，验证由于有头已被关闭，此时会重新以已还原的无头环境配置拉起全新实例且处于活跃状态
       const pageNew = await BrowserSession.getPage(undefined, tenantId);
       expect(pageNew).toBeDefined();
       expect(pageNew.isClosed()).toBe(false);
       expect(pageNew).not.toBe(pageOld); // 应当是全新实例
 
-      // 9. 验证环境变量已被正确恢复（因为 execute 中是直接 delete）
-      expect(process.env.BROWSER_HEADLESS).toBeUndefined();
+      // 9. 验证环境变量已被精准恢复为原始的 'true' 配置
+      expect(process.env.BROWSER_HEADLESS).toBe('true');
 
       // 10. 验证协作回调确实被触发了
       expect(mockHandler).toHaveBeenCalled();

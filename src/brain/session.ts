@@ -36,7 +36,7 @@ export class SessionManager {
   /** 会话的跟踪记录仪，负责日志落盘 */
   private tracer: AgentTracer;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
-  private maxIterations = 10;
+  private maxIterations = 20;
   /** 本地会话的上下文与状态存储 */
   private context: SessionContext;
   /** 大语言模型的核心驱动模块 */
@@ -92,7 +92,7 @@ export class SessionManager {
     this.contextRepo = new ContextRepository(this.context);
     this.toolDispatcher = new ToolDispatcher(this.context);
     this.compactionService = new CompactionService(this.context, this.driver, this.contextRepo);
-    
+
     // 初始化并注册拦截插件
     this.pluginRegistry = new PluginRegistry();
     this.pluginRegistry.register(new TokenWatermarkPlugin(this.compactionService, estimator, () => this.llmConfig));

@@ -807,6 +807,9 @@ export class BrowserEnsureLoginTool implements NativeTool {
     const reason = typeof args.reason === 'string' ? args.reason : '检测到需要人机登录验证';
     const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
     
+    // 备份 process.env.BROWSER_HEADLESS 的原始状态，用于非破坏性还原
+    const originalHeadless = process.env.BROWSER_HEADLESS;
+
     // 1. 获取当前页面实例
     let page = await BrowserSession.getPage(undefined, tenantId);
 
@@ -840,12 +843,21 @@ export class BrowserEnsureLoginTool implements NativeTool {
       await waitUserIntervention(promptMsg);
     }
 
-    // 4. 恢复 headless 原始配置（如果之前有临时更改的话）
+    // 4. 阻塞释放后，由于接下来要关闭该有头页面，我们先在此处获取最新的 ARIA 快照
+    const snapshot = await generateAriaSnapshot(page);
+
+    // 5. 恢复 headless 原始配置并优雅关闭有头页面，以防其常驻缓存，确保切回后台无头静默运行
     if (isHeadless && !cdpUrl) {
-      delete process.env.BROWSER_HEADLESS;
+      if (originalHeadless !== undefined) {
+        process.env.BROWSER_HEADLESS = originalHeadless;
+      } else {
+        delete process.env.BROWSER_HEADLESS;
+      }
+
+      // 再次显式关闭并销毁协作期间创建的有头实例，解开物理磁盘锁，清除缓存
+      await BrowserSession.closeTenant(tenantId);
     }
 
-    // 5. 阻塞释放后，刷新并生成最新快照返回给智能体
-    return await generateAriaSnapshot(page);
+    return snapshot;
   }
 }

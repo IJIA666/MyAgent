@@ -82,6 +82,11 @@ export class InputListener {
   public start(): void {
     this.isPaused = false;
     try {
+      // 在恢复或启动时，如果有被 pause 挂起的流，显式执行 resume 唤醒以恢复正常读取
+      const stream = this.inputStream as unknown as { resume?: () => void };
+      if (typeof stream.resume === 'function') {
+        stream.resume();
+      }
       // 在创建新 readline 之前，同步排空物理输入流中所有积压的数据，防止重建后的积压数据溢出
       while (this.inputStream.read() !== null);
     } catch {
@@ -166,6 +171,11 @@ export class InputListener {
    */
   public resume(): void {
     try {
+      // 恢复监听前，若流被 pause 挂起，显式执行 resume 唤醒
+      const stream = this.inputStream as unknown as { resume?: () => void };
+      if (typeof stream.resume === 'function') {
+        stream.resume();
+      }
       // 在恢复监听之前，物理同步排空流中所有挂起期间意外积压的垃圾输入，以保持缓冲区物理洁净
       while (this.inputStream.read() !== null);
     } catch {

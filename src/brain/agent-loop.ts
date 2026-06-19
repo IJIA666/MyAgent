@@ -107,7 +107,7 @@ export class AgentLoop {
     this.toolDispatcher = options.toolDispatcher;
     this.compactionService = options.compactionService;
     this.pluginRegistry = options.pluginRegistry;
-    this.maxIterations = options.maxIterations ?? 10;
+    this.maxIterations = options.maxIterations ?? 20;
   }
 
   /**
