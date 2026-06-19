@@ -338,7 +338,7 @@ export class AgentLoop {
 
               let toolResult = '';
               try {
-                const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs);
+                const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs, this.context);
                 const rawResult = JSON.stringify(mcpResult);
                 toolResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
               } catch (toolError: unknown) {
@@ -376,7 +376,7 @@ export class AgentLoop {
                 const tailCall = afterToolResult.tailToolCallRequest;
                 yield { type: 'thinking', content: `[尾随调用] 插件触发尾随工具链调用: ${tailCall.name}` };
                 try {
-                  const tailResultRaw = await this.toolRegistry.callTool(tailCall.name, tailCall.args);
+                  const tailResultRaw = await this.toolRegistry.callTool(tailCall.name, tailCall.args, this.context);
                   finalToolCalls[i].result = JSON.stringify(tailResultRaw);
                 } catch (tailError: unknown) {
                   const errorMsg = tailError instanceof Error ? tailError.message : String(tailError);

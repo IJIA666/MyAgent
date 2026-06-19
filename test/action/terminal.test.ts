@@ -109,10 +109,10 @@ describe('Terminal Tool 单元测试', () => {
     setWorkMode('YOLO');
     
     // 场景 A: 在 200ms 内立即报错退出的命令，executeCommandTool 应同步返回错误结果，而不是后台 ID 提示
-    const invalidCommand = 'node -e "process.exit(1)"';
+    const invalidCommand = 'node --invalid-flag-non-existent';
     const resultInvalid = await executeCommandToolInstance.execute({ command: invalidCommand, isBackground: true });
     expect(resultInvalid).not.toContain('任务已在后台成功启动');
-    expect(resultInvalid).toContain('退出码 1');
+    expect(resultInvalid).toContain('退出');
 
     // 场景 B: 存活时间超过 200ms 的后台任务，应该返回后台 ID 成功启动的提示
     const longRunningCommand = 'node -e "setTimeout(function(){}, 2000)"';

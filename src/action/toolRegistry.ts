@@ -58,7 +58,11 @@ export class ToolRegistry {
    * @returns 工具执行完毕后返回的序列化/结构化数据
    * @throws 当指定的工具在本地和外部均未找到时，抛出未知工具异常
    */
-  public async callTool(functionName: string, functionArgs: { targetPath?: string; content?: string; [key: string]: unknown }): Promise<unknown> {
+  public async callTool(
+    functionName: string,
+    functionArgs: { targetPath?: string; content?: string; [key: string]: unknown },
+    sessionContext?: unknown
+  ): Promise<unknown> {
     // 先行加载本地工具清单以供比对
     const localToolsDef = await this.localMcpServer.getTools();
     // 检查目标工具是否隶属于本地内置集合
@@ -71,7 +75,7 @@ export class ToolRegistry {
       return await this.localMcpServer.callTool({
         name: functionName,
         arguments: functionArgs
-      });
+      }, sessionContext);
     } else if (this.mcpManager) {
       // 命中外部工具，跨进程分发至对应的 MCP Client 实例
       return await this.mcpManager.callMcpTool(functionName, functionArgs);

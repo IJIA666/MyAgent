@@ -2,6 +2,12 @@ import { ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool } from './nati
 import { GrepSearchTool, GlobSearchTool } from './native-tools/search.js';
 import { ExecuteCommandTool } from './native-tools/terminal.js';
 import { LoadSkillTool } from './native-tools/skill.js';
+import { CreateDirectoryTool, DeletePathTool, MovePathTool, CopyPathTool } from './native-tools/directory-manager.js';
+import { ReadManyFilesTool } from './native-tools/read-many-files.js';
+import { ApplyPatchTool } from './native-tools/apply-patch.js';
+import { GitShowStatusTool } from './native-tools/git-show-status.js';
+import { GitShowDiffTool } from './native-tools/git-show-diff.js';
+import { GitShowLogTool } from './native-tools/git-show-log.js';
 
 /**
  * 本地内置工具的契约接口。
@@ -22,9 +28,10 @@ export interface NativeTool {
    * 异步或同步执行该工具的逻辑。
    *
    * @param args - 调用工具时传入的参数字典
+   * @param _sessionContext - 可选的智能体会话上下文
    * @returns 工具执行完毕后返回的文本结果
    */
-  execute(args: Record<string, unknown>): Promise<string> | string;
+  execute(args: Record<string, unknown>, _sessionContext?: unknown): Promise<string> | string;
 }
 
 /**
@@ -76,6 +83,15 @@ export class LocalFileSystemMcpServer {
     this.register(new GrepSearchTool());
     this.register(new GlobSearchTool());
     this.register(new ExecuteCommandTool());
+    this.register(new CreateDirectoryTool());
+    this.register(new DeletePathTool());
+    this.register(new MovePathTool());
+    this.register(new CopyPathTool());
+    this.register(new ReadManyFilesTool());
+    this.register(new ApplyPatchTool());
+    this.register(new GitShowStatusTool());
+    this.register(new GitShowDiffTool());
+    this.register(new GitShowLogTool());
   }
 
   /**
@@ -100,9 +116,10 @@ export class LocalFileSystemMcpServer {
    * 遵循 MCP 标准格式调用本地工具。
    *
    * @param request - 符合 MCP CallToolRequest 结构的请求对象
+   * @param sessionContext - 可选的智能体会话上下文
    * @returns 符合 MCP CallToolResult 结构的结果对象
    */
-  async callTool(request: CallToolRequest): Promise<CallToolResult> {
+  async callTool(request: CallToolRequest, sessionContext?: unknown): Promise<CallToolResult> {
     try {
       const args = request.arguments || {};
       const tool = this.toolsMap.get(request.name);
@@ -110,7 +127,7 @@ export class LocalFileSystemMcpServer {
         throw new Error(`虚拟 MCP Server 不支持工具: ${request.name}`);
       }
 
-      const resultText = await tool.execute(args);
+      const resultText = await tool.execute(args, sessionContext);
 
       return {
         content: [

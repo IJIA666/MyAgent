@@ -22,6 +22,25 @@ export class ToolConstants {
   /** 通配符文件检索工具名称 */
   public static readonly GLOB_SEARCH = 'globSearch';
 
+  /** 目录创建工具名称 */
+  public static readonly CREATE_DIRECTORY = 'createDirectory';
+  /** 安全删除工具名称 */
+  public static readonly DELETE_PATH = 'deletePath';
+  /** 移动路径工具名称 */
+  public static readonly MOVE_PATH = 'movePath';
+  /** 复制路径工具名称 */
+  public static readonly COPY_PATH = 'copyPath';
+  /** 批量文件读取工具名称 */
+  public static readonly READ_MANY_FILES = 'readManyFiles';
+  /** 代码修补工具名称 */
+  public static readonly APPLY_PATCH = 'applyPatch';
+  /** Git状态查看工具名称 */
+  public static readonly GIT_SHOW_STATUS = 'gitShowStatus';
+  /** Git增量变化查看工具名称 */
+  public static readonly GIT_SHOW_DIFF = 'gitShowDiff';
+  /** Git提交日志查看工具名称 */
+  public static readonly GIT_SHOW_LOG = 'gitShowLog';
+
   /** 终端工具判定别名集合 */
   public static readonly TERMINAL_ALIASES = [
     ToolConstants.EXECUTE_COMMAND,
@@ -35,15 +54,33 @@ export class ToolConstants {
   public static readonly FILE_READ_ALIASES = [
     ToolConstants.READ_FILE,
     ToolConstants.LIST_FILES,
+    ToolConstants.READ_MANY_FILES,
+    ToolConstants.GIT_SHOW_STATUS,
+    ToolConstants.GIT_SHOW_DIFF,
+    ToolConstants.GIT_SHOW_LOG,
     'read_file',
-    'list_files'
+    'list_files',
+    'readManyFiles',
+    'gitShowStatus',
+    'gitShowDiff',
+    'gitShowLog'
   ] as const;
 
   /** 文件写入与修改工具判定别名集合 */
   public static readonly FILE_WRITE_ALIASES = [
     ToolConstants.WRITE_FILE,
     ToolConstants.EDIT_FILE,
+    ToolConstants.CREATE_DIRECTORY,
+    ToolConstants.DELETE_PATH,
+    ToolConstants.MOVE_PATH,
+    ToolConstants.COPY_PATH,
+    ToolConstants.APPLY_PATCH,
     'write_file',
-    'edit_file'
+    'edit_file',
+    'createDirectory',
+    'deletePath',
+    'movePath',
+    'copyPath',
+    'applyPatch'
   ] as const;
 }

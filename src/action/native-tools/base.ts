@@ -96,13 +96,29 @@ export function hasTemporaryWriteWhitelist(pathStr: string): boolean {
   return temporaryWriteWhitelist.has(resolve(pathStr));
 }
 
-
 /**
  * 清空内存中暂存的所有临时读写白名单。
  */
 export function clearTemporaryWhitelists(): void {
   temporaryReadWhitelist.clear();
   temporaryWriteWhitelist.clear();
+}
+
+/**
+ * 判定目标物理路径是否在授权目录安全防护边界内。
+ * 针对 Windows 平台下文件或目录尚未创建时（ realpathSync 无法对未存在子目录完全大小写对齐 ）导致的盘符或大小写不一致进行不敏感兼容判定。
+ *
+ * @param parent - 授权工作区的绝对物理路径
+ * @param child - 经过规范化后的绝对物理路径
+ * @returns 是否在边界内
+ */
+function isSubPath(parent: string, child: string): boolean {
+  if (process.platform === 'win32') {
+    const p = parent.toLowerCase();
+    const c = child.toLowerCase();
+    return c === p || c.startsWith(p + sep);
+  }
+  return child === parent || child.startsWith(parent + sep);
 }
 
 /**
@@ -124,10 +140,8 @@ export function secureResolvePath(targetPath: string): string {
   const rawPath = resolve(authorizedDir, targetPath);
   const resolvedPath = getPhysicalRealPath(rawPath);
 
-  // 加固判定：目标物理路径必须完全等于授权工作区根目录，
-  // 或者以授权工作区根目录加上系统路径分隔符开头（证明属于工作区内的直接子元素），
-  // 从根本上防范类似于 /auth/path-secret 穿透 /auth/path 的逃逸隐患。
-  const isAuthorized = resolvedPath === authorizedDir || resolvedPath.startsWith(authorizedDir + sep);
+  // 加固判定：目标物理路径必须完全属于授权工作区，或在其子路径内
+  const isAuthorized = isSubPath(authorizedDir, resolvedPath);
   if (!isAuthorized) {
     throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区的安全防护边界。`);
   }
@@ -157,7 +171,7 @@ export function secureResolveReadPath(targetPath: string): string {
   }
 
   // 2. 常规校验：判断是否在常规工作区授权边界内
-  const isAuthorized = resolvedPath === authorizedDir || resolvedPath.startsWith(authorizedDir + sep);
+  const isAuthorized = isSubPath(authorizedDir, resolvedPath);
   if (!isAuthorized) {
     throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区的安全防护边界。`);
   }
@@ -186,7 +200,7 @@ export function secureResolveWritePath(targetPath: string): string {
   }
 
   // 2. 常规校验：判断是否在常规工作区授权边界内
-  const isAuthorized = resolvedPath === authorizedDir || resolvedPath.startsWith(authorizedDir + sep);
+  const isAuthorized = isSubPath(authorizedDir, resolvedPath);
   if (!isAuthorized) {
     throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区的安全防护边界。`);
   }
