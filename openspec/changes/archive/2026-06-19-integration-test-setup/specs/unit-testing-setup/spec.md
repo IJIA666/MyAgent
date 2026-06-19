@@ -1,9 +1,4 @@
-# unit-testing-setup
-
-## Purpose
-本模块负责系统核心模块（包含安全沙箱、MCP 客户端生命周期等）的单元测试与回归校验，以保障系统质量和后续迭代的稳定性。
-
-## Requirements
+## 修改需求
 
 ### Requirement: 核心模块单元测试自动化校验
 为了保障系统在持续迭代中的稳定性与安全加固的有效性，系统核心逻辑（包含绝对路径沙箱校验与 MCP 客户端生命周期注销）必须（MUST）编写自动化单元测试。全部单元测试用例在不需要物理启动外部 stdio 进程的前提下，必须（MUST）能够一次性全部通过。
@@ -14,7 +9,7 @@
 
 #### 场景: 环境变量思考等级非法字面量配置阻断校验
 - **WHEN** 开发者在测试中为 `process.env.AGENT_LLM_REASONING_EFFORT` 设置了不在支持字面量集合（如 `extreme`）内的值并调用 `getModelConfig`
-- **THEN** 测试应当预期 `getModelConfig` 抛出包含 `不合法的 AGENT_LLM_REASONING_EFFORT 值` 文本的 Error 异常
+- **THEN** 测试应当预期 `getModelConfig` 抛出包含 `不合法的 AGENT_LLM_REASONING_EFFORT 值` 文本 of/的 Error 异常
 
 #### 场景: 环境变量思考等级合规取值校验
 - **WHEN** 开发者在测试中为 `process.env.AGENT_LLM_REASONING_EFFORT` 注入合规字面量（如 `low`、`max`、`disabled`）并调用 `getModelConfig`
