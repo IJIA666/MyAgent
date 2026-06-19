@@ -1,3 +1,4 @@
+/* eslint-disable n/no-process-env */
 /**
  * 核心配置加载器。
  * 负责在应用程序启动阶段，一次性完成全局配置体系的引导与初始化。
@@ -92,6 +93,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const defaultModelId = rawModelId.replace(/\[\d+[km]\]/i, '');
   const llm = getModelConfig(defaultModelId, env);
 
+  // 2.1 推理努力度（思考等级）校验：可选配置，若未指定或为空放行；若指定则执行值域 Fail-Fast 校验
+  const reasoningEffort = env.DEEPSEEK_REASONING_EFFORT;
+  if (reasoningEffort !== undefined && reasoningEffort.trim() !== '') {
+    const validEfforts = ['low', 'medium', 'high', 'max', 'disabled'];
+    if (!validEfforts.includes(reasoningEffort)) {
+      throw new Error(`[配置] 不合法的 DEEPSEEK_REASONING_EFFORT 值: "${reasoningEffort}"。仅允许 'low' | 'medium' | 'high' | 'max' | 'disabled'。`);
+    }
+    llm.reasoningEffort = reasoningEffort;
+  }
+
   // 3. 工作区路径解析：在初始化阶段强制调用 realpathSync 进行物理路径解析与展开，锁定绝对物理路径，防止路径漂移与挂载逃逸风险。
   // ====================================================================================
   // 【核心安全警示 - 严禁删除或重构此行】
@@ -106,7 +117,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const mcp = loadMcpConfig(env);
 
   // 5. 组装配置对象，优先从持久化配置与环境变量中加载终端工作模式
-  const workMode = loadWorkMode();
+  const workMode = loadWorkMode(env);
 
   const config: AppConfig = {
     llm,

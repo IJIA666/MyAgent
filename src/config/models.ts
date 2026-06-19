@@ -25,9 +25,9 @@ export const BUILTIN_MODELS: Record<string, ModelProfile> = {
     timeout: 600000,
     /** 预设最大重试次数为 3 次 */
     maxRetries: 3,
-    buildExtraPayload: (options?: Record<string, unknown>) => {
-      // 优先取交互传递的思考等级，兜底使用环境变量，默认设为 high
-      const effort = options?.reasoning_effort || process.env.DEEPSEEK_REASONING_EFFORT || 'high';
+    buildExtraPayload: (options?: Record<string, unknown>, config?: LlmConfig) => {
+      // 优先取交互传递的思考等级，其次取已初始化的配置，默认设为 high
+      const effort = options?.reasoning_effort || config?.reasoningEffort || 'high';
       if (effort === 'disabled') {
         return {}; // 禁用推理模式时返回空 payload
       }
@@ -52,8 +52,8 @@ export const BUILTIN_MODELS: Record<string, ModelProfile> = {
     timeout: 600000,
     /** 预设最大重试次数为 3 次 */
     maxRetries: 3,
-    buildExtraPayload: (options?: Record<string, unknown>) => {
-      const effort = options?.reasoning_effort || process.env.DEEPSEEK_REASONING_EFFORT || 'high';
+    buildExtraPayload: (options?: Record<string, unknown>, config?: LlmConfig) => {
+      const effort = options?.reasoning_effort || config?.reasoningEffort || 'high';
       if (effort === 'disabled') {
         return {};
       }
@@ -92,6 +92,7 @@ export function parseContextWindow(val: string): number {
  * @param id - 模型在 BUILTIN_MODELS 中的 ID
  * @returns 构建完成的大语言模型连接配置对象
  */
+// eslint-disable-next-line n/no-process-env
 export function getModelConfig(id: string, env: Record<string, string | undefined> = process.env): LlmConfig {
   const profile = BUILTIN_MODELS[id];
   if (!profile) {

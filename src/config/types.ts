@@ -23,8 +23,8 @@ export interface ModelProfile {
   maxRetries?: number;
   /** 自定义请求头 */
   headers?: Record<string, string>;
-  /** 构建额外 Payload 的钩子函数，支持接收运行时交互传递的参数 */
-  buildExtraPayload?: (options?: Record<string, unknown>) => Record<string, unknown>;
+  /** 构建额外 Payload 的钩子函数，支持接收运行时交互传递的参数及 LlmConfig 局部配置 */
+  buildExtraPayload?: (options?: Record<string, unknown>, config?: LlmConfig) => Record<string, unknown>;
 }
 
 /**
@@ -52,6 +52,8 @@ export interface LlmConfig {
   maxRetries?: number;
   /** 自定义请求头 */
   headers?: Record<string, string>;
+  /** 推理努力度（思考等级），仅在支持推理模式的模型上生效，可选值为 'high' | 'medium' | 'low' | 'disabled' */
+  reasoningEffort?: string;
 }
 
 /**

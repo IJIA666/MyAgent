@@ -1,3 +1,4 @@
+/* eslint-disable n/no-process-env */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { getModelConfig, parseContextWindow } from '../../src/config/models.js';
 

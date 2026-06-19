@@ -169,7 +169,7 @@ export class LlmDriver {
           // 若配置了采样温度则予以透传
           ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
           // 根据模型不同特性，动态拼装扩展层参数（例如特定模型的思考模式配置）
-          ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions) : {})
+          ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions, this.llmConfig) : {})
         },
         // 绑定中止信号量
         { signal: this.abortController.signal }
@@ -292,7 +292,7 @@ export class LlmDriver {
           // 若配置了采样温度则予以透传
           ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
           // 动态组装特定模型所要求的运行时 Payload
-          ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions) : {})
+          ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions, this.llmConfig) : {})
         },
         { signal: this.abortController.signal }
       );
@@ -320,7 +320,7 @@ export class LlmDriver {
         max_tokens: this.llmConfig.maxTokens,
         stream: false,
         ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
-        ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions) : {})
+        ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions, this.llmConfig) : {})
       },
       { signal: localAbortController.signal }
     );

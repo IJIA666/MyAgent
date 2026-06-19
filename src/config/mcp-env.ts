@@ -1,3 +1,4 @@
+/* eslint-disable n/no-process-env */
 /**
  * MCP 子进程环境变量管理。
  * 专门负责构造传递给 MCP Server 子进程的隔离环境。通过严格的白名单机制，

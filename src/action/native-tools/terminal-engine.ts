@@ -1,3 +1,4 @@
+/* eslint-disable n/no-process-env */
 /**
  * 纯净无状态的进程执行引擎底座。
  * 核心职责：

@@ -1,3 +1,4 @@
+/* eslint-disable n/no-process-env */
 /**
  * @file run_testbed.ts
  * @description 虚拟 Windows C 盘清理评测的一键主控运行脚本。

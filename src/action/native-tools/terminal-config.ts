@@ -111,7 +111,8 @@ export function saveAllowedCommands(commands: string[]): void {
  * 从工作区磁盘配置文件加载安全工作模式
  * @returns 加载成功或回退的工作模式
  */
-export function loadWorkMode(): WorkMode {
+// eslint-disable-next-line n/no-process-env
+export function loadWorkMode(env: Record<string, string | undefined> = process.env): WorkMode {
   try {
     const configPath = getAgentConfigPath();
     if (existsSync(configPath)) {
@@ -127,7 +128,7 @@ export function loadWorkMode(): WorkMode {
   }
   
   // 备用兜底：尝试从系统环境变量获取
-  const envMode = process.env.AGENT_WORK_MODE;
+  const envMode = env.AGENT_WORK_MODE;
   if (envMode === 'Safe' || envMode === 'Auto' || envMode === 'YOLO') {
     globalState.workMode = envMode;
   }
