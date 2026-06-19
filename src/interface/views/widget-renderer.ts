@@ -6,8 +6,8 @@
  * 3. 渲染 Token 预测预算和实际结算花费的监控面板。
  */
 
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
-import type { ApiUsage, ContextTokenUsage } from '../../brain/context.js';
+import type { ChatMessage } from '../../brain/ports/LlmPort.js';
+import type { ApiUsage, ContextTokenUsage } from '../../brain/ports/TokenEstimatorPort.js';
 import { theme } from '../../utils/theme.js';
 
 /**
@@ -58,7 +58,7 @@ export function renderContentWithWidgets(content: string): string {
  * @param history 当前对话的消息参数历史数组
  * @param modelName 当前激活的大语言模型名称
  */
-export function redrawHistory(history: ChatCompletionMessageParam[], modelName: string): void {
+export function redrawHistory(history: ChatMessage[], modelName: string): void {
   console.clear();
   console.log(theme.dim('--- 时间旅行完成，当前剩余的有效记忆 ---'));
 
@@ -69,8 +69,6 @@ export function redrawHistory(history: ChatCompletionMessageParam[], modelName: 
       let contentStr = '';
       if (typeof msg.content === 'string') {
         contentStr = msg.content;
-      } else if (Array.isArray(msg.content)) {
-        contentStr = msg.content.map(p => ('text' in p ? p.text : '')).join('\n');
       }
       console.log(`\n${theme.info(`用户 [${modelName}] > `)}${renderContentWithWidgets(contentStr)}`);
     } else if (msg.role === 'assistant') {

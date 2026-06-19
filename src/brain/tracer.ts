@@ -1,6 +1,7 @@
 import { resolve } from 'path';
 import { existsSync, mkdirSync, appendFileSync } from 'fs';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
+import type { ChatMessage } from './ports/LlmPort.js';
+import type { ApiUsage } from './ports/TokenEstimatorPort.js';
 
 /**
  * 记录单次 ReAct 交互闭环的结构化信息
@@ -11,7 +12,7 @@ export interface InteractionRecord {
   /**
    * 喂给大模型的历史上下文（包含 system prompt 等）
    */
-  context: ChatCompletionMessageParam[];
+  context: ChatMessage[];
   /**
    * 大模型输出的思考推理过程（链）
    */
@@ -42,12 +43,7 @@ export interface InteractionRecord {
   /**
    * 实际的 API Token 消耗
    */
-  actual_tokens?: {
-    input_tokens: number;
-    output_tokens: number;
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
-  };
+  actual_tokens?: ApiUsage;
 }
 
 /**

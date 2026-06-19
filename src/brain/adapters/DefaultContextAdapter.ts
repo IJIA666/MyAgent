@@ -1,15 +1,26 @@
-import type { ChatCompletionMessageParam, ChatCompletionUserMessageParam } from 'openai/resources/chat/completions.js';
+import type { ChatMessage } from '../ports/LlmPort.js';
+import type { TokenEstimatorPort } from '../ports/TokenEstimatorPort.js';
 import type { ContextAdapter } from './ContextAdapter.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { countTokens } from '../TokenEstimator.js';
-import { HANDOFF_INSTRUCTION } from '../prompts.js';
+import { HANDOFF_INSTRUCTION } from '../prompts/prompts.js';
 
 /**
  * 默认上下文适配器实现类。
  * 负责在最新一条用户消息前挂载临时技能指令，并在会话头部注入历史摘要 Checkpoint 及核心文件记忆。
  */
 export class DefaultContextAdapter implements ContextAdapter {
+  private tokenEstimator: TokenEstimatorPort;
+
+  /**
+   * 构造函数，注入分词预估器以解耦底层分词细节。
+   *
+   * @param tokenEstimator - Token 水位预估与计算适配 Port 接口
+   */
+  constructor(tokenEstimator: TokenEstimatorPort) {
+    this.tokenEstimator = tokenEstimator;
+  }
+
   /**
    * 组装会话历史、临时技能规范、局部项目规则、历史摘要与最近读写的文件。
    * 采用不可变原则，返回拷贝后的新消息数组，防止污染原始会话内存。
@@ -22,17 +33,17 @@ export class DefaultContextAdapter implements ContextAdapter {
    * @returns 拼接后的完整消息参数数组
    */
   public assemble(
-    baseHistory: ChatCompletionMessageParam[],
+    baseHistory: ChatMessage[],
     transientContext?: string,
     localRules?: string,
     summary?: string | null,
     recentFiles?: string[]
-  ): ChatCompletionMessageParam[] {
+  ): ChatMessage[] {
     // 1. 浅拷贝基础消息数组，防止对数组的增删插操作污染原始引用
     const historySnapshot = [...baseHistory];
 
     // 1.1 组装并前置注入物理会话轮换的 Checkpoint 摘要与文件记忆附件
-    const headInjections: ChatCompletionMessageParam[] = [];
+    const headInjections: ChatMessage[] = [];
     if (summary) {
       headInjections.push({
         role: 'user',
@@ -51,7 +62,7 @@ export class DefaultContextAdapter implements ContextAdapter {
           const absolutePath = join(process.cwd(), filePath);
           if (existsSync(absolutePath)) {
             let fileContent = readFileSync(absolutePath, 'utf-8');
-            let fileTokens = countTokens(fileContent);
+            let fileTokens = this.tokenEstimator.countTokens(fileContent);
 
             if (fileTokens > MAX_SINGLE_TOKENS) {
               const ratio = MAX_SINGLE_TOKENS / fileTokens;
@@ -113,16 +124,11 @@ export class DefaultContextAdapter implements ContextAdapter {
       } else {
         // 4. 核心逻辑：使用原生 structuredClone 内存拷贝最后一条 user 消息，防止污染 baseHistory 引用
         const originalUserMsg = historySnapshot[lastUserIndex];
-        const copiedUserMsg = structuredClone(originalUserMsg) as ChatCompletionUserMessageParam;
+        const copiedUserMsg = structuredClone(originalUserMsg) as ChatMessage;
 
         const originalContent = originalUserMsg.content;
         if (typeof originalContent === 'string') {
           copiedUserMsg.content = originalContent + injectedText;
-        } else if (Array.isArray(originalContent)) {
-          copiedUserMsg.content = [
-            ...originalContent,
-            { type: 'text', text: injectedText }
-          ];
         } else {
           copiedUserMsg.content = injectedText.trim();
         }

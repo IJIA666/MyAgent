@@ -1,9 +1,9 @@
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import { McpToolManager, ToolRegistry } from '../action/index.js';
 import { LlmConfig } from '../config/index.js';
 import { AgentTracer } from './tracer.js';
-import { SessionContext, ApiUsage, ContextTokenUsage } from './context.js';
-import { LlmDriver } from './driver.js';
+import { SessionContext, ContextTokenUsage } from './context.js';
+import type { ChatMessage, LlmPort } from './ports/LlmPort.js';
+import type { TokenEstimatorPort, ApiUsage } from './ports/TokenEstimatorPort.js';
 import { ContextAdapter, DefaultContextAdapter } from './adapters/index.js';
 import { loadSkillContent } from './contextLoader.js';
 import { AgentLoop, AgentEvent } from './agent-loop.js';
@@ -39,7 +39,7 @@ export class SessionManager {
   /** 本地会话的上下文与状态存储 */
   private context: SessionContext;
   /** 大语言模型的核心驱动模块 */
-  private driver: LlmDriver;
+  private driver: LlmPort;
   /** 上下文管理与组装适配器 */
   private contextAdapter: ContextAdapter;
   /** 当前的大语言模型连接配置 */
@@ -64,19 +64,27 @@ export class SessionManager {
    * 实例初始化。
    *
    * @param llmConfig - 大语言模型连接配置
+   * @param driver - 大语言模型驱动接口适配器实例
+   * @param estimator - Token 预估与水位计算接口实例
    * @param mcpManager - 可选的 MCP 客户端管理器，用于挂载外部扩展能力
    * @param contextAdapter - 可选的上下文适配器，若未传则默认使用 DefaultContextAdapter
    */
-  constructor(llmConfig: LlmConfig, mcpManager?: McpToolManager, contextAdapter?: ContextAdapter) {
+  constructor(
+    llmConfig: LlmConfig,
+    driver: LlmPort,
+    estimator: TokenEstimatorPort,
+    mcpManager?: McpToolManager,
+    contextAdapter?: ContextAdapter
+  ) {
     this.llmConfig = llmConfig;
     this.mcpManager = mcpManager;
     this.toolRegistry = new ToolRegistry(mcpManager, {
       loadSkill: (name) => loadSkillContent(name)
     });
     this.context = new SessionContext();
-    this.driver = new LlmDriver(llmConfig);
+    this.driver = driver;
     this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());
-    this.contextAdapter = contextAdapter || new DefaultContextAdapter();
+    this.contextAdapter = contextAdapter || new DefaultContextAdapter(estimator);
 
     // 初始化解耦后的四大领域服务
     this.ruleManager = new RuleManager(this.context);
@@ -86,7 +94,7 @@ export class SessionManager {
     
     // 初始化并注册拦截插件
     this.pluginRegistry = new PluginRegistry();
-    this.pluginRegistry.register(new TokenWatermarkPlugin(this.compactionService, () => this.llmConfig));
+    this.pluginRegistry.register(new TokenWatermarkPlugin(this.compactionService, estimator, () => this.llmConfig));
     this.pluginRegistry.register(new JitRulesPlugin(this.toolDispatcher));
     this.pluginRegistry.register(new TracerLogPlugin(() => this.tracer));
     this.pluginRegistry.register(new LoopPreventionPlugin());
@@ -121,7 +129,7 @@ export class SessionManager {
    *
    * @returns 包含对话历史的消息参数数组
    */
-  public getHistory(): ChatCompletionMessageParam[] {
+  public getHistory(): ChatMessage[] {
     return this.context.getHistory();
   }
 
@@ -213,7 +221,7 @@ export class SessionManager {
    * @param turns - 需要丢弃的交互轮次
    * @returns 返回被弹栈丢弃的历史消息数组（按原本对话顺序排列）
    */
-  public rollback(turns: number): ChatCompletionMessageParam[] {
+  public rollback(turns: number): ChatMessage[] {
     return this.contextRepo.rollback(turns);
   }
 

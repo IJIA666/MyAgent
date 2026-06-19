@@ -3,6 +3,8 @@ import { McpToolManager, initWorkspace } from './action/index.js';
 import { loadConfig, ensureConfigFiles } from './config/index.js';
 import { startCli } from './interface/index.js';
 import { theme } from './utils/theme.js';
+import { OpenAiLlmAdapter } from './infrastructure/llm/OpenAiLlmAdapter.js';
+import { TiktokenEstimator } from './infrastructure/llm/TiktokenEstimator.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -36,7 +38,9 @@ async function main() {
   try {
     const mcpManager = new McpToolManager(appConfig.mcp);
     await mcpManager.connectAll();
-    session = new SessionManager(appConfig.llm, mcpManager);
+    const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
+    const tokenEstimator = new TiktokenEstimator();
+    session = new SessionManager(appConfig.llm, llmAdapter, tokenEstimator, mcpManager);
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);
     console.log(theme.error(`[错误] 初始化会话管理器失败：${errorMsg}`));

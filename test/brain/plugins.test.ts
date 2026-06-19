@@ -15,6 +15,7 @@ import type { CompactionService } from '../../src/brain/services/CompactionServi
 import type { LlmConfig } from '../../src/config/index.js';
 import type { ToolDispatcher } from '../../src/brain/services/ToolDispatcher.js';
 import type { AgentTracer } from '../../src/brain/tracer.js';
+import type { TokenEstimatorPort } from '../../src/brain/ports/TokenEstimatorPort.js';
 
 import type { ChatCompletionCreateParams } from 'openai/resources/chat/completions.js';
 
@@ -31,8 +32,12 @@ describe('Plugins Lifecycle & Action Tests', () => {
         compact: vi.fn().mockResolvedValue(true)
       } as unknown as CompactionService;
       const mockLlmConfig = { model: 'gpt-4o', contextWindow: 10 } as unknown as LlmConfig;
+      const mockTokenEstimator = {
+        estimateSnapshotTokens: vi.fn().mockReturnValue({ total: 100, system: 10, rules: 10, transient: 10, history: 70, isEstimated: true }),
+        getCompactionThreshold: vi.fn().mockReturnValue(50)
+      } as unknown as TokenEstimatorPort;
 
-      const plugin = new TokenWatermarkPlugin(mockCompactionService, () => mockLlmConfig);
+      const plugin = new TokenWatermarkPlugin(mockCompactionService, mockTokenEstimator, () => mockLlmConfig);
 
       // 制造一个模拟的 messages 数组使得估算的 token 数超过限额
       const llmRequest = {

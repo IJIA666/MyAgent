@@ -1,7 +1,10 @@
 /**
- * 集中管理大语言模型的核心人设与指令预设（System Prompt）。
+ * @fileoverview 集中管理大语言模型的核心人设与指令预设（System Prompt）。
  * 剥离业务层中的硬编码字符串，并提供统一的组装接口，为未来扩展动态上下文预留骨架。
  */
+
+import type { ChatMessage } from '../ports/LlmPort.js';
+import { loadGlobalRules, loadSkills } from '../contextLoader.js';
 
 // 预设的人设和最底层的不可撼动之规则
 const BASE_SYSTEM_PROMPT = `你是一个专业且精确的本地智能体助手。
@@ -13,9 +16,6 @@ const BASE_SYSTEM_PROMPT = `你是一个专业且精确的本地智能体助手�
 2. 如果工具在运行过程中返回错误（例如文件未找到、路径越权等），请分析错误原因并优雅地向用户解释，或者在修正参数后重新尝试调用。
 3. 请直接、专业且精准地回答用户问题，避免冗余的客套话或占位信息。
 4. 【语言强制】你必须始终使用简体中文进行思考（内部逻辑和推理链）以及最终回复，仅在必要时保留英文的专业术语或代码片段。`;
-
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
-import { loadGlobalRules, loadSkills } from './contextLoader.js';
 
 /**
  * 组装并获取最终的系统级人设文本。
@@ -54,8 +54,8 @@ export function buildSystemPrompt(customGlobalRules?: string): string {
  * @returns 组装好的、用于调用总结模型的 messages 数组
  */
 export function buildCompactionSummaryPrompt(
-  messagesToCompact: ChatCompletionMessageParam[]
-): ChatCompletionMessageParam[] {
+  messagesToCompact: ChatMessage[]
+): ChatMessage[] {
   const systemInstruction = `你是一个专业的上下文提炼助手。
 你的任务是将待归档的智能体与用户的交互历史提炼为一份不超过 1000 字符的 Markdown 格式的概要（Checkpoint Summary）。
 
@@ -80,10 +80,6 @@ ${IDENTIFIER_PRESERVATION_INSTRUCTION}`;
     let contentStr = '';
     if (typeof msg.content === 'string') {
       contentStr = msg.content;
-    } else if (Array.isArray(msg.content)) {
-      contentStr = msg.content
-        .map((part: { type: string; text?: string }) => (part.type === 'text' && part.text ? part.text : ''))
-        .join('\n');
     }
     // 包含工具调用情况
     let toolCallsStr = '';
@@ -113,7 +109,7 @@ ${IDENTIFIER_PRESERVATION_INSTRUCTION}`;
 }
 
 export const IDENTIFIER_PRESERVATION_INSTRUCTION = `【严格标识符保护协议】
-绝不允许缩写、省略或重构任何长相怪异的 UUID、Hash、IP地址、端口号、URL 以及绝对文件路径！
+绝不允许缩写、省略或重构任何长相怪异 of UUID、Hash、IP地址、端口号、URL 以及绝对文件路径！
 必须在摘要中原封不动地完整保留这些“不透明标识符”，违者将导致后续系统调用断链崩溃。`;
 
 export const HANDOFF_INSTRUCTION = `【最高指挥官（LEADER）交接声明】

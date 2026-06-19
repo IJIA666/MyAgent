@@ -1,13 +1,20 @@
 /**
- * @file 智能体插件与生命周期 Hook 强类型契约定义。
- * 核心职责：
- * 1. 声明所有的 Hook 拦截节点枚举。
- * 2. 规定串行 Fail-Fast 的 HookControl 信号机制。
- * 3. 制定统一的洋葱管道中间件与插件配置结构。
+ * @fileoverview 智能体插件与生命周期 Hook 强类型契约定义。
+ * 本模块定义了挂载在智能体各执行节点的拦截插件规格与管道执行上下文。
  */
 
-import type { ChatCompletionCreateParams } from 'openai/resources/chat/completions.js';
+import type { ChatMessage } from '../ports/LlmPort.js';
 import type { SessionContext, ContextTokenUsage } from '../context.js';
+
+/**
+ * 大模型请求所需的参数载体。
+ */
+export interface LlmRequest {
+  model?: string;
+  messages?: ChatMessage[];
+  tools?: Record<string, unknown>[];
+  [key: string]: unknown;
+}
 
 /**
  * 智能体 Hook 生命周期的事件枚举。
@@ -54,7 +61,7 @@ export interface HookContext {
   /** 当前触发的生命周期 Hook 事件名 */
   eventName: HookEventName;
   /** 大模型的请求配置项（ 仅在 BeforeModel / BeforeToolSelection 中存在，允许被就地修改 ） */
-  llmRequest?: ChatCompletionCreateParams;
+  llmRequest?: LlmRequest;
   /** 大模型的响应回包（ 仅在 AfterModel 中存在，允许被就地修改 ） */
   llmResponse?: unknown;
   /** 当前准备执行或刚执行完的工具项（ 仅在 BeforeTool / AfterTool 中存在 ） */

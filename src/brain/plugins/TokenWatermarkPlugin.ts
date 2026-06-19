@@ -1,6 +1,7 @@
 import type { HookContext, Plugin } from './plugin-types.js';
 import { HookEventName } from './plugin-types.js';
-import { TokenEstimator } from '../TokenEstimator.js';
+import type { TokenEstimatorPort } from '../ports/TokenEstimatorPort.js';
+import type { ChatMessage } from '../ports/LlmPort.js';
 import type { CompactionService } from '../services/CompactionService.js';
 import type { LlmConfig } from '../../config/index.js';
 
@@ -14,16 +15,23 @@ export class TokenWatermarkPlugin implements Plugin {
   public readonly weight = 10;
 
   private compactionService: CompactionService;
+  private tokenEstimator: TokenEstimatorPort;
   private configProvider: () => LlmConfig;
 
   /**
    * 构造函数。
    *
    * @param compactionService - 上下文提炼与截断防爆服务实例
+   * @param tokenEstimator - Token 预算与水位计算适配契约接口
    * @param configProvider - 提供当前激活的大模型配置的获取函数
    */
-  constructor(compactionService: CompactionService, configProvider: () => LlmConfig) {
+  constructor(
+    compactionService: CompactionService,
+    tokenEstimator: TokenEstimatorPort,
+    configProvider: () => LlmConfig
+  ) {
     this.compactionService = compactionService;
+    this.tokenEstimator = tokenEstimator;
     this.configProvider = configProvider;
   }
 
@@ -50,11 +58,11 @@ export class TokenWatermarkPlugin implements Plugin {
     }
 
     const baseline = context.sessionContext.getLastApiUsageBaseline();
-    const estimatedTokens = TokenEstimator.estimateSnapshotTokens(messages, baseline.usage, baseline.historyLength);
+    const estimatedTokens = this.tokenEstimator.estimateSnapshotTokens(messages as ChatMessage[], baseline.usage, baseline.historyLength);
     context.estimatedUsage = estimatedTokens;
 
     const llmConfig = this.configProvider();
-    const threshold = TokenEstimator.getCompactionThreshold(llmConfig, 0.8);
+    const threshold = this.tokenEstimator.getCompactionThreshold(llmConfig, 0.8);
 
     if (estimatedTokens.total > threshold) {
       context.emitEvent?.({

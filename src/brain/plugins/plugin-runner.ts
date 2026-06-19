@@ -9,8 +9,8 @@
 
 import { enablePatches, createDraft, finishDraft, setAutoFreeze } from 'immer';
 import type { Patch } from 'immer';
-import type { ChatCompletionMessageParam, ChatCompletionCreateParams } from 'openai/resources/chat/completions.js';
-import type { HookContext, HookEventName, HookMiddleware } from './plugin-types.js';
+import type { ChatMessage } from '../ports/LlmPort.js';
+import type { HookContext, HookEventName, HookMiddleware, LlmRequest } from './plugin-types.js';
 import type { SessionContext } from '../context.js';
 
 // 全局禁用 Immer 的自动冻结机制，以适配 SessionContext 底层的面向对象可变状态（Mutable State）架构设计，防止外部操作被冻结的会话消息历史或工具属性时崩溃
@@ -25,8 +25,8 @@ enablePatches();
  * 包装在 Immer 隔离沙箱中的纯状态数据结构。
  */
 interface BaseState {
-  history: ChatCompletionMessageParam[];
-  llmRequest?: ChatCompletionCreateParams;
+  history: ChatMessage[];
+  llmRequest?: LlmRequest;
   llmResponse?: unknown;
   toolCall?: {
     name: string;
@@ -91,7 +91,7 @@ export async function runHookPipeline(
         return () => draft.history;
       }
       if (prop === 'addMessage') {
-        return (msg: ChatCompletionMessageParam) => {
+        return (msg: ChatMessage) => {
           draft.history.push(msg);
         };
       }

@@ -3,5 +3,5 @@
  * 集中导出大语言模型推理控制流与会话状态管理相关的功能。
  */
 export * from './session.js';
-export * from './prompts.js';
+export * from './prompts/prompts.js';
 export * from './tracer.js';

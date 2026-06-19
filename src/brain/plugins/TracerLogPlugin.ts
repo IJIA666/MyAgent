@@ -41,7 +41,7 @@ export class TracerLogPlugin implements Plugin {
         eventName: HookEventName.BeforeModel,
         details: {
           model: context.llmRequest?.model,
-          messagesCount: context.llmRequest?.messages.length
+          messagesCount: context.llmRequest?.messages?.length
         }
       });
       await next();

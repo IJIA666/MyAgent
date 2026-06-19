@@ -1,11 +1,11 @@
 import { createHash } from 'crypto';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
-import { buildSystemPrompt } from './prompts.js';
+import type { ChatMessage } from './ports/LlmPort.js';
+import { buildSystemPrompt } from './prompts/prompts.js';
 import { ApprovalService } from './services/ApprovalService.js';
 
 // 显式重导出 ApiUsage 和 ContextTokenUsage 类型，避免在 ESM 下因类型擦除引发运行时加载错误
-export type { ApiUsage, ContextTokenUsage } from './TokenEstimator.js';
-import { ApiUsage } from './TokenEstimator.js';
+export type { ApiUsage, ContextTokenUsage } from './ports/TokenEstimatorPort.js';
+import { ApiUsage } from './ports/TokenEstimatorPort.js';
 
 export interface PluginPatchGroup {
   timestamp: string;
@@ -34,7 +34,7 @@ export function computeStringHash(text: string): string {
  * 2. 管理会话唯一标识（Session ID）。
  */
 export class SessionContext {
-  private messageHistory: ChatCompletionMessageParam[] = [];
+  private messageHistory: ChatMessage[] = [];
   private sessionId: string;
   private checkpointSummary: string | null = null;
   private recentFiles: string[] = [];
@@ -183,7 +183,7 @@ export class SessionContext {
    *
    * @returns 包含所有历史消息的数组
    */
-  public getHistory(): ChatCompletionMessageParam[] {
+  public getHistory(): ChatMessage[] {
     return this.messageHistory;
   }
 
@@ -192,7 +192,7 @@ export class SessionContext {
    *
    * @param message - 待追加的标准模型消息载体对象
    */
-  public addMessage(message: ChatCompletionMessageParam): void {
+  public addMessage(message: ChatMessage): void {
     // 忙状态并发锁断言保护
     if (this.isProcessing) {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
@@ -206,7 +206,7 @@ export class SessionContext {
    *
    * @returns 从队尾弹出的最新一条消息，若历史为空则返回 undefined
    */
-  public popMessage(): ChatCompletionMessageParam | undefined {
+  public popMessage(): ChatMessage | undefined {
     // 忙状态并发锁断言保护
     if (this.isProcessing) {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
@@ -276,7 +276,7 @@ export class SessionContext {
    *
    * @param history - 新的消息历史数组
    */
-  public updateHistory(history: ChatCompletionMessageParam[]): void {
+  public updateHistory(history: ChatMessage[]): void {
     // 忙状态并发锁断言保护
     if (this.isProcessing) {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');

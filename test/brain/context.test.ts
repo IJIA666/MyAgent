@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SessionContext } from '../../src/brain/context.js';
-import { TokenEstimator } from '../../src/brain/TokenEstimator.js';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
+import { TiktokenEstimator } from '../../src/infrastructure/llm/TiktokenEstimator.js';
+import type { ChatMessage } from '../../src/brain/ports/LlmPort.js';
 
 describe('SessionContext Token & Hash Tests', () => {
   let context: SessionContext;
+  let estimator: TiktokenEstimator;
 
   beforeEach(() => {
     context = new SessionContext('test-session-123');
+    estimator = new TiktokenEstimator();
   });
 
   it('应该能够正确初始化 sessionId 和第一条 system 消息', () => {
@@ -33,7 +35,7 @@ describe('SessionContext Token & Hash Tests', () => {
 
   it('应该在无上次 Usage 锚点时，正确估算整个快照的各部分 Token 预算', () => {
     // 构造一个包含 rules, transient skill 和 history 的 snapshot
-    const snapshot: ChatCompletionMessageParam[] = [
+    const snapshot: ChatMessage[] = [
       { role: 'system', content: 'Base system prompt instructions...' },
       { role: 'system', content: '<project_rules>\nAlways write TypeScript code.\n</project_rules>' },
       { role: 'system', content: '<transient_skill>\nThis is a temporary skill spec.\n</transient_skill>' },
@@ -41,7 +43,7 @@ describe('SessionContext Token & Hash Tests', () => {
     ];
 
     const baseline = context.getLastApiUsageBaseline();
-    const estimate = TokenEstimator.estimateSnapshotTokens(snapshot, baseline.usage, baseline.historyLength);
+    const estimate = estimator.estimateSnapshotTokens(snapshot, baseline.usage, baseline.historyLength);
     expect(estimate.isEstimated).toBe(true);
     expect(estimate.system).toBeGreaterThan(0);
     expect(estimate.rules).toBeGreaterThan(0);
@@ -62,7 +64,7 @@ describe('SessionContext Token & Hash Tests', () => {
     context.updateLastApiUsage(mockUsage, 2);
 
     // 2. 构造本次的 snapshot，在原有基础上增加了一条 assistant 消息和一条新 user 消息
-    const snapshot: ChatCompletionMessageParam[] = [
+    const snapshot: ChatMessage[] = [
       context.getHistory()[0], // 原始 system prompt
       { role: 'user', content: 'Hello, what can you do?' }, // 上次的历史消息
       { role: 'assistant', content: 'I can help you build agents!' }, // 增量消息 1
@@ -70,7 +72,7 @@ describe('SessionContext Token & Hash Tests', () => {
     ];
 
     const baseline = context.getLastApiUsageBaseline();
-    const estimate = TokenEstimator.estimateSnapshotTokens(snapshot, baseline.usage, baseline.historyLength);
+    const estimate = estimator.estimateSnapshotTokens(snapshot, baseline.usage, baseline.historyLength);
     expect(estimate.isEstimated).toBe(true);
     
     // 预测的 history 应当基于基准值进行增量计算：

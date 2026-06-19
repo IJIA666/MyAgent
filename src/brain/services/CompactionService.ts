@@ -1,7 +1,6 @@
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
+import type { ChatMessage, LlmPort } from '../ports/LlmPort.js';
 import { SessionContext } from '../context.js';
-import { LlmDriver } from '../driver.js';
-import { buildCompactionSummaryPrompt, buildStaticFallbackSummary } from '../prompts.js';
+import { buildCompactionSummaryPrompt, buildStaticFallbackSummary } from '../prompts/prompts.js';
 import { ContextRepository } from './ContextRepository.js';
 
 /**
@@ -24,7 +23,7 @@ export class CompactionService {
    */
   constructor(
     private context: SessionContext,
-    private driver: LlmDriver,
+    private driver: LlmPort,
     private contextRepo: ContextRepository
   ) {}
 
@@ -103,7 +102,7 @@ export class CompactionService {
    * @param messages - 待扫描的历史消息数组
    * @returns 收集到的核心代码文件路径数组（去重后）
    */
-  public collectReadToolFilePaths(messages: ChatCompletionMessageParam[]): string[] {
+  public collectReadToolFilePaths(messages: ChatMessage[]): string[] {
     const files = new Set<string>();
 
     for (let i = messages.length - 1; i >= 0; i--) {

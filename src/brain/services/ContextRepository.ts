@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
+import type { ChatMessage } from '../ports/LlmPort.js';
 import { SessionContext } from '../context.js';
 
 /**
@@ -69,14 +69,14 @@ export class ContextRepository {
    * @param turns - 需要丢弃的交互轮次
    * @returns 返回被弹栈丢弃的历史消息数组（按原本对话顺序排列）
    */
-  public rollback(turns: number): ChatCompletionMessageParam[] {
+  public rollback(turns: number): ChatMessage[] {
     // 如果无需回退，则直接返回空集合
     if (turns <= 0) return [];
     
     // 初始化已成功剥离的用户轮次计数
     let poppedTurns = 0;
     // 用于暂存被丢弃的历史节点，以便最终返回
-    const dropped: ChatCompletionMessageParam[] = [];
+    const dropped: ChatMessage[] = [];
 
     // 获取当前上下文的引用
     const history = this.context.getHistory();

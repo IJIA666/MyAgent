@@ -1,4 +1,9 @@
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
+/**
+ * @fileoverview 定义上下文适配器接口。
+ * 本模块提供了组装和转换消息上下文的契约定义，解耦了领域逻辑与大模型提供商特定的消息格式。
+ */
+
+import type { ChatMessage } from '../ports/LlmPort.js';
 
 /**
  * 上下文适配器接口。
@@ -17,10 +22,10 @@ export interface ContextAdapter {
    * @returns 组装好的、可直接发送给大模型的完整消息参数数组
    */
   assemble(
-    baseHistory: ChatCompletionMessageParam[],
+    baseHistory: ChatMessage[],
     transientContext?: string,
     localRules?: string,
     summary?: string | null,
     recentFiles?: string[]
-  ): ChatCompletionMessageParam[];
+  ): ChatMessage[];
 }

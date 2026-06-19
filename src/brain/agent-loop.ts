@@ -1,12 +1,12 @@
-import type { ChatCompletionTool, ChatCompletionMessageParam, ChatCompletionCreateParams } from 'openai/resources/chat/completions.js';
 import { ToolRegistry } from '../action/index.js';
 import { LlmConfig } from '../config/index.js';
 import { AgentTracer } from './tracer.js';
-import { SessionContext, ApiUsage, ContextTokenUsage } from './context.js';
-import { LlmDriver } from './driver.js';
+import { SessionContext, ContextTokenUsage } from './context.js';
+import type { ChatMessage, LlmPort, LlmStreamEvent } from './ports/LlmPort.js';
+import type { ApiUsage } from './ports/TokenEstimatorPort.js';
 import { ContextAdapter } from './adapters/index.js';
 import { purifyContent } from '../utils/purify.js';
-import { PluginRegistry, HookEventName, runHookPipeline } from './plugins/index.js';
+import { PluginRegistry, HookEventName, runHookPipeline, type LlmRequest } from './plugins/index.js';
 
 // 导入领域服务
 import { RuleManager } from './services/RuleManager.js';
@@ -34,7 +34,7 @@ export interface AgentLoopOptions {
   /** 本地会话的上下文与状态存储 */
   context: SessionContext;
   /** 大语言模型的核心驱动模块 */
-  driver: LlmDriver;
+  driver: LlmPort;
   /** 上下文管理与组装适配器 */
   contextAdapter: ContextAdapter;
   /** 全局与局部规则热加载服务 */
@@ -60,7 +60,7 @@ export class AgentLoop {
   /** 本地会话的上下文与状态存储 */
   private context: SessionContext;
   /** 大语言模型的核心驱动模块 */
-  private driver: LlmDriver;
+  private driver: LlmPort;
   /** 上下文管理与组装适配器 */
   private contextAdapter: ContextAdapter;
   /** 全局与局部规则热加载服务 */
@@ -179,7 +179,7 @@ export class AgentLoop {
           HookEventName.BeforeToolSelection,
           this.context,
           this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeToolSelection),
-          { llmRequest: { tools: allTools as ChatCompletionTool[] } as ChatCompletionCreateParams, emitEvent }
+          { llmRequest: { tools: allTools } as LlmRequest, emitEvent }
         );
         while (eventQueue.length > 0) {
           yield eventQueue.shift()!;
@@ -210,7 +210,7 @@ export class AgentLoop {
           HookEventName.BeforeModel,
           this.context,
           this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeModel),
-          { llmRequest: { model: llmConfig.model, messages: snapshotContext, tools: filteredTools as ChatCompletionTool[] } as ChatCompletionCreateParams, emitEvent }
+          { llmRequest: { model: llmConfig.model, messages: snapshotContext, tools: filteredTools } as LlmRequest, emitEvent }
         );
         while (eventQueue.length > 0) {
           yield eventQueue.shift()!;
@@ -232,21 +232,21 @@ export class AgentLoop {
         const actualRequest = beforeModelResult.llmRequest ?? {
           model: llmConfig.model,
           messages: snapshotContext,
-          tools: filteredTools as ChatCompletionTool[]
+          tools: filteredTools as Record<string, unknown>[]
         };
 
         // 获取底层的 Stream 响应
-        let stream: ReturnType<LlmDriver['streamChat']>;
+        let stream: AsyncGenerator<LlmStreamEvent, void, unknown>;
         if (beforeModelResult.llmResponse) {
-          // 如果插件直接 Mock 了相应，利用生成器做模拟回包
+          // 如果插件直接 Mock 了响应，利用生成器做模拟回包
           const mockResponse = beforeModelResult.llmResponse;
           stream = (async function* () {
-            yield mockResponse;
-          })() as unknown as ReturnType<LlmDriver['streamChat']>;
+            yield mockResponse as LlmStreamEvent;
+          })() as unknown as AsyncGenerator<LlmStreamEvent, void, unknown>;
         } else {
           stream = this.driver.streamChat(
-            actualRequest.messages,
-            actualRequest.tools as ChatCompletionTool[]
+            actualRequest.messages || [],
+            actualRequest.tools || []
           );
         }
 
@@ -282,12 +282,12 @@ export class AgentLoop {
               break; // 退出当前 stream 消费，重新开始大循环
             }
 
-            const finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatCompletionMessageParam;
+            const finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatMessage;
             this.context.addMessage(finalAssistantMessage);
 
             // 更新真实 API 用量数据
             if (event.usage) {
-              this.context.updateLastApiUsage(event.usage, this.context.getHistory().length);
+              this.context.updateLastApiUsage(event.usage as ApiUsage, this.context.getHistory().length);
             }
 
             finalToolCalls = event.toolCalls.map((tc: { function: { name: string; arguments: string } }) => ({
@@ -398,7 +398,7 @@ export class AgentLoop {
                 return {
                   ...msg,
                   content: purifyContent(msg.content)
-                } as ChatCompletionMessageParam;
+                } as ChatMessage;
               }
               return msg;
             });
@@ -412,7 +412,7 @@ export class AgentLoop {
               content: event.assistantMessage.content || '',
               tool_calls: finalToolCalls,
               estimated_tokens: this.lastEstimatedUsage ?? undefined,
-              actual_tokens: event.usage
+              actual_tokens: event.usage as ApiUsage
             });
 
           } else if (event.type === 'complete') {
@@ -436,11 +436,11 @@ export class AgentLoop {
               break;
             }
 
-            const finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatCompletionMessageParam;
+            const finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatMessage;
             this.context.addMessage(finalAssistantMessage);
 
             if (event.usage) {
-              this.context.updateLastApiUsage(event.usage, this.context.getHistory().length);
+              this.context.updateLastApiUsage(event.usage as ApiUsage, this.context.getHistory().length);
             }
 
             const purifiedContext = snapshotContext.map(msg => {
@@ -448,7 +448,7 @@ export class AgentLoop {
                 return {
                   ...msg,
                   content: purifyContent(msg.content)
-                } as ChatCompletionMessageParam;
+                } as ChatMessage;
               }
               return msg;
             });
@@ -460,7 +460,7 @@ export class AgentLoop {
               reasoning: event.reasoning,
               content: event.content,
               estimated_tokens: this.lastEstimatedUsage ?? undefined,
-              actual_tokens: event.usage
+              actual_tokens: event.usage as ApiUsage
             });
 
             await this.contextRepo.saveState();
