@@ -71,4 +71,34 @@ describe('Model Configuration & Window Parsing Tests', () => {
       expect(config.contextWindow).toBe(128000);
     });
   });
+
+  describe('getModelConfig 推理努力度 (Reasoning Effort) 校验与提取验证', () => {
+    it('当传入非法的推理努力度时，必须 Fail-Fast 抛出包含非法取值的明确 Error', () => {
+      process.env.AGENT_LLM_REASONING_EFFORT = 'extreme';
+      expect(() => getModelConfig('deepseek-v4-flash')).toThrow(
+        /不合法的 AGENT_LLM_REASONING_EFFORT 值/
+      );
+    });
+
+    it('当环境变量 AGENT_LLM_REASONING_EFFORT 未配置或为空白字符串时，必须平滑放行', () => {
+      // 1. 未配置情况 (undefined)
+      delete process.env.AGENT_LLM_REASONING_EFFORT;
+      const config1 = getModelConfig('deepseek-v4-flash');
+      expect(config1.reasoningEffort).toBeUndefined();
+
+      // 2. 空白字符串情况 (" ")
+      process.env.AGENT_LLM_REASONING_EFFORT = '   ';
+      const config2 = getModelConfig('deepseek-v4-flash');
+      expect(config2.reasoningEffort).toBeUndefined();
+    });
+
+    it('当传入合法的推理努力度字面量时，必须精准绑定至返回配置中', () => {
+      const validCases = ['low', 'max', 'disabled'] as const;
+      for (const val of validCases) {
+        process.env.AGENT_LLM_REASONING_EFFORT = val;
+        const config = getModelConfig('deepseek-v4-flash');
+        expect(config.reasoningEffort).toBe(val);
+      }
+    });
+  });
 });
