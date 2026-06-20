@@ -160,6 +160,39 @@ export class ExecuteCommandTool implements NativeTool {
         watch_patterns,
         onNotification: (event) => {
           process.stdout.write(`\n[事件通知] 任务 ${event.taskId} 触发通知: ${event.type}${event.pattern ? `, 模式: ${event.pattern}` : ''}\n`);
+          if (sessionContext) {
+            let summary = `Background command "${command}" triggered ${event.type} notification.`;
+            if (event.type === 'stalled') {
+              summary = `Background command "${command}" stalled (no output for watchdog period).`;
+            } else if (event.type === 'completed') {
+              summary = `Background command "${command}" completed.`;
+            } else if (event.type === 'watch_match' && event.pattern) {
+              summary = `Background command "${command}" matched pattern "${event.pattern}".`;
+            }
+
+            const xmlLines = [
+              '<system_notification>',
+              `  <event_type>${event.type}</event_type>`,
+              `  <task_id>${event.taskId}</task_id>`,
+              `  <summary>${summary}</summary>`
+            ];
+
+            if (event.pattern) {
+              xmlLines.push(`  <pattern>${event.pattern}</pattern>`);
+            }
+            if (event.output) {
+              xmlLines.push(`  <log_slice>${event.output}</log_slice>`);
+            }
+            xmlLines.push('</system_notification>');
+            const xmlContent = xmlLines.join('\n');
+
+            // 写入会话历史并广播事件
+            sessionContext.addNotification({
+              role: 'user',
+              content: xmlContent
+            });
+            sessionContext.emit('async_event', event);
+          }
         }
       },
       sessionId

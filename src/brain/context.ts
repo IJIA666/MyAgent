@@ -1,8 +1,10 @@
 import { createHash } from 'crypto';
+import { EventEmitter } from 'node:events';
 import type { ChatMessage } from './ports/LlmPort.js';
 import { buildSystemPrompt } from './prompts/prompts.js';
 import { ApprovalService } from './services/ApprovalService.js';
 import { AppConfig, WorkMode, getDefaultWorkMode } from '../config/index.js';
+
 
 // 显式重导出 ApiUsage 和 ContextTokenUsage 类型，避免在 ESM 下因类型擦除引发运行时加载错误
 export type { ApiUsage, ContextTokenUsage } from './ports/TokenEstimatorPort.js';
@@ -34,7 +36,7 @@ export function computeStringHash(text: string): string {
  * 1. 维护当前会话的消息历史（Message History）。
  * 2. 管理会话唯一标识（Session ID）。
  */
-export class SessionContext {
+export class SessionContext extends EventEmitter {
   private messageHistory: ChatMessage[] = [];
   private sessionId: string;
   private tenantId: string;
@@ -42,8 +44,60 @@ export class SessionContext {
   private recentFiles: string[] = [];
   /** 当前会话持有的工作安全模式，初始时从全局默认配置中拷贝 */
   private workMode: WorkMode;
-  /** 会话是否正在处理生命周期 Hook 中间件（忙状态并发锁） */
-  public isProcessing = false;
+  /** 会话是否正在处理生命周期 Hook 中间件（忙状态并发锁，内部存储变量） */
+  private _isProcessing = false;
+  /** 缓冲在 Hook 忙锁执行期间到达的后台系统通知 */
+  private pendingNotifications: ChatMessage[] = [];
+
+  /**
+   * 获取会话是否正在处理生命周期 Hook 中间件。
+   *
+   * @returns 忙状态标识
+   */
+  public get isProcessing(): boolean {
+    return this._isProcessing;
+  }
+
+  /**
+   * 设定会话是否正在处理生命周期 Hook 中间件。
+   * 当设为 false 释放锁时，会自动在微任务阶段触发暂存消息的 flush。
+   *
+   * @param val - 新的忙锁状态值
+   */
+  public set isProcessing(val: boolean) {
+    this._isProcessing = val;
+    if (!val) {
+      this.flushPendingNotifications();
+    }
+  }
+
+  /**
+   * 追加一条系统通知消息，若当前处于 Hook 管道忙碌状态则暂存，否则直接写入物理历史。
+   *
+   * @param message - 系统通知消息对象
+   */
+  public addNotification(message: ChatMessage): void {
+    if (this._isProcessing) {
+      this.pendingNotifications.push(message);
+    } else {
+      this.addMessage(message);
+    }
+  }
+
+  /**
+   * 物理将暂存的后台系统通知消息追加并刷入当前的对话历史栈。
+   * 使用 process.nextTick 延迟到当前 Tick 同步调用清空后，以规避 plugin-runner 同步覆写的风险。
+   */
+  private flushPendingNotifications(): void {
+    if (this.pendingNotifications.length > 0) {
+      process.nextTick(() => {
+        if (this.pendingNotifications.length > 0) {
+          this.messageHistory.push(...this.pendingNotifications);
+          this.pendingNotifications = [];
+        }
+      });
+    }
+  }
 
   private lastApiUsage: ApiUsage | null = null;
   private lastApiHistoryLength: number = 0;
@@ -61,6 +115,7 @@ export class SessionContext {
    * @param tenantId - 可选的租户标识，若不传则默认为 'default'
    */
   constructor(sessionId?: string, tenantId?: string) {
+    super();
     // 如果没有传入 sessionId，则使用当前时间戳作为默认会话标识
     this.sessionId = sessionId || Date.now().toString();
     this.tenantId = tenantId || 'default';

@@ -1,0 +1,19 @@
+- [x] 扩展 SessionContext 支持事件发射与暂存队列
+    - [x] 导入 `EventEmitter` 并使 `SessionContext` 继承它
+    - [x] 将 `isProcessing`（仅代表 Hook 中间件忙锁，防止脏写抛错）升级为带有 setter 触发机制的 getter/setter
+    - [x] 增加 `addNotification` 与 `flushPendingNotifications` 应对 Hook 执行期间（`isProcessing = true`）的事件写入积压，并在 `isProcessing` 设为 `false` 的 setter 中，利用 `process.nextTick` / `queueMicrotask` 延迟微任务 flush，以规避紧随其后同步执行的 `updateHistory` 覆写覆盖风险
+- [x] 改造 `terminal.ts` 的 `onNotification` 实现
+    - [x] 构建结构化合规的 XML 消息体，指明事件属性
+    - [x] 使用 `addNotification` 灌入会话上下文
+    - [x] 向外发射 `async_event` 事件
+- [x] 扩展 `SessionManager` 事件订阅接口
+    - [x] 增加 `onAsyncEvent` 透传监听 `SessionContext` 的 `async_event`
+- [x] 在 `CliFacade` 接入异步自动唤醒与熔断机制
+    - [x] 引入 `autoWakeupCount` 与 `hasPendingAsyncNotification` 状态
+    - [x] 在人类交互输入时重置计数器
+    - [x] 在空闲接收到事件时，触发 `runStreamLoop` 并锁定 Stdin
+    - [x] 在忙碌时记录积压状态，在 finally 块自动级联调度下一轮唤醒
+    - [x] 限制最大连续自动唤醒次数为 3 次，熔断时打印警告
+- [x] 实施验证与回归测试
+    - [x] 运行现有集成测试，确保无并发死锁与数据破坏
+    - [x] 编写测试脚本模拟后台任务通知并断言唤醒及熔断行为

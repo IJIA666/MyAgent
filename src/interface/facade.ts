@@ -17,6 +17,10 @@ export class CliFacade {
   private listener: InputListener;
   /** 当前大模型是否正在推理生成中 */
   private isGenerating = false;
+  /** 连续自动唤醒大模型的次数（无人值守熔断防御） */
+  private autoWakeupCount = 0;
+  /** 标识当前推理期间是否到达了积压的异步系统通知 */
+  private hasPendingAsyncNotification = false;
 
   /**
    * 构造函数，建立与 SessionManager 的绑定，并实例化键盘输入监听器。
@@ -139,6 +143,11 @@ export class CliFacade {
         this.listener.start();
       }
     });
+
+    // 订阅后台进程事件总线，注册自动唤醒与熔断控制器
+    this.session.onAsyncEvent(async () => {
+      await this.handleAsyncEvent();
+    });
   }
 
   /**
@@ -162,6 +171,9 @@ export class CliFacade {
    */
   private async handleLineSubmit(line: string): Promise<void> {
     let input = line.trim();
+
+    // 每次检测到人类用户主动输入交互时，重置自动唤醒计数器以清空无人值守累计次数
+    this.autoWakeupCount = 0;
 
     // 1. 退出指令检查
     if (input.toLowerCase() === 'exit' || input.toLowerCase() === 'quit') {
@@ -282,6 +294,58 @@ export class CliFacade {
       console.log(`\n${theme.error(`[系统故障] ${errorMsg}`)}\n`);
     } finally {
       this.isGenerating = false;
+
+      // 检测本轮推理生成期间是否积压了新的后台通知事件，若有则级联触发
+      if (this.hasPendingAsyncNotification) {
+        this.hasPendingAsyncNotification = false;
+
+        // 延迟 100ms 异步调起，避免在 finally 块中形成递归调用栈溢出或并发干扰
+        setTimeout(async () => {
+          if (!this.isGenerating) {
+            if (this.autoWakeupCount >= 3) {
+              console.log(`\n⚠️  \x1b[33m[系统提示] 检测到连续自动唤醒次数已达上限（3次），为防止 Token 无限消耗，已暂停自动唤醒，请人工介入。\x1b[0m\n`);
+              return;
+            }
+
+            this.autoWakeupCount++;
+            this.listener.pause();
+            try {
+              console.log(`\n\n📢 \x1b[36m[系统通知] 正在处理积压的后台任务更新，自动唤醒大模型进行研判（自动唤醒轮次: ${this.autoWakeupCount}/3）...\x1b[0m`);
+              await this.runStreamLoop();
+            } finally {
+              this.listener.resume();
+            }
+          }
+        }, 100);
+      }
+    }
+  }
+
+  /**
+   * 处理从底层会话总线分发的异步后台通知事件。
+   */
+  private async handleAsyncEvent(): Promise<void> {
+    if (this.isGenerating) {
+      // 忙碌状态：仅记录积压标识，避免产生竞态并发
+      this.hasPendingAsyncNotification = true;
+      return;
+    }
+
+    // 限制连续自动唤醒的最大上限（无人值守防御）
+    if (this.autoWakeupCount >= 3) {
+      console.log(`\n⚠️  \x1b[33m[系统提示] 检测到连续自动唤醒次数已达上限（3次），为防止 Token 无限消耗，已暂停自动唤醒，请人工介入。\x1b[0m\n`);
+      this.hasPendingAsyncNotification = false;
+      return;
+    }
+
+    this.autoWakeupCount++;
+    this.listener.pause(); // 挂起常规 Stdin 监听，防抢占
+
+    try {
+      console.log(`\n\n📢 \x1b[36m[系统通知] 收到后台任务更新，正在自动唤醒大模型进行研判（自动唤醒轮次: ${this.autoWakeupCount}/3）...\x1b[0m`);
+      await this.runStreamLoop();
+    } finally {
+      this.listener.resume(); // 自动推理完毕，恢复 Stdin
     }
   }
 }

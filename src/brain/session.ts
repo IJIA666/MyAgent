@@ -314,4 +314,13 @@ export class SessionManager {
   public getSystemPromptHash(): string {
     return this.agentLoop.getSystemPromptHash();
   }
+
+  /**
+   * 注册异步后台任务事件监听器。
+   *
+   * @param listener - 接收后台通知事件的监听器函数
+   */
+  public onAsyncEvent(listener: (event: unknown) => void): void {
+    this.context.on('async_event', listener);
+  }
 }
