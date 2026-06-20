@@ -7,6 +7,8 @@ import type { ApiUsage } from './ports/TokenEstimatorPort.js';
 import { ContextAdapter } from './adapters/index.js';
 import { purifyContent } from '../common/purify.js';
 import { PluginRegistry, HookEventName, runHookPipeline, type LlmRequest } from './plugins/index.js';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
 // 导入领域服务
 import { RuleManager } from './services/RuleManager.js';
@@ -143,6 +145,8 @@ export class AgentLoop {
   ): AsyncGenerator<AgentEvent, void, unknown> {
     // 初始化迭代计数器
     let iteration = 0;
+    // 追踪本次 chat 中是否执行过写操作工具
+    let hasWriteOperation = false;
 
     // 事件中转队列及推送回调，供插件安全发射流式交互事件
     const eventQueue: AgentEvent[] = [];
@@ -336,6 +340,12 @@ export class AgentLoop {
               const actualArgs = beforeToolResult.toolCall?.arguments ?? functionArgs;
               yield { type: 'tool_call_start', functionName, functionArgs: actualArgs };
 
+              // 检测是否执行了 write 类别工具
+              const toolInstance = this.toolRegistry.getTool(functionName);
+              if (toolInstance && toolInstance.securityCategory === 'write') {
+                hasWriteOperation = true;
+              }
+
               let toolResult = '';
               try {
                 const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs, this.context);
@@ -443,6 +453,22 @@ export class AgentLoop {
               this.context.updateLastApiUsage(event.usage as ApiUsage, this.context.getHistory().length);
             }
 
+            // PostRunHook：在完成响应后且存在写操作时运行后置 lint/typecheck 自测
+            if (hasWriteOperation) {
+              yield { type: 'thinking', content: '[PostRunHook] 正在执行修改后自动代码规范与类型检查自测...' };
+              const checkResult = await this.runPostRunCheck();
+              if (!checkResult.success) {
+                yield { type: 'thinking', content: `[PostRunHook] 校验未通过，正在将报错反馈给模型进行自我修复...\n${checkResult.output}` };
+                this.context.addMessage({
+                  role: 'user',
+                  content: `[系统自动质量强校验失败]\n检测到您刚刚的修改引入了代码规范或编译错误，请根据以下报错信息进行修正，修正后请重新编译或测试：\n\`\`\`\n${checkResult.output}\n\`\`\`\n注意：请勿忽略本报错，必须确保代码编译和 lint 完全通过。`
+                });
+                hasToolCalls = true; // 强制继续下一轮 ReAct 循环
+                break; // 退出当前 stream 消费，进入下一轮迭代
+              }
+              yield { type: 'thinking', content: '[PostRunHook] 静态规范及编译类型检查全部通过。' };
+            }
+
             const purifiedContext = snapshotContext.map(msg => {
               if (typeof msg.content === 'string') {
                 return {
@@ -508,6 +534,37 @@ export class AgentLoop {
 
     // 达到最大允许轮数依然没有完结退出，抛出死循环超载保护异常
     throw new Error(`超出了工具调用的最大迭代轮数限制（${this.maxIterations} 轮）。`);
+  }
+
+  /**
+   * 执行后置质量自测校验，对项目运行代码规范与类型检查。
+   *
+   * @returns 异步返回校验结果对象，包含是否成功以及控制台报错文本
+   */
+  private async runPostRunCheck(): Promise<{ success: boolean; output: string }> {
+    const execPromise = promisify(exec);
+    let output = '';
+    try {
+      // 1. 运行 ESLint 静态代码规范检查
+      const { stdout: lintStdout, stderr: lintStderr } = await execPromise('npm run lint', { cwd: process.cwd() });
+      output += lintStdout + lintStderr;
+    } catch (lintError: unknown) {
+      const err = lintError as { stdout?: string; stderr?: string; message?: string };
+      output += (err.stdout || '') + (err.stderr || '') + (err.message || '');
+      return { success: false, output: `ESLint 检查失败:\n${output}` };
+    }
+
+    try {
+      // 2. 运行 TypeScript 编译类型检查
+      const { stdout: tscStdout, stderr: tscStderr } = await execPromise('npx tsc --noEmit', { cwd: process.cwd() });
+      output += tscStdout + tscStderr;
+    } catch (tscError: unknown) {
+      const err = tscError as { stdout?: string; stderr?: string; message?: string };
+      const errorOutput = (err.stdout || '') + (err.stderr || '') + (err.message || '');
+      return { success: false, output: `TypeScript 类型检查失败:\n${errorOutput}` };
+    }
+
+    return { success: true, output };
   }
 
   /**

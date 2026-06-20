@@ -5,7 +5,9 @@
  */
 
 import { ExecuteCommandTool } from './terminal.js';
+import { GetCurrentTimeTool } from './time.js';
 
 export const systemTools = [
-  new ExecuteCommandTool()
+  new ExecuteCommandTool(),
+  new GetCurrentTimeTool()
 ];

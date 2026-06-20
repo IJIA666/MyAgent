@@ -4,6 +4,8 @@ import { systemTools } from './tools/system/index.js';
 import { getSkillTools } from './tools/skill/index.js';
 import type { SafetyCheckResult } from '../brain/plugins/plugin-types.js';
 import { SessionContext } from '../brain/context.js';
+import { secureResolveWritePath } from './tools/base.js';
+import { existsSync } from 'fs';
 import {
   BrowserNavigateTool,
   BrowserClickTool,
@@ -162,7 +164,53 @@ export class LocalFileSystemMcpServer {
         throw new Error(`虚拟 MCP Server 不支持工具: ${request.name}`);
       }
 
-      const resultText = await tool.execute(args, sessionContext);
+      // 底层高危操作安全硬拦截逻辑
+      if (sessionContext && sessionContext.approvalService) {
+        let isDangerous = false;
+        let warningMsg = '';
+
+        if (request.name === 'deletePath') {
+          isDangerous = true;
+          warningMsg = `智能体试图删除文件或目录。目标路径: "${args.targetPath}"`;
+        } else if (request.name === 'writeFile') {
+          const targetPath = args.targetPath;
+          if (typeof targetPath === 'string') {
+            try {
+              const safePath = secureResolveWritePath(targetPath);
+              if (existsSync(safePath)) {
+                isDangerous = true;
+                warningMsg = `智能体试图强行覆盖已有的文件。目标路径: "${targetPath}"`;
+              }
+            } catch {
+              // 路径解析越权或错误直接交给工具自身 execute 跑 checkSafety，这里跳过
+            }
+          }
+        }
+
+        if (isDangerous) {
+          const approvalId = `approve_dangerous_${Math.random().toString(36).substring(2, 9)}`;
+          const decision = await sessionContext.approvalService.wait(
+            approvalId,
+            { name: request.name, arguments: args },
+            undefined,
+            warningMsg
+          );
+
+          if (decision.action === 'deny') {
+            throw new Error(`用户拒绝了高危操作。工具: "${request.name}"，原因: 用户审批拒绝`);
+          }
+        }
+      }
+
+      // 为了防止在 DeletePathTool 内部再次发起重复审批，在已核准的前提下，我们将 approvalService 属性遮蔽掉
+      let contextToPass = sessionContext;
+      if (request.name === 'deletePath' && sessionContext) {
+        contextToPass = Object.assign(Object.create(Object.getPrototypeOf(sessionContext)), sessionContext, {
+          approvalService: undefined
+        });
+      }
+
+      const resultText = await tool.execute(args, contextToPass);
 
       return {
         content: [

@@ -4,49 +4,73 @@
  */
 
 import type { ChatMessage } from '../ports/LlmPort.js';
-import { loadGlobalRules, loadSkills } from '../contextLoader.js';
+import { loadGlobalRules, loadLocalRules, loadSkills } from '../contextLoader.js';
 
 // 预设的人设和最底层的不可撼动之规则
 const BASE_SYSTEM_PROMPT = `你是一个专业且精确的本地智能体助手。
 你严格在授权的工作区根目录下运行。
 你可以使用提供给你的本地工具读取文件、写入文件以及列出目录内容。
 
-**极其重要的指令：**
+**极其重要的核心工程红线指令 (MUST OBEY)：**
 1. 所有文件操作都必须严格限制在授权的工作区目录下。你的工具集会自动执行此项校验，一旦你尝试越权操作外部目录，工具将返回拒绝访问的错误。
 2. 如果工具在运行过程中返回错误（例如文件未找到、路径越权等），请分析错误原因并优雅地向用户解释，或者在修正参数后重新尝试调用。
-3. 请直接、专业且精准地回答用户问题，避免冗余的客套话或占位信息。
+3. 请直接、专业且精准地回答用户问题，避免冗余的客套话、假设性警告或占位信息。
 4. 【语言强制】你必须始终使用简体中文进行思考（内部逻辑和推理链）以及最终回复，仅在必要时保留英文的专业术语或代码片段。
-5. 【终端工具使用规范】你当前运行的宿主操作系统是 Windows。当你需要使用 execute_command 工具执行命令时：
+5. 【终端命令原子化与 Windows 安全】你当前运行的宿主操作系统是 Windows。当你需要使用 execute_command 工具执行命令时：
    - 必须且仅能执行单一、原子的 Windows 原生命令（例如使用 'tasklist' 替代 'top/ps'，使用 'ipconfig' 替代 'ifconfig'）。
-   - 严禁在命令中拼接任何复合连接符、重定向符或换行符（如 &、&&、|、||、;、<、>、\n 等），否则将被沙箱引擎强制拦截执行。`;
+   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符（如 &, &&, |, ||, ;, <, >, \\n 等）将多个独立操作拼接为单条长命令，否则将被沙箱引擎强制拦截执行。
+6. 【最小重构与零注释污染原则】
+   - 最小重构：仅针对请求的范围进行修改，绝对禁止顺便清理周围代码、增加未请求的 feature 或设计过度抽象。
+   - 零注释污染：修改代码时必须在 API 声明正上方编写严格的 TSDoc/JSDoc 注释（ JSDoc/TSDoc 必须移除 {type} 声明，参数用 @param name - 描述 语法，返回值描述采用 @returns 描述 语法），非必要不乱加注释，严禁对未修改的代码乱加或改动 JSDoc。
+7. 【专用工具优先】
+   - 凡是可用原生工具（如文件读写 read_file/write_to_file、目录查询 list_dir、ripgrep 检索 grep_search 等）完成的操作，绝对禁止调用通用的终端 Shell 工具（ExecuteCommandTool）执行 cat, sed, awk, find, grep 等文件操作。终端命令仅用于编译、跑测试等确实无法由原生工具覆盖的系统管理。`;
 
 /**
  * 组装并获取最终的系统级人设文本。
- * 此方法允许接收外部已加载的全局规则缓存，以维持会话锁定的 Byte-stable 哈希前缀。
- * 注意：项目局部规则已剥离，改为在 ContextAdapter 中动态注入至 user 消息前，以防破坏前置缓存。
+ * 使用 XML 标签在单 System 消息内构建三层物理与语义隔离架构：
+ * 1. stable: 核心稳定人设与指令红线
+ * 2. context: 工作区级的规则配置与技能大纲（相对稳定，仅在工作区改变或技能更新时失效）
+ * 3. volatile: 高频变动的动态瞬时参数（不予缓存，置于尾部作为牺牲层）
  * 
- * @param customGlobalRules - 可选的全局规则内容缓存，若不传则从磁盘加载最新的规则状态
- * @returns 完整的、准备用于发送给 LLM 的全局静态基线系统提示词字符串
+ * @param customGlobalRules - 可选的已缓存全局规则内容，若不传则自动从磁盘加载最新的全局规则
+ * @param customLocalRules - 可选的已缓存局部规则内容，若不传则自动从磁盘加载最新的局部规则
+ * @returns 组装好的符合三层 XML 结构且缓存友好的单个系统提示词字符串
  */
-export function buildSystemPrompt(customGlobalRules?: string): string {
-  // 使用数组收集所有区块片段
-  const parts: string[] = [BASE_SYSTEM_PROMPT];
+export function buildSystemPrompt(customGlobalRules?: string, customLocalRules?: string): string {
+  const parts: string[] = [];
 
-  // 1. 挂载全局级规则
+  // 1. stable (稳定人设层，绝对静态，100% 缓存命中)
+  parts.push(`<!-- 1. stable (稳定人设层，绝对静态，100% 缓存命中) -->\n${BASE_SYSTEM_PROMPT}`);
+
+  // 2. context (上下文环境层，工作区级稳定)
   const globalRules = customGlobalRules !== undefined ? customGlobalRules : loadGlobalRules();
-  if (globalRules) {
-    parts.push(`\n<global_rules>\n${globalRules}\n</global_rules>`);
-  }
-
-  // 2. 挂载全局技能目录大纲 (防范管中窥豹，保留全知视野)
+  const localRules = customLocalRules !== undefined ? customLocalRules : loadLocalRules();
   const allSkills = loadSkills();
-  if (allSkills.length > 0) {
-    // 提取所有技能名称和摘要供 LLM 建立全局感知
-    const indexLines = allSkills.map(s => `- ${s.name}: ${s.description}`);
-    parts.push(`\n<available_skills>\n${indexLines.join('\n')}\n</available_skills>`);
-  }
+  const indexLines = allSkills.length > 0
+    ? allSkills.map(s => `- ${s.name}: ${s.description}`).join('\n')
+    : '';
 
-  // 将所有片段拼装为一个长字符串
+  parts.push(`\n<!-- 2. context (上下文环境层，工作区级稳定) -->\n<context_rules>`);
+  if (indexLines) {
+    parts.push(`  <available_skills>\n${indexLines.split('\n').map(line => `    ${line}`).join('\n')}\n  </available_skills>`);
+  }
+  if (globalRules || localRules) {
+    const combinedRules = [globalRules, localRules].filter(Boolean).join('\n\n');
+    parts.push(`  <local_rules>\n${combinedRules.split('\n').map(line => `    ${line}`).join('\n')}\n  </local_rules>`);
+  }
+  parts.push(`</context_rules>`);
+
+  // 3. volatile (易变数据层，高频变动，不予缓存)
+  const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+  const cwdStr = process.cwd();
+  const osStr = process.platform === 'win32' ? 'Windows' : process.platform;
+  
+  parts.push(`\n<!-- 3. volatile (易变数据层，高频变动，不予缓存) -->\n<volatile_context>
+  <date>${dateStr}</date>
+  <cwd>${cwdStr}</cwd>
+  <os>${osStr}</os>
+</volatile_context>`);
+
   return parts.join('\n');
 }
 

@@ -3,7 +3,7 @@
  * 负责从物理磁盘中动态加载并缓存全局规则、项目局部规则和扩展沙盒技能。
  */
 
-import { existsSync, readFileSync, readdirSync, lstatSync, watch } from 'fs';
+import { existsSync, readFileSync, readdirSync, lstatSync, watch, statSync } from 'fs';
 import { join } from 'path';
 import matter from 'gray-matter';
 
@@ -12,20 +12,42 @@ const DEV_GLOBAL_RULES_PATH = 'D:\\Projects\\MyAgent\\.agent\\global_rules.md';
 const DEV_LOCAL_RULES_PATH = 'D:\\Projects\\MyAgent\\.agent\\rules\\guize.md';
 const DEV_SKILLS_DIR = 'D:\\Projects\\MyAgent\\.agent\\skills';
 
+// 设定单文件最大加载为 20KB (20480 字节)，防止 Token 溢出
+const RULE_MAX_BYTES = 20480;
+
+/**
+ * 安全地读取规则文件，若文件过大则进行物理截断并拼入标志语（Token 防爆熔断）。
+ *
+ * @param filePath - 待读取的规则文件路径
+ * @returns 截断后或完整的规则内容
+ */
+function readAndLimitFile(filePath: string): string {
+  try {
+    if (!existsSync(filePath)) {
+      return '';
+    }
+    const stat = statSync(filePath);
+    const rawContent = readFileSync(filePath, 'utf-8').trim();
+    
+    // 熔断拦截逻辑
+    if (stat.size > RULE_MAX_BYTES) {
+      const truncated = rawContent.slice(0, RULE_MAX_BYTES);
+      return `${truncated}\n\n[...系统规则过长，已被安全模块截断，仅保留前20KB...]`;
+    }
+    return rawContent;
+  } catch (e) {
+    console.warn(`[ContextLoader] 安全读取规则文件失败: ${filePath}, 错误: ${e}`);
+    return '';
+  }
+}
+
 /**
  * 加载全局规则 (Global Rules)。
  * 
  * @returns 成功读取时返回全局规则内容的字符串，否则返回空字符串
  */
 export function loadGlobalRules(): string {
-  if (existsSync(DEV_GLOBAL_RULES_PATH)) {
-    try {
-      return readFileSync(DEV_GLOBAL_RULES_PATH, 'utf-8').trim();
-    } catch (e) {
-      console.warn(`[ContextLoader] 读取全局规则失败: ${e}`);
-    }
-  }
-  return '';
+  return readAndLimitFile(DEV_GLOBAL_RULES_PATH);
 }
 
 /**
@@ -34,14 +56,7 @@ export function loadGlobalRules(): string {
  * @returns 成功读取时返回局部规则内容的字符串，否则返回空字符串
  */
 export function loadLocalRules(): string {
-  if (existsSync(DEV_LOCAL_RULES_PATH)) {
-    try {
-      return readFileSync(DEV_LOCAL_RULES_PATH, 'utf-8').trim();
-    } catch (e) {
-      console.warn(`[ContextLoader] 读取局部规则失败: ${e}`);
-    }
-  }
-  return '';
+  return readAndLimitFile(DEV_LOCAL_RULES_PATH);
 }
 
 /**
