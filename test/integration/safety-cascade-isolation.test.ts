@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { resolve } from 'path';
 import { existsSync, mkdirSync, rmSync } from 'fs';
-import { initWorkspace } from '../../src/action/tools.js';
-import { SessionContext } from '../../src/brain/context.js';
-import { ExecuteCommandTool } from '../../src/action/tools/system/terminal.js';
-import { HumanApprovalPlugin } from '../../src/brain/plugins/HumanApprovalPlugin.js';
-import { HookEventName, HookContext } from '../../src/brain/plugins/plugin-types.js';
+import { initWorkspace } from '../../src/adapters/tools/tools.js';
+import { SessionContext } from '../../src/core/domain/context.js';
+import { ExecuteCommandTool } from '../../src/adapters/tools/tools/system/terminal.js';
+import { HumanApprovalPlugin } from '../../src/adapters/plugins/HumanApprovalPlugin.js';
+import { HookEventName, HookContext } from '../../src/core/usecases/plugin-types.js';
 
 describe('安全隔离与级联熔断集成测试', () => {
   const testDir = resolve(__dirname, 'temp_integration_dir');

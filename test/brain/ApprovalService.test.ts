@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ApprovalService } from '../../src/brain/services/ApprovalService.js';
+import { ApprovalService } from '../../src/core/usecases/ApprovalService.js';
 
 describe('ApprovalService Unit Tests', () => {
   let service: ApprovalService;

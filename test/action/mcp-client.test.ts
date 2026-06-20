@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { McpToolManager } from '../../src/action/mcp-client.js';
+import { McpToolManager } from '../../src/adapters/tools/mcp-client.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 interface ExposedMcpToolManager {

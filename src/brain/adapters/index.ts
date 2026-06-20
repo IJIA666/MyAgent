@@ -3,5 +3,5 @@
  * 导出适配器接口及其默认实现，以供 SessionManager 引入使用。
  */
 
-export * from './ContextAdapter.js';
-export * from './DefaultContextAdapter.js';
+export * from '../../ports/driven/ContextAdapter.js';
+export * from '../../adapters/context/DefaultContextAdapter.js';

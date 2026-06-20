@@ -3,13 +3,13 @@ import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import { existsSync, rmSync } from 'fs';
 import { resolve } from 'path';
 import { BrowserContext, Page } from 'playwright';
-import { SessionContext } from '../../src/brain/context.js';
+import { SessionContext } from '../../src/core/domain/context.js';
 import {
   BrowserSession,
   generateAriaSnapshot,
   BrowserEnsureLoginTool,
   BrowserGetTextTool
-} from '../../src/action/tools/browser/browser-action.js';
+} from '../../src/adapters/tools/tools/browser/browser-action.js';
 
 describe('BrowserSession 多租户隔离集成测试', () => {
   const testBaseDir = resolve(process.cwd(), `.myagent/browser-session-multitenant-test-${Date.now()}`);

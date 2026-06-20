@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { resolve } from 'path';
-import { LocalFileSystemMcpServer } from '../../src/action/virtual-mcp.js';
-import { SessionContext } from '../../src/brain/context.js';
-import { initWorkspace } from '../../src/action/tools/base.js';
+import { LocalFileSystemMcpServer } from '../../src/adapters/tools/virtual-mcp.js';
+import { SessionContext } from '../../src/core/domain/context.js';
+import { initWorkspace } from '../../src/adapters/tools/tools/base.js';
 
 describe('高危操作安全硬拦截单元测试', () => {
   let mcpServer: LocalFileSystemMcpServer;

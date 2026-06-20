@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { DefaultContextAdapter } from '../../../src/brain/adapters/DefaultContextAdapter.js';
+import { DefaultContextAdapter } from '../../../src/adapters/context/DefaultContextAdapter.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 
 describe('DefaultContextAdapter 单元测试', () => {

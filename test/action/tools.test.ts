@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { resolve, join } from 'path';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
-import { initWorkspace, secureResolvePath, ReadFileTool } from '../../src/action/tools.js';
-import { WriteFileTool, EditFileTool } from '../../src/action/tools/filesystem/file-system.js';
-import { SessionContext } from '../../src/brain/context.js';
+import { initWorkspace, secureResolvePath, ReadFileTool } from '../../src/adapters/tools/tools.js';
+import { WriteFileTool, EditFileTool } from '../../src/adapters/tools/tools/filesystem/file-system.js';
+import { SessionContext } from '../../src/core/domain/context.js';
 
 describe('安全沙箱 tools.ts 单元测试', () => {
   const mockRootDir = resolve('D:\\authorized\\path');

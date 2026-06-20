@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { GetCurrentTimeTool } from '../../src/action/tools/system/time.js';
+import { GetCurrentTimeTool } from '../../src/adapters/tools/tools/system/time.js';
 
 describe('GetCurrentTimeTool 单元测试', () => {
   let toolInstance: GetCurrentTimeTool;

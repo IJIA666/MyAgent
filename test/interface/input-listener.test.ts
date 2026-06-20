@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { InputListener } from '../../src/interface/io/input-listener.js';
+import { InputListener } from '../../src/adapters/input/interface/io/input-listener.js';
 
 describe('InputListener Dependency Injection & Lifecycle Tests', () => {
   let mockStdin: PassThrough;

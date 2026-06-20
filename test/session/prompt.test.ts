@@ -5,8 +5,8 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, writeFileSync, readFileSync } from 'fs';
-import { buildSystemPrompt } from '../../src/brain/prompts/prompts.js';
-import { SessionContext } from '../../src/brain/context.js';
+import { buildSystemPrompt } from '../../src/core/usecases/prompts.js';
+import { SessionContext } from '../../src/core/domain/context.js';
 
 describe('System Prompt 三层 XML 缓存架构单元测试', () => {
   const globalRulesPath = 'D:\\Projects\\MyAgent\\.agent\\global_rules.md';

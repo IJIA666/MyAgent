@@ -7,15 +7,15 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { resolve, join } from 'path';
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
-import { initWorkspace } from '../../src/action/tools.js';
-import { CreateDirectoryTool, DeletePathTool, MovePathTool, CopyPathTool } from '../../src/action/tools/filesystem/directory-manager.js';
-import { ReadManyFilesTool } from '../../src/action/tools/filesystem/read-many-files.js';
-import { ApplyPatchTool } from '../../src/action/tools/filesystem/apply-patch.js';
-import { GitShowStatusTool } from '../../src/action/tools/git/git-show-status.js';
-import { GitShowDiffTool } from '../../src/action/tools/git/git-show-diff.js';
-import { GitShowLogTool } from '../../src/action/tools/git/git-show-log.js';
-import { ApprovalService } from '../../src/brain/services/ApprovalService.js';
-import { ReadFileTool } from '../../src/action/tools/filesystem/file-system.js';
+import { initWorkspace } from '../../src/adapters/tools/tools.js';
+import { CreateDirectoryTool, DeletePathTool, MovePathTool, CopyPathTool } from '../../src/adapters/tools/tools/filesystem/directory-manager.js';
+import { ReadManyFilesTool } from '../../src/adapters/tools/tools/filesystem/read-many-files.js';
+import { ApplyPatchTool } from '../../src/adapters/tools/tools/filesystem/apply-patch.js';
+import { GitShowStatusTool } from '../../src/adapters/tools/tools/git/git-show-status.js';
+import { GitShowDiffTool } from '../../src/adapters/tools/tools/git/git-show-diff.js';
+import { GitShowLogTool } from '../../src/adapters/tools/tools/git/git-show-log.js';
+import { ApprovalService } from '../../src/core/usecases/ApprovalService.js';
+import { ReadFileTool } from '../../src/adapters/tools/tools/filesystem/file-system.js';
 
 describe('新增原生内置工具单元测试', () => {
   const testDir = resolve('./test_action_new_tools_temp');
@@ -71,7 +71,16 @@ describe('新增原生内置工具单元测试', () => {
     await expect(tool.execute({ targetPath: '../../outside.txt' })).rejects.toThrow('拒绝访问');
 
     // 2. 挂起放行 (once)
-    const mockContext = { approvalService };
+    const mockContext = {
+      waitApproval: async (
+        approvalId: string,
+        actionInfo: { name: string; arguments?: Record<string, unknown> },
+        options: unknown,
+        warningMsg?: string
+      ) => {
+        return approvalService.wait(approvalId, actionInfo, options, warningMsg);
+      }
+    };
     const waitPromise = tool.execute({ targetPath: 'delete_me.txt' }, mockContext);
     
     // 挂起中，文件仍应该存在

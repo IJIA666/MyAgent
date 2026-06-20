@@ -1,10 +1,11 @@
-import { SessionManager } from './brain/index.js';
-import { McpToolManager, initWorkspace } from './action/index.js';
+import { SessionManager } from './core/usecases/session.js';
+import { McpToolManager, initWorkspace } from './adapters/tools/index.js';
 import { loadConfig, ensureConfigFiles } from './config/index.js';
-import { startCli } from './interface/index.js';
-import { theme } from './interface/views/theme.js';
-import { OpenAiLlmAdapter } from './infrastructure/llm/OpenAiLlmAdapter.js';
-import { TiktokenEstimator } from './infrastructure/llm/TiktokenEstimator.js';
+import { startCli } from './adapters/input/interface/index.js';
+import { theme } from './adapters/input/interface/views/theme.js';
+import { OpenAiLlmAdapter } from './adapters/llm/OpenAiLlmAdapter.js';
+import { TiktokenEstimator } from './adapters/llm/TiktokenEstimator.js';
+import { abortSessionTasks } from './adapters/tools/tools/system/terminal-engine.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -40,7 +41,7 @@ async function main() {
     await mcpManager.connectAll();
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
-    session = new SessionManager(appConfig.llm, llmAdapter, tokenEstimator, mcpManager, undefined, appConfig);
+    session = new SessionManager(appConfig.llm, llmAdapter, tokenEstimator, mcpManager, undefined, appConfig, abortSessionTasks);
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);
     console.log(theme.error(`[错误] 初始化会话管理器失败：${errorMsg}`));

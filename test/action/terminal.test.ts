@@ -4,7 +4,7 @@
 
 import { describe, test, expect, beforeAll, beforeEach } from 'vitest';
 import { resolve } from 'path';
-import { initWorkspace } from '../../src/action/tools.js';
+import { initWorkspace } from '../../src/adapters/tools/tools.js';
 import {
   ExecuteCommandTool,
   extractSafePrefix,
@@ -14,9 +14,9 @@ import {
   setWorkMode,
   saveWorkMode,
   loadWorkMode
-} from '../../src/action/tools/system/terminal.js';
-import { validateCommand, validateCwd } from '../../src/action/tools/system/terminal-guard.js';
-import { SessionContext } from '../../src/brain/context.js';
+} from '../../src/adapters/tools/tools/system/terminal.js';
+import { validateCommand, validateCwd } from '../../src/adapters/tools/tools/system/terminal-guard.js';
+import { SessionContext } from '../../src/core/domain/context.js';
 
 describe('Terminal Tool 单元测试', () => {
   const mockRootDir = resolve('D:\\authorized\\path_terminal_test');

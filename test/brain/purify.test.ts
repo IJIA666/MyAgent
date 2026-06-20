@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import { purifyContent } from '../../src/common/purify.js';
-import { renderContentWithWidgets } from '../../src/interface/cli.js';
+import { renderContentWithWidgets } from '../../src/adapters/input/interface/cli.js';
 
 describe('净化与折叠微件渲染测试', () => {
   test('purifyContent 应当正确将冗长规则/技能替换为占位符，并剔除系统定界语', () => {

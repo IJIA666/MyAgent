@@ -3,7 +3,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { writeFileSync, rmSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { BrowserDetector } from '../../src/action/tools/browser/browser-detector.js';
+import { BrowserDetector } from '../../src/adapters/tools/tools/browser/browser-detector.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

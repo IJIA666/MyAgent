@@ -5,7 +5,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, writeFileSync, readFileSync } from 'fs';
-import { loadGlobalRules, loadLocalRules } from '../../src/brain/contextLoader.js';
+import { loadGlobalRules, loadLocalRules } from '../../src/core/usecases/contextLoader.js';
 
 describe('ContextLoader 规则熔断单元测试', () => {
   const globalRulesPath = 'D:\\Projects\\MyAgent\\.agent\\global_rules.md';

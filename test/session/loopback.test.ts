@@ -8,13 +8,13 @@
 
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { resolve } from 'path';
-import { initWorkspace } from '../../src/action/tools.js';
-import { setWorkMode } from '../../src/action/tools/system/terminal.js';
-import { SessionContext } from '../../src/brain/context.js';
-import { ExecuteCommandTool } from '../../src/action/tools/system/terminal.js';
-import * as terminalEngine from '../../src/action/tools/system/terminal-engine.js';
-import { CliFacade } from '../../src/interface/facade.js';
-import { SessionManager } from '../../src/brain/session.js';
+import { initWorkspace } from '../../src/adapters/tools/tools.js';
+import { setWorkMode } from '../../src/adapters/tools/tools/system/terminal.js';
+import { SessionContext } from '../../src/core/domain/context.js';
+import { ExecuteCommandTool } from '../../src/adapters/tools/tools/system/terminal.js';
+import * as terminalEngine from '../../src/adapters/tools/tools/system/terminal-engine.js';
+import { CliFacade } from '../../src/adapters/input/interface/facade.js';
+import { SessionManager } from '../../src/core/usecases/session.js';
 
 interface PrivateCliFacade {
   isGenerating: boolean;

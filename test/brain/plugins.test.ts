@@ -8,16 +8,15 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { HookEventName, HookContext, TokenWatermarkPlugin, JitRulesPlugin, TracerLogPlugin, LoopPreventionPlugin } from '../../src/brain/plugins/index.js';
-import { runHookPipeline } from '../../src/brain/plugins/plugin-runner.js';
-import { SessionContext } from '../../src/brain/context.js';
-import type { CompactionService } from '../../src/brain/services/CompactionService.js';
+import { TokenWatermarkPlugin, JitRulesPlugin, TracerLogPlugin, LoopPreventionPlugin } from '../../src/adapters/plugins/index.js';
+import { HookEventName, HookContext, LlmRequest } from '../../src/core/usecases/plugin-types.js';
+import { runHookPipeline } from '../../src/core/usecases/plugin-runner.js';
+import { SessionContext } from '../../src/core/domain/context.js';
+import type { CompactionService } from '../../src/core/usecases/CompactionService.js';
 import type { LlmConfig } from '../../src/config/index.js';
-import type { ToolDispatcher } from '../../src/brain/services/ToolDispatcher.js';
-import type { AgentTracer } from '../../src/brain/tracer.js';
-import type { TokenEstimatorPort } from '../../src/brain/ports/TokenEstimatorPort.js';
-
-import type { ChatCompletionCreateParams } from 'openai/resources/chat/completions.js';
+import type { ToolDispatcher } from '../../src/core/usecases/ToolDispatcher.js';
+import type { AgentTracer } from '../../src/core/domain/tracer.js';
+import type { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
 
 describe('Plugins Lifecycle & Action Tests', () => {
   let sessionContext: SessionContext;
@@ -40,12 +39,12 @@ describe('Plugins Lifecycle & Action Tests', () => {
       const plugin = new TokenWatermarkPlugin(mockCompactionService, mockTokenEstimator, () => mockLlmConfig);
 
       // 制造一个模拟的 messages 数组使得估算的 token 数超过限额
-      const llmRequest = {
+      const llmRequest: LlmRequest = {
         messages: [
           { role: 'system', content: 'system-prompt' },
           { role: 'user', content: 'x'.repeat(100) } // 大量文本
         ]
-      } as unknown as ChatCompletionCreateParams;
+      };
 
       const context: HookContext = {
         sessionContext,

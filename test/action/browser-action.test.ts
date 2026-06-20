@@ -16,7 +16,7 @@ import {
   BrowserClickTool,
   BrowserTypeTool,
   BrowserEnsureLoginTool
-} from '../../src/action/tools/browser/browser-action.js';
+} from '../../src/adapters/tools/tools/browser/browser-action.js';
 
 describe('BrowserAction 浏览器自动化工具集成测试', () => {
   let remoteBrowser: Browser | null = null;
