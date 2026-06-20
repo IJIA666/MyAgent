@@ -78,13 +78,15 @@ export class InputListener {
 
   /**
    * 初始化并启动基于 stdin/stdout 的交互监听。
+   *
+   * @param paused - 是否在重建后立即保持挂起暂停状态，默认不挂起
    */
-  public start(): void {
-    this.isPaused = false;
+  public start(paused = false): void {
+    this.isPaused = paused;
     try {
-      // 在恢复或启动时，如果有被 pause 挂起的流，显式执行 resume 唤醒以恢复正常读取
+      // 在恢复或启动时，如果有被 pause 挂起的流，且不需要保持暂停，显式执行 resume 唤醒以恢复正常读取
       const stream = this.inputStream as unknown as { resume?: () => void };
-      if (typeof stream.resume === 'function') {
+      if (!paused && typeof stream.resume === 'function') {
         stream.resume();
       }
       // 在创建新 readline 之前，同步排空物理输入流中所有积压的数据，防止重建后的积压数据溢出

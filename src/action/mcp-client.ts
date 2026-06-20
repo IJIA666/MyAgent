@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { McpConfig, McpServerEntry, buildSubprocessEnv } from '../config/index.js';
 import { Readable } from 'node:stream';
+import { execSync } from 'node:child_process';
 // 系统本地内置文件操作及技能载入工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
 const BUILTIN_TOOL_NAMES = new Set([
   'readFile',
@@ -23,10 +24,33 @@ export class McpToolManager {
   private config: McpConfig;
 
   /**
-   * 具名的信号监听回调硬引用，防止重复监听与内存泄露
+   * 异步的信号监听回调，用于 SIGINT/SIGTERM 信号
    */
   private cleanupHandler = () => {
     this.close().catch(() => {});
+  };
+
+  /**
+   * 同步的 exit 事件回调。
+   * process 'exit' 事件中 async/await 无效，必须用同步方式清理。
+   * 通过 execSync('taskkill /T /F') 递归杀死所有 MCP 子进程树。
+   */
+  private syncExitHandler = () => {
+    if (process.platform !== 'win32') return;
+    try {
+      for (const conn of this.connections.values()) {
+        const pid = conn.transport?.pid;
+        if (pid) {
+          try {
+            execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
+          } catch {
+            // 进程可能已退出，忽略
+          }
+        }
+      }
+    } catch {
+      // 静默忽略
+    }
   };
 
   /**
@@ -37,8 +61,10 @@ export class McpToolManager {
   constructor(config: McpConfig) {
     this.config = config;
 
-    // 绑定具名的生命周期系统信号处理器，防止产生僵尸进程
-    process.on('exit', this.cleanupHandler);
+    // 绑定生命周期信号处理器，防止产生僵尸进程
+    // exit 使用同步处理器（因为 exit 事件中 async 无效）
+    process.on('exit', this.syncExitHandler);
+    // SIGINT/SIGTERM 使用异步处理器
     process.on('SIGINT', this.cleanupHandler);
     process.on('SIGTERM', this.cleanupHandler);
   }
@@ -274,7 +300,7 @@ export class McpToolManager {
     this.isClosed = true;
 
     // 立即注销全局监听器，防止内存泄露
-    process.off('exit', this.cleanupHandler);
+    process.off('exit', this.syncExitHandler);
     process.off('SIGINT', this.cleanupHandler);
     process.off('SIGTERM', this.cleanupHandler);
 
@@ -291,7 +317,8 @@ export class McpToolManager {
 
   /**
    * 优雅销毁单一 MCP 服务连接。
-   * 包含 Stdin EOF 触发、3 秒异步自毁等待和 client 连接释放三个完整执行动作。
+   * 先记录子进程 PID，然后执行 transport.close() 和 client.close()，
+   * 最后在 Windows 上使用 taskkill /T /F 递归杀死整棵进程树以防僵尸进程。
    * 
    * @param name - 被销毁服务的名称
    * @param conn - 客户端与传输层句柄对象
@@ -299,7 +326,10 @@ export class McpToolManager {
   private async shutdownConnection(name: string, conn: { client: Client; transport?: StdioClientTransport }): Promise<void> {
     console.log(`[MCP Client] 正在优雅关闭服务: [${name}]`);
     
-    // 1. 关闭传输管道的 stdin，发出 EOF 信号以触发优雅自毁
+    // 1. 关闭前记录子进程 PID，用于后续强杀兜底
+    const pid = conn.transport?.pid ?? null;
+
+    // 2. 关闭传输管道（触发 SDK 内置的 stdin EOF → SIGTERM → SIGKILL 三段式关闭）
     try {
       if (conn.transport) {
         await conn.transport.close();
@@ -308,16 +338,25 @@ export class McpToolManager {
       console.error(`[MCP Client] 关闭 [${name}] 传输管道时出错:`, e);
     }
 
-    // 2. 异步等待 3 秒缓冲退出时间，使进程有足够时间收尾
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    // 3. 彻底释放客户端协议资源
+    // 3. 释放客户端协议资源
     try {
       if (conn.client) {
         await conn.client.close();
       }
     } catch (e) {
       console.error(`[MCP Client] 关闭 [${name}] 客户端协议时出错:`, e);
+    }
+
+    // 4. Windows 进程树强杀兜底：taskkill /PID <pid> /T /F 递归杀死整棵进程树
+    //    SDK 的 SIGTERM/SIGKILL 在 Windows 上只能杀死直接子进程（如 uv），
+    //    无法杀死 uv 派生的孙进程（如 python），导致僵尸进程。
+    if (pid && process.platform === 'win32') {
+      try {
+        execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
+        console.log(`[MCP Client] [${name}] 进程树已强制终止 (PID: ${pid})`);
+      } catch {
+        // PID 可能已经退出，静默忽略
+      }
     }
   }
 }

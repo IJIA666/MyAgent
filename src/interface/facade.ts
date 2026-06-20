@@ -49,6 +49,10 @@ export class CliFacade {
       this.listener.close();
 
       const decision = await new Promise<'once' | 'always' | 'deny'>((resolve) => {
+        // 创建临时接口前，显式唤醒 stdin 流，防止之前实例关闭导致流处于暂停状态
+        if (typeof process.stdin.resume === 'function') {
+          process.stdin.resume();
+        }
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout
@@ -119,8 +123,8 @@ export class CliFacade {
       // 直接将外部用户的决策通过 resolve 回传至 ApprovalService 唤醒内核
       this.session.approvalService.resolve(id, { action: decision });
 
-      // 物理重建全局监听器，由于当前还在生成推理中，重建后的实例会自动保持 pause 状态，不会展示 Prompt 提示符
-      this.listener.start();
+      // 物理重建全局监听器，由于当前还在生成推理中，重建后的实例需要保持 pause 状态，防止抢占 stdin 和重复展示提示符
+      this.listener.start(true);
     });
 
     // 注册浏览器人机风控协作的黄色高亮阻塞干预回调

@@ -235,7 +235,7 @@ export class SessionManager {
   }
 
   /**
-   * 关闭会话，终止推理流、清理挂起审批并强制终止所有后台子进程。
+   * 关闭会话，终止推理流、清理挂起审批、强制终止所有后台子进程并关闭 MCP 连接。
    *
    * @returns 无返回值的 Promise
    */
@@ -243,6 +243,11 @@ export class SessionManager {
     this.abort();
     this.approvalService.rejectAll('Session is closing');
     await abortSessionTasks(this.context.getSessionId());
+
+    // 关闭所有 MCP 子进程连接，防止产生僵尸进程
+    if (this.mcpManager) {
+      await this.mcpManager.close();
+    }
   }
 
   /**
