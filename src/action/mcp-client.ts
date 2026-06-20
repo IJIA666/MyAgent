@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { McpConfig, McpServerEntry, buildSubprocessEnv } from '../config/index.js';
+import { Readable } from 'node:stream';
 // 系统本地内置文件操作及技能载入工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
 const BUILTIN_TOOL_NAMES = new Set([
   'readFile',
@@ -80,12 +81,21 @@ export class McpToolManager {
       capabilities: {}
     });
 
-    // 使用白名单机制构建安全的子进程环境变量
+    // 使用白名单机制构建安全的子进程环境变量，并指定 stderr: 'pipe'
     const transport = new StdioClientTransport({
       command: config.command,
       args: config.args || [],
-      env: buildSubprocessEnv(config.env)
+      env: buildSubprocessEnv(config.env),
+      stderr: "pipe"
     });
+
+    // 动态劫持子进程 stderr 输出以监控 Fail-Fast 权限异常
+    let stderrLog = "";
+    if (transport.stderr) {
+      (transport.stderr as Readable).on("data", (chunk: Buffer) => {
+        stderrLog += chunk.toString("utf8");
+      });
+    }
 
     console.log(`[MCP Client] 正在启动并连接到 Server [${name}]: ${config.command} ${config.args?.join(' ')}`);
     try {
@@ -93,7 +103,18 @@ export class McpToolManager {
       console.log(`[MCP Client] [${name}] 握手成功，连接已建立。`);
       this.connections.set(name, { client, transport });
     } catch (e) {
-      console.error(`[MCP Client] [${name}] 连接失败:`, e);
+      if (stderrLog.includes("requires Administrator privileges")) {
+        console.log('\n\x1b[31m%s\x1b[0m', `================================================================================`);
+        console.log('\x1b[31m%s\x1b[0m', `[提示] 外部服务 [${name}] 启动失败！`);
+        console.log('\x1b[31m%s\x1b[0m', `[原因] 该系统监控服务需要 Windows 管理员特权，但当前 IJIA Agent 以普通权限运行。`);
+        console.log('\x1b[31m%s\x1b[0m', `[解决] 请以管理员身份重新运行您的终端（如“以管理员身份运行 PowerShell”），再启动 IJIA Agent。`);
+        console.log('\x1b[31m%s\x1b[0m', `================================================================================\n`);
+      } else {
+        console.error(`[MCP Client] [${name}] 连接失败:`, e);
+        if (stderrLog.trim()) {
+          console.error(`[MCP Client] [${name}] 错误日志:\n${stderrLog.trim()}`);
+        }
+      }
     }
   }
 
