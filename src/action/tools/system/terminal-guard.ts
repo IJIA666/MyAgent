@@ -2,10 +2,11 @@
  * 终端执行安全防护拦截网关。
  * 核心职责：
  * 1. 基于硬编码正则防御复合连接符与注入式命令；
- * 2. 校验进程的当前工作目录（cwd）在沙箱保护区内的合法边界。
+ * 2. 校验进程的当前工作目录（cwd）在沙箱保护区内的合法边界；
+ * 3. 剥离前导环境变量与嵌套外壳（env/sudo/sh/bash等），识别核心子命令。
  */
 
-import { resolve, sep } from 'path';
+import { resolve, sep, isAbsolute } from 'path';
 import { getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 
 /**
@@ -101,5 +102,119 @@ export const HARDLINE_PATTERNS = /\b(rm\s+-(?:[rR][fF]|[fF][rR])\s+(\/|\*|~)|\bd
  */
 export function isHardlineDangerous(command: string): boolean {
   return HARDLINE_PATTERNS.test(command);
+}
+
+/**
+ * 剔除命令前导的环境变量赋值。
+ * 
+ * @param command - 原始命令文本
+ * @returns 剔除环境变量后的干净命令文本
+ */
+export function stripLeadingEnvAssignments(command: string): string {
+  let trimmed = command.trim();
+  const envPattern = /^[a-zA-Z_][a-zA-Z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s'"]+)\s+/;
+  while (envPattern.test(trimmed)) {
+    trimmed = trimmed.replace(envPattern, '').trim();
+  }
+  return trimmed;
+}
+
+/**
+ * 递归剥离命令的嵌套外壳（env, sudo, exec, sh, bash等），提取出真正执行的核心命令内容。
+ * 
+ * @param command - 干净的命令文本
+ * @returns 剥离嵌套后的核心指令内容
+ */
+export function unboxNestedCommand(command: string): string {
+  let current = command.trim();
+  
+  // 先剥离前导环境变量
+  current = stripLeadingEnvAssignments(current);
+
+  // 递归剥离前置前缀 env, sudo, exec
+  const prefixPattern = /^(env|sudo|exec)\s+/i;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const stripped = stripLeadingEnvAssignments(current);
+    if (stripped !== current) {
+      current = stripped;
+      changed = true;
+    }
+    
+    const match = current.match(prefixPattern);
+    if (match) {
+      current = current.slice(match[0].length).trim();
+      changed = true;
+    }
+  }
+
+  // 剥离 sh -c / bash -c / cmd /c 及其对应的包围引号
+  const shellPattern = /^(sh|bash|cmd|powershell|pwsh)\s+(?:-c|-Command|\/c)\s+('[^']*'|"[^"]*"|`[^`]*`|[^\s'"`]+)/i;
+  const shellMatch = current.match(shellPattern);
+  if (shellMatch) {
+    let innerCmd = shellMatch[2].trim();
+    if ((innerCmd.startsWith('"') && innerCmd.endsWith('"')) ||
+        (innerCmd.startsWith("'") && innerCmd.endsWith("'")) ||
+        (innerCmd.startsWith("`") && innerCmd.endsWith("`"))) {
+      innerCmd = innerCmd.slice(1, -1).trim();
+    }
+    return unboxNestedCommand(innerCmd);
+  }
+
+  return current;
+}
+
+/**
+ * 分析命令行，检测敏感词和潜在的安全跨盘逃逸，生成 Advisory Warnings。
+ * 
+ * @param command - 原始命令行
+ * @returns 警告信息数组，若无则返回空数组
+ */
+export function detectAdvisoryWarnings(command: string): string[] {
+  const warnings: string[] = [];
+  
+  const unboxed = unboxNestedCommand(command);
+  const parts = unboxed.split(/\s+/);
+  if (parts.length === 0) return [];
+  
+  const exe = parts[0];
+  const exeName = exe.replace(/\\|\//g, sep).split(sep).pop() || '';
+  
+  // 敏感二进制名检测
+  const sensitiveExes = /^(rm|dd|mkfs|format|del|erase|rd|rmdir)$/i;
+  if (sensitiveExes.test(exeName)) {
+    warnings.push(`检测到敏感系统命令/二进制名: "${exeName}"。已放行，请谨慎操作。`);
+  }
+  
+  // 跨盘防沙箱穿透与绝对路径真实解析校验
+  const rootDir = getAuthorizedDir();
+  if (rootDir) {
+    for (const part of parts.slice(1)) {
+      const cleanPart = part.replace(/^['"`]|['"`]$/g, '');
+      
+      // 判断是否是绝对路径或者含有盘符特征
+      if (isAbsolute(cleanPart) || /^[a-zA-Z]:\\/.test(cleanPart)) {
+        try {
+          const resolvedPath = getPhysicalRealPath(cleanPart);
+          const rootVolume = rootDir.slice(0, 3).toLowerCase();
+          const destVolume = resolvedPath.slice(0, 3).toLowerCase();
+          
+          if (rootVolume !== destVolume) {
+            warnings.push(`检测到跨盘访问或路径逃逸: 试图从工作区盘符 "${rootVolume}" 访问外部路径 "${resolvedPath}"`);
+          } else {
+            const isInside = resolvedPath === rootDir || resolvedPath.startsWith(rootDir + sep);
+            if (!isInside) {
+              warnings.push(`检测到工作区外的文件访问: "${resolvedPath}"`);
+            }
+          }
+        } catch {
+          // 路径可能不存在或非法，忽略
+        }
+      }
+    }
+  }
+
+  return warnings;
 }
 

@@ -212,3 +212,8 @@ export function checkWhitelist(command: string): boolean {
   }
   return false;
 }
+
+/**
+ * 终端后台任务运行状态类型定义
+ */
+export type TerminalTaskStatus = 'PENDING' | 'RUNNING' | 'STALLED' | 'COMPLETED' | 'FAILED' | 'KILLED';

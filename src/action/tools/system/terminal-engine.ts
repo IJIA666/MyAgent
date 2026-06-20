@@ -7,10 +7,34 @@
  * 3. 进行大日志防爆溢写（Spilling）截断，以及 Windows npm 漏洞重定向与乱码防御。
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execSync } from 'child_process';
 import { resolve, dirname } from 'path';
-import { existsSync, createWriteStream, WriteStream } from 'fs';
+import { existsSync, createWriteStream, WriteStream, statSync, openSync, readSync, closeSync } from 'fs';
 import { tmpdir } from 'os';
+import { TerminalTaskStatus } from './terminal-config.js';
+import iconv from 'iconv-lite';
+import { detectAdvisoryWarnings } from './terminal-guard.js';
+
+// Windows 平台活动代码页（chcp）探测与编码识别
+let activeEncoding = 'utf-8';
+if (process.platform === 'win32') {
+  try {
+    const rawChcp = execSync('chcp', { stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf-8');
+    const match = rawChcp.match(/\d+/);
+    if (match) {
+      const codePage = match[0];
+      if (codePage === '936') {
+        activeEncoding = 'gbk';
+      } else if (codePage === '65001') {
+        activeEncoding = 'utf-8';
+      } else {
+        activeEncoding = 'cp' + codePage;
+      }
+    }
+  } catch {
+    // 忽略异常，降级为 utf-8
+  }
+}
 
 /**
  * 任务运行时信息接口
@@ -19,7 +43,7 @@ export interface TaskInfo {
   id: string;
   command: string;
   cwd: string;
-  status: 'running' | 'success' | 'failed' | 'timeout';
+  status: TerminalTaskStatus;
   exitCode: number | null;
   startTime: number;
   duration: number | null;
@@ -28,12 +52,71 @@ export interface TaskInfo {
   tailText: string;
   /** 可选的任务所属会话唯一 ID，用于生命周期回收 */
   sessionId?: string;
+  /** 失败的具体原因（超时/卡死等） */
+  failureReason?: 'timeout' | 'stalled' | 'error';
+  /** 敏感或逃逸警告信息 */
+  advisoryWarnings?: string[];
 }
 
 /**
  * 全局后台任务追踪表，键为 Task ID
  */
 export const activeTasks = new Map<string, TaskInfo & { child?: ChildProcess }>();
+
+/**
+ * 原子地流转任务状态。
+ * 如果转换成功，则返回 true，否则返回 false。
+ * 
+ * @param taskId - 任务唯一 ID
+ * @param nextState - 目标流转状态
+ * @returns 是否成功流转状态
+ */
+export function transitionTaskState(taskId: string, nextState: TerminalTaskStatus): boolean {
+  const task = activeTasks.get(taskId);
+  if (!task) {
+    return false;
+  }
+
+  const current = task.status;
+  if (current === nextState) {
+    return true;
+  }
+
+  // 终态包括 COMPLETED, FAILED, KILLED，不可往外流转
+  const terminalStates: TerminalTaskStatus[] = ['COMPLETED', 'FAILED', 'KILLED'];
+  if (terminalStates.includes(current)) {
+    return false;
+  }
+
+  let allowed = false;
+  if (current === 'PENDING') {
+    allowed = nextState === 'RUNNING';
+  } else if (current === 'RUNNING') {
+    allowed = ['STALLED', 'COMPLETED', 'FAILED', 'KILLED'].includes(nextState);
+  } else if (current === 'STALLED') {
+    allowed = ['RUNNING', 'FAILED', 'KILLED'].includes(nextState);
+  }
+
+  if (allowed) {
+    task.status = nextState;
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * 剔除字符串中的所有 ANSI 转义和终端控制序列。
+ * 
+ * @param text - 原始字符串
+ * @returns 过滤后的纯净文本
+ */
+export function stripAnsi(text: string): string {
+  const u001b = String.fromCharCode(27);
+  const u009b = String.fromCharCode(155);
+  const pattern = new RegExp('[' + u001b + u009b + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
+  return text.replace(pattern, '');
+}
 
 /**
  * Windows 原生特化：强杀整棵子进程树
@@ -138,7 +221,12 @@ export function formatTaskResult(taskInfo: TaskInfo, totalBytes: number, limit: 
     ? taskInfo.headText
     : `${taskInfo.headText}\n\n... [此处日志因过长被截断，已忽略中间的 ${totalBytes - taskInfo.headText.length - taskInfo.tailText.length} 字节内容] ...\n\n${taskInfo.tailText}`;
 
-  const meta = `\n\n<shell_metadata>\n  <exit_code>${taskInfo.exitCode ?? 'unknown'}</exit_code>\n  <duration_ms>${taskInfo.duration ?? 0}</duration_ms>\n  <log_path>${taskInfo.logPath}</log_path>\n</shell_metadata>`;
+  let warningMeta = '';
+  if (taskInfo.advisoryWarnings && taskInfo.advisoryWarnings.length > 0) {
+    warningMeta = `\n  <advisory_warnings>\n` + taskInfo.advisoryWarnings.map(w => `    <warning>${w}</warning>`).join('\n') + `\n  </advisory_warnings>`;
+  }
+
+  const meta = `\n\n<shell_metadata>\n  <exit_code>${taskInfo.exitCode ?? 'unknown'}</exit_code>\n  <duration_ms>${taskInfo.duration ?? 0}</duration_ms>\n  <log_path>${taskInfo.logPath}</log_path>${warningMeta}\n</shell_metadata>`;
   return content + meta;
 }
 
@@ -170,7 +258,17 @@ export async function runCommandEngine(
   command: string,
   targetCwd: string,
   isBackground?: boolean,
-  options?: { timeoutMs?: number; noOutputTimeoutMs?: number },
+  options?: { 
+    timeoutMs?: number; 
+    noOutputTimeoutMs?: number;
+    watch_patterns?: string[];
+    onNotification?: (event: {
+      type: 'watch_match' | 'completed' | 'stalled';
+      taskId: string;
+      pattern?: string;
+      output?: string;
+    }) => void;
+  },
   sessionId?: string
 ): Promise<string> {
   // 解析命令行程序与参数
@@ -216,27 +314,99 @@ export async function runCommandEngine(
   const startTime = Date.now();
   const timeoutMs = options?.timeoutMs ?? 60000;
   const noOutputTimeoutMs = options?.noOutputTimeoutMs ?? 30000;
+  const watch_patterns = options?.watch_patterns ?? [];
 
   // 内存头部与尾部 Chunk 字节存储限制（默认单向 50KB，共计 100KB 限制）
   const MAX_MEMORY_BYTES = 50 * 1024;
-  let headBuffer = '';
-  let tailBuffer = '';
+  const headChunks: unknown[] = [];
+  let headBytes = 0;
+  let headText = '';
+  const tailChunks: unknown[] = [];
+  let tailBytes = 0;
   let totalBytes = 0;
+
+  // Watcher 行级匹配、频控与断路器上下文变量
+  let lastMatchTime = 0;
+  let matchStrikeCount = 0;
+  let circuitBroken = false;
+  let lineRemainder = '';
 
   // 接收事件监听并分发写入
   const handleData = (chunk: Buffer) => {
     totalBytes += chunk.length;
     logStream.write(chunk);
 
-    const text = chunk.toString('utf-8');
-    if (headBuffer.length < MAX_MEMORY_BYTES) {
-      const remainingSpace = MAX_MEMORY_BYTES - headBuffer.length;
-      headBuffer += text.substring(0, remainingSpace);
+    // 收集头部预览字节，若满 50KB 立即进行物理释放
+    if (headBytes < MAX_MEMORY_BYTES) {
+      const needed = MAX_MEMORY_BYTES - headBytes;
+      if (chunk.length <= needed) {
+        headChunks.push(chunk);
+        headBytes += chunk.length;
+      } else {
+        headChunks.push(chunk.subarray(0, needed));
+        headBytes += needed;
+      }
+      if (headBytes >= MAX_MEMORY_BYTES) {
+        const headCombined = Buffer.concat(headChunks as Uint8Array[]);
+        headText = iconv.decode(headCombined, activeEncoding);
+        headChunks.length = 0; // 释放引用以规避 GC 大对象积压
+      }
     }
-    
-    tailBuffer += text;
-    if (tailBuffer.length > MAX_MEMORY_BYTES) {
-      tailBuffer = tailBuffer.substring(tailBuffer.length - MAX_MEMORY_BYTES);
+
+    // 收集尾部预览双端队列 (Deque)
+    tailChunks.push(chunk);
+    tailBytes += chunk.length;
+    while (tailChunks.length > 0 && tailBytes - (tailChunks[0] as Uint8Array).length >= MAX_MEMORY_BYTES) {
+      const removed = tailChunks.shift();
+      if (removed) {
+        tailBytes -= (removed as Uint8Array).length;
+      }
+    }
+
+    const text = iconv.decode(chunk, activeEncoding);
+
+    // 实施 watch_patterns 匹配、频控与断路器
+    if (watch_patterns.length > 0 && !circuitBroken) {
+      const lines = (lineRemainder + text).split(/\r?\n/);
+      lineRemainder = lines.pop() || '';
+      for (const line of lines) {
+        if (circuitBroken) break;
+        for (const pattern of watch_patterns) {
+          if (line.includes(pattern)) {
+            const now = Date.now();
+            if (now - lastMatchTime < 15000) {
+              matchStrikeCount++;
+              if (matchStrikeCount >= 3) {
+                circuitBroken = true;
+                const warningMsg = `\n[系统警告] 任务 ${taskId} 命中的匹配词 "${pattern}" 发生高频刷屏，已自动断开 Watcher 熔断器，退化为仅在退出时通知。\n`;
+                process.stdout.write(warningMsg);
+                if (options?.onNotification) {
+                  options.onNotification({
+                    type: 'watch_match',
+                    taskId,
+                    pattern,
+                    output: 'CIRCUIT_BREAKER_TRIGGERED'
+                  });
+                }
+              }
+            } else {
+              lastMatchTime = now;
+              matchStrikeCount = 0;
+              const matchMsg = `\n[匹配提醒] 任务 ${taskId} 命中匹配词 "${pattern}"，输出内容：${line}\n`;
+              process.stdout.write(matchMsg);
+              if (options?.onNotification) {
+                options.onNotification({
+                  type: 'watch_match',
+                  taskId,
+                  pattern,
+                  output: line
+                });
+              }
+            }
+            break;
+          }
+        }
+      }
     }
   };
 
@@ -247,11 +417,13 @@ export async function runCommandEngine(
     shell: false
   });
 
+  const advisoryWarnings = detectAdvisoryWarnings(command);
+
   const taskInfo: TaskInfo & { child?: ChildProcess; logStream?: WriteStream } = {
     id: taskId,
     command,
     cwd: targetCwd,
-    status: 'running',
+    status: 'PENDING',
     exitCode: null,
     startTime,
     duration: null,
@@ -260,13 +432,19 @@ export async function runCommandEngine(
     tailText: '',
     child,
     logStream,
-    sessionId
+    sessionId,
+    advisoryWarnings
   };
   activeTasks.set(taskId, taskInfo);
+
+  // 启动后立即流转状态为 RUNNING
+  transitionTaskState(taskId, 'RUNNING');
 
   // 定时器变量声明
   let overallTimeoutTimer: NodeJS.Timeout | null = null;
   let inactivityTimer: NodeJS.Timeout | null = null;
+  let absoluteTimeoutTimer: NodeJS.Timeout | null = null;
+  let stallWatchdogInterval: NodeJS.Timeout | null = null;
 
   // 清除全部正在工作的定时器
   const clearTimers = () => {
@@ -278,18 +456,98 @@ export async function runCommandEngine(
       clearTimeout(inactivityTimer);
       inactivityTimer = null;
     }
+    if (absoluteTimeoutTimer) {
+      clearTimeout(absoluteTimeoutTimer);
+      absoluteTimeoutTimer = null;
+    }
+    if (stallWatchdogInterval) {
+      clearInterval(stallWatchdogInterval);
+      stallWatchdogInterval = null;
+    }
   };
 
   // 重设无输出超时时限
   const resetInactivityTimer = () => {
     if (inactivityTimer) clearTimeout(inactivityTimer);
     inactivityTimer = setTimeout(() => {
-      taskInfo.status = 'timeout';
-      killProcessTree(child.pid!).then(() => {
-        cleanup();
-      });
+      if (transitionTaskState(taskId, 'FAILED')) {
+        taskInfo.failureReason = 'timeout';
+        killProcessTree(child.pid!).then(() => {
+          cleanup();
+        });
+      }
     }, noOutputTimeoutMs);
   };
+
+  // 5秒大小监控与 looksLikePrompt 匹配看守器
+  let lastSize = 0;
+  let noGrowthSeconds = 0;
+
+  const startStallWatchdog = () => {
+    stallWatchdogInterval = setInterval(() => {
+      if (taskInfo.status !== 'RUNNING') {
+        return;
+      }
+      try {
+        if (!existsSync(tempLogPath)) return;
+        const stats = statSync(tempLogPath);
+        const currentSize = stats.size;
+        
+        if (currentSize === lastSize) {
+          noGrowthSeconds += 5;
+        } else {
+          noGrowthSeconds = 0;
+          lastSize = currentSize;
+        }
+
+        if (noGrowthSeconds >= 30) {
+          // 从尾部读取 1024 字节进行解码和清洗
+          const fd = openSync(tempLogPath, 'r');
+          const buffer = Buffer.alloc(1024);
+          const readLength = Math.min(1024, currentSize);
+          const position = Math.max(0, currentSize - readLength);
+          
+          readSync(fd, buffer as unknown as Uint8Array, 0, readLength, position);
+          closeSync(fd);
+
+          const tailSlice = buffer.subarray(0, readLength);
+          const decodedTail = iconv.decode(tailSlice, activeEncoding);
+          const purifiedTail = stripAnsi(decodedTail);
+
+          const looksLikePrompt = /(y\/n)|continue\?|overwrite\?|按任意键继续|是否确定/i;
+          if (looksLikePrompt.test(purifiedTail)) {
+            noGrowthSeconds = 0;
+            if (transitionTaskState(taskId, 'STALLED')) {
+              taskInfo.failureReason = 'stalled';
+              
+              const noticeMsg = `\n[卡死警告] 任务 ${taskId} 在 30 秒内日志无增长，且检测到交互提示符，已自动强杀进程！\n`;
+              process.stdout.write(noticeMsg);
+              if (options?.onNotification) {
+                options.onNotification({
+                  type: 'stalled',
+                  taskId,
+                  output: purifiedTail
+                });
+              }
+
+              killProcessTree(child.pid!).then(() => {
+                transitionTaskState(taskId, 'FAILED');
+                cleanup();
+              });
+            }
+          } else {
+            // 未命中交互提示符，回退 5 秒以进行下一次周期的滑动检测
+            noGrowthSeconds = 25;
+          }
+        }
+      } catch {
+        // 忽略文件读取异常
+      }
+    }, 5000);
+  };
+
+  // 启动看守器
+  startStallWatchdog();
 
   // 挂载数据监听
   child.stdout.on('data', (chunk: Buffer) => {
@@ -315,14 +573,34 @@ export async function runCommandEngine(
     logStream.end();
 
     taskInfo.duration = Date.now() - startTime;
-    taskInfo.headText = headBuffer;
-    taskInfo.tailText = tailBuffer;
 
-    if (taskInfo.status === 'running') {
-      if (taskInfo.exitCode === 0) {
-        taskInfo.status = 'success';
-      } else {
-        taskInfo.status = 'failed';
+    // 惰性拼接并转码头尾预览 buffer 块
+    if (headChunks.length > 0) {
+      const headCombined = Buffer.concat(headChunks as Uint8Array[]);
+      taskInfo.headText = iconv.decode(headCombined, activeEncoding);
+      headChunks.length = 0;
+    } else {
+      taskInfo.headText = headText;
+    }
+
+    const tailCombined = Buffer.concat(tailChunks as Uint8Array[]);
+    const sliceStart = Math.max(0, tailCombined.length - MAX_MEMORY_BYTES);
+    const finalTailBuffer = tailCombined.subarray(sliceStart);
+    taskInfo.tailText = iconv.decode(finalTailBuffer, activeEncoding);
+
+    // 原子化流转至终态
+    if (taskInfo.status === 'RUNNING' || taskInfo.status === 'STALLED') {
+      const finalState = taskInfo.exitCode === 0 ? 'COMPLETED' : 'FAILED';
+      transitionTaskState(taskId, finalState);
+    }
+
+    if (taskInfo.status === 'COMPLETED' || taskInfo.status === 'FAILED') {
+      if (options?.onNotification) {
+        options.onNotification({
+          type: 'completed',
+          taskId,
+          output: `Exit Code: ${taskInfo.exitCode}, Status: ${taskInfo.status}`
+        });
       }
     }
 
@@ -331,14 +609,14 @@ export async function runCommandEngine(
 
     const output = formatTaskResult(taskInfo, totalBytes, MAX_MEMORY_BYTES);
     
-    if (taskInfo.status === 'success') {
+    if (taskInfo.status === 'COMPLETED') {
       resolvePromise(output);
     } else {
-      if (taskInfo.status === 'timeout') {
-        resolvePromise(`[错误] 命令执行超时（总限制: ${timeoutMs}ms 或无输出限制: ${noOutputTimeoutMs}ms）。\n${output}`);
+      if (taskInfo.failureReason === 'timeout') {
+        resolvePromise(`[错误] 命令执行超时（总限制: ${timeoutMs}ms 或无输出限制: ${noOutputTimeoutMs}ms 或 30分钟绝对超时限制）。\n${output}`);
       } else {
         // 命令退避策略校验
-        const hasRealError = checkHasRealError(tailBuffer);
+        const hasRealError = checkHasRealError(taskInfo.tailText);
         if (taskInfo.exitCode === 1 && !hasRealError) {
           resolvePromise(`[提示] 命令以退出码 1 结束，但未检测到实质性错误输出。\n${output}`);
         } else {
@@ -350,11 +628,24 @@ export async function runCommandEngine(
 
   // 绑定子进程事件
   overallTimeoutTimer = setTimeout(() => {
-    taskInfo.status = 'timeout';
-    killProcessTree(child.pid!).then(() => {
-      cleanup();
-    });
+    if (transitionTaskState(taskId, 'FAILED')) {
+      taskInfo.failureReason = 'timeout';
+      killProcessTree(child.pid!).then(() => {
+        cleanup();
+      });
+    }
   }, timeoutMs);
+
+  // 30 分钟无条件绝对超时门禁，防范交互卡死
+  const ABSOLUTE_TIMEOUT_MS = 30 * 60 * 1000;
+  absoluteTimeoutTimer = setTimeout(() => {
+    if (transitionTaskState(taskId, 'FAILED')) {
+      taskInfo.failureReason = 'timeout';
+      killProcessTree(child.pid!).then(() => {
+        cleanup();
+      });
+    }
+  }, ABSOLUTE_TIMEOUT_MS);
 
   resetInactivityTimer();
 
@@ -363,21 +654,25 @@ export async function runCommandEngine(
   });
 
   child.on('close', () => {
-    cleanup();
+    const finalState = taskInfo.exitCode === 0 ? 'COMPLETED' : 'FAILED';
+    if (transitionTaskState(taskId, finalState)) {
+      cleanup();
+    }
   });
 
   child.on('error', (err) => {
-    taskInfo.status = 'failed';
-    handleData(Buffer.from(`启动子进程时发生错误: ${err.message}\n`, 'utf-8'));
-    cleanup();
+    if (transitionTaskState(taskId, 'FAILED')) {
+      taskInfo.failureReason = 'error';
+      handleData(Buffer.from(`启动子进程时发生错误: ${err.message}\n`, 'utf-8'));
+      cleanup();
+    }
   });
 
   // 后台执行缓冲及自动阻塞降级
   if (isBackground) {
     // 200ms 的启动观察缓冲期
     await new Promise((resolve) => setTimeout(resolve, 200));
-    if (taskInfo.status === 'failed') {
-      cleanup();
+    if (taskInfo.status === 'FAILED' || taskInfo.status === 'COMPLETED' || taskInfo.status === 'KILLED') {
       return promise;
     } else {
       resolved = true;
@@ -408,12 +703,14 @@ export async function runCommandEngine(
 export async function abortSessionTasks(sessionId: string): Promise<void> {
   const killPromises: Promise<void>[] = [];
   for (const [taskId, task] of activeTasks.entries()) {
-    if (task.sessionId === sessionId && task.status === 'running') {
-      task.status = 'failed';
-      if (task.child && typeof task.child.pid === 'number') {
-        killPromises.push(killProcessTree(task.child.pid));
+    if (task.sessionId === sessionId && (task.status === 'RUNNING' || task.status === 'STALLED')) {
+      if (transitionTaskState(taskId, 'FAILED')) {
+        task.failureReason = 'error';
+        if (task.child && typeof task.child.pid === 'number') {
+          killPromises.push(killProcessTree(task.child.pid));
+        }
+        activeTasks.delete(taskId);
       }
-      activeTasks.delete(taskId);
     }
   }
   await Promise.all(killPromises);

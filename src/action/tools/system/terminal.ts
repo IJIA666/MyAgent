@@ -45,6 +45,13 @@ export class ExecuteCommandTool implements NativeTool {
           isBackground: {
             type: "boolean",
             description: "是否显式指示在后台运行。对于长时间挂起的服务，必须设为 true。"
+          },
+          watch_patterns: {
+            type: "array",
+            items: {
+              type: "string"
+            },
+            description: "可选的日志行匹配触发词列表。一旦终端输出日志行命中其中任何一个触发词，系统将提前发出唤醒通知。"
           }
         },
         required: ["command"]
@@ -133,6 +140,9 @@ export class ExecuteCommandTool implements NativeTool {
 
     const cwd = typeof args.cwd === 'string' ? args.cwd : undefined;
     const isBackground = typeof args.isBackground === 'boolean' ? args.isBackground : false;
+    const watch_patterns = Array.isArray(args.watch_patterns)
+      ? args.watch_patterns.filter((x): x is string => typeof x === 'string')
+      : undefined;
 
     // 1. 安全网关：校验复合拼接符与命令注入风险
     validateCommand(command);
@@ -142,7 +152,18 @@ export class ExecuteCommandTool implements NativeTool {
 
     // 3. 进程执行：交给底座无状态进程引擎进行 spawn 调度，传入会话 ID
     const sessionId = sessionContext ? sessionContext.getSessionId() : undefined;
-    return await runCommandEngine(command, targetCwd, isBackground, undefined, sessionId);
+    return await runCommandEngine(
+      command,
+      targetCwd,
+      isBackground,
+      {
+        watch_patterns,
+        onNotification: (event) => {
+          process.stdout.write(`\n[事件通知] 任务 ${event.taskId} 触发通知: ${event.type}${event.pattern ? `, 模式: ${event.pattern}` : ''}\n`);
+        }
+      },
+      sessionId
+    );
   }
 }
 

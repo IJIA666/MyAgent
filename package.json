@@ -24,7 +24,8 @@
     "immer": "^11.1.8",
     "js-tiktoken": "^1.0.12",
     "openai": "4.52.0",
-    "playwright": "^1.45.0"
+    "playwright": "^1.45.0",
+    "iconv-lite": "^0.6.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
