@@ -1,0 +1,16 @@
+[project]
+name = "monitoring-server"
+version = "0.1.0"
+description = "Windows system and network monitoring MCP server"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.2.0",
+    "psutil>=6.0.0",
+    "pyetwkit>=0.1.6",
+    "types-psutil>=6.0.0",
+    "types-pywin32>=308",
+]
+
+[tool.uv]
+managed = true
