@@ -15,6 +15,7 @@ import { JitRulesPlugin } from './JitRulesPlugin.js';
 import { HumanApprovalPlugin } from './HumanApprovalPlugin.js';
 import { TracerLogPlugin } from './TracerLogPlugin.js';
 import { LoopPreventionPlugin } from './LoopPreventionPlugin.js';
+import { LongTermMemoryPlugin } from './LongTermMemoryPlugin.js';
 
 // 导入领域服务
 import { RuleManager } from './RuleManager.js';
@@ -110,6 +111,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.pluginRegistry.register(new TokenWatermarkPlugin(this.compactionService, estimator, () => this.llmConfig));
     this.pluginRegistry.register(new JitRulesPlugin(this.toolDispatcher));
     this.pluginRegistry.register(new TracerLogPlugin(() => this.tracer));
+    this.pluginRegistry.register(new LongTermMemoryPlugin(this.driver));
     this.pluginRegistry.register(new LoopPreventionPlugin());
     this.pluginRegistry.register(new HumanApprovalPlugin());
 

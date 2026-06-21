@@ -7,11 +7,13 @@
  * 4. 验证死循环熔断插件（LoopPreventionPlugin）的频次限制与阻断机制。
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
 import { TokenWatermarkPlugin } from '../../src/core/usecases/TokenWatermarkPlugin.js';
 import { JitRulesPlugin } from '../../src/core/usecases/JitRulesPlugin.js';
 import { TracerLogPlugin } from '../../src/core/usecases/TracerLogPlugin.js';
 import { LoopPreventionPlugin } from '../../src/core/usecases/LoopPreventionPlugin.js';
+import { LongTermMemoryPlugin } from '../../src/core/usecases/LongTermMemoryPlugin.js';
 import { HookEventName, HookContext, LlmRequest } from '../../src/core/usecases/plugin-types.js';
 import { runHookPipeline } from '../../src/core/usecases/plugin-runner.js';
 import { SessionContext } from '../../src/core/domain/context.js';
@@ -20,6 +22,7 @@ import type { LlmConfig } from '../../src/config/index.js';
 import type { ToolDispatcher } from '../../src/core/usecases/ToolDispatcher.js';
 import type { AgentTracer } from '../../src/core/domain/tracer.js';
 import type { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
+import type { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
 
 describe('Plugins Lifecycle & Action Tests', () => {
   let sessionContext: SessionContext;
@@ -237,6 +240,176 @@ describe('Plugins Lifecycle & Action Tests', () => {
       // 验证虽然中间件内写入了状态，但是由于异常熔断，宿主历史记录不受脏写影响（Immer Draft 被安全丢弃）
       expect(sessionContext.getHistory().length).toBe(originalLength);
       expect(sessionContext.getHistory().some(m => m.content === 'dirty-state-during-failure')).toBe(false);
+    });
+  });
+
+  describe('LongTermMemoryPlugin', () => {
+    const tempMemoryPath = './test-temp-memory.md';
+
+    beforeEach(() => {
+      if (fs.existsSync(tempMemoryPath)) {
+        fs.unlinkSync(tempMemoryPath);
+      }
+    });
+
+    afterEach(() => {
+      if (fs.existsSync(tempMemoryPath)) {
+        fs.unlinkSync(tempMemoryPath);
+      }
+    });
+
+    it('should load memory file up to 4000 characters and append it to system message in BeforeModel hook', async () => {
+      const mockDriver = {} as unknown as LlmPort;
+      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath);
+
+      const longMemory = 'A'.repeat(5000);
+      fs.writeFileSync(tempMemoryPath, longMemory);
+
+      const llmRequest: LlmRequest = {
+        messages: [
+          { role: 'system', content: 'Base system prompt.' }
+        ]
+      };
+
+      const context: HookContext = {
+        sessionContext,
+        eventName: HookEventName.BeforeModel,
+        llmRequest,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+      await plugin.hooks[HookEventName.BeforeModel](context, next);
+
+      expect(llmRequest.messages?.[0].content).toContain('[长期记忆]');
+      const contentLen = llmRequest.messages?.[0].content?.length ?? 0;
+      expect(contentLen).toBeLessThanOrEqual(4000 + 'Base system prompt.'.length + 20);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should unshift system message in BeforeModel hook if no system message exists', async () => {
+      const mockDriver = {} as unknown as LlmPort;
+      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath);
+
+      fs.writeFileSync(tempMemoryPath, 'User prefers TypeScript.');
+
+      const llmRequest: LlmRequest = {
+        messages: [
+          { role: 'user', content: 'Hello' }
+        ]
+      };
+
+      const context: HookContext = {
+        sessionContext,
+        eventName: HookEventName.BeforeModel,
+        llmRequest,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+      await plugin.hooks[HookEventName.BeforeModel](context, next);
+
+      expect(llmRequest.messages?.[0].role).toBe('system');
+      expect(llmRequest.messages?.[0].content).toContain('[长期记忆]');
+      expect(llmRequest.messages?.[1].role).toBe('user');
+    });
+
+    it('should skip session end refinement if history is less than 2 messages', async () => {
+      const mockDriver = {
+        streamChat: vi.fn()
+      } as unknown as LlmPort;
+      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath);
+
+      sessionContext.addMessage({ role: 'user', content: 'Hello' });
+
+      const context: HookContext = {
+        sessionContext,
+        eventName: HookEventName.SessionEnd,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+      await plugin.hooks[HookEventName.SessionEnd](context, next);
+
+      await (plugin as unknown as { refinePromise: Promise<void> }).refinePromise;
+
+      expect(mockDriver.streamChat).not.toHaveBeenCalled();
+      expect(fs.existsSync(tempMemoryPath)).toBe(false);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should asynchronously refine and append memory in SessionEnd hook and queue write files', async () => {
+      const mockLlmChunk = { type: 'content', content: '- **主题**：提炼出的记忆事实。' };
+      const mockDriver = {
+        streamChat: vi.fn().mockImplementation(async function* () {
+          yield mockLlmChunk;
+        })
+      } as unknown as LlmPort;
+
+      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath);
+
+      sessionContext.addMessage({ role: 'user', content: 'What language do you like?' });
+      sessionContext.addMessage({ role: 'assistant', content: 'I like TypeScript.' });
+
+      const context: HookContext = {
+        sessionContext,
+        eventName: HookEventName.SessionEnd,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+      await plugin.hooks[HookEventName.SessionEnd](context, next);
+
+      await (plugin as unknown as { refinePromise: Promise<void> }).refinePromise;
+
+      expect(mockDriver.streamChat).toHaveBeenCalled();
+      expect(fs.existsSync(tempMemoryPath)).toBe(true);
+      const writtenContent = fs.readFileSync(tempMemoryPath, 'utf-8');
+      expect(writtenContent).toContain('- **主题**：提炼出的记忆事实。');
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should format non-string content (array, null) and tool calls in SessionEnd refinement', async () => {
+      const mockDriver = {
+        streamChat: vi.fn().mockImplementation(async function* () {
+          yield { type: 'content', content: '- **主题**：多模态及工具测试完成。' };
+        })
+      } as unknown as LlmPort;
+
+      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath);
+
+      // 添加含有非 string 内容（如 JSON 串表示复杂对象）和 tool_calls 的消息
+      sessionContext.addMessage({
+        role: 'user',
+        content: JSON.stringify([{ type: 'text', text: 'Analyze this image' }]) as unknown as string
+      });
+      sessionContext.addMessage({
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: '1', type: 'function', function: { name: 'analyzeImage', arguments: '{}' } }]
+      });
+
+      const context: HookContext = {
+        sessionContext,
+        eventName: HookEventName.SessionEnd,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+      await plugin.hooks[HookEventName.SessionEnd](context, next);
+
+      await (plugin as unknown as { refinePromise: Promise<void> }).refinePromise;
+
+      expect(mockDriver.streamChat).toHaveBeenCalled();
+      const mockStreamChat = mockDriver.streamChat as unknown as {
+        mock: { calls: Array<[ChatMessage[]]> };
+      };
+      const calledArgs = mockStreamChat.mock.calls[0][0];
+      const historyPromptText = calledArgs[0].content;
+      // 验证 user 消息被转为了字符串形式，assistant 消息的 tool_calls 被表达了出来
+      expect(historyPromptText).toContain('Analyze this image');
+      expect(historyPromptText).toContain('[调用工具]');
+      expect(historyPromptText).toContain('analyzeImage');
     });
   });
 });

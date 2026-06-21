@@ -179,8 +179,8 @@ export function unboxNestedCommand(command: string): string {
     }
   }
 
-  // 改进后的 shellPrefixPattern：支持解释器后附带可选参数，如 -NoProfile -ExecutionPolicy Bypass，且使用 [^\s'"\`-]+ 限制其值不能含引号以防吞噬 innerCmd 内的包裹段
-  const shellPrefixPattern = /^(sh|bash|cmd|powershell|pwsh)(?:\s+-[a-zA-Z0-9]+(?:\s+[^\s'"\`-]+)?)*\s+(?:-c|-Command|\/c)\s+/i;
+  // 改进后的 shellPrefixPattern：支持解释器后附带可选参数，如 -NoProfile -ExecutionPolicy Bypass，且使用 [^\s'"`-]+ 限制其值不能含引号以防吞噬 innerCmd 内的包裹段
+  const shellPrefixPattern = /^(sh|bash|cmd|powershell|pwsh)(?:\s+-[a-zA-Z0-9]+(?:\s+[^\s'"`-]+)?)*\s+(?:-c|-Command|\/c)\s+/i;
   const shellMatch = current.match(shellPrefixPattern);
   if (shellMatch) {
     // 采用位置截取，获取匹配头之后的全部剩余字符串，防止正则捕获组在处理复杂的嵌套引号时发生截断
