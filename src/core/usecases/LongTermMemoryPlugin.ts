@@ -1,8 +1,9 @@
-import * as fs from 'fs';
 import * as path from 'path';
 import type { HookContext, Plugin } from './plugin-types.js';
 import { HookEventName } from './plugin-types.js';
 import type { LlmPort, ChatMessage } from '../../ports/driven/LlmPort.js';
+import type { EmbeddingPort } from '../../ports/driven/EmbeddingPort.js';
+import type { VectorDbPort } from '../../ports/driven/VectorDbPort.js';
 
 /**
  * 长期记忆自省与提炼插件。
@@ -13,6 +14,8 @@ export class LongTermMemoryPlugin implements Plugin {
   public readonly weight = 50;
 
   private driver: LlmPort;
+  private vectorDb: VectorDbPort;
+  private embedding: EmbeddingPort;
   private memoryFilePath: string;
   private onSessionEndCallback?: (history: ChatMessage[]) => void;
   private refinePromise: Promise<void> = Promise.resolve();
@@ -21,15 +24,21 @@ export class LongTermMemoryPlugin implements Plugin {
    * 构造函数。
    *
    * @param driver - 大语言模型驱动接口适配器实例
+   * @param vectorDb - 本地向量数据库存储服务契约
+   * @param embedding - 文本嵌入生成契约
    * @param memoryFilePath - 可选。持久化长期记忆 file 路径，默认指向项目 .agent/MEMORY.md
    * @param onSessionEndCallback - 可选。会话结束后的异步自省提炼回调函数
    */
   constructor(
     driver: LlmPort,
+    vectorDb: VectorDbPort,
+    embedding: EmbeddingPort,
     memoryFilePath?: string,
     onSessionEndCallback?: (history: ChatMessage[]) => void
   ) {
     this.driver = driver;
+    this.vectorDb = vectorDb;
+    this.embedding = embedding;
     this.onSessionEndCallback = onSessionEndCallback;
     /* eslint-disable-next-line n/no-process-env */
     const baseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
@@ -58,33 +67,38 @@ export class LongTermMemoryPlugin implements Plugin {
     }
 
     try {
-      if (!fs.existsSync(this.memoryFilePath)) {
+      const history = context.sessionContext.getHistory();
+      const userMessages = history.filter(m => m.role === 'user');
+      const latestUserMessage = userMessages[userMessages.length - 1];
+
+      if (!latestUserMessage || !latestUserMessage.content || typeof latestUserMessage.content !== 'string') {
         return;
       }
 
-      let memoryContent = await fs.promises.readFile(this.memoryFilePath, 'utf-8');
-      memoryContent = memoryContent.trim();
-      if (!memoryContent) {
-        return;
-      }
+      // 防御性截断，最大截取 2000 字符，规避 API 成本与 token 溢出
+      const queryText = latestUserMessage.content.substring(0, 2000);
+      const queryVector = await this.embedding.generateEmbedding(queryText);
+      const searchResults = await this.vectorDb.search(queryVector, 5);
 
-      if (memoryContent.length > 4000) {
-        memoryContent = memoryContent.substring(memoryContent.length - 4000);
-      }
+      // 双重保险：过滤掉相似度 < 0.5 的低相关结果 (统一转换公式 similarity = 1 / (1 + distance))
+      const validResults = searchResults.filter(r => r.score >= 0.5);
 
-      const memoryPrompt = `\n\n[长期记忆]\n${memoryContent}`;
+      if (validResults.length > 0) {
+        const memoryBlocks = validResults.map(r => r.text).join('\n\n');
+        const memoryPrompt = `\n\n<long-term-memory>\n${memoryBlocks}\n</long-term-memory>`;
 
-      const systemMessage = context.llmRequest.messages.find(m => m.role === 'system');
-      if (systemMessage) {
-        systemMessage.content += memoryPrompt;
-      } else {
-        context.llmRequest.messages.unshift({
-          role: 'system',
-          content: memoryPrompt.trim()
-        });
+        const systemMessage = context.llmRequest.messages.find(m => m.role === 'system');
+        if (systemMessage) {
+          systemMessage.content += memoryPrompt;
+        } else {
+          context.llmRequest.messages.unshift({
+            role: 'system',
+            content: memoryPrompt.trim()
+          });
+        }
       }
     } catch (error) {
-      console.error('[LongTermMemoryPlugin] 读取或注入长期记忆失败:', error);
+      console.error('[LongTermMemoryPlugin] 语义召回或注入长期记忆失败:', error);
     }
   }
 

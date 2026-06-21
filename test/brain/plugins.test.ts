@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * @file 智能体生命周期 Hook 插件系统单元测试。
  * 核心职责：
@@ -261,12 +262,21 @@ describe('Plugins Lifecycle & Action Tests', () => {
       }
     });
 
-    it('should load memory file up to 4000 characters and append it to system message in BeforeModel hook', async () => {
+    it('should query vector db and append recalled memories to system message in BeforeModel hook', async () => {
       const mockDriver = {} as unknown as LlmPort;
-      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath);
+      const mockVectorDb = {
+        search: vi.fn().mockResolvedValue([
+          { id: '1', text: '- **技术要点**：语义内容。', score: 0.8 }
+        ]),
+        count: vi.fn().mockResolvedValue(0)
+      } as any;
+      const mockEmbedding = {
+        generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0))
+      } as any;
 
-      const longMemory = 'A'.repeat(5000);
-      fs.writeFileSync(tempMemoryPath, longMemory);
+      const plugin = new LongTermMemoryPlugin(mockDriver, mockVectorDb, mockEmbedding, tempMemoryPath);
+
+      sessionContext.addMessage({ role: 'user', content: '测试查询' });
 
       const llmRequest: LlmRequest = {
         messages: [
@@ -284,17 +294,26 @@ describe('Plugins Lifecycle & Action Tests', () => {
       const next = vi.fn().mockResolvedValue(undefined);
       await plugin.hooks[HookEventName.BeforeModel](context, next);
 
-      expect(llmRequest.messages?.[0].content).toContain('[长期记忆]');
-      const contentLen = llmRequest.messages?.[0].content?.length ?? 0;
-      expect(contentLen).toBeLessThanOrEqual(4000 + 'Base system prompt.'.length + 20);
+      expect(llmRequest.messages?.[0].content).toContain('<long-term-memory>');
+      expect(llmRequest.messages?.[0].content).toContain('- **技术要点**：语义内容。');
       expect(next).toHaveBeenCalled();
     });
 
     it('should unshift system message in BeforeModel hook if no system message exists', async () => {
       const mockDriver = {} as unknown as LlmPort;
-      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath);
+      const mockVectorDb = {
+        search: vi.fn().mockResolvedValue([
+          { id: '1', text: '- **技术要点**：语义内容。', score: 0.8 }
+        ]),
+        count: vi.fn().mockResolvedValue(0)
+      } as any;
+      const mockEmbedding = {
+        generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0))
+      } as any;
 
-      fs.writeFileSync(tempMemoryPath, 'User prefers TypeScript.');
+      const plugin = new LongTermMemoryPlugin(mockDriver, mockVectorDb, mockEmbedding, tempMemoryPath);
+
+      sessionContext.addMessage({ role: 'user', content: '测试查询' });
 
       const llmRequest: LlmRequest = {
         messages: [
@@ -313,7 +332,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
       await plugin.hooks[HookEventName.BeforeModel](context, next);
 
       expect(llmRequest.messages?.[0].role).toBe('system');
-      expect(llmRequest.messages?.[0].content).toContain('[长期记忆]');
+      expect(llmRequest.messages?.[0].content).toContain('<long-term-memory>');
       expect(llmRequest.messages?.[1].role).toBe('user');
     });
 
@@ -321,7 +340,9 @@ describe('Plugins Lifecycle & Action Tests', () => {
       const mockDriver = {
         streamChat: vi.fn()
       } as unknown as LlmPort;
-      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath);
+      const mockVectorDb = {} as any;
+      const mockEmbedding = {} as any;
+      const plugin = new LongTermMemoryPlugin(mockDriver, mockVectorDb, mockEmbedding, tempMemoryPath);
 
       sessionContext.addMessage({ role: 'user', content: 'Hello' });
 
@@ -343,8 +364,10 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
     it('should trigger onSessionEndCallback in SessionEnd hook when history is sufficient', async () => {
       const mockDriver = {} as unknown as LlmPort;
+      const mockVectorDb = {} as any;
+      const mockEmbedding = {} as any;
       const callback = vi.fn();
-      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath, callback);
+      const plugin = new LongTermMemoryPlugin(mockDriver, mockVectorDb, mockEmbedding, tempMemoryPath, callback);
 
       sessionContext.addMessage({ role: 'user', content: 'What language do you like?' });
       sessionContext.addMessage({ role: 'assistant', content: 'I like TypeScript.' });
@@ -417,13 +440,28 @@ describe('Plugins Lifecycle & Action Tests', () => {
       } as unknown as ToolRegistryPort;
       const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
+      const mockVectorDb = {
+        add: vi.fn().mockResolvedValue(undefined),
+        search: vi.fn().mockResolvedValue([]),
+        clear: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        count: vi.fn().mockResolvedValue(0)
+      } as any;
+
+      const mockEmbedding = {
+        generateEmbedding: vi.fn().mockResolvedValue([]),
+        generateEmbeddings: vi.fn().mockResolvedValue([])
+      } as any;
+
       // 使用自定义的记忆文件路径初始化 SessionManager
       const session = new SessionManager(
         mockLlmConfig,
         mockDriver,
         mockEstimator,
         mockToolRegistry,
-        mockContextAdapter
+        mockContextAdapter,
+        mockVectorDb,
+        mockEmbedding
       );
 
       // 覆盖 SessionManager 内的 memoryFilePath
@@ -456,6 +494,104 @@ describe('Plugins Lifecycle & Action Tests', () => {
       const writtenContent = fs.readFileSync(tempMemoryPath, 'utf-8');
       expect(writtenContent).toContain('- **长期事实**：提炼的记忆内容。');
       expect(next).toHaveBeenCalled();
+    });
+
+    it('应该能够成功进行语义召回并在 BeforeModel 钩子中注入 System Prompt', async () => {
+      const mockDriver = {} as unknown as LlmPort;
+      const mockVectorDb = {
+        search: vi.fn().mockResolvedValue([
+          { id: 'hash1', text: '- **技术偏好**：用户非常喜欢使用 TypeScript 语言。', score: 0.9 }
+        ]),
+        count: vi.fn().mockResolvedValue(0)
+      } as any;
+      const mockEmbedding = {
+        generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0.1))
+      } as any;
+
+      const plugin = new LongTermMemoryPlugin(
+        mockDriver,
+        mockVectorDb,
+        mockEmbedding,
+        tempMemoryPath
+      );
+
+      const sessionContext = new SessionContext('test-session');
+      // 模拟用户最新消息
+      sessionContext.addMessage({ role: 'user', content: '我喜欢使用 TypeScript' });
+
+      const llmRequest = {
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' }
+        ]
+      } as any;
+
+      const context: HookContext = {
+        sessionContext,
+        llmRequest,
+        eventName: HookEventName.BeforeModel,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+
+      await plugin.hooks[HookEventName.BeforeModel](context, next);
+
+      expect(mockEmbedding.generateEmbedding).toHaveBeenCalledWith('我喜欢使用 TypeScript');
+      expect(mockVectorDb.search).toHaveBeenCalled();
+      expect(llmRequest.messages[0].content).toContain('<long-term-memory>');
+      expect(llmRequest.messages[0].content).toContain('- **技术偏好**：用户非常喜欢使用 TypeScript 语言。');
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('应该能够在物理写盘后自动触发异步切片并 upsert 同步至向量数据库', async () => {
+      const mockDriver = {} as unknown as LlmPort;
+      const mockVectorDb = {
+        add: vi.fn().mockResolvedValue(undefined),
+        search: vi.fn().mockResolvedValue([]),
+        clear: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        count: vi.fn().mockResolvedValue(0)
+      } as any;
+      const mockEmbedding = {
+        generateEmbeddings: vi.fn().mockResolvedValue([[0.1, 0.2]])
+      } as any;
+
+      const mockEstimator = {
+        estimateSnapshotTokens: () => ({ total: 10, system: 2, rules: 2, transient: 2, history: 4 }),
+        getCompactionThreshold: () => 100000
+      } as unknown as TokenEstimatorPort;
+
+      const mockToolRegistry = {
+        getTools: async () => [],
+        callTool: async () => ({}),
+        getTool: () => undefined,
+        close: async () => {}
+      } as unknown as ToolRegistryPort;
+      const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+
+      const session = new SessionManager(
+        { model: 'mock' } as unknown as LlmConfig,
+        mockDriver,
+        mockEstimator,
+        mockToolRegistry,
+        mockContextAdapter,
+        mockVectorDb,
+        mockEmbedding
+      );
+
+      (session as unknown as { memoryFilePath: string }).memoryFilePath = tempMemoryPath;
+
+      // 触发 queueWrite，向物理文件写入带有要点的格式化事实
+      await session['queueWrite']('\n\n- **开发环境**：当前在 Windows 系统上运行测试。\n');
+
+      expect(mockEmbedding.generateEmbeddings).toHaveBeenCalledWith([
+        '- **开发环境**：当前在 Windows 系统上运行测试。'
+      ]);
+      expect(mockVectorDb.add).toHaveBeenCalledWith(
+        expect.any(String),
+        '- **开发环境**：当前在 Windows 系统上运行测试。',
+        [0.1, 0.2]
+      );
     });
   });
 });

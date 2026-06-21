@@ -18,6 +18,9 @@ import { HumanApprovalPlugin } from './HumanApprovalPlugin.js';
 import { TracerLogPlugin } from './TracerLogPlugin.js';
 import { LoopPreventionPlugin } from './LoopPreventionPlugin.js';
 import { LongTermMemoryPlugin } from './LongTermMemoryPlugin.js';
+import type { EmbeddingPort } from '../../ports/driven/EmbeddingPort.js';
+import type { VectorDbPort } from '../../ports/driven/VectorDbPort.js';
+import * as crypto from 'crypto';
 
 // 导入领域服务
 import { RuleManager } from './RuleManager.js';
@@ -72,6 +75,10 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   private writeQueue: Promise<void> = Promise.resolve();
   /** 长期记忆文件的物理路径 */
   private memoryFilePath: string;
+  /** 本地向量数据库存储服务契约 */
+  private vectorDb: VectorDbPort;
+  /** 文本嵌入生成契约 */
+  private embedding: EmbeddingPort;
 
   /**
    * 实例初始化。
@@ -81,6 +88,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
    * @param estimator - Token 预估与水位计算接口实例
    * @param toolRegistry - 工具注册表与调度管理端口契约
    * @param contextAdapter - 上下文适配器契约
+   * @param vectorDb - 本地向量数据库存储服务契约
+   * @param embedding - 文本嵌入生成契约
    * @param appConfig - 应用程序系统配置项
    * @param taskAborter - 任务中止服务端口
    */
@@ -90,6 +99,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     estimator: TokenEstimatorPort,
     toolRegistry: ToolRegistryPort,
     contextAdapter: ContextAdapter,
+    vectorDb: VectorDbPort,
+    embedding: EmbeddingPort,
     appConfig?: AppConfig,
     taskAborter?: TaskAborterPort
   ) {
@@ -105,6 +116,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.driver = driver;
     this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());
     this.contextAdapter = contextAdapter;
+    this.vectorDb = vectorDb;
+    this.embedding = embedding;
 
     /* eslint-disable-next-line n/no-process-env */
     const baseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
@@ -124,6 +137,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.pluginRegistry.register(
       new LongTermMemoryPlugin(
         this.driver,
+        this.vectorDb,
+        this.embedding,
         this.memoryFilePath,
         async (history) => {
           await this.triggerMemoryRefinementAsync(history);
@@ -150,6 +165,11 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     // 监听底层 Driven 事件总线抛出的异步任务事件，实施下沉后的自唤醒调度
     this.context.on('async_event', () => {
       this.handleAsyncEvent();
+    });
+
+    // 异步尝试重建向量数据库，仅当库为空且物理 MEMORY.md 存在时生效
+    this.rebuildVectorDbIfEmpty().catch((error) => {
+      console.error('[SessionManager] 异步重建向量库失败:', error);
     });
   }
 
@@ -440,11 +460,86 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
           await fs.promises.mkdir(dir, { recursive: true });
         }
         await fs.promises.appendFile(this.memoryFilePath, text, 'utf-8');
+
+        // 自动触发向量化同步 upsert
+        await this.syncNewMemoryToVectorDb(text);
       })
       .catch((error) => {
         console.error('[SessionManager] 写入长期记忆文件发生错误:', error);
       });
     return this.writeQueue;
+  }
+
+  /**
+   * 将记忆文本拆分为独立的语义切片。
+   * 支持按行（即以 `- **` 开头的记忆要点条目）进行拆分。
+   *
+   * @param text - 长期记忆文本
+   * @returns 拆分后的语义切片数组
+   */
+  public chunkMemoryText(text: string): string[] {
+    if (!text) {
+      return [];
+    }
+    return text
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line.startsWith('- **'));
+  }
+
+  /**
+   * 将新增的记忆事实同步切片并 upsert 存入向量数据库中。
+   *
+   * @param text - 新写入的记忆文本
+   */
+  private async syncNewMemoryToVectorDb(text: string): Promise<void> {
+    try {
+      const chunks = this.chunkMemoryText(text);
+      if (chunks.length === 0) {
+        return;
+      }
+      const embeddings = await this.embedding.generateEmbeddings(chunks);
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const vector = embeddings[i];
+        if (vector && vector.length > 0) {
+          const id = crypto.createHash('md5').update(chunk).digest('hex');
+          await this.vectorDb.add(id, chunk, vector);
+        }
+      }
+    } catch (error) {
+      console.error('[SessionManager] 长期记忆增量同步向量库失败:', error);
+    }
+  }
+
+  /**
+   * 如果本地向量库内容为空且物理长期记忆文件存在，则在后台异步运行增量重建。
+   */
+  private async rebuildVectorDbIfEmpty(): Promise<void> {
+    try {
+      const dbCount = await this.vectorDb.count();
+      if (dbCount === 0) {
+        if (fs.existsSync(this.memoryFilePath)) {
+          const fileContent = await fs.promises.readFile(this.memoryFilePath, 'utf-8');
+          const chunks = this.chunkMemoryText(fileContent);
+          if (chunks.length > 0) {
+            console.log(`[SessionManager] 检测到向量库为空，开始从 MEMORY.md 重建，共 ${chunks.length} 个切片...`);
+            const embeddings = await this.embedding.generateEmbeddings(chunks);
+            for (let i = 0; i < chunks.length; i++) {
+              const chunk = chunks[i];
+              const vector = embeddings[i];
+              if (vector && vector.length > 0) {
+                const id = crypto.createHash('md5').update(chunk).digest('hex');
+                await this.vectorDb.add(id, chunk, vector);
+              }
+            }
+            console.log('[SessionManager] 长期记忆向量库重建完成。');
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[SessionManager] 自动重建向量数据库失败:', error);
+    }
   }
 
   /**

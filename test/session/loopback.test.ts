@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * @file 异步后台任务通知与大模型唤醒机制集成测试。
  * 核心职责：
@@ -183,12 +184,27 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
       assemble: (baseHistory: ChatMessage[]) => baseHistory
     } as unknown as ContextAdapter;
 
+    const mockVectorDb = {
+      add: vi.fn().mockResolvedValue(undefined),
+      search: vi.fn().mockResolvedValue([]),
+      clear: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      count: vi.fn().mockResolvedValue(0)
+    } as any;
+
+    const mockEmbedding = {
+      generateEmbedding: vi.fn().mockResolvedValue([]),
+      generateEmbeddings: vi.fn().mockResolvedValue([])
+    } as any;
+
     const session = new SessionManager(
       mockLlmConfig,
       mockDriver,
       mockEstimator,
       mockToolRegistry,
-      mockContextAdapter
+      mockContextAdapter,
+      mockVectorDb,
+      mockEmbedding
     );
     const privateSession = session as unknown as {
       isGenerating: boolean;

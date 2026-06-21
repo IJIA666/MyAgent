@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * @file SessionManager.test.ts
  * @description 核心服务 SessionManager 与 AgentLoop 交互的单元测试。
@@ -44,8 +45,22 @@ interface VirtualAgentLoop {
 }
 
 describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
+  const mockVectorDb = {
+    add: vi.fn().mockResolvedValue(undefined),
+    search: vi.fn().mockResolvedValue([]),
+    clear: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+    count: vi.fn().mockResolvedValue(0)
+  } as any;
+
+  const mockEmbedding = {
+    generateEmbedding: vi.fn().mockResolvedValue([]),
+    generateEmbeddings: vi.fn().mockResolvedValue([])
+  } as any;
+
   beforeEach(() => {
     mockExecPromisified.mockResolvedValue({ stdout: 'lint/tsc mock passed\n', stderr: '' });
+    vi.clearAllMocks();
   });
 
   afterEach(() => {
@@ -74,7 +89,9 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockDriver,
       mockEstimator,
       mockToolRegistry,
-      mockContextAdapter
+      mockContextAdapter,
+      mockVectorDb,
+      mockEmbedding
     );
 
     expect(session.getIsGenerating()).toBe(false);
@@ -133,7 +150,9 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockDriver,
       mockEstimator,
       mockToolRegistry,
-      mockContextAdapter
+      mockContextAdapter,
+      mockVectorDb,
+      mockEmbedding
     );
 
     // 等待事件 complete
@@ -226,7 +245,9 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockDriver,
       mockEstimator,
       mockToolRegistry,
-      mockContextAdapter
+      mockContextAdapter,
+      mockVectorDb,
+      mockEmbedding
     );
 
     await new Promise<void>((resolve, reject) => {
@@ -255,7 +276,9 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockDriver,
       mockEstimator,
       mockToolRegistry,
-      mockContextAdapter
+      mockContextAdapter,
+      mockVectorDb,
+      mockEmbedding
     );
 
     const loop = session['agentLoop'] as unknown as VirtualAgentLoop;
@@ -323,7 +346,9 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockDriver,
       mockEstimator,
       mockToolRegistry,
-      mockContextAdapter
+      mockContextAdapter,
+      mockVectorDb,
+      mockEmbedding
     );
 
     const loop = session['agentLoop'] as unknown as VirtualAgentLoop;

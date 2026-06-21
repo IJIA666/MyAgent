@@ -8,6 +8,8 @@ import { TiktokenEstimator } from './adapters/llm/TiktokenEstimator.js';
 import { abortSessionTasks } from './adapters/tools/tools/system/terminal-engine.js';
 import { DefaultContextAdapter } from './adapters/context/DefaultContextAdapter.js';
 import { loadSkillContent } from './core/usecases/contextLoader.js';
+import { OpenAiEmbeddingAdapter } from './adapters/llm/OpenAiEmbeddingAdapter.js';
+import { LocalVectorDbAdapter } from './adapters/vectordb/LocalVectorDbAdapter.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -45,12 +47,16 @@ async function main() {
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
     const contextAdapter = new DefaultContextAdapter(tokenEstimator);
+    const embeddingAdapter = new OpenAiEmbeddingAdapter(appConfig.llm);
+    const vectorDbAdapter = new LocalVectorDbAdapter();
     session = new SessionManager(
       appConfig.llm,
       llmAdapter,
       tokenEstimator,
       toolRegistry,
       contextAdapter,
+      vectorDbAdapter,
+      embeddingAdapter,
       appConfig,
       abortSessionTasks
     );
