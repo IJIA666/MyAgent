@@ -12,8 +12,12 @@ export class ToolDispatcher {
    * 实例初始化。
    *
    * @param context - 会话上下文管理实例
+   * @param workspacePath - 可选的工作区根路径，用于重定向大文本拦截缓存与 JIT 规则寻路
    */
-  constructor(private context: SessionContext) {}
+  constructor(
+    private context: SessionContext,
+    private workspacePath?: string
+  ) {}
 
   /**
    * 拦截并处理超大工具输出。
@@ -31,7 +35,7 @@ export class ToolDispatcher {
     }
 
     // 确定临时落盘目录，并确保目录存在
-    const tempDir = join(process.cwd(), '.myagent/temp');
+    const tempDir = join(this.workspacePath || process.cwd(), '.myagent/temp');
     if (!existsSync(tempDir)) {
       mkdirSync(tempDir, { recursive: true });
     }
@@ -74,7 +78,7 @@ ${previewEnd}
    * @returns 组装好的 `<system-reminder>` 提示词文本，若无需注入则返回空字符串
    */
   public resolveJitContext(targetPath: string, injectedJitPaths: Set<string>): string {
-    const root = process.cwd();
+    const root = this.workspacePath || process.cwd();
     const targetAbs = resolve(root, targetPath);
     let current = dirname(targetAbs);
 

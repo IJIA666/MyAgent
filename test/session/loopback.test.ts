@@ -6,8 +6,32 @@
  * 3. 验证 CliFacade 的空闲自动唤醒、忙时积压缓存与无人值守 3 次熔断限流防护。
  */
 
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { resolve } from 'path';
+
+// 定义一个用来在各个测试用例中控制 exec 行为的 mock 函数
+const { mockExec, mockExecPromisified, execMockFunc } = vi.hoisted(() => {
+  const mExec = vi.fn();
+  const mExecPromisified = vi.fn();
+  const mockFunc = (cmd: string, options: unknown, callback: unknown) => {
+    const cb = typeof options === 'function' ? options : callback;
+    return mExec(cmd, options, cb);
+  };
+  Object.defineProperty(mockFunc, Symbol.for('nodejs.util.promisify.custom'), {
+    value: (cmd: string, options: unknown) => {
+      return mExecPromisified(cmd, options);
+    },
+    configurable: true,
+    writable: true
+  });
+  return { mockExec: mExec, mockExecPromisified: mExecPromisified, execMockFunc: mockFunc };
+});
+
+vi.mock('child_process', () => {
+  return {
+    exec: execMockFunc
+  };
+});
 import { initWorkspace } from '../../src/adapters/tools/tools.js';
 import { setWorkMode } from '../../src/adapters/tools/tools/system/terminal.js';
 import { SessionContext } from '../../src/core/domain/context.js';
@@ -15,10 +39,11 @@ import { ExecuteCommandTool } from '../../src/adapters/tools/tools/system/termin
 import * as terminalEngine from '../../src/adapters/tools/tools/system/terminal-engine.js';
 import { SessionManager } from '../../src/core/usecases/session.js';
 import { LlmConfig } from '../../src/config/index.js';
-import { LlmPort } from '../../src/ports/driven/LlmPort.js';
+import { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
 import { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
 import { ToolRegistryPort } from '../../src/ports/driven/ToolRegistryPort.js';
 import { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
+import { AgentEvent } from '../../src/core/usecases/agent-loop.js';
 
 describe('Terminal Notification Loopback & Buffering Tests', () => {
   const mockRootDir = resolve('D:\\authorized\\path_loopback_test');
@@ -31,6 +56,13 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
   beforeEach(() => {
     // 将工作安全模式重置为 YOLO，防止测试由于审批挂起而阻塞
     setWorkMode('YOLO');
+    // 设置默认 of promisified exec mock，防止在推理循环结束时物理执行 npm run lint / tsc --noEmit
+    mockExecPromisified.mockResolvedValue({ stdout: 'mock lint/tsc passed\n', stderr: '' });
+  });
+
+  afterEach(() => {
+    mockExecPromisified.mockReset();
+    mockExec.mockReset();
   });
 
   it('应该在 Hook 管道 busy 期间暂存通知，在 lock 释放后下一 Tick 刷入 history', async () => {
@@ -125,6 +157,12 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
       streamChat: async function* () {
         yield { type: 'thinking', content: 'thinking...' };
         yield { type: 'content', content: 'response' };
+        yield {
+          type: 'complete',
+          content: 'response',
+          reasoning: 'thinking...',
+          assistantMessage: { role: 'assistant', content: 'response' }
+        };
       }
     } as unknown as LlmPort;
 
@@ -142,7 +180,7 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
     } as unknown as ToolRegistryPort;
 
     const mockContextAdapter = {
-      assemble: (baseHistory: any) => baseHistory
+      assemble: (baseHistory: ChatMessage[]) => baseHistory
     } as unknown as ContextAdapter;
 
     const session = new SessionManager(
@@ -170,10 +208,20 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
 
     // 2. 【第一阶段】空闲状态收到事件 -> 触发唤醒
     // 模拟底层 context 向上发射 async_event，触发自唤醒逻辑
+    const completePromise1 = new Promise<void>((resolve) => {
+      const handler = (e: AgentEvent) => {
+        if (e.type === 'complete') {
+          session.off('agent_event', handler);
+          resolve();
+        }
+      };
+      session.on('agent_event', handler);
+    });
+
     privateSession.__testEmitAsyncEvent({ type: 'completed', taskId: 'task-1' });
 
     // 等待异步推理周期处理
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await completePromise1;
     expect(privateSession.autoWakeupCount).toBe(1);
 
     // 3. 【第二阶段】忙碌状态收到事件 -> 积压并级联唤醒
@@ -189,11 +237,22 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
 
     // 手动将 isGenerating 释放，并通过运行推理循环的 finally 块触发自唤醒微任务
     privateSession.isGenerating = false;
+
+    // 订阅自唤醒大循环执行完毕的 complete 事件以确定性地等待
+    const completePromise2 = new Promise<void>((resolve) => {
+      const handler = (e: AgentEvent) => {
+        if (e.type === 'complete') {
+          session.off('agent_event', handler);
+          resolve();
+        }
+      };
+      session.on('agent_event', handler);
+    });
+
     await privateSession.__testRunInternalGeneration();
     
-    // 等待 nextTick 及自唤醒异步推理跑完
-    await new Promise<void>((resolve) => process.nextTick(resolve));
-    await new Promise(resolve => setTimeout(resolve, 50));
+    // 等待自唤醒异步推理跑完
+    await completePromise2;
     
     // 验证自动唤醒次数增加到 2
     expect(privateSession.autoWakeupCount).toBe(2);

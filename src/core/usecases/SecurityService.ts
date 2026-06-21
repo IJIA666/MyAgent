@@ -8,22 +8,32 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 export class SecurityService {
   private static instance: SecurityService | null = null;
   private securityAllowlist: string[] = [];
-  private readonly filePath = resolve(process.cwd(), '.agent/allowed_commands.json');
+  private readonly filePath: string;
 
-  private constructor() {
+  private constructor(configPath?: string) {
+    this.filePath = configPath ? resolve(configPath) : resolve(process.cwd(), '.agent/allowed_commands.json');
     this.loadSecurityAllowlist();
   }
 
   /**
    * 获取 SecurityService 的全局单例实例。
    *
+   * @param configPath - 可选的配置文件重定向路径（主要供单元测试使用）
    * @returns 安全服务单例实例
    */
-  public static getInstance(): SecurityService {
+  public static getInstance(configPath?: string): SecurityService {
     if (!SecurityService.instance) {
-      SecurityService.instance = new SecurityService();
+      SecurityService.instance = new SecurityService(configPath);
     }
     return SecurityService.instance;
+  }
+
+  /**
+   * 重置 SecurityService 的单例状态（仅供单元测试清理环境使用）。
+   * @internal
+   */
+  public static resetInstance(): void {
+    SecurityService.instance = null;
   }
 
   /**

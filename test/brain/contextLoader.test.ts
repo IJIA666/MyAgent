@@ -5,11 +5,11 @@
  * 使用临时隔离文件夹进行物理读写测试，彻底规避并行测试下的磁盘竞态。
  */
 
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { loadGlobalRules, loadLocalRules } from '../../src/core/usecases/contextLoader.js';
+import { loadGlobalRules, loadLocalRules, loadSkills, loadSkillContent } from '../../src/core/usecases/contextLoader.js';
 
 describe('ContextLoader 规则熔断单元测试', () => {
   // 临时沙箱根目录路径
@@ -27,6 +27,7 @@ describe('ContextLoader 规则熔断单元测试', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     // 清理创建的临时文件夹及文件，释放系统资源
     try {
       rmSync(tempDir, { recursive: true, force: true });
@@ -59,5 +60,25 @@ describe('ContextLoader 规则熔断单元测试', () => {
     
     // 验证截断标志语是否正确拼入
     expect(result).toContain('[...系统规则过长，已被安全模块截断，仅保留前20KB...]');
+  });
+
+  test('3. 扫描并加载技能索引列表与正文', () => {
+    // 物理加载真实工作区下的技能索引，无需 Mock 任何 fs
+    const skills = loadSkills();
+    expect(skills.length).toBeGreaterThan(0);
+    
+    const firstSkill = skills[0];
+    expect(firstSkill.name).toBeDefined();
+    expect(firstSkill.filePath).toContain('SKILL.md');
+
+    // 验证正常载入真实技能详情
+    const body = loadSkillContent(firstSkill.name);
+    expect(body).not.toBeNull();
+    expect(typeof body).toBe('string');
+  });
+
+  test('4. 异常与边界分支覆盖', () => {
+    // 技能不存在时应该返回 null
+    expect(loadSkillContent('non-exist-skill-name-xyz')).toBeNull();
   });
 });

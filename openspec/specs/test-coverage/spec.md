@@ -25,3 +25,10 @@
 #### 场景: 正常模式下的事件分发与解挂唤醒
 - **WHEN** 调用 `wait()` 且有已注册的回调处理器，随后外部调用 `resolve()` 传入决策动作为 `once`/`always`/`deny` 时
 - **THEN** 系统必须同步派发包含工具元数据的新闻事件，挂起当前 Promise，并能在 `resolve` 调用后成功解挂唤醒，返回一致的用户决策。
+
+### 需求: 核心服务覆盖率指标
+系统底层核心服务的单元测试覆盖率必须 (MUST) 满足预设的安全阈值，以确保核心底座的高可靠性。
+
+#### 场景: 覆盖率校验与断言
+- **WHEN** 执行单元测试并收集覆盖率报告。
+- **THEN** 系统整体及 core/usecases 内部各服务（CompactionService, ContextRepository, ToolDispatcher, SecurityService, RuleManager）的 Statement 覆盖率均应当达到或超过设定的基线。

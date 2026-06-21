@@ -11,8 +11,12 @@ export class ContextRepository {
    * 实例初始化。
    *
    * @param context - 会话上下文管理实例
+   * @param workspacePath - 可选的工作区根路径，用于重定向持久化状态存储路径
    */
-  constructor(private context: SessionContext) {}
+  constructor(
+    private context: SessionContext,
+    private workspacePath?: string
+  ) {}
 
   /**
    * 将当前上下文静默序列化落盘到工作区文件。
@@ -21,7 +25,7 @@ export class ContextRepository {
    */
   public async saveState(): Promise<void> {
     try {
-      const dir = path.join(process.cwd(), '.myagent/sessions');
+      const dir = path.join(this.workspacePath || process.cwd(), '.myagent/sessions');
       await fs.mkdir(dir, { recursive: true });
       const file = path.join(dir, `${this.context.getSessionId()}.json`);
       const stateToSave = {
@@ -43,7 +47,7 @@ export class ContextRepository {
    */
   public async loadState(targetSessionId: string): Promise<boolean> {
     try {
-      const file = path.join(process.cwd(), '.myagent/sessions', `${targetSessionId}.json`);
+      const file = path.join(this.workspacePath || process.cwd(), '.myagent/sessions', `${targetSessionId}.json`);
       const data = await fs.readFile(file, 'utf-8');
       const parsed = JSON.parse(data);
       if (Array.isArray(parsed)) {
