@@ -23,6 +23,9 @@ import type { ToolDispatcher } from '../../src/core/usecases/ToolDispatcher.js';
 import type { AgentTracer } from '../../src/core/domain/tracer.js';
 import type { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
 import type { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
+import { SessionManager } from '../../src/core/usecases/session.js';
+import type { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
+import type { ToolRegistryPort } from '../../src/ports/driven/ToolRegistryPort.js';
 
 describe('Plugins Lifecycle & Action Tests', () => {
   let sessionContext: SessionContext;
@@ -338,15 +341,10 @@ describe('Plugins Lifecycle & Action Tests', () => {
       expect(next).toHaveBeenCalled();
     });
 
-    it('should asynchronously refine and append memory in SessionEnd hook and queue write files', async () => {
-      const mockLlmChunk = { type: 'content', content: '- **主题**：提炼出的记忆事实。' };
-      const mockDriver = {
-        streamChat: vi.fn().mockImplementation(async function* () {
-          yield mockLlmChunk;
-        })
-      } as unknown as LlmPort;
-
-      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath);
+    it('should trigger onSessionEndCallback in SessionEnd hook when history is sufficient', async () => {
+      const mockDriver = {} as unknown as LlmPort;
+      const callback = vi.fn();
+      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath, callback);
 
       sessionContext.addMessage({ role: 'user', content: 'What language do you like?' });
       sessionContext.addMessage({ role: 'assistant', content: 'I like TypeScript.' });
@@ -362,54 +360,102 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
       await (plugin as unknown as { refinePromise: Promise<void> }).refinePromise;
 
-      expect(mockDriver.streamChat).toHaveBeenCalled();
-      expect(fs.existsSync(tempMemoryPath)).toBe(true);
-      const writtenContent = fs.readFileSync(tempMemoryPath, 'utf-8');
-      expect(writtenContent).toContain('- **主题**：提炼出的记忆事实。');
+      expect(callback).toHaveBeenCalled();
       expect(next).toHaveBeenCalled();
     });
 
-    it('should format non-string content (array, null) and tool calls in SessionEnd refinement', async () => {
+    it('should integration-test sub-agent forked memory refinement and safe category bypass', async () => {
+      let streamCalledTimes = 0;
       const mockDriver = {
-        streamChat: vi.fn().mockImplementation(async function* () {
-          yield { type: 'content', content: '- **主题**：多模态及工具测试完成。' };
-        })
+        getModelName: () => 'MockRefineModel',
+        switchModel: () => {},
+        abort: () => {},
+        streamChat: async function* () {
+          streamCalledTimes++;
+          if (streamCalledTimes === 1) {
+            yield {
+              type: 'tool_calls',
+              toolCalls: [
+                {
+                  id: 'call-refine',
+                  type: 'function',
+                  function: { name: 'writeMemoryFile', arguments: JSON.stringify({ content: '- **长期事实**：提炼的记忆内容。' }) }
+                }
+              ],
+              assistantMessage: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                  {
+                    id: 'call-refine',
+                    type: 'function',
+                    function: { name: 'writeMemoryFile', arguments: JSON.stringify({ content: '- **长期事实**：提炼的记忆内容。' }) }
+                  }
+                ]
+              }
+            };
+          } else {
+            yield {
+              type: 'complete',
+              content: '自省提炼自损已完成。',
+              assistantMessage: { role: 'assistant', content: '自省提炼自损已完成。' }
+            };
+          }
+        }
       } as unknown as LlmPort;
 
-      const plugin = new LongTermMemoryPlugin(mockDriver, tempMemoryPath);
+      const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+      const mockEstimator = {
+        estimateSnapshotTokens: () => ({ total: 10, system: 2, rules: 2, transient: 2, history: 4 }),
+        getCompactionThreshold: () => 100000
+      } as unknown as TokenEstimatorPort;
+      const mockToolRegistry = {
+        getTools: async () => [],
+        callTool: async () => ({}),
+        getTool: () => undefined,
+        close: async () => {}
+      } as unknown as ToolRegistryPort;
+      const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
-      // 添加含有非 string 内容（如 JSON 串表示复杂对象）和 tool_calls 的消息
-      sessionContext.addMessage({
-        role: 'user',
-        content: JSON.stringify([{ type: 'text', text: 'Analyze this image' }]) as unknown as string
-      });
-      sessionContext.addMessage({
-        role: 'assistant',
-        content: null,
-        tool_calls: [{ id: '1', type: 'function', function: { name: 'analyzeImage', arguments: '{}' } }]
-      });
+      // 使用自定义的记忆文件路径初始化 SessionManager
+      const session = new SessionManager(
+        mockLlmConfig,
+        mockDriver,
+        mockEstimator,
+        mockToolRegistry,
+        mockContextAdapter
+      );
 
+      // 覆盖 SessionManager 内的 memoryFilePath
+      (session as unknown as { memoryFilePath: string }).memoryFilePath = tempMemoryPath;
+
+      // 添加对话历史以满足自省触发阈值
+      session['context'].addMessage({ role: 'user', content: 'hello refine' });
+      session['context'].addMessage({ role: 'assistant', content: 'hello subagent' });
+
+      // 手动执行 SessionEnd 钩子触发流程，由于我们注册了 LongTermMemoryPlugin 并带回调，这会异步拉起自省子智能体
       const context: HookContext = {
-        sessionContext,
+        sessionContext: session['context'],
         eventName: HookEventName.SessionEnd,
         control: { action: 'continue' }
       };
 
       const next = vi.fn().mockResolvedValue(undefined);
-      await plugin.hooks[HookEventName.SessionEnd](context, next);
+      const memoryPlugin = session['pluginRegistry'].getPlugins().find(p => p.name === 'LongTermMemoryPlugin') as LongTermMemoryPlugin;
+      expect(memoryPlugin).toBeDefined();
 
-      await (plugin as unknown as { refinePromise: Promise<void> }).refinePromise;
+      await memoryPlugin.hooks[HookEventName.SessionEnd](context, next);
 
-      expect(mockDriver.streamChat).toHaveBeenCalled();
-      const mockStreamChat = mockDriver.streamChat as unknown as {
-        mock: { calls: Array<[ChatMessage[]]> };
-      };
-      const calledArgs = mockStreamChat.mock.calls[0][0];
-      const historyPromptText = calledArgs[0].content;
-      // 验证 user 消息被转为了字符串形式，assistant 消息的 tool_calls 被表达了出来
-      expect(historyPromptText).toContain('Analyze this image');
-      expect(historyPromptText).toContain('[调用工具]');
-      expect(historyPromptText).toContain('analyzeImage');
+      // 等待自省异步任务和写队列执行完毕
+      await (memoryPlugin as unknown as { refinePromise: Promise<void> }).refinePromise;
+      // 这里的 refinePromise 结束后，还需要等待 triggerMemoryRefinementAsync 的微任务和 writeQueue 物理追加写入完毕
+      // 我们通过让 writeQueue 跑完来等待物理文件最终落盘
+      await (session as unknown as { writeQueue: Promise<void> }).writeQueue;
+
+      expect(fs.existsSync(tempMemoryPath)).toBe(true);
+      const writtenContent = fs.readFileSync(tempMemoryPath, 'utf-8');
+      expect(writtenContent).toContain('- **长期事实**：提炼的记忆内容。');
+      expect(next).toHaveBeenCalled();
     });
   });
 });
