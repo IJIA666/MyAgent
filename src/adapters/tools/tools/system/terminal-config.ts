@@ -8,6 +8,7 @@
 import { resolve, dirname } from 'path';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { getAuthorizedDir } from '../base.js';
+import { unboxNestedCommand } from './terminal-guard.js';
 
 /**
  * 终端执行工作模式定义
@@ -74,20 +75,42 @@ function getAgentConfigPath(): string {
 }
 
 /**
- * 从磁盘读取允许执行的命令白名单规则列表
+ * 从磁盘读取允许执行的命令白名单规则列表。
+ * 若文件不存在或内容为空，系统自动在本地写入一份常用且相对安全的规则预设。
+ * 
  * @returns 白名单规则列表
  */
 export function loadAllowedCommands(): string[] {
+  const path = getAllowedCommandsPath();
+  const defaultCommands = [
+    "git status:*",
+    "git diff:*",
+    "git log:*",
+    "vitest:*",
+    "npm test:*",
+    "npm run test:*"
+  ];
+
   try {
-    const path = getAllowedCommandsPath();
     if (existsSync(path)) {
       const data = readFileSync(path, 'utf-8');
-      return JSON.parse(data) as string[];
+      const parsed = JSON.parse(data) as string[];
+      if (parsed && parsed.length > 0) {
+        return parsed;
+      }
     }
   } catch {
-    // 读取异常时，忽略错误并返回空规则集
+    // 读取异常时，回退至写入默认预设或返回空
   }
-  return [];
+
+  // 文件不存在、解析为空或异常时，写入默认预设白名单规则并返回
+  try {
+    saveAllowedCommands(defaultCommands);
+    return defaultCommands;
+  } catch {
+    // 写入失败时降级返回默认数组，不引发程序崩溃
+    return defaultCommands;
+  }
 }
 
 /**
@@ -166,15 +189,17 @@ export function saveWorkMode(mode: WorkMode): void {
 /**
  * 静态安全前缀提取算法
  * 解析命令行文本，提取 Root Command + Sub Command 并进行纯字母数字校验。
- * 样例：
- * - "npm run build" -> "npm run"
- * - "git add src/index.ts" -> "git add"
- * - "python -m pip install" -> null
- * @param command 原始命令文本
+ * 在提取前先进行解包剥壳。
+ * 
+ * @param command - 原始命令文本
  * @returns 提取出的前缀，提取失败时返回 null
  */
 export function extractSafePrefix(command: string): string | null {
-  const parts = command.trim().split(/\s+/);
+  // 1. 剥离嵌套外壳获取实际内核命令
+  const unboxed = unboxNestedCommand(command);
+
+  // 2. 对内核命令提取前缀
+  const parts = unboxed.trim().split(/\s+/);
   if (parts.length < 2) {
     return null;
   }
@@ -191,21 +216,23 @@ export function extractSafePrefix(command: string): string | null {
 
 /**
  * 校验指定命令行是否命中已配置的命令白名单
- * @param command 待校验的命令行文本
+ * 校验前先调用 unboxNestedCommand 对命令进行解包剥壳，以保证对外契约与 checkSafety 匹配机制一致。
+ * 
+ * @param command - 待校验的命令行文本
  * @returns 是否命中白名单
  */
 export function checkWhitelist(command: string): boolean {
   const allowed = loadAllowedCommands();
-  const trimmed = command.trim();
+  const unboxed = unboxNestedCommand(command).trim();
   
   for (const rule of allowed) {
     if (rule.endsWith(':*')) {
       const prefix = rule.slice(0, -2);
-      if (trimmed.startsWith(prefix)) {
+      if (unboxed.startsWith(prefix)) {
         return true;
       }
     } else {
-      if (trimmed === rule) {
+      if (unboxed === rule) {
         return true;
       }
     }

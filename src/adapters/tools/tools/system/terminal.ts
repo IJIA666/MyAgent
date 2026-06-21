@@ -3,9 +3,9 @@
  * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
  */
 
-import { validateCommand, validateCwd, checkCommandSafetyLevel, isHardlineDangerous } from './terminal-guard.js';
+import { validateCommand, validateCwd, checkCommandSafetyLevel, isHardlineDangerous, unboxNestedCommand, DANGEROUS_WRITE_COMMAND_REGEX } from './terminal-guard.js';
 import { runCommandEngine } from './terminal-engine.js';
-import { getWorkMode, extractSafePrefix } from './terminal-config.js';
+import { getWorkMode, extractSafePrefix, loadAllowedCommands } from './terminal-config.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import type { SessionEventPort } from '../../../../ports/driven/SessionEventPort.js';
 import type { EventNotificationPort } from '../../../../ports/driven/EventNotificationPort.js';
@@ -81,8 +81,10 @@ export class ExecuteCommandTool implements NativeTool {
     const workMode = sessionContext ? sessionContext.getWorkMode() : getWorkMode();
 
     // 2. Plan 模式拦截：禁止任何有写倾向/修改副作用的终端指令
+    const unboxedCmd = unboxNestedCommand(command).trim();
+    const safetyLevel = checkCommandSafetyLevel(unboxedCmd);
+
     if (workMode === 'Plan') {
-      const safetyLevel = checkCommandSafetyLevel(command);
       if (safetyLevel !== 'allow') {
         return { status: 'deny', message: 'BLOCKED (Plan Mode Only): 只读模式下禁止执行任何具有写入/修改副作用的指令。' };
       }
@@ -95,18 +97,18 @@ export class ExecuteCommandTool implements NativeTool {
 
     let needApproval = true;
 
-    // 4. Auto 模式且属于只读白名单级别指令，进行已授权白名单的前缀校验
-    const safetyLevel = checkCommandSafetyLevel(command);
-    if (safetyLevel === 'allow' && workMode === 'Auto') {
+    // 4. Auto 模式且属于非高危写动作命令，进行已授权白名单的前缀校验
+    // 关键改动：安全评级判定前也先解包剥壳，以防解释器外壳导致只读规则评级失效
+    const isDangerous = DANGEROUS_WRITE_COMMAND_REGEX.test(unboxedCmd);
+    if (!isDangerous && workMode === 'Auto') {
       // 校验命令行是否命中白名单规则
-      const allowed = sessionContext ? sessionContext.getSecurityAllowlist() : [];
-      const trimmed = command.trim();
+      const allowed = sessionContext ? sessionContext.getSecurityAllowlist() : loadAllowedCommands();
       const isAllowed = allowed.some((rule: string) => {
         if (rule.endsWith(':*')) {
           const prefix = rule.slice(0, -2);
-          return trimmed.startsWith(prefix);
+          return unboxedCmd.startsWith(prefix);
         }
-        return trimmed === rule;
+        return unboxedCmd === rule;
       });
 
       if (isAllowed) {
@@ -116,9 +118,15 @@ export class ExecuteCommandTool implements NativeTool {
 
     if (needApproval) {
       const safePrefix = extractSafePrefix(command) ?? undefined;
+      
+      // 知情告知融合：当解包内核与原始外壳命令不一致时，展示披露比对信息（改用单引号包裹防止引号嵌套的视觉混乱）
+      const message = unboxedCmd !== command.trim()
+        ? `智能体试图在终端执行未授权命令。外壳包装: '${command.trim()}'，实际执行的核心命令为: '${unboxedCmd}'`
+        : `智能体试图在终端执行写倾向或未识别命令: '${command}'`;
+
       return {
         status: 'suspend',
-        message: `智能体试图在终端执行写倾向或未识别命令: "${command}"`,
+        message,
         safePrefix
       };
     }

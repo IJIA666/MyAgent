@@ -50,7 +50,9 @@ export function validateCwd(cwd?: string): string {
   return targetCwd;
 }
 
-/** 明确安全的无副作用只读白名单命令字开头（不能带有管道符及写重定向符号） */
+/**
+ * 明确安全的无副作用只读白名单命令字开头（不能带有管道符及写重定向符号）
+ */
 export const READONLY_COMMAND_WHITELIST = [
   'git status',
   'git diff',
@@ -70,17 +72,17 @@ export const DANGEROUS_WRITE_COMMAND_REGEX = /\b(Remove-Item|del|rd|rm|rmdir|ri|
  * 针对 Windows/PowerShell 执行环境执行“宁错杀不放过”的安全降级判定。
  * 
  * @param command - 待执行的完整命令行文本
- * @returns 判定结果：'allow' 表示静默放行，'ask' 表示强制安全降级到人工确认
+ * @returns 判定结果：'allow' 表示允许进入白名单规则校验，'ask' 表示强制安全降级到人工确认，不允许进入白名单匹配
  */
 export function checkCommandSafetyLevel(command: string): 'allow' | 'ask' {
   const trimmed = command.trim();
   
-  // 1. 特征判定：如果包含任何危险删除/写动作的指令或别名，强制降级为 ask
+  // 1. 特征判定：如果包含任何危险写动作的指令或别名，强制降级为 ask，严禁静默放行
   if (DANGEROUS_WRITE_COMMAND_REGEX.test(trimmed)) {
     return 'ask';
   }
   
-  // 2. 白名单判定：如果完全吻合或以只读白名单字开头，允许静默放行
+  // 2. 白名单判定：如果完全吻合或以只读白名单字开头，允许去匹配本地的配置白名单规则
   for (const rule of READONLY_COMMAND_WHITELIST) {
     if (trimmed === rule || trimmed.startsWith(rule + ' ')) {
       return 'allow';
@@ -120,6 +122,36 @@ export function stripLeadingEnvAssignments(command: string): string {
 }
 
 /**
+ * 寻找与字符串首位引号成对闭合的未转义引号的索引。
+ * 如果找不到或闭合点不在末尾，说明首尾引号并不是包围整个字符串的同一对引号。
+ *
+ * @param str - 待扫描的命令行文本
+ * @returns 闭合引号在字符串中的索引，找不到则返回 -1
+ */
+function getMatchingQuoteIndex(str: string): number {
+  const quote = str[0];
+  if (quote !== '"' && quote !== "'" && quote !== '`') {
+    return -1;
+  }
+  let isEscaped = false;
+  for (let i = 1; i < str.length; i++) {
+    const char = str[i];
+    if (isEscaped) {
+      isEscaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      isEscaped = true;
+      continue;
+    }
+    if (char === quote) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
  * 递归剥离命令的嵌套外壳（env, sudo, exec, sh, bash等），提取出真正执行的核心命令内容。
  * 
  * @param command - 干净的命令文本
@@ -127,11 +159,9 @@ export function stripLeadingEnvAssignments(command: string): string {
  */
 export function unboxNestedCommand(command: string): string {
   let current = command.trim();
-  
-  // 先剥离前导环境变量
-  current = stripLeadingEnvAssignments(current);
 
   // 递归剥离前置前缀 env, sudo, exec
+  // env 虽为 Unix 命令，但在 Windows 环境下能有效兼容 Git Bash 等类 Unix 模拟终端环境
   const prefixPattern = /^(env|sudo|exec)\s+/i;
   let changed = true;
   while (changed) {
@@ -149,17 +179,28 @@ export function unboxNestedCommand(command: string): string {
     }
   }
 
-  // 剥离 sh -c / bash -c / cmd /c 及其对应的包围引号
-  const shellPattern = /^(sh|bash|cmd|powershell|pwsh)\s+(?:-c|-Command|\/c)\s+('[^']*'|"[^"]*"|`[^`]*`|[^\s'"`]+)/i;
-  const shellMatch = current.match(shellPattern);
+  // 改进后的 shellPrefixPattern：支持解释器后附带可选参数，如 -NoProfile -ExecutionPolicy Bypass，且使用 [^\s'"\`-]+ 限制其值不能含引号以防吞噬 innerCmd 内的包裹段
+  const shellPrefixPattern = /^(sh|bash|cmd|powershell|pwsh)(?:\s+-[a-zA-Z0-9]+(?:\s+[^\s'"\`-]+)?)*\s+(?:-c|-Command|\/c)\s+/i;
+  const shellMatch = current.match(shellPrefixPattern);
   if (shellMatch) {
-    let innerCmd = shellMatch[2].trim();
-    if ((innerCmd.startsWith('"') && innerCmd.endsWith('"')) ||
-        (innerCmd.startsWith("'") && innerCmd.endsWith("'")) ||
-        (innerCmd.startsWith("`") && innerCmd.endsWith("`"))) {
-      innerCmd = innerCmd.slice(1, -1).trim();
+    // 采用位置截取，获取匹配头之后的全部剩余字符串，防止正则捕获组在处理复杂的嵌套引号时发生截断
+    let innerCmd = current.slice(shellMatch[0].length).trim();
+    
+    // 剥离最外层的一对包围引号（通过 getMatchingQuoteIndex 判定是否为同一对包裹引号，防止如 "cmd A" --arg "cmd B" 类型的首尾误判）
+    const firstChar = innerCmd[0];
+    if (firstChar === '"' || firstChar === "'" || firstChar === '`') {
+      const matchIndex = getMatchingQuoteIndex(innerCmd);
+      if (matchIndex === innerCmd.length - 1) {
+        innerCmd = innerCmd.slice(1, -1).trim();
+      }
     }
     return unboxNestedCommand(innerCmd);
+  }
+
+  // 将 & { ... } 清洗逻辑独立于 shellMatch 外置，以便处理单独传入的脚本块或递归深度清洗（正则确保 & 后紧随 {，防止误伤普通带花括号参数的命令，如 & cmd --config={...}）
+  if (/^&\s*\{/.test(current) && current.endsWith('}')) {
+    current = current.replace(/^&\s*\{\s*/, '').replace(/\s*\}$/, '').trim();
+    return unboxNestedCommand(current);
   }
 
   return current;

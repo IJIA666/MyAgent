@@ -15,7 +15,7 @@ import {
   saveWorkMode,
   loadWorkMode
 } from '../../src/adapters/tools/tools/system/terminal.js';
-import { validateCommand, validateCwd } from '../../src/adapters/tools/tools/system/terminal-guard.js';
+import { validateCommand, validateCwd, unboxNestedCommand } from '../../src/adapters/tools/tools/system/terminal-guard.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 
 describe('Terminal Tool 单元测试', () => {
@@ -88,6 +88,7 @@ describe('Terminal Tool 单元测试', () => {
 
     // 白名单命中匹配校验
     expect(checkWhitelist('npm run build')).toBe(true);
+    expect(checkWhitelist('powershell -Command "npm run build"')).toBe(true); // 剥壳后能够匹配
     expect(checkWhitelist('git add src/a.ts')).toBe(true);
     expect(checkWhitelist('npm publish')).toBe(false); // 没在白名单内
   });
@@ -161,5 +162,64 @@ describe('Terminal Tool 单元测试', () => {
     const safetyRmGlobal = executeCommandToolInstance.checkSafety({ command: 'rm -rf /' });
     expect(safetyRmGlobal.status).toBe('deny');
     expect(safetyRmGlobal.message).toContain('BLOCKED (Hardline Blocklist)');
+  });
+
+  test('9. unboxNestedCommand 核心功能及 flags 容忍单元测试', () => {
+    // A. 多层嵌套解包测试
+    expect(unboxNestedCommand('powershell -Command "cmd /c \'npm run build\'"')).toBe('npm run build');
+
+    // B. 带中间 CLI 选项 flags 容忍测试
+    expect(unboxNestedCommand('powershell -ExecutionPolicy Bypass -Command "npm run build"')).toBe('npm run build');
+    expect(unboxNestedCommand('powershell -NoProfile -ExecutionPolicy Bypass -Command "npm run test"')).toBe('npm run test');
+    expect(unboxNestedCommand('bash -c "npm run test"')).toBe('npm run test');
+  });
+
+  test('10. unboxNestedCommand 引号与 PowerShell 脚本块边界测试', () => {
+    // A. 嵌套引号切片防截断测试
+    expect(unboxNestedCommand('powershell -Command "npm run build -- --filter=\'src/**\'"')).toBe("npm run build -- --filter='src/**'");
+
+    // B. 多组引号首尾误判测试（防误删）
+    const multiQuoteCmd = '"npm run build" --option "some args"';
+    expect(unboxNestedCommand(multiQuoteCmd)).toBe(multiQuoteCmd);
+
+    // C. PowerShell 脚本块清洗
+    expect(unboxNestedCommand('powershell -Command "& { npm run build }"')).toBe('npm run build');
+    expect(unboxNestedCommand('& { npm run test }')).toBe('npm run test');
+
+    // D. 防花括号传参误伤
+    const withBraceParamsCmd = '& npm run build --config={tsconfig.json}';
+    expect(unboxNestedCommand(withBraceParamsCmd)).toBe(withBraceParamsCmd);
+  });
+
+  test('11. 自动初始化、剥壳前缀提取、Auto匹配与挂起弹窗披露测试', () => {
+    // A. 自动配置初始化测试：因为 beforeEach 把允许命令清空为空数组，
+    // 调用 loadAllowedCommands 应自动触发配置初始化，写入并返回默认常用规则
+    const defaultLoaded = loadAllowedCommands();
+    expect(defaultLoaded).toContain('git status:*');
+    expect(defaultLoaded).toContain('npm run test:*');
+
+    // B. 剥壳前缀提取测试
+    expect(extractSafePrefix('powershell -Command "npm run build"')).toBe('npm run');
+    expect(extractSafePrefix('powershell -ExecutionPolicy Bypass -Command "git add src/index.ts"')).toBe('git add');
+
+    // C. Auto 模式剥壳匹配与放行测试
+    saveAllowedCommands(['git status:*', 'npm run:*']);
+    setWorkMode('Auto');
+
+    const safetyAllowed = executeCommandToolInstance.checkSafety({ command: 'powershell -Command "npm run test"' });
+    expect(safetyAllowed.status).toBe('pass'); // 剥壳还原 npm run test 匹配白名单自动放行
+
+    // D. 审批挂起时的披露信息与对比测试
+    const safetyUnallowed = executeCommandToolInstance.checkSafety({ command: 'powershell -Command "npm test"' });
+    expect(safetyUnallowed.status).toBe('suspend');
+    expect(safetyUnallowed.message).toContain("外壳包装: 'powershell -Command \"npm test\"'");
+    expect(safetyUnallowed.message).toContain("实际执行的核心命令为: 'npm test'");
+
+    // E. 负向场景测试：解包后未命中白名单的拦截与告知行为
+    saveAllowedCommands(['git status:*']); // 只授权 git status
+    const safetyNegative = executeCommandToolInstance.checkSafety({ command: 'powershell -Command "npm run lint"' });
+    expect(safetyNegative.status).toBe('suspend');
+    expect(safetyNegative.message).toContain("外壳包装: 'powershell -Command \"npm run lint\"'");
+    expect(safetyNegative.message).toContain("实际执行的核心命令为: 'npm run lint'");
   });
 });
