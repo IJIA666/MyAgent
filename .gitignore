@@ -38,3 +38,6 @@ ENV/
 
 # Log files
 *.log
+
+# Test coverage reports
+coverage/
