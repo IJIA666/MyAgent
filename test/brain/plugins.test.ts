@@ -263,7 +263,6 @@ describe('Plugins Lifecycle & Action Tests', () => {
     });
 
     it('should query vector db and append recalled memories to system message in BeforeModel hook', async () => {
-      const mockDriver = {} as unknown as LlmPort;
       const mockVectorDb = {
         search: vi.fn().mockResolvedValue([
           { id: '1', text: '- **技术要点**：语义内容。', score: 0.8 }
@@ -274,7 +273,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0))
       } as any;
 
-      const plugin = new LongTermMemoryPlugin(mockDriver, mockVectorDb, mockEmbedding, tempMemoryPath);
+      const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath);
 
       sessionContext.addMessage({ role: 'user', content: '测试查询' });
 
@@ -300,7 +299,6 @@ describe('Plugins Lifecycle & Action Tests', () => {
     });
 
     it('should unshift system message in BeforeModel hook if no system message exists', async () => {
-      const mockDriver = {} as unknown as LlmPort;
       const mockVectorDb = {
         search: vi.fn().mockResolvedValue([
           { id: '1', text: '- **技术要点**：语义内容。', score: 0.8 }
@@ -311,7 +309,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0))
       } as any;
 
-      const plugin = new LongTermMemoryPlugin(mockDriver, mockVectorDb, mockEmbedding, tempMemoryPath);
+      const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath);
 
       sessionContext.addMessage({ role: 'user', content: '测试查询' });
 
@@ -342,7 +340,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
       } as unknown as LlmPort;
       const mockVectorDb = {} as any;
       const mockEmbedding = {} as any;
-      const plugin = new LongTermMemoryPlugin(mockDriver, mockVectorDb, mockEmbedding, tempMemoryPath);
+      const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath);
 
       sessionContext.addMessage({ role: 'user', content: 'Hello' });
 
@@ -363,11 +361,10 @@ describe('Plugins Lifecycle & Action Tests', () => {
     });
 
     it('should trigger onSessionEndCallback in SessionEnd hook when history is sufficient', async () => {
-      const mockDriver = {} as unknown as LlmPort;
       const mockVectorDb = {} as any;
       const mockEmbedding = {} as any;
       const callback = vi.fn();
-      const plugin = new LongTermMemoryPlugin(mockDriver, mockVectorDb, mockEmbedding, tempMemoryPath, callback);
+      const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath, callback);
 
       sessionContext.addMessage({ role: 'user', content: 'What language do you like?' });
       sessionContext.addMessage({ role: 'assistant', content: 'I like TypeScript.' });
@@ -497,7 +494,6 @@ describe('Plugins Lifecycle & Action Tests', () => {
     });
 
     it('应该能够成功进行语义召回并在 BeforeModel 钩子中注入 System Prompt', async () => {
-      const mockDriver = {} as unknown as LlmPort;
       const mockVectorDb = {
         search: vi.fn().mockResolvedValue([
           { id: 'hash1', text: '- **技术偏好**：用户非常喜欢使用 TypeScript 语言。', score: 0.9 }
@@ -509,7 +505,6 @@ describe('Plugins Lifecycle & Action Tests', () => {
       } as any;
 
       const plugin = new LongTermMemoryPlugin(
-        mockDriver,
         mockVectorDb,
         mockEmbedding,
         tempMemoryPath
@@ -592,6 +587,96 @@ describe('Plugins Lifecycle & Action Tests', () => {
         '- **开发环境**：当前在 Windows 系统上运行测试。',
         [0.1, 0.2]
       );
+    });
+
+    it('should extract technical keywords using regex with high precision', () => {
+      const mockVectorDb = {} as any;
+      const mockEmbedding = {} as any;
+      const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath);
+
+      const text = '请使用 `AgentLoop` 和 `LongTermMemoryPlugin`，参考 session.ts 文件中的 SessionManager 实现；还要看看 context.ts。';
+      const keywords = plugin.extractKeywords(text);
+
+      expect(keywords).toContain('AgentLoop');
+      expect(keywords).toContain('LongTermMemoryPlugin');
+      expect(keywords).toContain('SessionManager');
+      expect(keywords).toContain('session.ts');
+      expect(keywords).toContain('context.ts');
+      expect(keywords.length).toBe(5);
+    });
+
+    it('should merge vector results and keyword results correctly using reciprocalRankFusion', () => {
+      const mockVectorDb = {} as any;
+      const mockEmbedding = {} as any;
+      const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath);
+
+      const vectorResults = [
+        { id: 'a', text: 'Text A', score: 0.9 },
+        { id: 'b', text: 'Text B', score: 0.8 }
+      ];
+      const keywordResults = [
+        { id: 'b', text: 'Text B' },
+        { id: 'c', text: 'Text C' }
+      ];
+
+      const fused = plugin.reciprocalRankFusion(vectorResults, keywordResults);
+
+      expect(fused[0].id).toBe('b');
+      expect(fused[0].text).toBe('Text B');
+      expect(fused[1].id).toBe('a');
+      expect(fused[2].id).toBe('c');
+      expect(fused.length).toBe(3);
+    });
+
+    it('should query both vector db and keyword index and merge them using RRF in BeforeModel hook', async () => {
+      fs.writeFileSync(tempMemoryPath, '\n- **SessionManager**：会话管理器事实。\n- **OtherThing**：不相干事实。\n');
+
+      const mockVectorDb = {
+        search: vi.fn().mockResolvedValue([
+          { id: 'vector-id', text: '- **技术偏好**：用户非常喜欢使用 TypeScript 语言。', score: 0.9 }
+        ]),
+        count: vi.fn().mockResolvedValue(0)
+      } as any;
+      const mockEmbedding = {
+        generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0.1))
+      } as any;
+
+      const plugin = new LongTermMemoryPlugin(
+        mockVectorDb,
+        mockEmbedding,
+        tempMemoryPath
+      );
+
+      const sessionContext = new SessionContext('test-session');
+      sessionContext.addMessage({ role: 'user', content: '我喜欢使用 TypeScript 并且想了解 SessionManager' });
+
+      const llmRequest = {
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' }
+        ]
+      } as any;
+
+      const context: HookContext = {
+        sessionContext,
+        llmRequest,
+        eventName: HookEventName.BeforeModel,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+
+      await plugin.hooks[HookEventName.BeforeModel](context, next);
+
+      expect(mockEmbedding.generateEmbedding).toHaveBeenCalled();
+      expect(mockVectorDb.search).toHaveBeenCalled();
+      
+      const content = llmRequest.messages[0].content;
+      expect(content).toContain('<long-term-memory>');
+      expect(content).toContain('- **技术偏好**：用户非常喜欢使用 TypeScript 语言。');
+      expect(content).toContain('- **SessionManager**：会话管理器事实。');
+      expect(content).not.toContain('- **OtherThing**：不相干事实。');
+      
+      expect(next).toHaveBeenCalled();
     });
   });
 });

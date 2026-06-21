@@ -136,7 +136,6 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.pluginRegistry.register(new TracerLogPlugin(() => this.tracer));
     this.pluginRegistry.register(
       new LongTermMemoryPlugin(
-        this.driver,
         this.vectorDb,
         this.embedding,
         this.memoryFilePath,
