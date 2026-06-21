@@ -32,6 +32,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
   let sessionContext: SessionContext;
 
   beforeEach(() => {
+    // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
+    vi.spyOn(SessionManager.prototype as any, 'rebuildVectorDbIfEmpty').mockResolvedValue(undefined);
     sessionContext = new SessionContext('test-session');
   });
 
@@ -676,6 +678,94 @@ describe('Plugins Lifecycle & Action Tests', () => {
       expect(content).toContain('- **SessionManager**：会话管理器事实。');
       expect(content).not.toContain('- **OtherThing**：不相干事实。');
       
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should degrade to keyword search gracefully when vector search fails', async () => {
+      fs.writeFileSync(tempMemoryPath, '\n- **SessionManager**：这是会话管理的控制中枢，它负责插件的生命周期和洋葱模型的构建。\n');
+
+      const mockVectorDb = {
+        search: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0)
+      } as any;
+
+      const mockEmbedding = {
+        generateEmbedding: vi.fn().mockRejectedValue(new Error('Vector database offline or generateEmbedding failed'))
+      } as any;
+
+      const plugin = new LongTermMemoryPlugin(
+        mockVectorDb,
+        mockEmbedding,
+        tempMemoryPath
+      );
+
+      const sessionContext = new SessionContext('test-session');
+      sessionContext.addMessage({ role: 'user', content: '如何理解 SessionManager？' });
+
+      const llmRequest = {
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' }
+        ]
+      } as any;
+
+      const context: HookContext = {
+        sessionContext,
+        llmRequest,
+        eventName: HookEventName.BeforeModel,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+
+      await plugin.hooks[HookEventName.BeforeModel](context, next);
+
+      expect(mockEmbedding.generateEmbedding).toHaveBeenCalled();
+      expect(mockVectorDb.search).not.toHaveBeenCalled();
+
+      const content = llmRequest.messages[0].content;
+      expect(content).toContain('<long-term-memory>');
+      expect(content).toContain('- **SessionManager**：这是会话管理的控制中枢，它负责插件的生命周期和洋葱模型的构建。');
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should truncate latest user message to 2000 characters before embedding', async () => {
+      const mockVectorDb = {
+        search: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0)
+      } as any;
+      const mockEmbedding = {
+        generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0))
+      } as any;
+
+      const plugin = new LongTermMemoryPlugin(
+        mockVectorDb,
+        mockEmbedding,
+        tempMemoryPath
+      );
+
+      const sessionContext = new SessionContext('test-session');
+      const longQuery = 'a'.repeat(2500);
+      sessionContext.addMessage({ role: 'user', content: longQuery });
+
+      const llmRequest = {
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' }
+        ]
+      } as any;
+
+      const context: HookContext = {
+        sessionContext,
+        llmRequest,
+        eventName: HookEventName.BeforeModel,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+
+      await plugin.hooks[HookEventName.BeforeModel](context, next);
+
+      expect(mockEmbedding.generateEmbedding).toHaveBeenCalledWith(longQuery.substring(0, 2000));
+      expect(mockEmbedding.generateEmbedding.mock.calls[0][0].length).toBe(2000);
       expect(next).toHaveBeenCalled();
     });
   });

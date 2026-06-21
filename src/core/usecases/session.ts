@@ -114,13 +114,14 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       this.maxIterations = appConfig.runtimeLimits.maxIterations;
     }
     this.driver = driver;
-    this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());
+    /* eslint-disable-next-line n/no-process-env */
+    const baseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+    // 实例化主跟踪仪，支持沙箱环境变量重定向
+    this.tracer = new AgentTracer(baseDir, this.context.getSessionId());
     this.contextAdapter = contextAdapter;
     this.vectorDb = vectorDb;
     this.embedding = embedding;
 
-    /* eslint-disable-next-line n/no-process-env */
-    const baseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
     this.memoryFilePath = path.resolve(baseDir, '.agent/MEMORY.md');
 
     // 初始化解耦后的四大领域服务
@@ -257,8 +258,10 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   public async loadState(targetSessionId: string): Promise<boolean> {
     const success = await this.contextRepo.loadState(targetSessionId);
     if (success) {
-      // 状态恢复成功后，重置跟踪记录仪以绑定新的 Session ID 目录
-      this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());
+      /* eslint-disable-next-line n/no-process-env */
+      const baseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+      // 状态恢复成功后，重置跟踪记录仪以绑定新的 Session ID 目录，注意读取沙箱环境变量
+      this.tracer = new AgentTracer(baseDir, this.context.getSessionId());
     }
     return success;
   }
@@ -340,7 +343,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     if (this.isGenerating) {
       throw new Error('Session is currently busy generating a response.');
     }
-    
+
     this.isGenerating = true; // 同步原子加锁，防止同 Tick 重入
     this.autoWakeupCount = 0;  // 每次人类主动交互，重置自动唤醒计数器
 
@@ -487,6 +490,25 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   }
 
   /**
+   * 对文本切片列表分批生成 Embedding 向量。
+   * DashScope text-embedding-v3 单次 batch 上限为 10，超出时自动拆批串行调用。
+   *
+   * @param chunks - 待向量化的文本切片列表
+   * @returns 与 chunks 等长的向量数组
+   */
+  private async batchEmbeddings(chunks: string[]): Promise<number[][]> {
+    // 每批最多 10 条，与 DashScope API 限制对齐
+    const BATCH_SIZE = 10;
+    const result: number[][] = [];
+    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+      const batch = chunks.slice(i, i + BATCH_SIZE);
+      const batchEmbeddings = await this.embedding.generateEmbeddings(batch);
+      result.push(...batchEmbeddings);
+    }
+    return result;
+  }
+
+  /**
    * 将新增的记忆事实同步切片并 upsert 存入向量数据库中。
    *
    * @param text - 新写入的记忆文本
@@ -497,7 +519,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       if (chunks.length === 0) {
         return;
       }
-      const embeddings = await this.embedding.generateEmbeddings(chunks);
+      // 分批调用避免超过 DashScope batch size 上限
+      const embeddings = await this.batchEmbeddings(chunks);
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         const vector = embeddings[i];
@@ -523,7 +546,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
           const chunks = this.chunkMemoryText(fileContent);
           if (chunks.length > 0) {
             console.log(`[SessionManager] 检测到向量库为空，开始从 MEMORY.md 重建，共 ${chunks.length} 个切片...`);
-            const embeddings = await this.embedding.generateEmbeddings(chunks);
+            // 分批调用避免超过 DashScope batch size 上限
+            const embeddings = await this.batchEmbeddings(chunks);
             for (let i = 0; i < chunks.length; i++) {
               const chunk = chunks[i];
               const vector = embeddings[i];
@@ -603,15 +627,17 @@ ${historyText}
       await this.queueWrite(`\n\n${content.trim()}\n`);
     });
 
-    // 3. 实例化专用的沙箱追踪器
-    const subTracer = new AgentTracer(process.cwd(), subContext.getSessionId());
+    // 3. 实例化专用的沙箱追踪器，优先从环境变量读取重定向目录
+    /* eslint-disable-next-line n/no-process-env */
+    const subBaseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+    const subTracer = new AgentTracer(subBaseDir, subContext.getSessionId());
 
     // 4. 初始化空的 PluginRegistry
     const emptyPluginRegistry = new PluginRegistry();
 
     // 5. 实例化专为子智能体隔离上下文服务的四大领域服务，避免对主会话的串扰及多余的主会话落盘
     const subRuleManager = new RuleManager(subContext);
-    const subContextRepo = new ContextRepository(subContext);
+    const subContextRepo = new ContextRepository(subContext, undefined, true);
     const subToolDispatcher = new ToolDispatcher(subContext);
     const subCompactionService = new CompactionService(subContext, this.driver, subContextRepo);
 

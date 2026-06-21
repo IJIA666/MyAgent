@@ -59,6 +59,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
   } as any;
 
   beforeEach(() => {
+    // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
+    vi.spyOn(SessionManager.prototype as any, 'rebuildVectorDbIfEmpty').mockResolvedValue(undefined);
     mockExecPromisified.mockResolvedValue({ stdout: 'lint/tsc mock passed\n', stderr: '' });
     vi.clearAllMocks();
   });

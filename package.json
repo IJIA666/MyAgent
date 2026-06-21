@@ -17,6 +17,7 @@
   "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^1.5.0",
+    "@lancedb/lancedb": "^0.30.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "diff": "^9.0.0",
     "dotenv": "16.4.5",

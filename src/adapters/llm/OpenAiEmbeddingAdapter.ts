@@ -12,17 +12,24 @@ export class OpenAiEmbeddingAdapter implements EmbeddingPort {
 
   /**
    * 构造函数。
+   * 优先读取独立的 Embedding 专属环境变量（AGENT_EMBEDDING_API_KEY、AGENT_EMBEDDING_BASE_URL），
+   * 若未配置则降级复用 llmConfig 中的 apiKey 与 baseUrl，实现 Embedding 服务与 LLM 服务的厂商解耦。
    *
-   * @param llmConfig - 大语言模型连接配置（复用其中的 apiKey 与 baseUrl）
-   * @param embeddingModel - 可选。指定的嵌入模型名称，默认使用 'text-embedding-3-small'
+   * @param llmConfig - 大语言模型连接配置（作为兜底来源）
+   * @param embeddingModel - 可选。指定的嵌入模型名称，默认读取 AGENT_EMBEDDING_MODEL 环境变量或 'text-embedding-3-small'
    */
   constructor(llmConfig: LlmConfig, embeddingModel?: string) {
     /* eslint-disable-next-line n/no-process-env */
+    const envEmbeddingApiKey = process.env.AGENT_EMBEDDING_API_KEY;
+    /* eslint-disable-next-line n/no-process-env */
+    const envEmbeddingBaseUrl = process.env.AGENT_EMBEDDING_BASE_URL;
+    /* eslint-disable-next-line n/no-process-env */
     this.modelName = embeddingModel || process.env.AGENT_EMBEDDING_MODEL || 'text-embedding-3-small';
 
+    // 优先使用独立的 Embedding 专属配置，允许 Embedding 服务与 LLM 服务使用不同厂商
     const clientOptions: ClientOptions = {
-      apiKey: llmConfig.apiKey,
-      baseURL: llmConfig.baseUrl
+      apiKey: envEmbeddingApiKey || llmConfig.apiKey,
+      baseURL: envEmbeddingBaseUrl || llmConfig.baseUrl
     };
     if (llmConfig.timeout !== undefined) {
       clientOptions.timeout = llmConfig.timeout;
@@ -30,7 +37,8 @@ export class OpenAiEmbeddingAdapter implements EmbeddingPort {
     if (llmConfig.maxRetries !== undefined) {
       clientOptions.maxRetries = llmConfig.maxRetries;
     }
-    if (llmConfig.headers !== undefined) {
+    if (llmConfig.headers !== undefined && !envEmbeddingApiKey) {
+      // 仅在复用 LLM 配置时才透传自定义请求头，避免将 LLM 特有头部发送到 Embedding 服务
       clientOptions.defaultHeaders = llmConfig.headers;
     }
     this.client = new OpenAI(clientOptions);

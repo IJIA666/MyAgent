@@ -62,18 +62,12 @@ export class LocalVectorDbAdapter implements VectorDbPort {
       const tableName = 'memories';
       let table;
 
-      // 3. 打开或初始化 memories 表
+      // 3. 打开或初始化 memories 表（懒建表：等待第一次真实 add() 再创建以推断维度）
       if (tables.includes(tableName)) {
         table = await db.openTable(tableName);
       } else {
-        // 创建初始 dummy 数据以锁死 Table Schema
-        const dummyRecord = {
-          id: 'dummy',
-          text: 'dummy',
-          vector: new Array(1536).fill(0),
-          metadata: '{}'
-        };
-        table = await db.createTable(tableName, [dummyRecord]);
+        // 表不存在时暂不建表，等首次 add() 触发时再根据真实维度创建
+        table = null;
       }
 
       console.log('[LocalVectorDbAdapter] 成功加载并建立本地 LanceDB 向量存储服务。');
@@ -143,6 +137,11 @@ class LanceDbImpl implements VectorDbPort {
       vector,
       metadata: metadata ? JSON.stringify(metadata) : '{}'
     };
+    // 懒建表：表不存在时，用第一条真实数据的维度建表，避免硬编码维度导致 Schema 冲突
+    if (!this.table) {
+      this.table = await this.db.createTable('memories', [record]);
+      return;
+    }
     try {
       // 覆盖更新时，先删除同 ID 旧记录以保证幂等
       await this.table.delete(`id = '${id}'`);
@@ -153,8 +152,12 @@ class LanceDbImpl implements VectorDbPort {
   }
 
   public async search(vector: number[], limit: number): Promise<VectorSearchResult[]> {
-    // 显式指定 metric 为 'cosine' 进行余弦相似度距离查询
-    const results = await this.table.vectorSearch(vector).metric('cosine').limit(limit).toArray();
+    // 表尚未创建（无任何数据），直接返回空结果
+    if (!this.table) {
+      return [];
+    }
+    // LanceDB 0.30+ API：使用 .search() + .distanceType() + .toArray() 进行余弦相似度查询
+    const results = await this.table.search(vector).distanceType('cosine').limit(limit).toArray();
     const mapped = results.map((row: any) => {
       const distance = row._distance ?? 0;
       // 余弦距离 = 1 - 余弦相似度，因此相似度 = 1 - distance
@@ -174,12 +177,14 @@ class LanceDbImpl implements VectorDbPort {
         metadata
       };
     });
-    // 过滤掉 dummy 占位数据和低相关记录
-    return mapped.filter((r: any) => r.id !== 'dummy' && r.score >= 0.5);
+    return mapped.filter((r: any) => r.score >= 0.5);
   }
 
   public async clear(): Promise<void> {
-    await this.table.delete("id != 'dummy'");
+    if (!this.table) {
+      return;
+    }
+    await this.table.delete('id IS NOT NULL');
   }
 
   public async close(): Promise<void> {
@@ -188,12 +193,14 @@ class LanceDbImpl implements VectorDbPort {
   }
 
   /**
-   * 获取表中除占位 dummy 记录外的有效事实总数。
+   * 获取表中有效事实的总数。
    *
    * @returns 记录总数
    */
   public async count(): Promise<number> {
-    const count = await this.table.countRows();
-    return Math.max(0, count - 1);
+    if (!this.table) {
+      return 0;
+    }
+    return this.table.countRows();
   }
 }

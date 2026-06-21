@@ -55,6 +55,8 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
   });
 
   beforeEach(() => {
+    // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
+    vi.spyOn(SessionManager.prototype as any, 'rebuildVectorDbIfEmpty').mockResolvedValue(undefined);
     // 将工作安全模式重置为 YOLO，防止测试由于审批挂起而阻塞
     setWorkMode('YOLO');
     // 设置默认 of promisified exec mock，防止在推理循环结束时物理执行 npm run lint / tsc --noEmit

@@ -12,10 +12,12 @@ export class ContextRepository {
    *
    * @param context - 会话上下文管理实例
    * @param workspacePath - 可选的工作区根路径，用于重定向持久化状态存储路径
+   * @param isTransient - 可选。是否为临时或瞬时会话，若为 true 则在 saveState 时不会物理落盘
    */
   constructor(
     private context: SessionContext,
-    private workspacePath?: string
+    private workspacePath?: string,
+    private isTransient = false
   ) {}
 
   /**
@@ -24,8 +26,14 @@ export class ContextRepository {
    * @returns 无返回值的 Promise
    */
   public async saveState(): Promise<void> {
+    if (this.isTransient) {
+      return;
+    }
     try {
-      const dir = path.join(this.workspacePath || process.cwd(), '.myagent/sessions');
+      /* eslint-disable-next-line n/no-process-env */
+      const baseDir = this.workspacePath || process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+      // 获取最终会话文件保存的基础目录路径
+      const dir = path.join(baseDir, '.myagent/sessions');
       await fs.mkdir(dir, { recursive: true });
       const file = path.join(dir, `${this.context.getSessionId()}.json`);
       const stateToSave = {
@@ -47,7 +55,10 @@ export class ContextRepository {
    */
   public async loadState(targetSessionId: string): Promise<boolean> {
     try {
-      const file = path.join(this.workspacePath || process.cwd(), '.myagent/sessions', `${targetSessionId}.json`);
+      /* eslint-disable-next-line n/no-process-env */
+      const baseDir = this.workspacePath || process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+      // 定位目标反序列化会话 JSON 状态文件的物理路径
+      const file = path.join(baseDir, '.myagent/sessions', `${targetSessionId}.json`);
       const data = await fs.readFile(file, 'utf-8');
       const parsed = JSON.parse(data);
       if (Array.isArray(parsed)) {
@@ -76,7 +87,7 @@ export class ContextRepository {
   public rollback(turns: number): ChatMessage[] {
     // 如果无需回退，则直接返回空集合
     if (turns <= 0) return [];
-    
+
     // 初始化已成功剥离的用户轮次计数
     let poppedTurns = 0;
     // 用于暂存被丢弃的历史节点，以便最终返回
@@ -97,7 +108,7 @@ export class ContextRepository {
     }
 
     // 状态发生变化后进行静默落盘（后台异步执行，忽略可能产生的文件 IO 异常）
-    this.saveState().catch(() => {});
+    this.saveState().catch(() => { });
 
     // 因为是倒序弹出，此处反转数组恢复原有对话的时序逻辑
     return dropped.reverse();

@@ -35,6 +35,8 @@ ENV/
 # Runtime and local artifacts
 .myagent/
 .agent/skills/
+.agent/lancedb/
+.agent/vectordb.json
 
 # Log files
 *.log

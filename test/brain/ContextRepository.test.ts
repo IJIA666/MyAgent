@@ -89,6 +89,19 @@ describe('ContextRepository', () => {
       const badRepo = new ContextRepository(context, 'K:\\invalid:dir*path/?:');
       await expect(badRepo.saveState()).resolves.not.toThrow();
     });
+
+    it('should not save session files when isTransient is set to true', async () => {
+      const transientContext = new SessionContext('transient-repo-session');
+      const transientRepo = new ContextRepository(transientContext, tempDir, true);
+
+      transientContext.setCheckpointSummary('Transient summary');
+      transientContext.addMessage({ role: 'user', content: 'transient query' });
+
+      await transientRepo.saveState();
+
+      const sessionFile = path.join(tempDir, '.myagent/sessions/transient-repo-session.json');
+      expect(fs.existsSync(sessionFile)).toBe(false);
+    });
   });
 
   describe('rollback', () => {
