@@ -8,9 +8,3 @@
 export * from '../../core/usecases/plugin-types.js';
 export { PluginRegistry } from '../../core/usecases/plugin-registry.js';
 export { runHookPipeline } from '../../core/usecases/plugin-runner.js';
-
-export { TokenWatermarkPlugin } from './TokenWatermarkPlugin.js';
-export { JitRulesPlugin } from './JitRulesPlugin.js';
-export { TracerLogPlugin } from './TracerLogPlugin.js';
-export { LoopPreventionPlugin } from './LoopPreventionPlugin.js';
-export { HumanApprovalPlugin } from './HumanApprovalPlugin.js';

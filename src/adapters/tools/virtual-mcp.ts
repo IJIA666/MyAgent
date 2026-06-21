@@ -4,6 +4,7 @@ import { systemTools } from './tools/system/index.js';
 import { getSkillTools } from './tools/skill/index.js';
 import type { SafetyCheckResult } from '../../core/usecases/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/SessionEventPort.js';
+import type { ApprovalPort } from '../../ports/driven/ApprovalPort.js';
 import { secureResolveWritePath } from './tools/base.js';
 import { existsSync } from 'fs';
 import {
@@ -156,7 +157,7 @@ export class LocalFileSystemMcpServer {
    * @param sessionContext - 可选的智能体会话上下文
    * @returns 符合 MCP CallToolResult 结构的结果对象
    */
-  async callTool(request: CallToolRequest, sessionContext?: SessionEventPort): Promise<CallToolResult> {
+  async callTool(request: CallToolRequest, sessionContext?: SessionEventPort & ApprovalPort): Promise<CallToolResult> {
     try {
       const args = request.arguments || {};
       const tool = this.toolsMap.get(request.name);
@@ -176,7 +177,7 @@ export class LocalFileSystemMcpServer {
           const targetPath = args.targetPath;
           if (typeof targetPath === 'string') {
             try {
-              const safePath = secureResolveWritePath(targetPath);
+              const safePath = secureResolveWritePath(targetPath, sessionContext);
               if (existsSync(safePath)) {
                 isDangerous = true;
                 warningMsg = `智能体试图强行覆盖已有的文件。目标路径: "${targetPath}"`;

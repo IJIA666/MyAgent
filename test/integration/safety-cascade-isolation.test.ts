@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, rmSync } from 'fs';
 import { initWorkspace } from '../../src/adapters/tools/tools.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 import { ExecuteCommandTool } from '../../src/adapters/tools/tools/system/terminal.js';
-import { HumanApprovalPlugin } from '../../src/adapters/plugins/HumanApprovalPlugin.js';
+import { HumanApprovalPlugin } from '../../src/core/usecases/HumanApprovalPlugin.js';
 import { HookEventName, HookContext } from '../../src/core/usecases/plugin-types.js';
 
 describe('安全隔离与级联熔断集成测试', () => {

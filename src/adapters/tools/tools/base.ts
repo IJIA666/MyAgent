@@ -5,7 +5,7 @@
 
 import { resolve, sep, dirname } from 'path';
 import { realpathSync, existsSync } from 'fs';
-import { SecurityService } from '../../../core/usecases/SecurityService.js';
+import type { SessionEventPort } from '../../../ports/driven/SessionEventPort.js';
 
 /**
  * 授权工作区的绝对物理路径。
@@ -60,19 +60,21 @@ export function initWorkspace(rootDir: string): void {
 /**
  * 检查指定路径是否已存在于临时只读白名单中。
  * @param pathStr - 待检查的物理路径
+ * @param sessionContext - 可选的会话事件只读契约
  * @returns 是否在白名单中
  */
-export function hasTemporaryReadWhitelist(pathStr: string): boolean {
-  return SecurityService.getInstance().hasTemporaryReadWhitelist(pathStr);
+export function hasTemporaryReadWhitelist(pathStr: string, sessionContext?: SessionEventPort): boolean {
+  return sessionContext ? sessionContext.hasTemporaryReadWhitelist(pathStr) : false;
 }
 
 /**
  * 检查指定路径是否已存在于临时可写白名单中。
  * @param pathStr - 待检查的物理路径
+ * @param sessionContext - 可选的会话事件只读契约
  * @returns 是否在白名单中
  */
-export function hasTemporaryWriteWhitelist(pathStr: string): boolean {
-  return SecurityService.getInstance().hasTemporaryWriteWhitelist(pathStr);
+export function hasTemporaryWriteWhitelist(pathStr: string, sessionContext?: SessionEventPort): boolean {
+  return sessionContext ? sessionContext.hasTemporaryWriteWhitelist(pathStr) : false;
 }
 
 /**
@@ -128,7 +130,7 @@ export function secureResolvePath(targetPath: string): string {
  * @param targetPath - 待读取的目标相对或绝对路径
  * @returns 解析规范后的安全物理绝对路径
  */
-export function secureResolveReadPath(targetPath: string): string {
+export function secureResolveReadPath(targetPath: string, sessionContext?: SessionEventPort): string {
   if (authorizedDir === null) {
     throw new Error('工作区尚未初始化。请确保在使用文件工具前调用 initWorkspace()。');
   }
@@ -137,7 +139,7 @@ export function secureResolveReadPath(targetPath: string): string {
   const resolvedPath = getPhysicalRealPath(rawPath);
 
   // 1. 安全放行：如果目标物理路径已被临时授权加入只读白名单，直接放行
-  if (SecurityService.getInstance().hasTemporaryReadWhitelist(resolvedPath)) {
+  if (sessionContext && sessionContext.hasTemporaryReadWhitelist(resolvedPath)) {
     return resolvedPath;
   }
 
@@ -157,7 +159,7 @@ export function secureResolveReadPath(targetPath: string): string {
  * @param targetPath - 待写入的目标相对或绝对路径
  * @returns 解析规范后的安全物理绝对路径
  */
-export function secureResolveWritePath(targetPath: string): string {
+export function secureResolveWritePath(targetPath: string, sessionContext?: SessionEventPort): string {
   if (authorizedDir === null) {
     throw new Error('工作区尚未初始化。请确保在使用文件工具前调用 initWorkspace()。');
   }
@@ -166,7 +168,7 @@ export function secureResolveWritePath(targetPath: string): string {
   const resolvedPath = getPhysicalRealPath(rawPath);
 
   // 1. 安全放行：如果目标物理路径已被临时授权加入可写白名单，直接放行
-  if (SecurityService.getInstance().hasTemporaryWriteWhitelist(resolvedPath)) {
+  if (sessionContext && sessionContext.hasTemporaryWriteWhitelist(resolvedPath)) {
     return resolvedPath;
   }
 

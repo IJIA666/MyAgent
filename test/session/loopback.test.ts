@@ -17,6 +17,8 @@ import { SessionManager } from '../../src/core/usecases/session.js';
 import { LlmConfig } from '../../src/config/index.js';
 import { LlmPort } from '../../src/ports/driven/LlmPort.js';
 import { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
+import { ToolRegistryPort } from '../../src/ports/driven/ToolRegistryPort.js';
+import { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
 
 describe('Terminal Notification Loopback & Buffering Tests', () => {
   const mockRootDir = resolve('D:\\authorized\\path_loopback_test');
@@ -132,7 +134,24 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
       getCompactionThreshold: () => 100000
     } as unknown as TokenEstimatorPort;
 
-    const session = new SessionManager(mockLlmConfig, mockDriver, mockEstimator);
+    const mockToolRegistry = {
+      getTools: async () => [],
+      callTool: async () => ({}),
+      getTool: () => undefined,
+      close: async () => {}
+    } as unknown as ToolRegistryPort;
+
+    const mockContextAdapter = {
+      assemble: (baseHistory: any) => baseHistory
+    } as unknown as ContextAdapter;
+
+    const session = new SessionManager(
+      mockLlmConfig,
+      mockDriver,
+      mockEstimator,
+      mockToolRegistry,
+      mockContextAdapter
+    );
     const privateSession = session as unknown as {
       isGenerating: boolean;
       autoWakeupCount: number;

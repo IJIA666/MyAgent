@@ -5,6 +5,7 @@ import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import { copyRecursiveSync } from './directory-manager-helper.js';
 import { getWorkMode, loadWorkMode } from '../system/terminal.js';
 import type { SessionEventPort } from '../../../../ports/driven/SessionEventPort.js';
+import type { ApprovalPort } from '../../../../ports/driven/ApprovalPort.js';
 
 /**
  * 目录创建工具类。
@@ -163,7 +164,7 @@ export class DeletePathTool implements NativeTool {
    * @param sessionContext - 可选的会话上下文，用于获取 ApprovalService 确权
    * @returns 成功删除的提示信息
    */
-  async execute(args: Record<string, unknown>, sessionContext?: SessionEventPort): Promise<string> {
+  async execute(args: Record<string, unknown>, sessionContext?: SessionEventPort & ApprovalPort): Promise<string> {
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
       throw new Error("targetPath 必须是字符串");

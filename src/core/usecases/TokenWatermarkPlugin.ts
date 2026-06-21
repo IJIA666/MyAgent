@@ -1,8 +1,8 @@
-import type { HookContext, Plugin } from '../../core/usecases/plugin-types.js';
-import { HookEventName } from '../../core/usecases/plugin-types.js';
+import type { HookContext, Plugin } from './plugin-types.js';
+import { HookEventName } from './plugin-types.js';
 import type { TokenEstimatorPort } from '../../ports/driven/TokenEstimatorPort.js';
 import type { ChatMessage } from '../../ports/driven/LlmPort.js';
-import type { CompactionService } from '../../core/usecases/CompactionService.js';
+import type { CompactionService } from './CompactionService.js';
 import type { LlmConfig } from '../../config/index.js';
 
 /**

@@ -1,6 +1,9 @@
 import { LocalFileSystemMcpServer, NativeTool } from './virtual-mcp.js';
 import { McpToolManager } from './mcp-client.js';
-import { SessionContext } from '../../core/domain/context.js';
+import type { SessionEventPort } from '../../ports/driven/SessionEventPort.js';
+import type { ApprovalPort } from '../../ports/driven/ApprovalPort.js';
+import type { ToolRegistryPort } from '../../ports/driven/ToolRegistryPort.js';
+import type { McpManagerPort } from '../../ports/driven/McpManagerPort.js';
 
 /**
  * 工具注册表管理类。
@@ -9,11 +12,11 @@ import { SessionContext } from '../../core/domain/context.js';
  * 2. 集成外部真实 MCP 服务器（McpToolManager）提供的外部工具；
  * 3. 对外提供统一的工具获取（getTools）与工具调用（callTool）接口。
  */
-export class ToolRegistry {
+export class ToolRegistry implements ToolRegistryPort {
   // 本地文件系统工具对应的虚拟 MCP 服务器实例
   private localMcpServer: LocalFileSystemMcpServer;
   // 可选的外部 MCP 工具管理器实例
-  private mcpManager?: McpToolManager;
+  public readonly mcpManager?: McpManagerPort;
 
   /**
    * 初始化工具注册表。
@@ -71,8 +74,8 @@ export class ToolRegistry {
    */
   public async callTool(
     functionName: string,
-    functionArgs: { targetPath?: string; content?: string; [key: string]: unknown },
-    sessionContext?: SessionContext
+    functionArgs: Record<string, unknown>,
+    sessionContext?: SessionEventPort & ApprovalPort
   ): Promise<unknown> {
     // 先行加载本地工具清单以供比对
     const localToolsDef = await this.localMcpServer.getTools();
@@ -93,6 +96,15 @@ export class ToolRegistry {
     } else {
       // 异常分支：不存在该工具，阻断调用链路并抛出异常
       throw new Error(`未知的工具名称："${functionName}"`);
+    }
+  }
+
+  /**
+   * 优雅断开并清理工具注册表内管理的所有物理连接（如 MCP 子进程）。
+   */
+  public async close(): Promise<void> {
+    if (this.mcpManager) {
+      await this.mcpManager.close();
     }
   }
 }

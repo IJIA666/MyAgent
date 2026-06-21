@@ -7,7 +7,7 @@ export class ToolCommand implements ICommand {
 
   async execute(args: string[], context: CommandContext): Promise<void> {
     if (!args[0] || args[0] === 'list') {
-      const mcpManager = context.session.mcpManager;
+      const mcpManager = context.session.toolRegistryInstance.mcpManager;
       let tools: Array<{ function?: { name?: string; description?: string } }> = [];
       if (mcpManager) {
         tools = (await mcpManager.getMcpTools()) as Array<{ function?: { name?: string; description?: string } }>;

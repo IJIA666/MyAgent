@@ -1,6 +1,6 @@
-import type { Plugin, HookContext, SafetyCheckResult } from '../../core/usecases/plugin-types.js';
-import { HookEventName } from '../../core/usecases/plugin-types.js';
-import { SecurityService } from '../../core/usecases/SecurityService.js';
+import type { Plugin, HookContext, SafetyCheckResult } from './plugin-types.js';
+import { HookEventName } from './plugin-types.js';
+import { SecurityService } from './SecurityService.js';
 
 /**
  * 通用无状态人机协同审批插件。

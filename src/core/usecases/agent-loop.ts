@@ -1,4 +1,4 @@
-import { ToolRegistry } from '../../adapters/tools/index.js';
+import { ToolRegistryPort } from '../../ports/driven/ToolRegistryPort.js';
 import { LlmConfig } from '../../config/index.js';
 import { AgentTracer } from '../domain/tracer.js';
 import { SessionContext, ContextTokenUsage } from '../domain/context.js';
@@ -34,8 +34,8 @@ export type AgentEvent =
  * 实例化 AgentLoop 所需的依赖配置项。
  */
 export interface AgentLoopOptions {
-  /** 当前系统的工具注册管理台 */
-  toolRegistry: ToolRegistry;
+  /** 当前系统的工具注册管理台端口契约 */
+  toolRegistry: ToolRegistryPort;
   /** 本地会话的上下文与状态存储 */
   context: SessionContext;
   /** 大语言模型的核心驱动模块 */
@@ -60,8 +60,8 @@ export interface AgentLoopOptions {
  * 独立的智能体执行引擎，统管单次与多轮 ReAct 推理大循环流程。
  */
 export class AgentLoop {
-  /** 当前系统的工具注册管理台 */
-  private toolRegistry: ToolRegistry;
+  /** 当前系统的工具注册管理台端口契约 */
+  private toolRegistry: ToolRegistryPort;
   /** 本地会话的上下文与状态存储 */
   private context: SessionContext;
   /** 大语言模型的核心驱动模块 */

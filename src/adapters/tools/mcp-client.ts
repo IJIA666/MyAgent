@@ -3,6 +3,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { McpConfig, McpServerEntry, buildSubprocessEnv } from '../../config/index.js';
 import { Readable } from 'node:stream';
 import { execSync } from 'node:child_process';
+import { McpManagerPort } from '../../ports/driven/McpManagerPort.js';
+
 // 系统本地内置文件操作及技能载入工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
 const BUILTIN_TOOL_NAMES = new Set([
   'readFile',
@@ -15,7 +17,7 @@ const BUILTIN_TOOL_NAMES = new Set([
  * MCP (Model Context Protocol) 客户端管理类。
  * 通过构造函数接收已加载的 McpConfig 配置，不自行读取文件或环境变量。
  */
-export class McpToolManager {
+export class McpToolManager implements McpManagerPort {
   private connections = new Map<string, { client: Client, transport: StdioClientTransport }>();
   // 记录工具所属的 Server，用于调用路由
   private toolRouter = new Map<string, string>();

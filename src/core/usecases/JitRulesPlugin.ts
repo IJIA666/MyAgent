@@ -1,6 +1,6 @@
-import type { HookContext, Plugin } from '../../core/usecases/plugin-types.js';
-import { HookEventName } from '../../core/usecases/plugin-types.js';
-import type { ToolDispatcher } from '../../core/usecases/ToolDispatcher.js';
+import type { HookContext, Plugin } from './plugin-types.js';
+import { HookEventName } from './plugin-types.js';
+import type { ToolDispatcher } from './ToolDispatcher.js';
 
 /**
  * JIT 规则注入插件。

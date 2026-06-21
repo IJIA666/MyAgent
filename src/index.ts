@@ -1,11 +1,13 @@
 import { SessionManager } from './core/usecases/session.js';
-import { McpToolManager, initWorkspace } from './adapters/tools/index.js';
+import { McpToolManager, ToolRegistry, initWorkspace } from './adapters/tools/index.js';
 import { loadConfig, ensureConfigFiles } from './config/index.js';
 import { startCli } from './adapters/input/interface/index.js';
 import { theme } from './adapters/input/interface/views/theme.js';
 import { OpenAiLlmAdapter } from './adapters/llm/OpenAiLlmAdapter.js';
 import { TiktokenEstimator } from './adapters/llm/TiktokenEstimator.js';
 import { abortSessionTasks } from './adapters/tools/tools/system/terminal-engine.js';
+import { DefaultContextAdapter } from './adapters/context/DefaultContextAdapter.js';
+import { loadSkillContent } from './core/usecases/contextLoader.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -39,9 +41,19 @@ async function main() {
   try {
     const mcpManager = new McpToolManager(appConfig.mcp);
     await mcpManager.connectAll();
+    const toolRegistry = new ToolRegistry(mcpManager, { loadSkill: loadSkillContent });
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
-    session = new SessionManager(appConfig.llm, llmAdapter, tokenEstimator, mcpManager, undefined, appConfig, abortSessionTasks);
+    const contextAdapter = new DefaultContextAdapter(tokenEstimator);
+    session = new SessionManager(
+      appConfig.llm,
+      llmAdapter,
+      tokenEstimator,
+      toolRegistry,
+      contextAdapter,
+      appConfig,
+      abortSessionTasks
+    );
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);
     console.log(theme.error(`[错误] 初始化会话管理器失败：${errorMsg}`));

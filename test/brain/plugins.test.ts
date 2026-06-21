@@ -8,7 +8,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { TokenWatermarkPlugin, JitRulesPlugin, TracerLogPlugin, LoopPreventionPlugin } from '../../src/adapters/plugins/index.js';
+import { TokenWatermarkPlugin } from '../../src/core/usecases/TokenWatermarkPlugin.js';
+import { JitRulesPlugin } from '../../src/core/usecases/JitRulesPlugin.js';
+import { TracerLogPlugin } from '../../src/core/usecases/TracerLogPlugin.js';
+import { LoopPreventionPlugin } from '../../src/core/usecases/LoopPreventionPlugin.js';
 import { HookEventName, HookContext, LlmRequest } from '../../src/core/usecases/plugin-types.js';
 import { runHookPipeline } from '../../src/core/usecases/plugin-runner.js';
 import { SessionContext } from '../../src/core/domain/context.js';

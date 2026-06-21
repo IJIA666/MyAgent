@@ -7,8 +7,8 @@ import { validateCommand, validateCwd, checkCommandSafetyLevel, isHardlineDanger
 import { runCommandEngine } from './terminal-engine.js';
 import { getWorkMode, extractSafePrefix } from './terminal-config.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
-import { SecurityService } from '../../../../core/usecases/SecurityService.js';
 import type { SessionEventPort } from '../../../../ports/driven/SessionEventPort.js';
+import type { EventNotificationPort } from '../../../../ports/driven/EventNotificationPort.js';
 
 /**
  * 终端指令执行工具类。
@@ -99,7 +99,7 @@ export class ExecuteCommandTool implements NativeTool {
     const safetyLevel = checkCommandSafetyLevel(command);
     if (safetyLevel === 'allow' && workMode === 'Auto') {
       // 校验命令行是否命中白名单规则
-      const allowed = SecurityService.getInstance().getSecurityAllowlist();
+      const allowed = sessionContext ? sessionContext.getSecurityAllowlist() : [];
       const trimmed = command.trim();
       const isAllowed = allowed.some((rule: string) => {
         if (rule.endsWith(':*')) {
@@ -132,7 +132,7 @@ export class ExecuteCommandTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 终端输出摘要结果
    */
-  async execute(args: Record<string, unknown>, sessionContext?: SessionEventPort): Promise<string> {
+  async execute(args: Record<string, unknown>, sessionContext?: SessionEventPort & EventNotificationPort): Promise<string> {
     const command = args.command;
     if (typeof command !== 'string') {
       throw new Error("command 必须是字符串");

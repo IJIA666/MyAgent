@@ -1,24 +1,20 @@
 import { EventEmitter } from 'events';
-import { McpToolManager, ToolRegistry } from '../../adapters/tools/index.js';
 import { AppConfig, LlmConfig } from '../../config/index.js';
 import { AgentTracer } from '../domain/tracer.js';
 import { SessionContext, ContextTokenUsage } from '../domain/context.js';
 import type { ChatMessage, LlmPort } from '../../ports/driven/LlmPort.js';
 import type { TokenEstimatorPort, ApiUsage } from '../../ports/driven/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../ports/driven/ContextAdapter.js';
-import { DefaultContextAdapter } from '../../adapters/context/DefaultContextAdapter.js';
-import { loadSkillContent } from './contextLoader.js';
+import { ToolRegistryPort } from '../../ports/driven/ToolRegistryPort.js';
 import { AgentLoop } from './agent-loop.js';
 import { ChatUseCase } from '../../ports/driving/ChatUseCase.js';
 import { TaskAborterPort } from '../../ports/driven/TaskAborterPort.js';
 import { PluginRegistry } from './plugin-registry.js';
-import {
-  TokenWatermarkPlugin,
-  JitRulesPlugin,
-  TracerLogPlugin,
-  LoopPreventionPlugin,
-  HumanApprovalPlugin
-} from '../../adapters/plugins/index.js';
+import { TokenWatermarkPlugin } from './TokenWatermarkPlugin.js';
+import { JitRulesPlugin } from './JitRulesPlugin.js';
+import { HumanApprovalPlugin } from './HumanApprovalPlugin.js';
+import { TracerLogPlugin } from './TracerLogPlugin.js';
+import { LoopPreventionPlugin } from './LoopPreventionPlugin.js';
 
 // 导入领域服务
 import { RuleManager } from './RuleManager.js';
@@ -32,10 +28,8 @@ import { ApprovalService } from './ApprovalService.js';
  * 重构后退化为纯正的 ReAct 循环执行引擎，相关周边逻辑被下沉至各自领域服务。
  */
 export class SessionManager extends EventEmitter implements ChatUseCase {
-  /** 当前系统的工具注册管理台 */
-  private toolRegistry: ToolRegistry;
-  /** MCP 管理器实例引用，供外层命令动态重载服务使用 */
-  public readonly mcpManager?: McpToolManager;
+  /** 当前系统的工具注册管理台端口契约 */
+  private toolRegistry: ToolRegistryPort;
   /** 会话的跟踪记录仪，负责日志落盘 */
   private tracer: AgentTracer;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
@@ -78,25 +72,24 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
    * @param llmConfig - 大语言模型连接配置
    * @param driver - 大语言模型驱动接口适配器实例
    * @param estimator - Token 预估与水位计算接口实例
-   * @param mcpManager - 可选的 MCP 客户端管理器，用于挂载外部扩展能力
-   * @param contextAdapter - 可选的上下文适配器，若未传则默认使用 DefaultContextAdapter
+   * @param toolRegistry - 工具注册表与调度管理端口契约
+   * @param contextAdapter - 上下文适配器契约
+   * @param appConfig - 应用程序系统配置项
+   * @param taskAborter - 任务中止服务端口
    */
   constructor(
     llmConfig: LlmConfig,
     driver: LlmPort,
     estimator: TokenEstimatorPort,
-    mcpManager?: McpToolManager,
-    contextAdapter?: ContextAdapter,
+    toolRegistry: ToolRegistryPort,
+    contextAdapter: ContextAdapter,
     appConfig?: AppConfig,
     taskAborter?: TaskAborterPort
   ) {
     super();
     this.llmConfig = llmConfig;
-    this.mcpManager = mcpManager;
+    this.toolRegistry = toolRegistry;
     this.taskAborter = taskAborter;
-    this.toolRegistry = new ToolRegistry(mcpManager, {
-      loadSkill: (name: string) => loadSkillContent(name)
-    });
     this.context = new SessionContext();
     if (appConfig) {
       this.context.appConfig = appConfig;
@@ -104,7 +97,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     }
     this.driver = driver;
     this.tracer = new AgentTracer(process.cwd(), this.context.getSessionId());
-    this.contextAdapter = contextAdapter || new DefaultContextAdapter(estimator);
+    this.contextAdapter = contextAdapter;
 
     // 初始化解耦后的四大领域服务
     this.ruleManager = new RuleManager(this.context);
@@ -190,6 +183,15 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   }
 
   /**
+   * 获取当前会话绑定的工具注册表管理台端口契约实例。
+   *
+   * @returns 工具注册表端口契约实例
+   */
+  public get toolRegistryInstance(): ToolRegistryPort {
+    return this.toolRegistry;
+  }
+
+  /**
    * 获取当前会话绑定的人机协同审批协调服务。
    *
    * @returns 审批服务实例
@@ -257,10 +259,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       await this.taskAborter(this.context.getSessionId());
     }
 
-    // 关闭所有 MCP 子进程连接，防止产生僵尸进程
-    if (this.mcpManager) {
-      await this.mcpManager.close();
-    }
+    // 代理给 ToolRegistryPort close，物理断开并清理所有物理连接（含 MCP）
+    await this.toolRegistry.close();
   }
 
   /**

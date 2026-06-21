@@ -5,6 +5,7 @@ import { buildSystemPrompt } from '../usecases/prompts.js';
 import { ApprovalService } from '../usecases/ApprovalService.js';
 import { AppConfig, WorkMode, getDefaultWorkMode } from '../../config/index.js';
 import { SessionEventPort } from '../../ports/driven/SessionEventPort.js';
+import { SecurityService } from '../usecases/SecurityService.js';
 
 
 // 显式重导出 ApiUsage 和 ContextTokenUsage 类型，避免在 ESM 下因类型擦除引发运行时加载错误
@@ -352,6 +353,16 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
     this.workMode = mode;
   }
 
+  /**
+   * 获取当前有效的安全命令白名单列表。
+   * 桥接调用核心层的安全服务。
+   *
+   * @returns 安全命令白名单规则列表
+   */
+  public getSecurityAllowlist(): string[] {
+    return SecurityService.getInstance().getSecurityAllowlist();
+  }
+
   private pluginPatches: PluginPatchGroup[] = [];
 
   /**
@@ -416,5 +427,25 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
     return {
       action: (decision.action === 'once' || decision.action === 'always') ? 'approve' : 'deny'
     };
+  }
+
+  /**
+   * 检查指定绝对物理路径是否处于临时只读授权白名单中。
+   *
+   * @param pathStr - 物理绝对路径
+   * @returns 在白名单中返回 true，否则返回 false
+   */
+  public hasTemporaryReadWhitelist(pathStr: string): boolean {
+    return SecurityService.getInstance().hasTemporaryReadWhitelist(pathStr);
+  }
+
+  /**
+   * 检查指定绝对物理路径是否处于临时可写授权白名单中。
+   *
+   * @param pathStr - 物理绝对路径
+   * @returns 在白名单中返回 true，否则返回 false
+   */
+  public hasTemporaryWriteWhitelist(pathStr: string): boolean {
+    return SecurityService.getInstance().hasTemporaryWriteWhitelist(pathStr);
   }
 }

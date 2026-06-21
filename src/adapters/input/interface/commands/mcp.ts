@@ -14,7 +14,7 @@ export class McpCommand implements ICommand {
 
     const action = args[0];
     const serverName = args[1];
-    const mcpManager = context.session.mcpManager;
+    const mcpManager = context.session.toolRegistryInstance.mcpManager;
 
     if (!mcpManager) {
       console.log(theme.error('[错误] 当前系统尚未配置或初始化 MCP Tool Manager。'));

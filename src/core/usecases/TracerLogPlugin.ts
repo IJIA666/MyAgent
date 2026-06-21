@@ -1,6 +1,6 @@
-import type { HookContext, Plugin } from '../../core/usecases/plugin-types.js';
-import { HookEventName } from '../../core/usecases/plugin-types.js';
-import type { AgentTracer } from '../../core/domain/tracer.js';
+import type { HookContext, Plugin } from './plugin-types.js';
+import { HookEventName } from './plugin-types.js';
+import type { AgentTracer } from '../domain/tracer.js';
 
 /**
  * 审计与足迹跟踪插件。
