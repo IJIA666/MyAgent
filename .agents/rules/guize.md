@@ -4,7 +4,7 @@ trigger: always_on
 
 - **探索核心目标**：本项目旨在通过实践深入学习 Agent 技术，最终构建出具备通用能力的智能助手。workflow是我们的对立面（比如LangGraph）。
 
-- **主要学习对象**：研究和剖析的主要对象为 `Agents` 目录下的 7 个开源/参考项目。由于我们主要使用OpenAI标准，所以Claude Code和Gemini CLI这种特化的项目只做参考，但不妨碍他们是优质项目。
+- **主要学习对象**：研究和剖析的主要对象为 `Agents` 目录下的 7 个开源/参考项目。由于我们主要使用OpenAI标准，所以Claude Code和Gemini CLI这种特化的项目只做参考，但不妨碍他们是优质项目。最主要的是Claude Code、Hermes Agent、OpenClaw、OpenCode这四个。
 
 - **调研强制语义**：接收到“调研”指令时，必须执行跨项目的竞品分析与网络检索，深入 `Agents` 目录下项目的源码。在我下达明确指令后分批调研，然后写入探索文件中。
 

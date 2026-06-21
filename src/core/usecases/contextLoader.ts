@@ -44,19 +44,21 @@ function readAndLimitFile(filePath: string): string {
 /**
  * 加载全局规则 (Global Rules)。
  * 
+ * @param customPath - 可选的自定义规则文件物理路径
  * @returns 成功读取时返回全局规则内容的字符串，否则返回空字符串
  */
-export function loadGlobalRules(): string {
-  return readAndLimitFile(DEV_GLOBAL_RULES_PATH);
+export function loadGlobalRules(customPath?: string): string {
+  return readAndLimitFile(customPath ?? DEV_GLOBAL_RULES_PATH);
 }
 
 /**
  * 加载局部/工作区规则 (Local Rules)。
  * 
+ * @param customPath - 可选的自定义规则文件物理路径
  * @returns 成功读取时返回局部规则内容的字符串，否则返回空字符串
  */
-export function loadLocalRules(): string {
-  return readAndLimitFile(DEV_LOCAL_RULES_PATH);
+export function loadLocalRules(customPath?: string): string {
+  return readAndLimitFile(customPath ?? DEV_LOCAL_RULES_PATH);
 }
 
 /**

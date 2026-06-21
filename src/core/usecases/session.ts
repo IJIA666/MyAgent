@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { McpToolManager, ToolRegistry } from '../../adapters/tools/index.js';
 import { AppConfig, LlmConfig } from '../../config/index.js';
 import { AgentTracer } from '../domain/tracer.js';
@@ -7,7 +8,7 @@ import type { TokenEstimatorPort, ApiUsage } from '../../ports/driven/TokenEstim
 import { ContextAdapter } from '../../ports/driven/ContextAdapter.js';
 import { DefaultContextAdapter } from '../../adapters/context/DefaultContextAdapter.js';
 import { loadSkillContent } from './contextLoader.js';
-import { AgentLoop, AgentEvent } from './agent-loop.js';
+import { AgentLoop } from './agent-loop.js';
 import { ChatUseCase } from '../../ports/driving/ChatUseCase.js';
 import { TaskAborterPort } from '../../ports/driven/TaskAborterPort.js';
 import { PluginRegistry } from './plugin-registry.js';
@@ -30,7 +31,7 @@ import { ApprovalService } from './ApprovalService.js';
  * 会话管理与模型交互调度中心。
  * 重构后退化为纯正的 ReAct 循环执行引擎，相关周边逻辑被下沉至各自领域服务。
  */
-export class SessionManager implements ChatUseCase {
+export class SessionManager extends EventEmitter implements ChatUseCase {
   /** 当前系统的工具注册管理台 */
   private toolRegistry: ToolRegistry;
   /** MCP 管理器实例引用，供外层命令动态重载服务使用 */
@@ -41,6 +42,12 @@ export class SessionManager implements ChatUseCase {
   private maxIterations = 20;
   /** 本地会话的上下文与状态存储 */
   private context: SessionContext;
+  /** 大语言模型是否正在推理生成中 */
+  private isGenerating = false;
+  /** 连续自动唤醒大模型的次数 */
+  private autoWakeupCount = 0;
+  /** 标识当前推理期间是否到达了积压的异步系统通知 */
+  private hasPendingAsyncNotification = false;
   /** 大语言模型的核心驱动模块 */
   private driver: LlmPort;
   /** 上下文管理与组装适配器 */
@@ -83,6 +90,7 @@ export class SessionManager implements ChatUseCase {
     appConfig?: AppConfig,
     taskAborter?: TaskAborterPort
   ) {
+    super();
     this.llmConfig = llmConfig;
     this.mcpManager = mcpManager;
     this.taskAborter = taskAborter;
@@ -125,6 +133,11 @@ export class SessionManager implements ChatUseCase {
       pluginRegistry: this.pluginRegistry,
       maxIterations: this.maxIterations
     });
+
+    // 监听底层 Driven 事件总线抛出的异步任务事件，实施下沉后的自唤醒调度
+    this.context.on('async_event', () => {
+      this.handleAsyncEvent();
+    });
   }
 
   /**
@@ -132,7 +145,7 @@ export class SessionManager implements ChatUseCase {
    *
    * @param content - 用户侧的原始输入数据
    */
-  public addUserMessage(content: string): void {
+  private addUserMessage(content: string): void {
     this.context.addMessage({ role: 'user', content });
   }
 
@@ -278,14 +291,119 @@ export class SessionManager implements ChatUseCase {
   }
 
   /**
-   * 处理单次对话请求的完整生命周期。
-   * 委托给底层的 AgentLoop 执行器进行推理。
-   * 
+   * 统一人类输入接口。
+   * 该接口为 fire-and-forget 异步通知设计。
+   *
+   * @param input - 用户输入的指令
    * @param transientSkillContent - 可选。当前请求独占的临时技能规范内容
-   * @returns 抛出 AgentEvent 流，由外部消费者负责呈现
    */
-  public async *chat(transientSkillContent?: string): AsyncGenerator<AgentEvent, void, unknown> {
-    yield* this.agentLoop.chat(transientSkillContent, this.tracer, this.llmConfig);
+  public handleUserInput(input: string, transientSkillContent?: string): void {
+    if (this.isGenerating) {
+      throw new Error('Session is currently busy generating a response.');
+    }
+    
+    this.isGenerating = true; // 同步原子加锁，防止同 Tick 重入
+    this.autoWakeupCount = 0;  // 每次人类主动交互，重置自动唤醒计数器
+
+    // 1. 同步将消息写入上下文历史
+    this.addUserMessage(input);
+
+    // 2. 异步调起内部推理并广播事件
+    this.runInternalGeneration(transientSkillContent).catch((err: unknown) => {
+      console.error('[SessionManager] handleUserInput 推理执行失败:', err);
+    });
+  }
+
+  /**
+   * 内部推理循环调度，并进行事件的流式广播分发。
+   *
+   * @param transientSkillContent - 可选。临时技能规范内容
+   */
+  private async runInternalGeneration(transientSkillContent?: string): Promise<void> {
+    let hasError = false;
+    try {
+      // 订阅并逐步消费大脑层抛出的推理事件，对外分发统一的 'agent_event'
+      for await (const event of this.agentLoop.chat(transientSkillContent, this.tracer, this.llmConfig)) {
+        this.emit('agent_event', event);
+      }
+    } catch (error: unknown) {
+      hasError = true;
+      const message = error instanceof Error ? error.message : String(error);
+      this.emit('agent_event', {
+        type: 'error',
+        message
+      });
+    } finally {
+      this.isGenerating = false;
+
+      // 判定后续是否会触发自唤醒级联，若不会则在此 emit 'complete'。
+      // 【非对称契约说明】：若推理期间抛出 error 异常，将直接由 'error' 广播事件接管
+      // 且直接由终端捕获并恢复 stdin，故无需（也不应该）在此处重复发送 'complete'。
+      const willWakeup = !hasError && this.hasPendingAsyncNotification && this.autoWakeupCount < 3;
+      if (!hasError && !willWakeup) {
+        this.emit('agent_event', { type: 'complete' });
+      }
+
+      // 检测本轮推理生成期间是否积压了新的后台通知事件，延迟到下一 Tick 处理，防止爆栈
+      process.nextTick(() => {
+        if (!this.isGenerating && this.hasPendingAsyncNotification) {
+          this.hasPendingAsyncNotification = false;
+
+          if (this.autoWakeupCount >= 3) {
+            this.emit('agent_event', {
+              type: 'error',
+              message: '[系统提示] 检测到连续自动唤醒次数已达上限（3次），已暂停自动唤醒，等待人工介入。'
+            });
+            // 熔断后不再唤醒，补发 complete 事件
+            this.emit('agent_event', { type: 'complete' });
+            return;
+          }
+
+          this.autoWakeupCount++;
+          this.isGenerating = true; // 同步加锁
+          this.runInternalGeneration().catch((err: unknown) => {
+            console.error('[SessionManager] 自唤醒级联推理失败:', err);
+          });
+        }
+      });
+    }
+  }
+
+  /**
+   * 处理从底层会话总线分发的异步后台通知事件。
+   * 当推理忙碌时进行缓冲记录，空闲时触发自唤醒推理。
+   */
+  private handleAsyncEvent(): void {
+    if (this.isGenerating) {
+      // 忙碌状态：仅记录积压标识，避免产生竞态并发
+      this.hasPendingAsyncNotification = true;
+      return;
+    }
+
+    // 限制连续自动唤醒的最大上限（无人值守防御）
+    if (this.autoWakeupCount >= 3) {
+      this.emit('agent_event', {
+        type: 'error',
+        message: '[系统提示] 检测到连续自动唤醒次数已达上限（3次），已暂停自动唤醒，等待人工介入。'
+      });
+      this.hasPendingAsyncNotification = false;
+      return;
+    }
+
+    this.autoWakeupCount++;
+    // 异步调起后台任务更新研判
+    this.runInternalGeneration().catch((err: unknown) => {
+      console.error('[SessionManager] 自动唤醒推理执行失败:', err);
+    });
+  }
+
+  /**
+   * 获取当前智能体是否正在推理生成中。
+   *
+   * @returns 正在推理返回 true，否则返回 false
+   */
+  public getIsGenerating(): boolean {
+    return this.isGenerating;
   }
 
   /**
@@ -316,11 +434,20 @@ export class SessionManager implements ChatUseCase {
   }
 
   /**
-   * 注册异步后台任务事件监听器。
+   * @internal 仅供集成测试模拟底层 async_event 唤醒流程的测试辅助方法。
    *
-   * @param listener - 接收后台通知事件的监听器函数
+   * @param event - 模拟的异步事件载体
    */
-  public onAsyncEvent(listener: (event: unknown) => void): void {
-    this.context.on('async_event', listener);
+  public __testEmitAsyncEvent(event: unknown): void {
+    this.context.emit('async_event', event);
+  }
+
+  /**
+   * @internal 仅供集成测试驱动内部推理循环以验证 finally 块级联调度行为的测试辅助方法。
+   *
+   * @returns 内部生成循环的 Promise
+   */
+  public __testRunInternalGeneration(): Promise<void> {
+    return this.runInternalGeneration();
   }
 }

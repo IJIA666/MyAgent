@@ -13,19 +13,10 @@ import { setWorkMode } from '../../src/adapters/tools/tools/system/terminal.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 import { ExecuteCommandTool } from '../../src/adapters/tools/tools/system/terminal.js';
 import * as terminalEngine from '../../src/adapters/tools/tools/system/terminal-engine.js';
-import { CliFacade } from '../../src/adapters/input/interface/facade.js';
 import { SessionManager } from '../../src/core/usecases/session.js';
-
-interface PrivateCliFacade {
-  isGenerating: boolean;
-  autoWakeupCount: number;
-  hasPendingAsyncNotification: boolean;
-  listener: {
-    pause: () => void;
-    resume: () => void;
-  };
-  runStreamLoop: () => Promise<void>;
-}
+import { LlmConfig } from '../../src/config/index.js';
+import { LlmPort } from '../../src/ports/driven/LlmPort.js';
+import { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
 
 describe('Terminal Notification Loopback & Buffering Tests', () => {
   const mockRootDir = resolve('D:\\authorized\\path_loopback_test');
@@ -119,97 +110,91 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
     runEngineSpy.mockRestore();
   });
 
-  it('应该在 CliFacade 收到事件时执行空闲唤醒、忙碌积压、以及 3 次熔断限制', async () => {
-    // 1. Mock SessionManager 和 chat 方法
-    let asyncEventListener: ((event: unknown) => void) | null = null;
-    const mockSession = {
+  it('应该在 SessionManager 收到事件时执行空闲唤醒、忙碌积压、以及 3 次熔断限制', async () => {
+    // 1. 提供 mock 依赖项实例化 SessionManager
+    const mockLlmConfig = {
+      model: 'mock-model'
+    } as unknown as LlmConfig;
+
+    const mockDriver = {
       getModelName: () => 'MockModel',
-      getHistory: () => [],
-      getLastEstimatedUsage: () => null,
-      getLastApiUsage: () => null,
-      getSystemPromptHash: () => 'hash',
-      onAsyncEvent: (listener: (event: unknown) => void) => {
-        asyncEventListener = listener;
-      },
-      approvalService: {
-        registerApprovalHandler: () => {}
-      },
-      registerInterventionHandler: () => {},
-      chat: async function* () {
-        // 模拟大模型正在生成，延时 10ms
-        await new Promise(resolve => setTimeout(resolve, 10));
+      switchModel: () => {},
+      abort: () => {},
+      streamChat: async function* () {
         yield { type: 'thinking', content: 'thinking...' };
         yield { type: 'content', content: 'response' };
       }
-    } as unknown as SessionManager;
+    } as unknown as LlmPort;
 
-    // 2. 实例化 CliFacade
-    const facade = new CliFacade(mockSession);
-    const privateFacade = facade as unknown as PrivateCliFacade;
+    const mockEstimator = {
+      estimateTokens: () => 0,
+      estimateSnapshotTokens: () => ({ total: 0 }),
+      getCompactionThreshold: () => 100000
+    } as unknown as TokenEstimatorPort;
 
-    // 3. Mock listener 的 pause/resume 防止 Stdin 重建抢占或报错
-    const pauseSpy = vi.spyOn(privateFacade.listener, 'pause').mockImplementation(() => {});
-    const resumeSpy = vi.spyOn(privateFacade.listener, 'resume').mockImplementation(() => {});
+    const session = new SessionManager(mockLlmConfig, mockDriver, mockEstimator);
+    const privateSession = session as unknown as {
+      isGenerating: boolean;
+      autoWakeupCount: number;
+      hasPendingAsyncNotification: boolean;
+      __testEmitAsyncEvent: (event: unknown) => void;
+      __testRunInternalGeneration: () => Promise<void>;
+    };
+
+    // 监听事件广播
+    const eventSpy = vi.fn();
+    session.on('agent_event', eventSpy);
 
     // 验证初始状态
-    expect(asyncEventListener).not.toBeNull();
-    expect(privateFacade.isGenerating).toBe(false);
-    expect(privateFacade.autoWakeupCount).toBe(0);
+    expect(privateSession.isGenerating).toBe(false);
+    expect(privateSession.autoWakeupCount).toBe(0);
 
-    // 4. 【第一阶段】空闲状态收到事件 -> 触发唤醒
-    const runStreamLoopSpy = vi.spyOn(privateFacade, 'runStreamLoop');
+    // 2. 【第一阶段】空闲状态收到事件 -> 触发唤醒
+    // 模拟底层 context 向上发射 async_event，触发自唤醒逻辑
+    privateSession.__testEmitAsyncEvent({ type: 'completed', taskId: 'task-1' });
+
+    // 等待异步推理周期处理
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(privateSession.autoWakeupCount).toBe(1);
+
+    // 3. 【第二阶段】忙碌状态收到事件 -> 积压并级联唤醒
+    // 手动将 isGenerating 设为 true 模拟推理进行中
+    privateSession.isGenerating = true;
     
     // 触发事件
-    await asyncEventListener!({ type: 'completed', taskId: 'task-1' });
+    privateSession.__testEmitAsyncEvent({ type: 'completed', taskId: 'task-2' });
 
-    // 验证 autoWakeupCount 累加，并且 runStreamLoop 被调用
-    expect(privateFacade.autoWakeupCount).toBe(1);
-    expect(runStreamLoopSpy).toHaveBeenCalledTimes(1);
+    // 验证忙碌状态下 autoWakeupCount 不变，但暂存了通知积压标识
+    expect(privateSession.autoWakeupCount).toBe(1);
+    expect(privateSession.hasPendingAsyncNotification).toBe(true);
 
-    // 等待 runStreamLoop 异步执行完毕
+    // 手动将 isGenerating 释放，并通过运行推理循环的 finally 块触发自唤醒微任务
+    privateSession.isGenerating = false;
+    await privateSession.__testRunInternalGeneration();
+    
+    // 等待 nextTick 及自唤醒异步推理跑完
+    await new Promise<void>((resolve) => process.nextTick(resolve));
     await new Promise(resolve => setTimeout(resolve, 50));
-    expect(privateFacade.isGenerating).toBe(false);
-
-    // 5. 【第二阶段】忙碌状态收到事件 -> 积压并级联唤醒
-    // 手动将 isGenerating 设为 true 模拟忙碌
-    privateFacade.isGenerating = true;
     
-    // 此时触发事件
-    await asyncEventListener!({ type: 'completed', taskId: 'task-2' });
+    // 验证自动唤醒次数增加到 2
+    expect(privateSession.autoWakeupCount).toBe(2);
 
-    // 验证由于忙碌，autoWakeupCount 没有增加，且没有立即额外调用 runStreamLoop，而是设置了积压标记
-    expect(privateFacade.autoWakeupCount).toBe(1);
-    expect(privateFacade.hasPendingAsyncNotification).toBe(true);
-
-    // 手动释放忙碌状态（模拟 chat 运行结束），并手动调起 finally 块里检查积压的逻辑
-    privateFacade.isGenerating = false;
-    const runStreamLoopOriginal = privateFacade.runStreamLoop.bind(privateFacade);
-    
-    // 手动调用一次 runStreamLoop，模拟本轮生成结束以触发 finally 中的 setTimeout 级联调度
-    await runStreamLoopOriginal();
-    
-    // 此时 runStreamLoop 跑完了，setTimeout 在 100ms 后触发，我们等待 150ms 
-    await new Promise(resolve => setTimeout(resolve, 150));
-    
-    // 验证自动唤醒次数达到了 2，且 runStreamLoop 又被执行了
-    expect(privateFacade.autoWakeupCount).toBe(2);
-
-    // 6. 【第三阶段】测试 3 次熔断限制
-    // 手动让自动唤醒次数达到上限 3
-    privateFacade.autoWakeupCount = 3;
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    // 4. 【第三阶段】测试 3 次熔断限制
+    // 手动将唤醒计数器置为上限值 3
+    privateSession.autoWakeupCount = 3;
+    const errorSpy = vi.fn();
+    session.on('agent_event', (e) => {
+      if (e.type === 'error') errorSpy(e.message);
+    });
 
     // 再次触发事件
-    await asyncEventListener!({ type: 'completed', taskId: 'task-3' });
+    privateSession.__testEmitAsyncEvent({ type: 'completed', taskId: 'task-3' });
 
-    // 验证熔断：autoWakeupCount 不再增加，且没有调起 runStreamLoop
-    expect(privateFacade.autoWakeupCount).toBe(3);
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('连续自动唤醒次数已达上限'));
+    // 等待处理
+    await new Promise(resolve => setTimeout(resolve, 50));
 
-    // 恢复 Mocks
-    pauseSpy.mockRestore();
-    resumeSpy.mockRestore();
-    runStreamLoopSpy.mockRestore();
-    consoleSpy.mockRestore();
+    // 验证熔断生效：计数器不再累加，且广播了熔断错误事件
+    expect(privateSession.autoWakeupCount).toBe(3);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('连续自动唤醒次数已达上限'));
   });
 });

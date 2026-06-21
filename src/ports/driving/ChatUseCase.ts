@@ -3,19 +3,10 @@
  * @description 定义外部用户界面或适配器驱动核心智能体会话运行的输入端口用例接口契约。
  */
 
-import type { ChatMessage, LlmStreamEvent } from '../driven/LlmPort.js';
+import type { ChatMessage } from '../driven/LlmPort.js';
 import type { ApiUsage, ContextTokenUsage } from '../driven/TokenEstimatorPort.js';
 import type { ApprovalService } from '../../core/usecases/ApprovalService.js';
-
-/**
- * 智能体会话流式交互事件载体。
- */
-export type ChatUseCaseEvent =
-  | LlmStreamEvent
-  | { type: 'suspend' }
-  | { type: 'tool_call_start'; functionName: string; functionArgs: Record<string, unknown> }
-  | { type: 'tool_call_result'; functionName: string; result: string }
-  | { type: 'error'; message: string };
+import type { AgentEvent } from '../../core/usecases/agent-loop.js';
 
 /**
  * 驱动核心进行会话与对话交互的用例契约接口。
@@ -52,26 +43,38 @@ export interface ChatUseCase {
   getHistory(): ChatMessage[];
 
   /**
-   * 追加一条用户输入的消息到会话上下文。
+   * 统一人类输入接口。
+   * 为 fire-and-forget 异步设计，触发推理流并以 'agent_event' 广播事件。
    *
-   * @param content - 用户输入内容
+   * @param input - 用户输入内容
+   * @param transientSkillContent - 可选的临时沙盒技能规范文本
    */
-  addUserMessage(content: string): void;
+  handleUserInput(input: string, transientSkillContent?: string): void;
 
   /**
-   * 启动一轮推理会话， 返回流式生成的事件流。
+   * 注册事件监听器。
    *
-   * @param transientSkill - 可选的临时沙盒技能规范文本
-   * @returns 异步生成流式推理及工具调用事件
+   * @param event - 事件名称，固定为 'agent_event'
+   * @param listener - 事件监听器函数
+   * @returns 当前实例以支持链式调用
    */
-  chat(transientSkill?: string): AsyncGenerator<ChatUseCaseEvent, void, unknown>;
+  on(event: 'agent_event', listener: (event: AgentEvent) => void): this;
 
   /**
-   * 注册异步后台任务到达的唤醒通知监听器。
+   * 移除事件监听器。
    *
-   * @param listener - 监听回调函数
+   * @param event - 事件名称，固定为 'agent_event'
+   * @param listener - 事件监听器函数
+   * @returns 当前实例以支持链式调用
    */
-  onAsyncEvent(listener: () => Promise<void> | void): void;
+  off(event: 'agent_event', listener: (event: AgentEvent) => void): this;
+
+  /**
+   * 获取当前智能体是否正在推理生成中。
+   *
+   * @returns 正在推理返回 true，否则返回 false
+   */
+  getIsGenerating(): boolean;
 
   /**
    * 获取最近一次预估的 Token 用量数据。
