@@ -26,13 +26,19 @@ import type { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
 import { SessionManager } from '../../src/core/usecases/session.js';
 import type { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
 import type { ToolRegistryPort } from '../../src/ports/driven/ToolRegistryPort.js';
+import { createMockAppConfig } from '../mock-factory.js';
+import type { VectorDbPort } from '../../src/ports/driven/VectorDbPort.js';
+import type { EmbeddingPort } from '../../src/ports/driven/EmbeddingPort.js';
 
 describe('Plugins Lifecycle & Action Tests', () => {
   let sessionContext: SessionContext;
 
   beforeEach(() => {
     // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
-    vi.spyOn(SessionManager.prototype as any, 'rebuildVectorDbIfEmpty').mockResolvedValue(undefined);
+    vi.spyOn(
+      SessionManager.prototype as unknown as { rebuildVectorDbIfEmpty: () => Promise<void> },
+      'rebuildVectorDbIfEmpty'
+    ).mockResolvedValue(undefined);
     sessionContext = new SessionContext('test-session');
   });
 
@@ -269,10 +275,10 @@ describe('Plugins Lifecycle & Action Tests', () => {
           { id: '1', text: '- **技术要点**：语义内容。', score: 0.8 }
         ]),
         count: vi.fn().mockResolvedValue(0)
-      } as any;
+      } as unknown as VectorDbPort;
       const mockEmbedding = {
         generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0))
-      } as any;
+      } as unknown as EmbeddingPort;
 
       const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath);
 
@@ -305,10 +311,10 @@ describe('Plugins Lifecycle & Action Tests', () => {
           { id: '1', text: '- **技术要点**：语义内容。', score: 0.8 }
         ]),
         count: vi.fn().mockResolvedValue(0)
-      } as any;
+      } as unknown as VectorDbPort;
       const mockEmbedding = {
         generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0))
-      } as any;
+      } as unknown as EmbeddingPort;
 
       const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath);
 
@@ -339,8 +345,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
       const mockDriver = {
         streamChat: vi.fn()
       } as unknown as LlmPort;
-      const mockVectorDb = {} as any;
-      const mockEmbedding = {} as any;
+      const mockVectorDb = {} as unknown as VectorDbPort;
+      const mockEmbedding = {} as unknown as EmbeddingPort;
       const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath);
 
       sessionContext.addMessage({ role: 'user', content: 'Hello' });
@@ -362,8 +368,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
     });
 
     it('should trigger onSessionEndCallback in SessionEnd hook when history is sufficient', async () => {
-      const mockVectorDb = {} as any;
-      const mockEmbedding = {} as any;
+      const mockVectorDb = {} as unknown as VectorDbPort;
+      const mockEmbedding = {} as unknown as EmbeddingPort;
       const callback = vi.fn();
       const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath, callback);
 
@@ -444,12 +450,12 @@ describe('Plugins Lifecycle & Action Tests', () => {
         clear: vi.fn().mockResolvedValue(undefined),
         close: vi.fn().mockResolvedValue(undefined),
         count: vi.fn().mockResolvedValue(0)
-      } as any;
+      } as unknown as VectorDbPort;
 
       const mockEmbedding = {
         generateEmbedding: vi.fn().mockResolvedValue([]),
         generateEmbeddings: vi.fn().mockResolvedValue([])
-      } as any;
+      } as unknown as EmbeddingPort;
 
       // 使用自定义的记忆文件路径初始化 SessionManager
       const session = new SessionManager(
@@ -459,7 +465,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
         mockToolRegistry,
         mockContextAdapter,
         mockVectorDb,
-        mockEmbedding
+        mockEmbedding,
+        createMockAppConfig()
       );
 
       // 覆盖 SessionManager 内的 memoryFilePath
@@ -500,10 +507,10 @@ describe('Plugins Lifecycle & Action Tests', () => {
           { id: 'hash1', text: '- **技术偏好**：用户非常喜欢使用 TypeScript 语言。', score: 0.9 }
         ]),
         count: vi.fn().mockResolvedValue(0)
-      } as any;
+      } as unknown as VectorDbPort;
       const mockEmbedding = {
         generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0.1))
-      } as any;
+      } as unknown as EmbeddingPort;
 
       const plugin = new LongTermMemoryPlugin(
         mockVectorDb,
@@ -519,7 +526,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         messages: [
           { role: 'system', content: 'You are a helpful assistant.' }
         ]
-      } as any;
+      } as unknown as LlmRequest;
 
       const context: HookContext = {
         sessionContext,
@@ -534,8 +541,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
       expect(mockEmbedding.generateEmbedding).toHaveBeenCalledWith('我喜欢使用 TypeScript');
       expect(mockVectorDb.search).toHaveBeenCalled();
-      expect(llmRequest.messages[0].content).toContain('<long-term-memory>');
-      expect(llmRequest.messages[0].content).toContain('- **技术偏好**：用户非常喜欢使用 TypeScript 语言。');
+      expect(llmRequest.messages![0].content).toContain('<long-term-memory>');
+      expect(llmRequest.messages![0].content).toContain('- **技术偏好**：用户非常喜欢使用 TypeScript 语言。');
       expect(next).toHaveBeenCalled();
     });
 
@@ -547,10 +554,10 @@ describe('Plugins Lifecycle & Action Tests', () => {
         clear: vi.fn().mockResolvedValue(undefined),
         close: vi.fn().mockResolvedValue(undefined),
         count: vi.fn().mockResolvedValue(0)
-      } as any;
+      } as unknown as VectorDbPort;
       const mockEmbedding = {
         generateEmbeddings: vi.fn().mockResolvedValue([[0.1, 0.2]])
-      } as any;
+      } as unknown as EmbeddingPort;
 
       const mockEstimator = {
         estimateSnapshotTokens: () => ({ total: 10, system: 2, rules: 2, transient: 2, history: 4 }),
@@ -572,7 +579,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
         mockToolRegistry,
         mockContextAdapter,
         mockVectorDb,
-        mockEmbedding
+        mockEmbedding,
+        createMockAppConfig()
       );
 
       (session as unknown as { memoryFilePath: string }).memoryFilePath = tempMemoryPath;
@@ -591,8 +599,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
     });
 
     it('should extract technical keywords using regex with high precision', () => {
-      const mockVectorDb = {} as any;
-      const mockEmbedding = {} as any;
+      const mockVectorDb = {} as unknown as VectorDbPort;
+      const mockEmbedding = {} as unknown as EmbeddingPort;
       const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath);
 
       const text = '请使用 `AgentLoop` 和 `LongTermMemoryPlugin`，参考 session.ts 文件中的 SessionManager 实现；还要看看 context.ts。';
@@ -607,8 +615,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
     });
 
     it('should merge vector results and keyword results correctly using reciprocalRankFusion', () => {
-      const mockVectorDb = {} as any;
-      const mockEmbedding = {} as any;
+      const mockVectorDb = {} as unknown as VectorDbPort;
+      const mockEmbedding = {} as unknown as EmbeddingPort;
       const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath);
 
       const vectorResults = [
@@ -637,10 +645,10 @@ describe('Plugins Lifecycle & Action Tests', () => {
           { id: 'vector-id', text: '- **技术偏好**：用户非常喜欢使用 TypeScript 语言。', score: 0.9 }
         ]),
         count: vi.fn().mockResolvedValue(0)
-      } as any;
+      } as unknown as VectorDbPort;
       const mockEmbedding = {
         generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0.1))
-      } as any;
+      } as unknown as EmbeddingPort;
 
       const plugin = new LongTermMemoryPlugin(
         mockVectorDb,
@@ -655,7 +663,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         messages: [
           { role: 'system', content: 'You are a helpful assistant.' }
         ]
-      } as any;
+      } as unknown as LlmRequest;
 
       const context: HookContext = {
         sessionContext,
@@ -671,7 +679,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
       expect(mockEmbedding.generateEmbedding).toHaveBeenCalled();
       expect(mockVectorDb.search).toHaveBeenCalled();
 
-      const content = llmRequest.messages[0].content;
+      const content = llmRequest.messages![0].content;
       expect(content).toContain('<long-term-memory>');
       expect(content).toContain('- **技术偏好**：用户非常喜欢使用 TypeScript 语言。');
       expect(content).toContain('- **SessionManager**：会话管理器事实。');
@@ -686,11 +694,11 @@ describe('Plugins Lifecycle & Action Tests', () => {
       const mockVectorDb = {
         search: vi.fn().mockResolvedValue([]),
         count: vi.fn().mockResolvedValue(0)
-      } as any;
+      } as unknown as VectorDbPort;
 
       const mockEmbedding = {
         generateEmbedding: vi.fn().mockRejectedValue(new Error('Vector database offline or generateEmbedding failed'))
-      } as any;
+      } as unknown as EmbeddingPort;
 
       const plugin = new LongTermMemoryPlugin(
         mockVectorDb,
@@ -705,7 +713,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         messages: [
           { role: 'system', content: 'You are a helpful assistant.' }
         ]
-      } as any;
+      } as unknown as LlmRequest;
 
       const context: HookContext = {
         sessionContext,
@@ -721,7 +729,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
       expect(mockEmbedding.generateEmbedding).toHaveBeenCalled();
       expect(mockVectorDb.search).not.toHaveBeenCalled();
 
-      const content = llmRequest.messages[0].content;
+      const content = llmRequest.messages![0].content;
       expect(content).toContain('<long-term-memory>');
       expect(content).toContain('- **SessionManager**：这是会话管理的控制中枢，它负责插件的生命周期和洋葱模型的构建。');
       expect(next).toHaveBeenCalled();
@@ -731,14 +739,14 @@ describe('Plugins Lifecycle & Action Tests', () => {
       const mockVectorDb = {
         search: vi.fn().mockResolvedValue([]),
         count: vi.fn().mockResolvedValue(0)
-      } as any;
+      };
       const mockEmbedding = {
         generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0))
-      } as any;
+      };
 
       const plugin = new LongTermMemoryPlugin(
-        mockVectorDb,
-        mockEmbedding,
+        mockVectorDb as unknown as VectorDbPort,
+        mockEmbedding as unknown as EmbeddingPort,
         tempMemoryPath
       );
 
@@ -750,7 +758,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         messages: [
           { role: 'system', content: 'You are a helpful assistant.' }
         ]
-      } as any;
+      } as unknown as LlmRequest;
 
       const context: HookContext = {
         sessionContext,

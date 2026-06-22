@@ -102,7 +102,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     contextAdapter: ContextAdapter,
     vectorDb: VectorDbPort,
     embedding: EmbeddingPort,
-    appConfig?: AppConfig,
+    appConfig: AppConfig,
     taskAborter?: TaskAborterPort
   ) {
     super();
@@ -110,13 +110,10 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.toolRegistry = toolRegistry;
     this.taskAborter = taskAborter;
     this.context = new SessionContext();
-    if (appConfig) {
-      this.context.appConfig = appConfig;
-      this.maxIterations = appConfig.runtimeLimits.maxIterations;
-    }
+    this.context.appConfig = appConfig;
+    this.maxIterations = appConfig.runtimeLimits.maxIterations;
     this.driver = driver;
-    /* eslint-disable-next-line n/no-process-env */
-    const baseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+    const baseDir = appConfig.workspace;
     // 实例化主跟踪仪，支持沙箱环境变量重定向
     this.tracer = new AgentTracer(baseDir, this.context.getSessionId());
     this.contextAdapter = contextAdapter;
@@ -260,9 +257,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   public async loadState(targetSessionId: string): Promise<boolean> {
     const success = await this.contextRepo.loadState(targetSessionId);
     if (success) {
-      /* eslint-disable-next-line n/no-process-env */
-      const baseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
-      // 状态恢复成功后，重置跟踪记录仪以绑定新的 Session ID 目录，注意读取沙箱环境变量
+      const baseDir = this.context.appConfig ? this.context.appConfig.workspace : process.cwd();
+      // 状态恢复成功后，重置跟踪记录仪以绑定新的 Session ID 目录
       this.tracer = new AgentTracer(baseDir, this.context.getSessionId());
     }
     return success;
@@ -639,9 +635,8 @@ ${historyText}
       await this.queueWrite(`\n\n${content.trim()}\n`);
     });
 
-    // 3. 实例化专用的沙箱追踪器，优先从环境变量读取重定向目录
-    /* eslint-disable-next-line n/no-process-env */
-    const subBaseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+    // 3. 实例化专用的沙箱追踪器，使用注入的工作区绝对目录
+    const subBaseDir = this.context.appConfig ? this.context.appConfig.workspace : process.cwd();
     const subTracer = new AgentTracer(subBaseDir, subContext.getSessionId());
 
     // 4. 初始化空的 PluginRegistry

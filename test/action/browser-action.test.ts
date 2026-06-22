@@ -6,6 +6,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
+import { logger } from '../../src/utils/logger.js';
 import { existsSync, rmSync } from 'fs';
 import { resolve } from 'path';
 import { chromium, Browser } from 'playwright';
@@ -35,7 +36,7 @@ describe('BrowserAction 浏览器自动化工具集成测试', () => {
         headless: true
       });
     } catch (err) {
-      console.warn('警告：本地拉起测试 CDP 浏览器失败，部分 CDP 测试将使用 mock 降级。', err);
+      logger.warn('警告：本地拉起测试 CDP 浏览器失败，部分 CDP 测试将使用 mock 降级。', err);
     }
   });
 
@@ -113,7 +114,7 @@ describe('BrowserAction 浏览器自动化工具集成测试', () => {
 
   test('CDP 直连模式（connectOverCDP）的测试', async () => {
     if (!remoteBrowser) {
-      console.log('跳过 CDP 直连测试，因为临时 CDP 浏览器启动失败');
+      logger.info('跳过 CDP 直连测试，因为临时 CDP 浏览器启动失败');
       return;
     }
 

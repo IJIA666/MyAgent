@@ -44,6 +44,9 @@ import { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js
 import { ToolRegistryPort } from '../../src/ports/driven/ToolRegistryPort.js';
 import { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
 import { AgentEvent } from '../../src/core/usecases/agent-loop.js';
+import type { VectorDbPort } from '../../src/ports/driven/VectorDbPort.js';
+import type { EmbeddingPort } from '../../src/ports/driven/EmbeddingPort.js';
+import { createMockAppConfig } from '../mock-factory.js';
 
 describe('Terminal Notification Loopback & Buffering Tests', () => {
   const mockRootDir = resolve('D:\\authorized\\path_loopback_test');
@@ -55,7 +58,10 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
 
   beforeEach(() => {
     // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
-    vi.spyOn(SessionManager.prototype as any, 'rebuildVectorDbIfEmpty').mockResolvedValue(undefined);
+    vi.spyOn(
+      SessionManager.prototype as unknown as { rebuildVectorDbIfEmpty: () => Promise<void> },
+      'rebuildVectorDbIfEmpty'
+    ).mockResolvedValue(undefined);
     // 将工作安全模式重置为 YOLO，防止测试由于审批挂起而阻塞
     setWorkMode('YOLO');
     // 设置默认 of promisified exec mock，防止在推理循环结束时物理执行 npm run lint / tsc --noEmit
@@ -191,12 +197,12 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
       clear: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
       count: vi.fn().mockResolvedValue(0)
-    } as any;
+    } as unknown as VectorDbPort;
 
     const mockEmbedding = {
       generateEmbedding: vi.fn().mockResolvedValue([]),
       generateEmbeddings: vi.fn().mockResolvedValue([])
-    } as any;
+    } as unknown as EmbeddingPort;
 
     const session = new SessionManager(
       mockLlmConfig,
@@ -205,7 +211,8 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
       mockToolRegistry,
       mockContextAdapter,
       mockVectorDb,
-      mockEmbedding
+      mockEmbedding,
+      createMockAppConfig()
     );
     const privateSession = session as unknown as {
       isGenerating: boolean;

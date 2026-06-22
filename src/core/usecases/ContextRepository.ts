@@ -30,8 +30,7 @@ export class ContextRepository {
       return;
     }
     try {
-      /* eslint-disable-next-line n/no-process-env */
-      const baseDir = this.workspacePath || process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+      const baseDir = this.workspacePath || this.context.appConfig?.workspace || process.cwd();
       // 获取最终会话文件保存的基础目录路径
       const dir = path.join(baseDir, '.myagent/sessions');
       await fs.mkdir(dir, { recursive: true });
@@ -55,8 +54,7 @@ export class ContextRepository {
    */
   public async loadState(targetSessionId: string): Promise<boolean> {
     try {
-      /* eslint-disable-next-line n/no-process-env */
-      const baseDir = this.workspacePath || process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+      const baseDir = this.workspacePath || this.context.appConfig?.workspace || process.cwd();
       // 定位目标反序列化会话 JSON 状态文件的物理路径
       const file = path.join(baseDir, '.myagent/sessions', `${targetSessionId}.json`);
       const data = await fs.readFile(file, 'utf-8');

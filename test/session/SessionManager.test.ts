@@ -11,6 +11,9 @@ import { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js
 import { ToolRegistryPort } from '../../src/ports/driven/ToolRegistryPort.js';
 import { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
 import { AgentEvent } from '../../src/core/usecases/agent-loop.js';
+import type { VectorDbPort } from '../../src/ports/driven/VectorDbPort.js';
+import type { EmbeddingPort } from '../../src/ports/driven/EmbeddingPort.js';
+import { createMockAppConfig } from '../mock-factory.js';
 
 // 使用 vi.hoisted 提前在加载阶段劫持并 mock 掉 child_process.exec 行为，隔离物理执行
 const { mockExecPromisified, execMockFunc } = vi.hoisted(() => {
@@ -50,16 +53,19 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     clear: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
     count: vi.fn().mockResolvedValue(0)
-  } as any;
+  } as unknown as VectorDbPort;
 
   const mockEmbedding = {
     generateEmbedding: vi.fn().mockResolvedValue([]),
     generateEmbeddings: vi.fn().mockResolvedValue([])
-  } as any;
+  } as unknown as EmbeddingPort;
 
   beforeEach(() => {
     // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
-    vi.spyOn(SessionManager.prototype as any, 'rebuildVectorDbIfEmpty').mockResolvedValue(undefined);
+    vi.spyOn(
+      SessionManager.prototype as unknown as { rebuildVectorDbIfEmpty: () => Promise<void> },
+      'rebuildVectorDbIfEmpty'
+    ).mockResolvedValue(undefined);
     mockExecPromisified.mockResolvedValue({ stdout: 'lint/tsc mock passed\n', stderr: '' });
     vi.clearAllMocks();
   });
@@ -92,7 +98,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockToolRegistry,
       mockContextAdapter,
       mockVectorDb,
-      mockEmbedding
+      mockEmbedding,
+      createMockAppConfig()
     );
 
     expect(session.getIsGenerating()).toBe(false);
@@ -153,7 +160,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockToolRegistry,
       mockContextAdapter,
       mockVectorDb,
-      mockEmbedding
+      mockEmbedding,
+      createMockAppConfig()
     );
 
     // 等待事件 complete
@@ -248,7 +256,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockToolRegistry,
       mockContextAdapter,
       mockVectorDb,
-      mockEmbedding
+      mockEmbedding,
+      createMockAppConfig()
     );
 
     await new Promise<void>((resolve, reject) => {
@@ -279,7 +288,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockToolRegistry,
       mockContextAdapter,
       mockVectorDb,
-      mockEmbedding
+      mockEmbedding,
+      createMockAppConfig()
     );
 
     const loop = session['agentLoop'] as unknown as VirtualAgentLoop;
@@ -349,7 +359,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockToolRegistry,
       mockContextAdapter,
       mockVectorDb,
-      mockEmbedding
+      mockEmbedding,
+      createMockAppConfig()
     );
 
     const loop = session['agentLoop'] as unknown as VirtualAgentLoop;

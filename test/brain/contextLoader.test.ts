@@ -6,6 +6,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { logger } from '../../src/utils/logger.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -32,7 +33,7 @@ describe('ContextLoader 规则熔断单元测试', () => {
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch (e) {
-      console.warn(`[contextLoader.test] 清理临时沙箱失败: ${e}`);
+      logger.warn(`[contextLoader.test] 清理临时沙箱失败: ${e}`);
     }
   });
 

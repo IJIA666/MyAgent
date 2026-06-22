@@ -39,9 +39,7 @@ export class LongTermMemoryPlugin implements Plugin {
     this.vectorDb = vectorDb;
     this.embedding = embedding;
     this.onSessionEndCallback = onSessionEndCallback;
-    /* eslint-disable-next-line n/no-process-env */
-    const baseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
-    this.memoryFilePath = memoryFilePath || path.resolve(baseDir, '.agent/MEMORY.md');
+    this.memoryFilePath = memoryFilePath || path.resolve(process.cwd(), '.agent/MEMORY.md');
   }
 
   public readonly hooks = {

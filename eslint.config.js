@@ -20,14 +20,12 @@ export default [
     },
   },
   {
-    // CLI 交互展现层、启动入口文件以及测试套件放开 console 限制以支持正常的终端 UI 渲染和 Banner 
+    // CLI 交互展现层、启动入口文件以及命令行运行/辅助测试脚本放开 console 限制以支持正常的 UI 渲染和 Banner
     files: [
       "src/adapters/input/**/*.ts",
       "src/index.ts",
-      "src/utils/logger.ts",
       "src/adapters/tools/tools/system/terminal-interactive.ts",
-      "test/**/*.ts",
-      "test/**/*.tsx"
+      "test/scripts/**/*.ts"
     ],
     rules: {
       "no-console": "off",
@@ -40,11 +38,4 @@ export default [
       "n/no-process-env": "off",
     },
   },
-  {
-    // 测试套件豁免 no-explicit-any 规则，以便于 mock 复杂的 Driven 接口
-    files: ["test/**/*.ts", "test/**/*.tsx"],
-    rules: {
-      "@typescript-eslint/no-explicit-any": "off",
-    },
-  }
 ];
