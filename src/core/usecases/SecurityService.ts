@@ -1,5 +1,6 @@
 import { resolve, dirname } from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 
 /**
  * 命令安全白名单及访问控制服务。
@@ -69,7 +70,8 @@ export class SecurityService {
       }
       writeFileSync(this.filePath, JSON.stringify(commands, null, 2), 'utf-8');
     } catch (err) {
-      console.error('保存命令安全白名单至磁盘失败:', err);
+      // 使用统一日志单例 logger 打印保存白名单失败的错误
+      logger.error('保存命令安全白名单至磁盘失败:', err);
     }
   }
 

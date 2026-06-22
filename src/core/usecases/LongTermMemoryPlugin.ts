@@ -6,6 +6,7 @@ import { HookEventName } from './plugin-types.js';
 import type { ChatMessage } from '../../ports/driven/LlmPort.js';
 import type { EmbeddingPort } from '../../ports/driven/EmbeddingPort.js';
 import type { VectorDbPort } from '../../ports/driven/VectorDbPort.js';
+import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 
 /**
  * 长期记忆自省与提炼插件。
@@ -83,7 +84,8 @@ export class LongTermMemoryPlugin implements Plugin {
         const searchResults = await this.vectorDb.search(queryVector, 5);
         validVectorResults = searchResults.filter(r => r.score >= 0.5);
       } catch (vectorError) {
-        console.error('[LongTermMemoryPlugin] 向量检索路失败:', vectorError);
+        // 使用统一日志单例 logger 打印向量检索失败错误
+        logger.error('[LongTermMemoryPlugin] 向量检索路失败:', vectorError);
       }
 
       let keywordResults: Array<{ id: string; text: string }> = [];
@@ -91,7 +93,8 @@ export class LongTermMemoryPlugin implements Plugin {
         const keywords = this.extractKeywords(queryText);
         keywordResults = await this.searchMemoryByKeywords(keywords);
       } catch (keywordError) {
-        console.error('[LongTermMemoryPlugin] 关键字检索路失败:', keywordError);
+        // 使用统一日志单例 logger 打印关键字检索失败错误
+        logger.error('[LongTermMemoryPlugin] 关键字检索路失败:', keywordError);
       }
 
       // 双路结果调用 RRF 排序重整，过滤保留排名前 5 的有效事实
@@ -113,7 +116,8 @@ export class LongTermMemoryPlugin implements Plugin {
         }
       }
     } catch (error) {
-      console.error('[LongTermMemoryPlugin] 双路召回或注入长期记忆失败:', error);
+      // 使用统一日志单例 logger 打印双路召回或注入长期记忆失败错误
+      logger.error('[LongTermMemoryPlugin] 双路召回或注入长期记忆失败:', error);
     }
   }
 
@@ -200,7 +204,8 @@ export class LongTermMemoryPlugin implements Plugin {
           return { id, text: r.text };
         });
     } catch (error) {
-      console.error('[LongTermMemoryPlugin] 物理关键字检索失败:', error);
+      // 使用统一日志单例 logger 打印物理关键字检索失败错误
+      logger.error('[LongTermMemoryPlugin] 物理关键字检索失败:', error);
       return [];
     }
   }
@@ -265,7 +270,8 @@ export class LongTermMemoryPlugin implements Plugin {
         try {
           await callback(history);
         } catch (error) {
-          console.error('[LongTermMemoryPlugin] 自省提炼回调触发失败:', error);
+          // 使用统一日志单例 logger 打印自省提炼回调触发失败错误
+          logger.error('[LongTermMemoryPlugin] 自省提炼回调触发失败:', error);
         }
       });
     }

@@ -2,6 +2,7 @@ import type { ChatMessage, LlmPort } from '../../ports/driven/LlmPort.js';
 import { SessionContext } from '../domain/context.js';
 import { buildCompactionSummaryPrompt, buildStaticFallbackSummary } from './prompts.js';
 import { ContextRepository } from './ContextRepository.js';
+import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 
 /**
  * 负责防范 Token 爆仓及上下文的截断与提炼。
@@ -50,7 +51,8 @@ export class CompactionService {
       await this.contextRepo.saveState();
       return true;
     } catch (e) {
-      console.warn(`[CompactionService] 上下文硬截断失败: ${e}`);
+      // 使用统一日志单例 logger 打印警告信息
+      logger.warn(`[CompactionService] 上下文硬截断失败: ${e}`);
       return false;
     }
   }
@@ -83,7 +85,8 @@ export class CompactionService {
           this.compactionFailures = 0;
         }
       } catch (e) {
-        console.warn(`[CompactionService] 异步提炼失败: ${e}`);
+        // 使用统一日志单例 logger 打印警告信息
+        logger.warn(`[CompactionService] 异步提炼失败: ${e}`);
         this.compactionFailures++;
         if (this.compactionFailures >= 3) {
           // 连续 3 次失败，使用兜底摘要

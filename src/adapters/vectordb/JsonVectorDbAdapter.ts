@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { VectorDbPort, VectorSearchResult } from '../../ports/driven/VectorDbPort.js';
+import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 
 interface DbEntry {
   id: string;
@@ -45,7 +46,8 @@ export class JsonVectorDbAdapter implements VectorDbPort {
         }
       }
     } catch (error) {
-      console.error('[JsonVectorDbAdapter] 加载本地向量数据库文件失败:', error);
+      // 使用统一日志单例 logger 打印加载本地向量数据库文件失败错误
+      logger.error('[JsonVectorDbAdapter] 加载本地向量数据库文件失败:', error);
       this.entries = [];
     } finally {
       this.isLoaded = true;
@@ -63,7 +65,8 @@ export class JsonVectorDbAdapter implements VectorDbPort {
       }
       await fs.promises.writeFile(this.dbFilePath, JSON.stringify(this.entries, null, 2), 'utf-8');
     } catch (error) {
-      console.error('[JsonVectorDbAdapter] 持久化本地向量数据库文件失败:', error);
+      // 使用统一日志单例 logger 打印持久化本地向量数据库文件失败错误
+      logger.error('[JsonVectorDbAdapter] 持久化本地向量数据库文件失败:', error);
     }
   }
 

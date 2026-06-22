@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * @file SessionManager.test.ts
  * @description 核心服务 SessionManager 与 AgentLoop 交互的单元测试。
@@ -76,7 +75,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       getModelName: () => 'MockModel',
       switchModel: vi.fn(),
       abort: vi.fn(),
-      streamChat: async function* () {}
+      streamChat: async function* () { }
     } as unknown as LlmPort;
     const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
     const mockToolRegistry = {
@@ -118,8 +117,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = {
       getModelName: () => 'MockModel',
-      switchModel: () => {},
-      abort: () => {},
+      switchModel: () => { },
+      abort: () => { },
       streamChat: async function* () {
         yield { type: 'thinking', content: 'thinking...' };
         yield { type: 'content', content: 'hello agent' };
@@ -142,7 +141,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       getTools: async () => [],
       callTool: async () => ({}),
       getTool: () => undefined,
-      close: async () => {}
+      close: async () => { }
     } as unknown as ToolRegistryPort;
 
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
@@ -179,8 +178,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     let streamCalledTimes = 0;
     const mockDriver = {
       getModelName: () => 'MockModel',
-      switchModel: () => {},
-      abort: () => {},
+      switchModel: () => { },
+      abort: () => { },
       streamChat: async function* () {
         streamCalledTimes++;
         if (streamCalledTimes === 1) {
@@ -237,7 +236,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
         description: 'A test dummy tool',
         execute: async () => 'Mocked Tool Result Value'
       }),
-      close: async () => {}
+      close: async () => { }
     } as unknown as ToolRegistryPort;
 
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
@@ -268,7 +267,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
   it('应该能够运行缓存归因校验处理器 checkCacheAndCalibrate', () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
-    const mockDriver = { getModelName: () => 'MockModel', switchModel: () => {}, abort: () => {} } as unknown as LlmPort;
+    const mockDriver = { getModelName: () => 'MockModel', switchModel: () => { }, abort: () => { } } as unknown as LlmPort;
     const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
     const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}) } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
@@ -284,7 +283,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     );
 
     const loop = session['agentLoop'] as unknown as VirtualAgentLoop;
-    
+
     const gen1 = loop.checkCacheAndCalibrate({
       prompt_tokens: 100,
       completion_tokens: 50,
@@ -324,7 +323,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     loop.lastCacheReadTokens = 5000;
     loop.lastInteractionTime = Date.now() - 10 * 60 * 1000; // 10分钟前
     loop.pendingChanges = [];
-    
+
     const gen4 = loop.checkCacheAndCalibrate({
       prompt_tokens: 1000,
       completion_tokens: 50,
@@ -338,7 +337,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
   it('应该能够运行后置质量强校验 runPostRunCheck', async () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
-    const mockDriver = { getModelName: () => 'MockModel', switchModel: () => {}, abort: () => {} } as unknown as LlmPort;
+    const mockDriver = { getModelName: () => 'MockModel', switchModel: () => { }, abort: () => { } } as unknown as LlmPort;
     const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
     const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}) } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;

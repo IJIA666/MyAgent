@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AppConfig, LlmConfig } from '../../config/index.js';
+import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 import { AgentTracer } from '../domain/tracer.js';
 import { SessionContext, ContextTokenUsage } from '../domain/context.js';
 import type { ChatMessage, LlmPort } from '../../ports/driven/LlmPort.js';
@@ -169,7 +170,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
 
     // 异步尝试重建向量数据库，仅当库为空且物理 MEMORY.md 存在时生效
     this.rebuildVectorDbIfEmpty().catch((error) => {
-      console.error('[SessionManager] 异步重建向量库失败:', error);
+      // 使用统一日志单例 logger 打印异步重建向量库失败错误
+      logger.error('[SessionManager] 异步重建向量库失败:', error);
     });
   }
 
@@ -284,7 +286,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.driver.abort();
     if (this.taskAborter) {
       this.taskAborter(this.context.getSessionId()).catch((err: unknown) => {
-        console.error('Failed to abort session tasks on session abort:', err);
+        // 使用统一日志单例 logger 打印任务中断失败错误
+        logger.error('Failed to abort session tasks on session abort:', err);
       });
     }
   }
@@ -352,7 +355,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
 
     // 2. 异步调起内部推理并广播事件
     this.runInternalGeneration(transientSkillContent).catch((err: unknown) => {
-      console.error('[SessionManager] handleUserInput 推理执行失败:', err);
+      // 使用统一日志单例 logger 打印用户输入推理失败错误
+      logger.error('[SessionManager] handleUserInput 推理执行失败:', err);
     });
   }
 
@@ -404,7 +408,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
           this.autoWakeupCount++;
           this.isGenerating = true; // 同步加锁
           this.runInternalGeneration().catch((err: unknown) => {
-            console.error('[SessionManager] 自唤醒级联推理失败:', err);
+            // 使用统一日志单例 logger 打印自唤醒推理失败错误
+            logger.error('[SessionManager] 自唤醒级联推理失败:', err);
           });
         }
       });
@@ -435,7 +440,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.autoWakeupCount++;
     // 异步调起后台任务更新研判
     this.runInternalGeneration().catch((err: unknown) => {
-      console.error('[SessionManager] 自动唤醒推理执行失败:', err);
+      // 使用统一日志单例 logger 打印自动唤醒推理执行失败错误
+      logger.error('[SessionManager] 自动唤醒推理执行失败:', err);
     });
   }
 
@@ -467,7 +473,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
         await this.syncNewMemoryToVectorDb(text);
       })
       .catch((error) => {
-        console.error('[SessionManager] 写入长期记忆文件发生错误:', error);
+        // 使用统一日志单例 logger 打印写入长期记忆文件发生错误
+        logger.error('[SessionManager] 写入长期记忆文件发生错误:', error);
       });
     return this.writeQueue;
   }
@@ -530,7 +537,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
         }
       }
     } catch (error) {
-      console.error('[SessionManager] 长期记忆增量同步向量库失败:', error);
+      // 使用统一日志单例 logger 打印长期记忆增量同步向量库失败错误
+      logger.error('[SessionManager] 长期记忆增量同步向量库失败:', error);
     }
   }
 
@@ -545,7 +553,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
           const fileContent = await fs.promises.readFile(this.memoryFilePath, 'utf-8');
           const chunks = this.chunkMemoryText(fileContent);
           if (chunks.length > 0) {
-            console.log(`[SessionManager] 检测到向量库为空，开始从 MEMORY.md 重建，共 ${chunks.length} 个切片...`);
+            // 使用统一日志单例 logger 打印向量库重建开始信息
+            logger.info(`[SessionManager] 检测到向量库为空，开始从 MEMORY.md 重建，共 ${chunks.length} 个切片...`);
             // 分批调用避免超过 DashScope batch size 上限
             const embeddings = await this.batchEmbeddings(chunks);
             for (let i = 0; i < chunks.length; i++) {
@@ -556,12 +565,14 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
                 await this.vectorDb.add(id, chunk, vector);
               }
             }
-            console.log('[SessionManager] 长期记忆向量库重建完成。');
+            // 使用统一日志单例 logger 打印长期记忆向量库重建完成信息
+            logger.info('[SessionManager] 长期记忆向量库重建完成。');
           }
         }
       }
     } catch (error) {
-      console.error('[SessionManager] 自动重建向量数据库失败:', error);
+      // 使用统一日志单例 logger 打印自动重建向量数据库失败错误
+      logger.error('[SessionManager] 自动重建向量数据库失败:', error);
     }
   }
 
@@ -574,7 +585,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     try {
       await this.runMemoryRefinementSubAgent(history);
     } catch (error) {
-      console.error('[SessionManager] 子智能体长期记忆自省自损失败:', error);
+      // 使用统一日志单例 logger 打印子智能体长期记忆自省失败错误
+      logger.error('[SessionManager] 子智能体长期记忆自省自损失败:', error);
     }
   }
 

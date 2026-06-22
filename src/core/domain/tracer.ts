@@ -1,5 +1,6 @@
 import { resolve } from 'path';
 import { existsSync, mkdirSync, appendFileSync } from 'fs';
+import { logger } from '../../utils/logger.js';
 import type { ChatMessage } from '../../ports/driven/LlmPort.js';
 import type { ApiUsage } from '../../ports/driven/TokenEstimatorPort.js';
 
@@ -80,7 +81,7 @@ export class AgentTracer {
       appendFileSync(this.traceFile, line, 'utf-8');
     } catch (e) {
       // 容错处理：确保任何情况下的落盘失败绝不阻断核心会话流
-      console.error('\n[Tracer 故障] 无法写入交互日志:', e);
+      logger.error('\n[Tracer 故障] 无法写入交互日志:', e); // 替换为统一日志单例输出
     }
   }
 
@@ -95,7 +96,7 @@ export class AgentTracer {
       const line = JSON.stringify(record) + '\n';
       appendFileSync(auditFile, line, 'utf-8');
     } catch (e) {
-      console.error('\n[Tracer 故障] 无法写入插件审计日志:', e);
+      logger.error('\n[Tracer 故障] 无法写入插件审计日志:', e); // 替换为统一日志单例输出
     }
   }
 }

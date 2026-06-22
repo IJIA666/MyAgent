@@ -1,3 +1,5 @@
+import { logger } from '../../utils/logger.js';
+
 export interface ApprovalDecision {
   /** 决策动作：once (单次放行), always (始终放行并存入白名单), deny (拒绝执行) */
   action: 'once' | 'always' | 'deny';
@@ -90,10 +92,10 @@ export class ApprovalService {
       try {
         const res = this.onNeedApprovalHandler(id, toolCall, allowedPrefix, message);
         if (res instanceof Promise) {
-          res.catch((err) => console.error('Approval handler async error:', err));
+          res.catch((err) => logger.error('Approval handler async error:', err)); // 替换为统一日志单例输出
         }
       } catch (err) {
-        console.error('Approval handler sync error:', err);
+        logger.error('Approval handler sync error:', err); // 替换为统一日志单例输出
       }
     }
 

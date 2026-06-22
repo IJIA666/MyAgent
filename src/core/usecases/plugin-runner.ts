@@ -12,6 +12,7 @@ import type { Patch } from 'immer';
 import type { ChatMessage } from '../../ports/driven/LlmPort.js';
 import type { HookContext, HookEventName, HookMiddleware, LlmRequest } from './plugin-types.js';
 import type { SessionContext } from '../domain/context.js';
+import { logger, compressPatch } from '../../utils/logger.js';
 
 // 全局禁用 Immer 的自动冻结机制，以适配 SessionContext 底层的面向对象可变状态（Mutable State）架构设计，防止外部操作被冻结的会话消息历史或工具属性时崩溃
 setAutoFreeze(false);
@@ -155,7 +156,7 @@ export async function runHookPipeline(
     }) as BaseState;
   } catch (error) {
     // 发生异常时，直接丢弃该 Draft，坚决不提交，防止脏写
-    console.error(`[Plugin Error] Hook ${eventName} failed:`, error);
+    logger.error(`[Plugin Error] Hook ${eventName} failed:`, error);
     throw error;
   } finally {
     // 强制还原并释放并发忙状态锁，杜绝死锁风险
@@ -177,8 +178,11 @@ export async function runHookPipeline(
 
   // 5. 可观测性追踪：如果产生上下文改动，输出差异 Patch 审计日志
   if (patches.length > 0) {
+    // 对 patches 执行 Map 压缩摘要，避免大文本（ 如 system prompt ）撑爆日志
+    const simplifiedPatches = patches.map(compressPatch);
+
     // 将变更捕获作为 Trace 日志写入，提高黑盒插件环境下的高度可调试性
-    console.log(`[Plugin Trace] Hook ${eventName} context modified:`, JSON.stringify(patches, null, 2));
+    logger.debug(`[Plugin Trace] Hook ${eventName} context modified: ${JSON.stringify(simplifiedPatches, null, 2)}`);
     sessionContext.addPluginPatches(eventName, patches);
   }
 

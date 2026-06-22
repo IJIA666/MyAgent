@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, readdirSync, lstatSync, watch, statSync } from 'fs';
 import { join } from 'path';
 import matter from 'gray-matter';
+import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 
 // 开发环境硬编码路径，用于获取各项规则和技能
 const DEV_GLOBAL_RULES_PATH = 'D:\\Projects\\MyAgent\\.agent\\global_rules.md';
@@ -36,7 +37,8 @@ function readAndLimitFile(filePath: string): string {
     }
     return rawContent;
   } catch (e) {
-    console.warn(`[ContextLoader] 安全读取规则文件失败: ${filePath}, 错误: ${e}`);
+    // 使用统一日志单例 logger 打印安全读取规则文件失败的警告
+    logger.warn(`[ContextLoader] 安全读取规则文件失败: ${filePath}, 错误: ${e}`);
     return '';
   }
 }
@@ -91,7 +93,8 @@ function parseSkillFrontmatter(content: string): { name: string, description: st
       body: parsed.content.trim()
     };
   } catch (e) {
-    console.warn(`[ContextLoader] gray-matter 解析失败: ${e}`);
+    // 使用统一日志单例 logger 打印 gray-matter 解析失败的警告
+    logger.warn(`[ContextLoader] gray-matter 解析失败: ${e}`);
     return { name: 'unknown', description: '', body: content.trim() };
   }
 }
@@ -126,13 +129,13 @@ function findSkillFiles(dir: string, fileList: string[] = [], currentDepth: numb
           fileList.push(fullPath);
         }
       } catch (err) {
-        // 捕获可能产生的权限异常，并打印调试日志，防止后续排查时无迹可寻
-        console.warn(`[ContextLoader] 访问文件状态失败 (可能由于权限问题跳过), 路径: ${fullPath}`, err);
+        // 使用统一日志单例 logger 打印访问文件状态失败的警告
+        logger.warn(`[ContextLoader] 访问文件状态失败 (可能由于权限问题跳过), 路径: ${fullPath}`, err);
       }
     }
   } catch (err) {
-    // 捕获目录读取层面的异常并打印日志，防止整个扫描流程崩溃
-    console.warn(`[ContextLoader] 遍历技能目录失败, 路径: ${dir}`, err);
+    // 使用统一日志单例 logger 打印遍历技能目录失败的警告
+    logger.warn(`[ContextLoader] 遍历技能目录失败, 路径: ${dir}`, err);
   }
   return fileList;
 }
@@ -158,7 +161,8 @@ export function refreshSkillsCache(): void {
         });
       }
     } catch (e) {
-      console.warn(`[ContextLoader] 缓存技能文件失败: ${file}, 错误: ${e}`);
+      // 使用统一日志单例 logger 打印缓存技能文件失败的警告
+      logger.warn(`[ContextLoader] 缓存技能文件失败: ${file}, 错误: ${e}`);
     }
   }
 }
@@ -182,7 +186,8 @@ export function initSkillsWatcher(): void {
       isWatching = true;
     }
   } catch (e) {
-    console.warn(`[ContextLoader] 技能监听初始化失败: ${e}`);
+    // 使用统一日志单例 logger 打印技能监听初始化失败的警告
+    logger.warn(`[ContextLoader] 技能监听初始化失败: ${e}`);
   }
 }
 
@@ -217,7 +222,8 @@ export function loadSkillContent(name: string): string | null {
       return parsed.body;
     }
   } catch (e) {
-    console.warn(`[ContextLoader] 按需读取技能全文失败: ${name}, 错误: ${e}`);
+    // 使用统一日志单例 logger 打印按需读取技能全文失败的警告
+    logger.warn(`[ContextLoader] 按需读取技能全文失败: ${name}, 错误: ${e}`);
   }
   return null;
 }

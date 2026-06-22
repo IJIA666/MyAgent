@@ -14,6 +14,7 @@ import { config as dotenvConfig } from 'dotenv';
 import { AppConfig, McpConfig, WorkMode } from './types.js';
 import { getModelConfig } from './models.js';
 import { interpolateEnvVars } from './env.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 检查配置文件是否存在，缺失时从 .example 模板自动复制。
@@ -30,9 +31,9 @@ export function ensureConfigFiles(): void {
     const templatePath = resolve(template);
 
     if (!existsSync(targetPath) && existsSync(templatePath)) {
-      console.log(`[配置] 缺少 ${label}，正在从模板复制生成。`);
+      logger.info(`[配置] 缺少 ${label}，正在从模板复制生成。`); // 替换为统一日志单例输出
       copyFileSync(templatePath, targetPath);
-      console.log(`[配置] ${label} 创建完毕，请按需调整内部参数。`);
+      logger.info(`[配置] ${label} 创建完毕，请按需调整内部参数。`); // 替换为统一日志单例输出
     }
   }
 }
@@ -67,7 +68,7 @@ export function loadMcpConfig(env: Record<string, string | undefined> = process.
     return interpolated.mcpServers ? interpolated : { mcpServers: {} };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[配置] 解析 mcp_config.json 失败: ${msg}`);
+    logger.error(`[配置] 解析 mcp_config.json 失败: ${msg}`); // 替换为统一日志单例输出
     return { mcpServers: {} };
   }
 }

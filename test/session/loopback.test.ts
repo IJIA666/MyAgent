@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * @file 异步后台任务通知与大模型唤醒机制集成测试。
  * 核心职责：
@@ -155,8 +154,8 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
 
     const mockDriver = {
       getModelName: () => 'MockModel',
-      switchModel: () => {},
-      abort: () => {},
+      switchModel: () => { },
+      abort: () => { },
       streamChat: async function* () {
         yield { type: 'thinking', content: 'thinking...' };
         yield { type: 'content', content: 'response' };
@@ -179,7 +178,7 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
       getTools: async () => [],
       callTool: async () => ({}),
       getTool: () => undefined,
-      close: async () => {}
+      close: async () => { }
     } as unknown as ToolRegistryPort;
 
     const mockContextAdapter = {
@@ -245,7 +244,7 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
     // 3. 【第二阶段】忙碌状态收到事件 -> 积压并级联唤醒
     // 手动将 isGenerating 设为 true 模拟推理进行中
     privateSession.isGenerating = true;
-    
+
     // 触发事件
     privateSession.__testEmitAsyncEvent({ type: 'completed', taskId: 'task-2' });
 
@@ -268,10 +267,10 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
     });
 
     await privateSession.__testRunInternalGeneration();
-    
+
     // 等待自唤醒异步推理跑完
     await completePromise2;
-    
+
     // 验证自动唤醒次数增加到 2
     expect(privateSession.autoWakeupCount).toBe(2);
 

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * @file 智能体生命周期 Hook 插件系统单元测试。
  * 核心职责：
@@ -390,8 +389,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
       let streamCalledTimes = 0;
       const mockDriver = {
         getModelName: () => 'MockRefineModel',
-        switchModel: () => {},
-        abort: () => {},
+        switchModel: () => { },
+        abort: () => { },
         streamChat: async function* () {
           streamCalledTimes++;
           if (streamCalledTimes === 1) {
@@ -435,7 +434,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         getTools: async () => [],
         callTool: async () => ({}),
         getTool: () => undefined,
-        close: async () => {}
+        close: async () => { }
       } as unknown as ToolRegistryPort;
       const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
@@ -562,7 +561,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         getTools: async () => [],
         callTool: async () => ({}),
         getTool: () => undefined,
-        close: async () => {}
+        close: async () => { }
       } as unknown as ToolRegistryPort;
       const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
@@ -671,13 +670,13 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
       expect(mockEmbedding.generateEmbedding).toHaveBeenCalled();
       expect(mockVectorDb.search).toHaveBeenCalled();
-      
+
       const content = llmRequest.messages[0].content;
       expect(content).toContain('<long-term-memory>');
       expect(content).toContain('- **技术偏好**：用户非常喜欢使用 TypeScript 语言。');
       expect(content).toContain('- **SessionManager**：会话管理器事实。');
       expect(content).not.toContain('- **OtherThing**：不相干事实。');
-      
+
       expect(next).toHaveBeenCalled();
     });
 

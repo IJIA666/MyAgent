@@ -13,10 +13,38 @@ export default [
       n: eslintPluginN,
     },
     rules: {
-      // 因为是 CLI 应用，允许使用 console
-      "no-console": "off",
+      // 默认全局开启 no-console 诊断，防止滥用调试打印
+      "no-console": "error",
       // 物理阻断业务代码直接读取全局 process.env 变量，强制统一走配置加载与依赖注入层
       "n/no-process-env": "error",
+    },
+  },
+  {
+    // CLI 交互展现层、启动入口文件以及测试套件放开 console 限制以支持正常的终端 UI 渲染和 Banner 
+    files: [
+      "src/adapters/input/**/*.ts",
+      "src/index.ts",
+      "src/utils/logger.ts",
+      "src/adapters/tools/tools/system/terminal-interactive.ts",
+      "test/**/*.ts",
+      "test/**/*.tsx"
+    ],
+    rules: {
+      "no-console": "off",
+    },
+  },
+  {
+    // 日志系统底层工具类允许直接读取 process.env 环境变量
+    files: ["src/utils/logger.ts"],
+    rules: {
+      "n/no-process-env": "off",
+    },
+  },
+  {
+    // 测试套件豁免 no-explicit-any 规则，以便于 mock 复杂的 Driven 接口
+    files: ["test/**/*.ts", "test/**/*.tsx"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
     },
   }
 ];
