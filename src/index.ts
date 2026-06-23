@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { SessionManager } from './core/usecases/session.js';
 import { McpToolManager, ToolRegistry, initWorkspace } from './adapters/tools/index.js';
 import { loadConfig, ensureConfigFiles } from './config/index.js';
@@ -50,7 +51,10 @@ async function main() {
     const tokenEstimator = new TiktokenEstimator();
     const contextAdapter = new DefaultContextAdapter(tokenEstimator);
     const embeddingAdapter = new OpenAiEmbeddingAdapter(appConfig.llm);
-    const vectorDbAdapter = new LocalVectorDbAdapter();
+    const vectorDbAdapter = new LocalVectorDbAdapter(
+      path.resolve(appConfig.workspace, '.agent/lancedb'),
+      path.resolve(appConfig.workspace, '.agent/vectordb.json')
+    );
     session = new SessionManager(
       appConfig.llm,
       llmAdapter,
@@ -84,9 +88,6 @@ const handleExitSignal = async () => {
 
 process.on('SIGINT', handleExitSignal);
 process.on('SIGTERM', handleExitSignal);
-
-// 同步 exit 回调仅执行同步兜底
-process.on('exit', () => {});
 
 // 启动主程序
 main().catch((err) => {

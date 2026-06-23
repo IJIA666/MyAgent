@@ -70,7 +70,6 @@ export class SecurityService {
       }
       writeFileSync(this.filePath, JSON.stringify(commands, null, 2), 'utf-8');
     } catch (err) {
-      // 使用统一日志单例 logger 打印保存白名单失败的错误
       logger.error('保存命令安全白名单至磁盘失败:', err);
     }
   }

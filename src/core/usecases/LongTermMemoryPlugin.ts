@@ -82,7 +82,6 @@ export class LongTermMemoryPlugin implements Plugin {
         const searchResults = await this.vectorDb.search(queryVector, 5);
         validVectorResults = searchResults.filter(r => r.score >= 0.5);
       } catch (vectorError) {
-        // 使用统一日志单例 logger 打印向量检索失败错误
         logger.error('[LongTermMemoryPlugin] 向量检索路失败:', vectorError);
       }
 
@@ -91,7 +90,6 @@ export class LongTermMemoryPlugin implements Plugin {
         const keywords = this.extractKeywords(queryText);
         keywordResults = await this.searchMemoryByKeywords(keywords);
       } catch (keywordError) {
-        // 使用统一日志单例 logger 打印关键字检索失败错误
         logger.error('[LongTermMemoryPlugin] 关键字检索路失败:', keywordError);
       }
 
@@ -114,7 +112,6 @@ export class LongTermMemoryPlugin implements Plugin {
         }
       }
     } catch (error) {
-      // 使用统一日志单例 logger 打印双路召回或注入长期记忆失败错误
       logger.error('[LongTermMemoryPlugin] 双路召回或注入长期记忆失败:', error);
     }
   }
@@ -202,7 +199,6 @@ export class LongTermMemoryPlugin implements Plugin {
           return { id, text: r.text };
         });
     } catch (error) {
-      // 使用统一日志单例 logger 打印物理关键字检索失败错误
       logger.error('[LongTermMemoryPlugin] 物理关键字检索失败:', error);
       return [];
     }
@@ -268,7 +264,6 @@ export class LongTermMemoryPlugin implements Plugin {
         try {
           await callback(history);
         } catch (error) {
-          // 使用统一日志单例 logger 打印自省提炼回调触发失败错误
           logger.error('[LongTermMemoryPlugin] 自省提炼回调触发失败:', error);
         }
       });

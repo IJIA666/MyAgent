@@ -127,7 +127,6 @@ export function saveAllowedCommands(commands: string[]): void {
     }
     writeFileSync(path, JSON.stringify(commands, null, 2), 'utf-8');
   } catch (err) {
-    // 使用统一日志单例 logger 打印保存允许命令白名单失败的错误
     logger.error(`保存允许的命令白名单失败:`, err);
   }
 }
@@ -184,7 +183,6 @@ export function saveWorkMode(mode: WorkMode): void {
     parsed.workMode = mode;
     writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
   } catch (e) {
-    // 使用统一日志单例 logger 打印保存工作模式失败的错误
     logger.error(`保存工作模式失败:`, e);
   }
 }

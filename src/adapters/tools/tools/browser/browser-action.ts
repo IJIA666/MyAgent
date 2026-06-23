@@ -40,7 +40,6 @@ export class BrowserSession {
     };
 
     const sigHandler = async (signal: string) => {
-      // 使用统一日志单例 logger 打印释放浏览器上下文信息
       logger.info(`[BrowserSession] 接收到信号 ${signal}，正在释放所有浏览器上下文并退出进程...`);
       await cleanup();
       process.exit(0);
@@ -175,7 +174,6 @@ export class BrowserSession {
           rmSync(userDataDir, { recursive: true, force: true });
         }
       } catch (err) {
-        // 使用统一日志单例 logger 打印清理 Profile 文件夹失败错误
         logger.error(`[BrowserSession] 清理租户 [${tenantId}] 的 Profile 文件夹失败:`, err);
       }
     }
@@ -743,7 +741,6 @@ export class BrowserVisionTool implements NativeTool {
  */
 export function waitUserIntervention(message: string): Promise<void> {
   return new Promise<void>((resolve) => {
-    // 使用统一日志单例 logger 打印人机风控协作黄色高亮提示
     logger.info(`\n\x1b[33m⚠️  [人机风控协作] ${message}\x1b[0m`);
 
     // 建立临时的独立 Readline 接口实例
@@ -761,7 +758,6 @@ export function waitUserIntervention(message: string): Promise<void> {
         process.stdin.pause();
       }
 
-      // 使用统一日志单例 logger 打印状态同步完成信息
       logger.info('\x1b[32m✔ 状态同步完成，智能体继续执行...\x1b[0m\n');
       resolve();
     });
@@ -824,7 +820,6 @@ export class BrowserEnsureLoginTool implements NativeTool {
     if (isHeadless && !cdpUrl) {
       // 备份当前 URL
       const currentUrl = page.url();
-      // 使用统一日志单例 logger 打印有头浏览器重建启动信息
       logger.info('\n[人机协作] 正在以有头窗口重新调起浏览器，请稍候...');
       
       // 必须显式关闭当前无头实例，以释放物理锁并清理旧缓存，确保下一次 getPage 正常触发 launch 新实例

@@ -22,11 +22,10 @@ export class JsonVectorDbAdapter implements VectorDbPort {
   /**
    * 构造函数。
    *
-   * @param dbFilePath - 可选。向量数据库存储 JSON 文件路径，默认指向项目 .agent/vectordb.json
+   * @param dbFilePath - 可选。向量数据库存储 JSON 文件路径，默认指向当前工作目录下的 .agent/vectordb.json
    */
   constructor(dbFilePath?: string) {
-    /* eslint-disable-next-line n/no-process-env */
-    const baseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+    const baseDir = process.cwd();
     this.dbFilePath = dbFilePath || path.resolve(baseDir, '.agent/vectordb.json');
   }
 
@@ -46,7 +45,6 @@ export class JsonVectorDbAdapter implements VectorDbPort {
         }
       }
     } catch (error) {
-      // 使用统一日志单例 logger 打印加载本地向量数据库文件失败错误
       logger.error('[JsonVectorDbAdapter] 加载本地向量数据库文件失败:', error);
       this.entries = [];
     } finally {
@@ -65,7 +63,6 @@ export class JsonVectorDbAdapter implements VectorDbPort {
       }
       await fs.promises.writeFile(this.dbFilePath, JSON.stringify(this.entries, null, 2), 'utf-8');
     } catch (error) {
-      // 使用统一日志单例 logger 打印持久化本地向量数据库文件失败错误
       logger.error('[JsonVectorDbAdapter] 持久化本地向量数据库文件失败:', error);
     }
   }

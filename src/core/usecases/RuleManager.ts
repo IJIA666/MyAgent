@@ -53,7 +53,6 @@ export class RuleManager {
         this.cachedGlobalRules = '';
       }
     } catch (e) {
-      // 使用统一日志单例 logger 打印读取全局规则失败的警告
       logger.warn(`[RuleManager] 读取全局规则失败: ${e}`);
       this.cachedGlobalRules = '';
     }
@@ -63,13 +62,11 @@ export class RuleManager {
       const localRulesPath = join(process.cwd(), '.myagent.md');
       if (existsSync(localRulesPath)) {
         this.cachedLocalRules = readFileSync(localRulesPath, 'utf-8').trim();
-        // 使用统一日志单例 logger 打印局部规则文件锁定信息
         logger.info(`[RuleManager] 已探测并锁定局部规则文件: ${localRulesPath}`);
       } else {
         this.cachedLocalRules = '';
       }
     } catch (e) {
-      // 使用统一日志单例 logger 打印探测局部规则文件失败的警告
       logger.warn(`[RuleManager] 探测局部规则文件失败: ${e}`);
       this.cachedLocalRules = '';
     }
@@ -80,7 +77,6 @@ export class RuleManager {
    * 会在下一轮交互时强制生效最新的规则内容。
    */
   public reloadRules(): void {
-    // 使用统一日志单例 logger 打印重载规则文件信息
     logger.info('[RuleManager] 正在重载规则文件...');
     this.loadRulesToCache();
     this.context.updateSystemPrompt(this.cachedGlobalRules || undefined);

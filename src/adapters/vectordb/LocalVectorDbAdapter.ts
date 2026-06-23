@@ -42,12 +42,11 @@ export class LocalVectorDbAdapter implements VectorDbPort {
   /**
    * 构造函数。
    *
-   * @param dbDir - 可选。LanceDB 的本地物理数据库文件夹路径，默认指向 .agent/lancedb
-   * @param jsonDbPath - 可选。降级使用的 JSON 向量文件路径，默认指向 .agent/vectordb.json
+   * @param dbDir - 可选。LanceDB 的本地物理数据库文件夹路径，默认指向当前工作目录下的 .agent/lancedb
+   * @param jsonDbPath - 可选。降级使用的 JSON 向量文件路径，默认指向当前工作目录下的 .agent/vectordb.json
    */
   constructor(dbDir?: string, jsonDbPath?: string) {
-    /* eslint-disable-next-line n/no-process-env */
-    const baseDir = process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
+    const baseDir = process.cwd();
     this.dbDir = dbDir || path.resolve(baseDir, '.agent/lancedb');
     this.jsonDbPath = jsonDbPath || path.resolve(baseDir, '.agent/vectordb.json');
   }
@@ -93,11 +92,9 @@ export class LocalVectorDbAdapter implements VectorDbPort {
         table = null;
       }
 
-      // 使用统一日志单例 logger 打印成功加载信息
       logger.info('[LocalVectorDbAdapter] 成功加载并建立本地 LanceDB 向量存储服务。');
       this.delegate = new LanceDbImpl(db, table);
     } catch (error) {
-      // 使用统一日志单例 logger 打印加载失败警告
       logger.warn('[LocalVectorDbAdapter] 动态加载 LanceDB 失败，自动降级为内置 JsonVectorDbAdapter。失败原因:', error);
       this.delegate = new JsonVectorDbAdapter(this.jsonDbPath);
     }

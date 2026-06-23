@@ -51,7 +51,6 @@ export class CompactionService {
       await this.contextRepo.saveState();
       return true;
     } catch (e) {
-      // 使用统一日志单例 logger 打印警告信息
       logger.warn(`[CompactionService] 上下文硬截断失败: ${e}`);
       return false;
     }
@@ -85,7 +84,6 @@ export class CompactionService {
           this.compactionFailures = 0;
         }
       } catch (e) {
-        // 使用统一日志单例 logger 打印警告信息
         logger.warn(`[CompactionService] 异步提炼失败: ${e}`);
         this.compactionFailures++;
         if (this.compactionFailures >= 3) {

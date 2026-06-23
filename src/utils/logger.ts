@@ -10,64 +10,39 @@ import { getRotatingFileSink } from "@logtape/file";
 
 const rawLogger = getLogger([]);
 
-/**
- * 根日志记录器包装代理，用于系统内部的诊断信息输出。
- * 兼容处理各种日志级别，并允许第二个参数传入 unknown 以防 catch (e) 产生的类型报错。
- */
+/** 将 unknown 类型的第二参数适配为 LogTape 兼容的调用形式 */
+function callRawLogger(
+  method: (msg: string, props?: Record<string, unknown>) => void,
+  message: string,
+  propertiesOrError?: unknown
+): void {
+  if (propertiesOrError instanceof Error) {
+    method(message, { error: propertiesOrError.message, stack: propertiesOrError.stack });
+  } else if (propertiesOrError && typeof propertiesOrError === "object") {
+    method(message, propertiesOrError as Record<string, unknown>);
+  } else {
+    method(message);
+  }
+}
+
 export const logger = {
   debug(message: string, propertiesOrError?: unknown): void {
-    if (propertiesOrError instanceof Error) {
-      rawLogger.debug(message, { error: propertiesOrError.message, stack: propertiesOrError.stack });
-    } else if (propertiesOrError && typeof propertiesOrError === "object") {
-      rawLogger.debug(message, propertiesOrError as Record<string, unknown>);
-    } else {
-      rawLogger.debug(message);
-    }
+    callRawLogger(rawLogger.debug.bind(rawLogger), message, propertiesOrError);
   },
   info(message: string, propertiesOrError?: unknown): void {
-    if (propertiesOrError instanceof Error) {
-      rawLogger.info(message, { error: propertiesOrError.message, stack: propertiesOrError.stack });
-    } else if (propertiesOrError && typeof propertiesOrError === "object") {
-      rawLogger.info(message, propertiesOrError as Record<string, unknown>);
-    } else {
-      rawLogger.info(message);
-    }
+    callRawLogger(rawLogger.info.bind(rawLogger), message, propertiesOrError);
   },
   warn(message: string, propertiesOrError?: unknown): void {
-    if (propertiesOrError instanceof Error) {
-      rawLogger.warn(message, { error: propertiesOrError.message, stack: propertiesOrError.stack });
-    } else if (propertiesOrError && typeof propertiesOrError === "object") {
-      rawLogger.warn(message, propertiesOrError as Record<string, unknown>);
-    } else {
-      rawLogger.warn(message);
-    }
+    callRawLogger(rawLogger.warn.bind(rawLogger), message, propertiesOrError);
   },
   warning(message: string, propertiesOrError?: unknown): void {
-    if (propertiesOrError instanceof Error) {
-      rawLogger.warning(message, { error: propertiesOrError.message, stack: propertiesOrError.stack });
-    } else if (propertiesOrError && typeof propertiesOrError === "object") {
-      rawLogger.warning(message, propertiesOrError as Record<string, unknown>);
-    } else {
-      rawLogger.warning(message);
-    }
+    callRawLogger(rawLogger.warning.bind(rawLogger), message, propertiesOrError);
   },
   error(message: string, propertiesOrError?: unknown): void {
-    if (propertiesOrError instanceof Error) {
-      rawLogger.error(message, { error: propertiesOrError.message, stack: propertiesOrError.stack });
-    } else if (propertiesOrError && typeof propertiesOrError === "object") {
-      rawLogger.error(message, propertiesOrError as Record<string, unknown>);
-    } else {
-      rawLogger.error(message);
-    }
+    callRawLogger(rawLogger.error.bind(rawLogger), message, propertiesOrError);
   },
   fatal(message: string, propertiesOrError?: unknown): void {
-    if (propertiesOrError instanceof Error) {
-      rawLogger.fatal(message, { error: propertiesOrError.message, stack: propertiesOrError.stack });
-    } else if (propertiesOrError && typeof propertiesOrError === "object") {
-      rawLogger.fatal(message, propertiesOrError as Record<string, unknown>);
-    } else {
-      rawLogger.fatal(message);
-    }
+    callRawLogger(rawLogger.fatal.bind(rawLogger), message, propertiesOrError);
   },
 };
 

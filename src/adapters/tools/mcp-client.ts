@@ -82,7 +82,6 @@ export class McpToolManager implements McpManagerPort {
     const servers = (this.config.mcpServers || {}) as Record<string, McpServerEntry>;
 
     if (!servers || Object.keys(servers).length === 0) {
-      // 使用统一日志单例 logger 打印跳过 MCP 启动信息
       logger.info(`[MCP Client] 未找到有效的 MCP 配置，将跳过 MCP 启动。`);
       return;
     }
@@ -90,7 +89,6 @@ export class McpToolManager implements McpManagerPort {
     const connectPromises = [];
     for (const [serverName, serverConfig] of Object.entries(servers)) {
       if (serverConfig.enabled === false) {
-        // 使用统一日志单例 logger 打印跳过停用服务信息
         logger.info(`[MCP Client] 已跳过服务 [${serverName}] (处于停用状态)`);
         continue;
       }
@@ -128,22 +126,17 @@ export class McpToolManager implements McpManagerPort {
       });
     }
 
-    // 使用统一日志单例 logger 打印启动连接服务信息
     logger.info(`[MCP Client] 正在启动并连接到 Server [${name}]: ${config.command} ${config.args?.join(' ')}`);
     try {
       await client.connect(transport);
-      // 使用统一日志单例 logger 打印连接成功信息
       logger.info(`[MCP Client] [${name}] 握手成功，连接已建立。`);
       this.connections.set(name, { client, transport });
     } catch (e) {
       if (stderrLog.includes("requires Administrator privileges")) {
-        // 使用统一日志单例 logger 打印管理员特权要求警告
         logger.error(`\n================================================================================\n[提示] 外部服务 [${name}] 启动失败！\n[原因] 该系统监控服务需要 Windows 管理员特权，但当前 IJIA Agent 以普通权限运行。\n[解决] 请以管理员身份重新运行您的终端（如“以管理员身份运行 PowerShell”），再启动 IJIA Agent。\n================================================================================\n`);
       } else {
-        // 使用统一日志单例 logger 打印连接失败错误
         logger.error(`[MCP Client] [${name}] 连接失败:`, e);
         if (stderrLog.trim()) {
-          // 使用统一日志单例 logger 打印详细错误日志
           logger.error(`[MCP Client] [${name}] 错误日志:\n${stderrLog.trim()}`);
         }
       }
@@ -256,11 +249,9 @@ export class McpToolManager implements McpManagerPort {
         }
       } catch (e: unknown) {
         const errorMsg = e instanceof Error ? e.message : String(e);
-        // 如果是致命的命名空间冲突，必须强行抛出阻断启动
         if (errorMsg.includes('[MCP 命名冲突]')) {
           throw e;
         }
-        // 使用统一日志单例 logger 打印获取工具列表失败错误
         logger.error(`[MCP Client] [${serverName}] 获取工具列表失败:`, e);
       }
     }
@@ -306,13 +297,11 @@ export class McpToolManager implements McpManagerPort {
     }
     this.isClosed = true;
 
-    // 立即注销全局监听器，防止内存泄露
     process.off('exit', this.syncExitHandler);
     process.off('SIGINT', this.cleanupHandler);
     process.off('SIGTERM', this.cleanupHandler);
 
     if (this.connections.size > 0) {
-      // 使用统一日志单例 logger 打印断开连接清理子进程信息
       logger.info(`[MCP Client] 正在安全断开所有连接并清理子进程...`);
       const closePromises: Promise<void>[] = [];
       for (const [name, conn] of this.connections.entries()) {
@@ -332,7 +321,6 @@ export class McpToolManager implements McpManagerPort {
    * @param conn - 客户端与传输层句柄对象
    */
   private async shutdownConnection(name: string, conn: { client: Client; transport?: StdioClientTransport }): Promise<void> {
-    // 使用统一日志单例 logger 打印优雅关闭服务信息
     logger.info(`[MCP Client] 正在优雅关闭服务: [${name}]`);
     
     // 1. 关闭前记录子进程 PID，用于后续强杀兜底
@@ -344,7 +332,6 @@ export class McpToolManager implements McpManagerPort {
         await conn.transport.close();
       }
     } catch (e) {
-      // 使用统一日志单例 logger 打印关闭传输管道出错
       logger.error(`[MCP Client] 关闭 [${name}] 传输管道时出错:`, e);
     }
 
@@ -354,7 +341,6 @@ export class McpToolManager implements McpManagerPort {
         await conn.client.close();
       }
     } catch (e) {
-      // 使用统一日志单例 logger 打印关闭客户端协议出错
       logger.error(`[MCP Client] 关闭 [${name}] 客户端协议时出错:`, e);
     }
 
@@ -364,7 +350,6 @@ export class McpToolManager implements McpManagerPort {
     if (pid && process.platform === 'win32') {
       try {
         execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
-        // 使用统一日志单例 logger 打印进程树强制终止信息
         logger.info(`[MCP Client] [${name}] 进程树已强制终止 (PID: ${pid})`);
       } catch {
         // PID 可能已经退出，静默忽略
