@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SessionManager } from '../../src/core/usecases/session.js';
+import { MemoryService } from '../../src/core/usecases/MemoryService.js';
 import { LlmConfig } from '../../src/config/index.js';
 import { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
 import { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
@@ -63,7 +64,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
   beforeEach(() => {
     // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
     vi.spyOn(
-      SessionManager.prototype as unknown as { rebuildVectorDbIfEmpty: () => Promise<void> },
+      MemoryService.prototype,
       'rebuildVectorDbIfEmpty'
     ).mockResolvedValue(undefined);
     mockExecPromisified.mockResolvedValue({ stdout: 'lint/tsc mock passed\n', stderr: '' });

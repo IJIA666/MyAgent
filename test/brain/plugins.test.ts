@@ -24,6 +24,7 @@ import type { AgentTracer } from '../../src/core/domain/tracer.js';
 import type { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
 import type { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
 import { SessionManager } from '../../src/core/usecases/session.js';
+import { MemoryService } from '../../src/core/usecases/MemoryService.js';
 import type { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
 import type { ToolRegistryPort } from '../../src/ports/driven/ToolRegistryPort.js';
 import { createMockAppConfig } from '../mock-factory.js';
@@ -36,7 +37,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
   beforeEach(() => {
     // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
     vi.spyOn(
-      SessionManager.prototype as unknown as { rebuildVectorDbIfEmpty: () => Promise<void> },
+      MemoryService.prototype,
       'rebuildVectorDbIfEmpty'
     ).mockResolvedValue(undefined);
     sessionContext = new SessionContext('test-session');
@@ -469,8 +470,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
         createMockAppConfig()
       );
 
-      // 覆盖 SessionManager 内的 memoryFilePath
-      (session as unknown as { memoryFilePath: string }).memoryFilePath = tempMemoryPath;
+      // 覆盖 MemoryService 实例内的 memoryFilePath 物理路径以使用测试临时路径
+      (session['memoryService'] as unknown as { memoryFilePath: string }).memoryFilePath = tempMemoryPath;
 
       // 添加对话历史以满足自省触发阈值
       session['context'].addMessage({ role: 'user', content: 'hello refine' });
@@ -492,8 +493,8 @@ describe('Plugins Lifecycle & Action Tests', () => {
       // 等待自省异步任务和写队列执行完毕
       await (memoryPlugin as unknown as { refinePromise: Promise<void> }).refinePromise;
       // 这里的 refinePromise 结束后，还需要等待 triggerMemoryRefinementAsync 的微任务和 writeQueue 物理追加写入完毕
-      // 我们通过让 writeQueue 跑完来等待物理文件最终落盘
-      await (session as unknown as { writeQueue: Promise<void> }).writeQueue;
+      // 我们通过让 MemoryService 内部的 writeQueue 跑完来等待物理文件最终落盘
+      await (session['memoryService'] as unknown as { writeQueue: Promise<void> }).writeQueue;
 
       expect(fs.existsSync(tempMemoryPath)).toBe(true);
       const writtenContent = fs.readFileSync(tempMemoryPath, 'utf-8');
@@ -583,10 +584,11 @@ describe('Plugins Lifecycle & Action Tests', () => {
         createMockAppConfig()
       );
 
-      (session as unknown as { memoryFilePath: string }).memoryFilePath = tempMemoryPath;
+      // 覆盖 MemoryService 实例内的 memoryFilePath 物理路径以使用测试临时路径
+      (session['memoryService'] as unknown as { memoryFilePath: string }).memoryFilePath = tempMemoryPath;
 
-      // 触发 queueWrite，向物理文件写入带有要点的格式化事实
-      await session['queueWrite']('\n\n- **开发环境**：当前在 Windows 系统上运行测试。\n');
+      // 触发 MemoryService 实例的 queueWrite，向物理文件写入带有要点的格式化事实
+      await session['memoryService']['queueWrite']('\n\n- **开发环境**：当前在 Windows 系统上运行测试。\n');
 
       expect(mockEmbedding.generateEmbeddings).toHaveBeenCalledWith([
         '- **开发环境**：当前在 Windows 系统上运行测试。'

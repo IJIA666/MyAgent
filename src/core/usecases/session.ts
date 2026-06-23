@@ -1,6 +1,4 @@
 import { EventEmitter } from 'events';
-import * as fs from 'fs';
-import * as path from 'path';
 import { AppConfig, LlmConfig } from '../../config/index.js';
 import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 import { AgentTracer } from '../domain/tracer.js';
@@ -21,7 +19,6 @@ import { LoopPreventionPlugin } from './LoopPreventionPlugin.js';
 import { LongTermMemoryPlugin } from './LongTermMemoryPlugin.js';
 import type { EmbeddingPort } from '../../ports/driven/EmbeddingPort.js';
 import type { VectorDbPort } from '../../ports/driven/VectorDbPort.js';
-import * as crypto from 'crypto';
 
 // 导入领域服务
 import { RuleManager } from './RuleManager.js';
@@ -29,6 +26,7 @@ import { ContextRepository } from './ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import { CompactionService } from './CompactionService.js';
 import { ApprovalService } from './ApprovalService.js';
+import { MemoryService } from './MemoryService.js';
 
 /**
  * 会话管理与模型交互调度中心。
@@ -72,14 +70,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
 
   /** 独立的智能体执行循环引擎 */
   private agentLoop: AgentLoop;
-  /** 长期记忆提炼自省任务的物理追加写入队列 */
-  private writeQueue: Promise<void> = Promise.resolve();
-  /** 长期记忆文件的物理路径 */
-  private memoryFilePath: string;
-  /** 本地向量数据库存储服务契约 */
-  private vectorDb: VectorDbPort;
-  /** 文本嵌入生成契约 */
-  private embedding: EmbeddingPort;
+  /** 独立的长期记忆管理服务 */
+  private memoryService: MemoryService;
 
   /**
    * 实例初始化。
@@ -117,12 +109,16 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     // 实例化主跟踪仪，支持沙箱环境变量重定向
     this.tracer = new AgentTracer(baseDir, this.context.getSessionId());
     this.contextAdapter = contextAdapter;
-    this.vectorDb = vectorDb;
-    this.embedding = embedding;
 
-    this.memoryFilePath = path.resolve(baseDir, '.agent/MEMORY.md');
+    this.memoryService = new MemoryService(
+      vectorDb,
+      embedding,
+      appConfig,
+      this.driver,
+      this.contextAdapter
+    );
 
-    // 初始化解耦后的四大领域服务
+    // 初始化解耦后的五大领域服务
     this.ruleManager = new RuleManager(this.context);
     this.contextRepo = new ContextRepository(this.context);
     this.toolDispatcher = new ToolDispatcher(this.context);
@@ -135,11 +131,11 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.pluginRegistry.register(new TracerLogPlugin(() => this.tracer));
     this.pluginRegistry.register(
       new LongTermMemoryPlugin(
-        this.vectorDb,
-        this.embedding,
-        this.memoryFilePath,
+        vectorDb,
+        embedding,
+        this.memoryService.getMemoryFilePath(),
         async (history) => {
-          await this.triggerMemoryRefinementAsync(history);
+          await this.memoryService.triggerMemoryRefinementAsync(history, this.llmConfig);
         }
       )
     );
@@ -166,8 +162,9 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     });
 
     // 异步尝试重建向量数据库，仅当库为空且物理 MEMORY.md 存在时生效
-    this.rebuildVectorDbIfEmpty().catch((error) => {
-      logger.error('[SessionManager] 异步重建向量库失败:', error);
+    this.memoryService.rebuildVectorDbIfEmpty().catch((error: unknown) => {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error(`[SessionManager] 异步重建向量库失败: ${msg}`);
     });
   }
 
@@ -356,7 +353,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   /**
    * 内部推理循环调度，并进行事件的流式广播分发。
    *
-   * @param transientSkillContent - 可选。临时技能规范内容
+   * @param transientSkillContent - 可选。当前请求专享的临时技能规范内容
    */
   private async runInternalGeneration(transientSkillContent?: string): Promise<void> {
     let hasError = false;
@@ -446,220 +443,6 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   }
 
   /**
-   * 使用互斥队列将提炼记忆安全追加写入长期记忆文件。
-   *
-   * @param text - 待追加写入的文本
-   * @returns 互斥写入执行完毕的 Promise
-   */
-  private queueWrite(text: string): Promise<void> {
-    this.writeQueue = this.writeQueue
-      .then(async () => {
-        const dir = path.dirname(this.memoryFilePath);
-        if (!fs.existsSync(dir)) {
-          await fs.promises.mkdir(dir, { recursive: true });
-        }
-        await fs.promises.appendFile(this.memoryFilePath, text, 'utf-8');
-
-        // 自动触发向量化同步 upsert
-        await this.syncNewMemoryToVectorDb(text);
-      })
-      .catch((error) => {
-        logger.error('[SessionManager] 写入长期记忆文件发生错误:', error);
-      });
-    return this.writeQueue;
-  }
-
-  /**
-   * 将记忆文本拆分为独立的语义切片。
-   * 支持按行（即以 `- **` 开头的记忆要点条目）进行拆分。
-   *
-   * @param text - 长期记忆文本
-   * @returns 拆分后的语义切片数组
-   */
-  public chunkMemoryText(text: string): string[] {
-    if (!text) {
-      return [];
-    }
-    return text
-      .split(/\r?\n/)
-      .map(line => line.trim())
-      .filter(line => line.startsWith('- **'));
-  }
-
-  /**
-   * 对文本切片列表分批生成 Embedding 向量。
-   * DashScope text-embedding-v3 单次 batch 上限为 10，超出时自动拆批串行调用。
-   *
-   * @param chunks - 待向量化的文本切片列表
-   * @returns 与 chunks 等长的向量数组
-   */
-  private async batchEmbeddings(chunks: string[]): Promise<number[][]> {
-    // 每批最多 10 条，与 DashScope API 限制对齐
-    const BATCH_SIZE = 10;
-    const result: number[][] = [];
-    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-      const batch = chunks.slice(i, i + BATCH_SIZE);
-      const batchEmbeddings = await this.embedding.generateEmbeddings(batch);
-      result.push(...batchEmbeddings);
-    }
-    return result;
-  }
-
-  /**
-   * 将新增的记忆事实同步切片并 upsert 存入向量数据库中。
-   *
-   * @param text - 新写入的记忆文本
-   */
-  private async syncNewMemoryToVectorDb(text: string): Promise<void> {
-    try {
-      const chunks = this.chunkMemoryText(text);
-      if (chunks.length === 0) {
-        return;
-      }
-      // 分批调用避免超过 DashScope batch size 上限
-      const embeddings = await this.batchEmbeddings(chunks);
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        const vector = embeddings[i];
-        if (vector && vector.length > 0) {
-          const id = crypto.createHash('md5').update(chunk).digest('hex');
-          await this.vectorDb.add(id, chunk, vector);
-        }
-      }
-    } catch (error) {
-      logger.error('[SessionManager] 长期记忆增量同步向量库失败:', error);
-    }
-  }
-
-  /**
-   * 如果本地向量库内容为空且物理长期记忆文件存在，则在后台异步运行增量重建。
-   */
-  private async rebuildVectorDbIfEmpty(): Promise<void> {
-    try {
-      const dbCount = await this.vectorDb.count();
-      if (dbCount === 0) {
-        if (fs.existsSync(this.memoryFilePath)) {
-          const fileContent = await fs.promises.readFile(this.memoryFilePath, 'utf-8');
-          const chunks = this.chunkMemoryText(fileContent);
-          if (chunks.length > 0) {
-            logger.info(`[SessionManager] 检测到向量库为空，开始从 MEMORY.md 重建，共 ${chunks.length} 个切片...`);
-            // 分批调用避免超过 DashScope batch size 上限
-            const embeddings = await this.batchEmbeddings(chunks);
-            for (let i = 0; i < chunks.length; i++) {
-              const chunk = chunks[i];
-              const vector = embeddings[i];
-              if (vector && vector.length > 0) {
-                const id = crypto.createHash('md5').update(chunk).digest('hex');
-                await this.vectorDb.add(id, chunk, vector);
-              }
-            }
-            logger.info('[SessionManager] 长期记忆向量库重建完成。');
-          }
-        }
-      }
-    } catch (error) {
-      logger.error('[SessionManager] 自动重建向量数据库失败:', error);
-    }
-  }
-
-  /**
-   * 使用隔离的子智能体在后台异步运行自省提炼。
-   *
-   * @param history - 对话历史消息
-   */
-  private async triggerMemoryRefinementAsync(history: ChatMessage[]): Promise<void> {
-    try {
-      await this.runMemoryRefinementSubAgent(history);
-    } catch (error) {
-      logger.error('[SessionManager] 子智能体长期记忆自省自损失败:', error);
-    }
-  }
-
-  /**
-   * 实例化隔离的子智能体运行自省提炼。
-   *
-   * @param history - 对话历史消息
-   */
-  private async runMemoryRefinementSubAgent(history: ChatMessage[]): Promise<void> {
-    const historyText = history
-      .map(m => {
-        let contentText = '';
-        if (m.content !== null && m.content !== undefined) {
-          if (typeof m.content === 'string') {
-            contentText = m.content;
-          } else {
-            contentText = JSON.stringify(m.content);
-          }
-        }
-        if (m.tool_calls && m.tool_calls.length > 0) {
-          contentText += `\n[调用工具]: ${JSON.stringify(m.tool_calls)}`;
-        }
-        return `[${m.role}]: ${contentText}`;
-      })
-      .join('\n\n');
-
-    const prompt = `您是一个长期记忆提炼助手。下面是当前会话的对话历史。请仔细阅读并提炼出对于未来开发有长期保留价值的事实、用户偏好或关键教训。
-
-历史对话内容：
-${historyText}
-
-请遵循以下规则提炼并调用 writeMemoryFile 保存：
-1. 提炼结果应当精炼为要点列表，每条一个独立知识点，且条目之间空一行，总数不超过 5 条。
-2. 每一个要点开头使用加粗的 4-6 个字总结核心主题作为视觉锚点，格式如：- **核心主题**：事实描述。
-3. 英文前后空一格，始终使用简体中文。
-4. 只返回提炼后的无序列表，不要包含任何前导词、总结词。
-5. 提炼完毕后，请务必直接调用 writeMemoryFile 工具将这些要点列表保存。
-6. 如果没有发现任何有保留价值的事实或关键信息，请不要调用工具。`;
-
-    // 1. 派生干净的隔离 SessionContext
-    const subContext = new SessionContext();
-    if (this.context.appConfig) {
-      subContext.appConfig = this.context.appConfig;
-    }
-    // 注入 Initial User Prompt
-    subContext.addMessage({ role: 'user', content: prompt });
-
-    // 2. 构造只读/写工具注册表
-    const subToolRegistry = new MemoryRefinementToolRegistry(async (content) => {
-      await this.queueWrite(`\n\n${content.trim()}\n`);
-    });
-
-    // 3. 实例化专用的沙箱追踪器，使用注入的工作区绝对目录
-    const subBaseDir = this.context.appConfig ? this.context.appConfig.workspace : process.cwd();
-    const subTracer = new AgentTracer(subBaseDir, subContext.getSessionId());
-
-    // 4. 初始化空的 PluginRegistry
-    const emptyPluginRegistry = new PluginRegistry();
-
-    // 5. 实例化专为子智能体隔离上下文服务的四大领域服务，避免对主会话的串扰及多余的主会话落盘
-    const subRuleManager = new RuleManager(subContext);
-    const subContextRepo = new ContextRepository(subContext, undefined, true);
-    const subToolDispatcher = new ToolDispatcher(subContext);
-    const subCompactionService = new CompactionService(subContext, this.driver, subContextRepo);
-
-    // 6. 实例化隔离的子 AgentLoop，限制最大步数为 3 轮防止无限循环
-    const forkedAgent = new AgentLoop({
-      toolRegistry: subToolRegistry,
-      context: subContext,
-      driver: this.driver,
-      contextAdapter: this.contextAdapter,
-      ruleManager: subRuleManager,
-      contextRepo: subContextRepo,
-      toolDispatcher: subToolDispatcher,
-      compactionService: subCompactionService,
-      pluginRegistry: emptyPluginRegistry,
-      maxIterations: 3
-    });
-
-    // 7. 用 for await 驱动子智能体自旋并消费其 chat 异步生成器
-    const generator = forkedAgent.chat('', subTracer, this.llmConfig);
-    for await (const chunk of generator) {
-      // 子智能体运行过程静默输出，不需要在此处将自提炼流输出给前台用户
-      void chunk;
-    }
-  }
-
-  /**
    * 获取最近一次大模型的 API 结算 Usage。
    *
    * @returns 最近一次 API 结算的真实用量，若无则返回 null
@@ -702,95 +485,5 @@ ${historyText}
    */
   public __testRunInternalGeneration(): Promise<void> {
     return this.runInternalGeneration();
-  }
-}
-
-/**
- * 长期记忆提炼自省任务专属的受限工具注册表。
- * 仅且唯一提供 writeMemoryFile 追加长期记忆能力，且锁定其安全属性为 safe，
- * 规避自省智能体执行完写盘后误触 PostRunHook 的代码编译/Lint 质检开销。
- */
-class MemoryRefinementToolRegistry implements ToolRegistryPort {
-  /** 代理执行物理写入的回调函数 */
-  private writeMemoryFn: (content: string) => Promise<void>;
-
-  /**
-   * 初始化专用的受限工具注册表。
-   *
-   * @param writeMemoryFn - 代理的物理追加写入函数
-   */
-  constructor(writeMemoryFn: (content: string) => Promise<void>) {
-    this.writeMemoryFn = writeMemoryFn;
-  }
-
-  /**
-   * 获取当前提炼自省任务可用的工具定义。
-   *
-   * @returns 仅包含 writeMemoryFile 工具定义的数组
-   */
-  public async getTools(): Promise<unknown[]> {
-    return [
-      {
-        type: 'function',
-        function: {
-          name: 'writeMemoryFile',
-          description: '追加并保存提炼后的长期记忆。此工具仅可被用于在提炼结束后追加并写入重要记忆，请提供精炼的要点列表，每条一个独立知识点，条目之间空一行。在每个要点列表的开头，用加粗的 4-6 个字总结该条目的核心主题，作为视觉锚点。',
-          parameters: {
-            type: 'object',
-            properties: {
-              content: {
-                type: 'string',
-                description: '追加写入的长期记忆内容，必须使用简体中文，且条目之间空一行，中英文之间加空格。'
-              }
-            },
-            required: ['content']
-          }
-        }
-      }
-    ];
-  }
-
-  /**
-   * 执行指定的工具调用。
-   *
-   * @param functionName - 调用的工具名称
-   * @param functionArgs - 工具参数
-   * @returns 执行成功后的确认消息
-   * @throws 当被调用了非 writeMemoryFile 工具时抛出未知工具异常
-   */
-  public async callTool(
-    functionName: string,
-    functionArgs: Record<string, unknown>
-  ): Promise<unknown> {
-    if (functionName === 'writeMemoryFile') {
-      const content = functionArgs.content;
-      if (typeof content !== 'string') {
-        throw new Error('content 参数缺失或非字符串');
-      }
-      await this.writeMemoryFn(content);
-      return '成功追加写入记忆。';
-    }
-    throw new Error(`未知的工具名称："${functionName}"`);
-  }
-
-  /**
-   * 根据工具名称获取本地工具实例的元信息。
-   * 特别将 writeMemoryFile 工具的安全类别属性设为 safe，避开代码 Lint 编译检查。
-   *
-   * @param name - 工具名称
-   * @returns 包含安全类别元信息的对象，若未找到则返回 undefined
-   */
-  public getTool(name: string): { securityCategory: string; name: string } | undefined {
-    if (name === 'writeMemoryFile') {
-      return { securityCategory: 'safe', name: 'writeMemoryFile' };
-    }
-    return undefined;
-  }
-
-  /**
-   * 优雅断开并物理清理工具连接。本受限注册表无外部连接，为 no-op。
-   */
-  public async close(): Promise<void> {
-    // 提炼专属工具，无 MCP 连接需要清理，为 no-op
   }
 }

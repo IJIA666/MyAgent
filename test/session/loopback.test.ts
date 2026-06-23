@@ -38,6 +38,7 @@ import { SessionContext } from '../../src/core/domain/context.js';
 import { ExecuteCommandTool } from '../../src/adapters/tools/tools/system/terminal.js';
 import * as terminalEngine from '../../src/adapters/tools/tools/system/terminal-engine.js';
 import { SessionManager } from '../../src/core/usecases/session.js';
+import { MemoryService } from '../../src/core/usecases/MemoryService.js';
 import { LlmConfig } from '../../src/config/index.js';
 import { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
 import { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
@@ -59,7 +60,7 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
   beforeEach(() => {
     // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
     vi.spyOn(
-      SessionManager.prototype as unknown as { rebuildVectorDbIfEmpty: () => Promise<void> },
+      MemoryService.prototype,
       'rebuildVectorDbIfEmpty'
     ).mockResolvedValue(undefined);
     // 将工作安全模式重置为 YOLO，防止测试由于审批挂起而阻塞
