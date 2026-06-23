@@ -321,10 +321,9 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
       sessionContext.addMessage({ role: 'user', content: '测试查询' });
 
+      // 当消息列表既没有 system 消息也没有 user 消息时，触发新逻辑的 unshift 兜底退化
       const llmRequest: LlmRequest = {
-        messages: [
-          { role: 'user', content: 'Hello' }
-        ]
+        messages: []
       };
 
       const context: HookContext = {
@@ -339,7 +338,6 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
       expect(llmRequest.messages?.[0].role).toBe('system');
       expect(llmRequest.messages?.[0].content).toContain('<long-term-memory>');
-      expect(llmRequest.messages?.[1].role).toBe('user');
     });
 
     it('should skip session end refinement if history is less than 2 messages', async () => {
@@ -775,6 +773,90 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
       expect(mockEmbedding.generateEmbedding).toHaveBeenCalledWith(longQuery.substring(0, 2000));
       expect(mockEmbedding.generateEmbedding.mock.calls[0][0].length).toBe(2000);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should skip RAG recall if ragEnabled is configured to false in AppConfig', async () => {
+      const mockVectorDb = {
+        search: vi.fn().mockResolvedValue([
+          { id: '1', text: '- **偏好**：用户喜欢用 Python。', score: 0.9 }
+        ]),
+        count: vi.fn().mockResolvedValue(0)
+      } as unknown as VectorDbPort;
+      const mockEmbedding = {
+        generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0))
+      } as unknown as EmbeddingPort;
+
+      const mockConfig = createMockAppConfig();
+      // 显式配置 ragEnabled 为 false
+      (mockConfig.runtimeLimits as unknown as { ragEnabled: boolean }).ragEnabled = false;
+
+      const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath, undefined, mockConfig);
+
+      sessionContext.addMessage({ role: 'user', content: '测试查询' });
+
+      const llmRequest: LlmRequest = {
+        messages: [
+          { role: 'system', content: 'Base system prompt.' },
+          { role: 'user', content: '测试查询' }
+        ]
+      };
+
+      const context: HookContext = {
+        sessionContext,
+        eventName: HookEventName.BeforeModel,
+        llmRequest,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+      await plugin.hooks[HookEventName.BeforeModel](context, next);
+
+      // 验证没有调用 Embedding 和 VectorDb
+      expect(mockEmbedding.generateEmbedding).not.toHaveBeenCalled();
+      expect(llmRequest.messages?.[1].content).not.toContain('<long-term-memory>');
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should append recalled memories to the last user message instead of system message', async () => {
+      const mockVectorDb = {
+        search: vi.fn().mockResolvedValue([
+          { id: '1', text: '- **偏好**：用户喜欢 TypeScript。', score: 0.9 }
+        ]),
+        count: vi.fn().mockResolvedValue(0)
+      } as unknown as VectorDbPort;
+      const mockEmbedding = {
+        generateEmbedding: vi.fn().mockResolvedValue(new Array(1536).fill(0))
+      } as unknown as EmbeddingPort;
+
+      const mockConfig = createMockAppConfig();
+      const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath, undefined, mockConfig);
+
+      sessionContext.addMessage({ role: 'user', content: '测试 TypeScript 召回' });
+
+      const llmRequest: LlmRequest = {
+        messages: [
+          { role: 'system', content: 'Base system prompt.' },
+          { role: 'user', content: '测试 TypeScript 召回' }
+        ]
+      };
+
+      const context: HookContext = {
+        sessionContext,
+        eventName: HookEventName.BeforeModel,
+        llmRequest,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+      await plugin.hooks[HookEventName.BeforeModel](context, next);
+
+      // 验证 system 消息不受污染，仍然是 Base system prompt.
+      expect(llmRequest.messages?.[0].content).toBe('Base system prompt.');
+      // 验证记忆成功拼接到 user 消息末尾
+      expect(llmRequest.messages?.[1].content).toContain('测试 TypeScript 召回');
+      expect(llmRequest.messages?.[1].content).toContain('<long-term-memory>');
+      expect(llmRequest.messages?.[1].content).toContain('- **偏好**：用户喜欢 TypeScript。');
       expect(next).toHaveBeenCalled();
     });
   });

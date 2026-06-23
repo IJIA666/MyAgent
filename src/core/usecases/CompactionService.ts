@@ -15,6 +15,11 @@ export class CompactionService {
   /** 后台提炼是否在途 */
   private isCompacting = false;
 
+  private compactionRetainCount = 4;
+  private compactionTriggerDelta = 5000;
+  private compactionFailureLimit = 3;
+  private compactionRecentFilesLimit = 5;
+
   /**
    * 实例初始化。
    *
@@ -26,7 +31,15 @@ export class CompactionService {
     private context: SessionContext,
     private driver: LlmPort,
     private contextRepo: ContextRepository
-  ) {}
+  ) {
+    const limits = context.appConfig?.runtimeLimits;
+    if (limits) {
+      this.compactionRetainCount = limits.compactionRetainCount;
+      this.compactionTriggerDelta = limits.compactionTriggerDelta;
+      this.compactionFailureLimit = limits.compactionFailureLimit;
+      this.compactionRecentFilesLimit = limits.compactionRecentFilesLimit;
+    }
+  }
 
   /**
    * 执行无延迟硬截断（Pointer-based Truncation）。
@@ -37,10 +50,10 @@ export class CompactionService {
   public async compact(): Promise<boolean> {
     try {
       const fullHistory = this.context.getHistory();
-      if (fullHistory.length <= 4) return false;
+      if (fullHistory.length <= this.compactionRetainCount) return false;
 
-      // 指针级截断：保留最后 4 条消息
-      this.context.truncateHistory(4);
+      // 指针级截断：保留最后 compactionRetainCount 条消息
+      this.context.truncateHistory(this.compactionRetainCount);
 
       // 如果兜底也没有摘要，则塞一个默认兜底
       if (!this.context.getCheckpointSummary()) {
@@ -65,8 +78,8 @@ export class CompactionService {
   public async triggerAsyncCompactionIfNeeded(currentTokens: number): Promise<void> {
     if (this.isCompacting) return;
     
-    // 当累积增量 Token 达到 5000 时触发后台提炼任务
-    if (currentTokens - this.lastSummaryTokenLevel >= 5000) {
+    // 当累积增量 Token 达到指定配置差额时触发后台提炼任务
+    if (currentTokens - this.lastSummaryTokenLevel >= this.compactionTriggerDelta) {
       this.isCompacting = true;
       try {
         const fullHistory = this.context.getHistory();
@@ -86,8 +99,8 @@ export class CompactionService {
       } catch (e) {
         logger.warn(`[CompactionService] 异步提炼失败: ${e}`);
         this.compactionFailures++;
-        if (this.compactionFailures >= 3) {
-          // 连续 3 次失败，使用兜底摘要
+        if (this.compactionFailures >= this.compactionFailureLimit) {
+          // 连续达到失败上限次数，使用兜底摘要
           const fallback = buildStaticFallbackSummary('后台异步失败', '无响应');
           this.context.setCheckpointSummary(fallback);
         }
@@ -98,7 +111,7 @@ export class CompactionService {
   }
 
   /**
-   * 从待剔除的历史消息中，反向扫描找出最近大模型读写过的核心代码文件路径（最多 5 个）。
+   * 从待剔除的历史消息中，反向扫描找出最近大模型读写过的核心代码文件路径。
    *
    * @param messages - 待扫描的历史消息数组
    * @returns 收集到的核心代码文件路径数组（去重后）
@@ -107,7 +120,7 @@ export class CompactionService {
     const files = new Set<string>();
 
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (files.size >= 5) break;
+      if (files.size >= this.compactionRecentFilesLimit) break;
       const msg = messages[i];
       const customMsg = msg as {
         tool_calls?: Array<{
@@ -124,7 +137,7 @@ export class CompactionService {
               const args = JSON.parse(tc.function.arguments || '{}');
               if (args && typeof args.targetPath === 'string') {
                 files.add(args.targetPath);
-                if (files.size >= 5) break;
+                if (files.size >= this.compactionRecentFilesLimit) break;
               }
             } catch {
               // 忽略参数反序列化失败的异常

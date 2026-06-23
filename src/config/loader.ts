@@ -145,6 +145,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const searchLimit = parseEnvInt(env.AGENT_SEARCH_LIMIT, 100);
   const compactionWatermarkFactor = parseEnvFloat(env.AGENT_COMPACTION_WATERMARK_FACTOR, 0.8);
 
+  // 解析 RAG、死循环及上下文压缩的 9 个限额环境变量控制参数
+  const ragEnabled = env.AGENT_RAG_ENABLED === undefined ? true : env.AGENT_RAG_ENABLED.trim().toLowerCase() === 'true';
+  const ragScoreThreshold = parseEnvFloat(env.AGENT_RAG_SCORE_THRESHOLD, 0.5);
+  const ragRecallLimit = parseEnvInt(env.AGENT_RAG_RECALL_LIMIT, 5);
+  const ragRefinementThreshold = parseEnvInt(env.AGENT_RAG_REFINEMENT_THRESHOLD, 2);
+  const loopPreventionLimit = parseEnvInt(env.AGENT_LOOP_PREVENTION_LIMIT, 3);
+  const compactionRetainCount = parseEnvInt(env.AGENT_COMPACTION_RETAIN_COUNT, 4);
+  const compactionTriggerDelta = parseEnvInt(env.AGENT_COMPACTION_TRIGGER_DELTA, 5000);
+  const compactionFailureLimit = parseEnvInt(env.AGENT_COMPACTION_FAILURE_LIMIT, 3);
+  const compactionRecentFilesLimit = parseEnvInt(env.AGENT_COMPACTION_RECENT_FILES_LIMIT, 5);
+
   // 加载 Embedding 配置（支持独立环境变量配置，并高保真向 LLM 配置降级）
   const envEmbeddingApiKey = env.AGENT_EMBEDDING_API_KEY;
   const envEmbeddingBaseUrl = env.AGENT_EMBEDDING_BASE_URL;
@@ -178,6 +189,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       readManyFilesLimit,
       searchLimit,
       compactionWatermarkFactor,
+      ragEnabled,
+      ragScoreThreshold,
+      ragRecallLimit,
+      ragRefinementThreshold,
+      loopPreventionLimit,
+      compactionRetainCount,
+      compactionTriggerDelta,
+      compactionFailureLimit,
+      compactionRecentFilesLimit,
     }
   };
 

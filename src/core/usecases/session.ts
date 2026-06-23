@@ -136,10 +136,11 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
         this.memoryService.getMemoryFilePath(),
         async (history) => {
           await this.memoryService.triggerMemoryRefinementAsync(history, this.llmConfig);
-        }
+        },
+        appConfig
       )
     );
-    this.pluginRegistry.register(new LoopPreventionPlugin());
+    this.pluginRegistry.register(new LoopPreventionPlugin(appConfig));
     this.pluginRegistry.register(new HumanApprovalPlugin());
 
     // 初始化独立的执行引擎实例

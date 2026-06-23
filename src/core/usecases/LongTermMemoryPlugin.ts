@@ -7,6 +7,7 @@ import type { ChatMessage } from '../../ports/driven/LlmPort.js';
 import type { EmbeddingPort } from '../../ports/driven/EmbeddingPort.js';
 import type { VectorDbPort } from '../../ports/driven/VectorDbPort.js';
 import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
+import { AppConfig } from '../../config/index.js';
 
 /**
  * 长期记忆自省与提炼插件。
@@ -19,6 +20,7 @@ export class LongTermMemoryPlugin implements Plugin {
   private vectorDb: VectorDbPort;
   private embedding: EmbeddingPort;
   private memoryFilePath: string;
+  private appConfig?: AppConfig;
   private onSessionEndCallback?: (history: ChatMessage[]) => void;
   private refinePromise: Promise<void> = Promise.resolve();
 
@@ -29,17 +31,20 @@ export class LongTermMemoryPlugin implements Plugin {
    * @param embedding - 文本嵌入生成契约
    * @param memoryFilePath - 可选。持久化长期记忆 file 路径，默认指向项目 .agent/MEMORY.md
    * @param onSessionEndCallback - 可选。会话结束后的异步自省提炼回调函数
+   * @param appConfig - 可选。应用程序系统配置项
    */
   constructor(
     vectorDb: VectorDbPort,
     embedding: EmbeddingPort,
     memoryFilePath?: string,
-    onSessionEndCallback?: (history: ChatMessage[]) => void
+    onSessionEndCallback?: (history: ChatMessage[]) => void,
+    appConfig?: AppConfig
   ) {
     this.vectorDb = vectorDb;
     this.embedding = embedding;
     this.onSessionEndCallback = onSessionEndCallback;
     this.memoryFilePath = memoryFilePath || path.resolve(process.cwd(), '.agent/MEMORY.md');
+    this.appConfig = appConfig;
   }
 
   public readonly hooks = {
@@ -63,6 +68,11 @@ export class LongTermMemoryPlugin implements Plugin {
       return;
     }
 
+    // 1. 如果显式配置了禁用 RAG 召回，则直接退出，不执行任何检索与注入
+    if (this.appConfig && this.appConfig.runtimeLimits.ragEnabled === false) {
+      return;
+    }
+
     try {
       const history = context.sessionContext.getHistory();
       const userMessages = history.filter(m => m.role === 'user');
@@ -77,10 +87,13 @@ export class LongTermMemoryPlugin implements Plugin {
 
       // 并行开启向量检索路与物理文本关键字匹配路，并做单路容错保护
       let validVectorResults: Array<{ id: string; text: string; score: number }> = [];
+      const recallLimit = this.appConfig ? this.appConfig.runtimeLimits.ragRecallLimit : 5;
+      const scoreThreshold = this.appConfig ? this.appConfig.runtimeLimits.ragScoreThreshold : 0.5;
+
       try {
         const queryVector = await this.embedding.generateEmbedding(queryText);
-        const searchResults = await this.vectorDb.search(queryVector, 5);
-        validVectorResults = searchResults.filter(r => r.score >= 0.5);
+        const searchResults = await this.vectorDb.search(queryVector, recallLimit);
+        validVectorResults = searchResults.filter(r => r.score >= scoreThreshold);
       } catch (vectorError) {
         logger.error('[LongTermMemoryPlugin] 向量检索路失败:', vectorError);
       }
@@ -93,22 +106,36 @@ export class LongTermMemoryPlugin implements Plugin {
         logger.error('[LongTermMemoryPlugin] 关键字检索路失败:', keywordError);
       }
 
-      // 双路结果调用 RRF 排序重整，过滤保留排名前 5 的有效事实
+      // 双路结果调用 RRF 排序重整，过滤保留排名前 recallLimit 的有效事实
       const fusedResults = this.reciprocalRankFusion(validVectorResults, keywordResults);
-      const topResults = fusedResults.slice(0, 5);
+      const topResults = fusedResults.slice(0, recallLimit);
 
       if (topResults.length > 0) {
         const memoryBlocks = topResults.map(r => r.text).join('\n\n');
         const memoryPrompt = `\n\n<long-term-memory>\n${memoryBlocks}\n</long-term-memory>`;
 
-        const systemMessage = context.llmRequest.messages.find(m => m.role === 'system');
-        if (systemMessage) {
-          systemMessage.content += memoryPrompt;
+        // 2. 将 RAG 召回的事实段，追加挂载至最新一条 User 消息中，从而锁定 System Prompt 前缀，防止 Prompt 缓存被击穿
+        let lastUserMessage: ChatMessage | undefined;
+        for (let i = context.llmRequest.messages.length - 1; i >= 0; i--) {
+          if (context.llmRequest.messages[i].role === 'user') {
+            lastUserMessage = context.llmRequest.messages[i];
+            break;
+          }
+        }
+
+        if (lastUserMessage) {
+          lastUserMessage.content += memoryPrompt;
         } else {
-          context.llmRequest.messages.unshift({
-            role: 'system',
-            content: memoryPrompt.trim()
-          });
+          // 兜底退化分支：如果在请求列表中没有找到 User 消息，则依然追加在 system message 中
+          const systemMessage = context.llmRequest.messages.find(m => m.role === 'system');
+          if (systemMessage) {
+            systemMessage.content += memoryPrompt;
+          } else {
+            context.llmRequest.messages.unshift({
+              role: 'system',
+              content: memoryPrompt.trim()
+            });
+          }
         }
       }
     } catch (error) {
@@ -254,7 +281,8 @@ export class LongTermMemoryPlugin implements Plugin {
     const history = context.sessionContext.getHistory();
     // 过滤掉 system 消息，计算真实对话轮数
     const effectiveHistory = history.filter(m => m.role !== 'system');
-    if (!effectiveHistory || effectiveHistory.length < 2) {
+    const refinementThreshold = this.appConfig ? this.appConfig.runtimeLimits.ragRefinementThreshold : 2;
+    if (!effectiveHistory || effectiveHistory.length < refinementThreshold) {
       return;
     }
 

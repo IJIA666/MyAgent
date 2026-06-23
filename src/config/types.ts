@@ -152,4 +152,22 @@ export interface RuntimeLimitsConfig {
   searchLimit: number;
   /** Token 水位自动压缩阈值比例（浮点型，例如 0.8） */
   compactionWatermarkFactor: number;
+  /** 是否开启长期记忆 RAG 召回，若设为 false 则在推理前不再注入记忆 */
+  ragEnabled: boolean;
+  /** 向量相似度检索得分过滤阈值，低于此分数的记忆要点会被过滤 */
+  ragScoreThreshold: number;
+  /** 混合检索重排（RRF）后最终注入大模型上下文的记忆条数上限 */
+  ragRecallLimit: number;
+  /** 触发自省子智能体提炼记忆的最小有效对话轮数限制 */
+  ragRefinementThreshold: number;
+  /** 防死循环熔断中同一工具完全相同参数允许的最大调用次数 */
+  loopPreventionLimit: number;
+  /** 发生紧急 Token 硬截断时保留的最新的多轮对话消息轮数 */
+  compactionRetainCount: number;
+  /** 触发异步 Summary 提炼所需的增量累计 Token 数 */
+  compactionTriggerDelta: number;
+  /** 异步提炼连续失败时，退回到防爆兜底静态摘要的次数上限 */
+  compactionFailureLimit: number;
+  /** 上下文提炼后最近被读写并挂在上下文头部的关联文件路径上限数 */
+  compactionRecentFilesLimit: number;
 }
