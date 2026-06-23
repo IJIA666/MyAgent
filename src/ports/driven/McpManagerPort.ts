@@ -48,8 +48,9 @@ export interface McpManagerPort {
    *
    * @param name - 工具名称
    * @param args - 工具参数键值对
+   * @param signal - 可选的 AbortSignal，用于物理取消工具执行
    */
-  callMcpTool(name: string, args: Record<string, unknown>): Promise<unknown>;
+  callMcpTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
 
   /**
    * 安全断开所有连接并回收子进程。

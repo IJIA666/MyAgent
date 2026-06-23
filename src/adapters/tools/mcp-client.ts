@@ -265,7 +265,7 @@ export class McpToolManager implements McpManagerPort {
    * @param args - 工具参数键值对
    * @returns 工具执行后的返回结果 Promise
    */
-  async callMcpTool(name: string, args: Record<string, unknown>) {
+  async callMcpTool(name: string, args: Record<string, unknown>, signal?: AbortSignal) {
     if (this.isClosed) {
       throw new Error("MCP Client 已关闭");
     }
@@ -278,6 +278,19 @@ export class McpToolManager implements McpManagerPort {
     const connection = this.connections.get(serverName);
     if (!connection) {
       throw new Error(`MCP Server "${serverName}" 连接异常`);
+    }
+
+    // 监听 AbortSignal 以彻底释放并强杀 MCP 悬空连接与子进程
+    if (signal) {
+      if (signal.aborted) {
+        throw new Error("工具执行已被 Abort 阻断");
+      }
+      signal.addEventListener('abort', () => {
+        logger.warn(`[MCP Client] 触发 Abort 超时，正在强制关闭连接并清理进程 [${serverName}]`);
+        this.disconnectServer(serverName).catch((disconnectError: unknown) => {
+          logger.error(`[MCP Client] 强制清理进程失败:`, disconnectError);
+        });
+      });
     }
 
     return await connection.client.callTool({

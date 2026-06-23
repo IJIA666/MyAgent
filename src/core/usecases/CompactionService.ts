@@ -1,8 +1,10 @@
+import { resolve } from 'path';
 import type { ChatMessage, LlmPort } from '../../ports/driven/LlmPort.js';
 import { SessionContext } from '../domain/context.js';
 import { buildCompactionSummaryPrompt, buildStaticFallbackSummary } from './prompts.js';
 import { ContextRepository } from './ContextRepository.js';
 import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
+import type { ToolRegistryPort } from '../../ports/driven/ToolRegistryPort.js';
 
 /**
  * 负责防范 Token 爆仓及上下文的截断与提炼。
@@ -26,11 +28,13 @@ export class CompactionService {
    * @param context - 会话上下文管理实例
    * @param driver - 大语言模型驱动接口
    * @param contextRepo - 会话状态仓储实例
+   * @param toolRegistry - 可选的工具注册表端口
    */
   constructor(
     private context: SessionContext,
     private driver: LlmPort,
-    private contextRepo: ContextRepository
+    private contextRepo: ContextRepository,
+    private toolRegistry?: ToolRegistryPort
   ) {
     const limits = context.appConfig?.runtimeLimits;
     if (limits) {
@@ -116,8 +120,51 @@ export class CompactionService {
    * @param messages - 待扫描的历史消息数组
    * @returns 收集到的核心代码文件路径数组（去重后）
    */
+  /**
+   * 从待剔除的历史消息中，反向扫描找出最近大模型读写过的核心代码文件绝对路径。
+   *
+   * @param messages - 待扫描的历史消息数组
+   * @returns 收集到的核心代码文件绝对路径数组（去重后）
+   */
   public collectReadToolFilePaths(messages: ChatMessage[]): string[] {
     const files = new Set<string>();
+    const rootDir = this.context.appConfig?.workspace || process.cwd();
+
+    const addPathOrPaths = (pathVal: string) => {
+      const trimmed = pathVal.trim();
+      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (Array.isArray(parsed)) {
+            for (const p of parsed) {
+              if (typeof p === 'string' && p.trim()) {
+                files.add(resolve(rootDir, p.trim()));
+              }
+            }
+            return;
+          }
+        } catch {
+          // 忽略并降级为逗号拆分
+        }
+      }
+
+      const parts = trimmed.split(',').map(p => p.trim()).filter(Boolean);
+      for (const p of parts) {
+        files.add(resolve(rootDir, p));
+      }
+    };
+
+    const heuristicKeys = new Set([
+      'targetPath',
+      'targetPaths',
+      'target',
+      'file',
+      'filePath',
+      'directoryPath',
+      'destinationPath',
+      'sourcePath',
+      'path'
+    ]);
 
     for (let i = messages.length - 1; i >= 0; i--) {
       if (files.size >= this.compactionRecentFilesLimit) break;
@@ -132,15 +179,35 @@ export class CompactionService {
       };
       if (msg.role === 'assistant' && customMsg.tool_calls && Array.isArray(customMsg.tool_calls)) {
         for (const tc of customMsg.tool_calls) {
-          if (tc.function && (tc.function.name === 'readFile' || tc.function.name === 'writeFile')) {
+          if (tc.function && tc.function.name) {
             try {
+              const name = tc.function.name;
               const args = JSON.parse(tc.function.arguments || '{}');
-              if (args && typeof args.targetPath === 'string') {
-                files.add(args.targetPath);
-                if (files.size >= this.compactionRecentFilesLimit) break;
+              if (!args || typeof args !== 'object') continue;
+
+              let pathKey: string | undefined;
+              // 优先查找工具注册表元数据声明
+              if (this.toolRegistry) {
+                const meta = this.toolRegistry.getTool(name);
+                if (meta && meta.filePathParamKey) {
+                  pathKey = meta.filePathParamKey;
+                }
               }
+
+              if (pathKey && typeof args[pathKey] === 'string') {
+                addPathOrPaths(args[pathKey]);
+              } else {
+                // 启发式参数名解析
+                for (const key of Object.keys(args)) {
+                  if (heuristicKeys.has(key) && typeof args[key] === 'string') {
+                    addPathOrPaths(args[key]);
+                  }
+                }
+              }
+
+              if (files.size >= this.compactionRecentFilesLimit) break;
             } catch {
-              // 忽略参数反序列化失败的异常
+              // 忽略参数反序列化失败 of 异常
             }
           }
         }

@@ -36,6 +36,11 @@ export interface NativeTool {
   readonly name: string;
 
   /**
+   * 可选的文件路径参数字段键名。
+   */
+  readonly filePathParamKey?: string;
+
+  /**
    * 工具的大模型调用声明定义，包含描述与参数模式。
    */
   readonly definition: Record<string, unknown>;
@@ -45,9 +50,14 @@ export interface NativeTool {
    *
    * @param args - 调用工具时传入的参数字典
    * @param _sessionContext - 可选的智能体会话上下文
+   * @param signal - 可选的 AbortSignal，用于物理取消工具执行
    * @returns 工具执行完毕后返回的文本结果
    */
-  execute(args: Record<string, unknown>, _sessionContext?: SessionEventPort): Promise<string> | string;
+  execute(
+    args: Record<string, unknown>,
+    _sessionContext?: SessionEventPort,
+    signal?: AbortSignal
+  ): Promise<string> | string;
 
   /**
    * 异步或同步审查该工具执行调用的安全性。
@@ -55,9 +65,14 @@ export interface NativeTool {
    *
    * @param args - 调用工具时传入的参数字典
    * @param sessionContext - 可选的会话上下文，用于获取安全状态服务
+   * @param signal - 可选的 AbortSignal，用于物理取消安全校验
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): Promise<SafetyCheckResult> | SafetyCheckResult;
+  checkSafety(
+    args: Record<string, unknown>,
+    sessionContext?: SessionEventPort,
+    signal?: AbortSignal
+  ): Promise<SafetyCheckResult> | SafetyCheckResult;
 }
 
 /**
@@ -157,7 +172,11 @@ export class LocalFileSystemMcpServer {
    * @param sessionContext - 可选的智能体会话上下文
    * @returns 符合 MCP CallToolResult 结构的结果对象
    */
-  async callTool(request: CallToolRequest, sessionContext?: SessionEventPort & ApprovalPort): Promise<CallToolResult> {
+  async callTool(
+    request: CallToolRequest,
+    sessionContext?: SessionEventPort & ApprovalPort,
+    signal?: AbortSignal
+  ): Promise<CallToolResult> {
     try {
       const args = request.arguments || {};
       const tool = this.toolsMap.get(request.name);
@@ -170,21 +189,40 @@ export class LocalFileSystemMcpServer {
         let isDangerous = false;
         let warningMsg = '';
 
-        if (request.name === 'deletePath') {
-          isDangerous = true;
-          warningMsg = `智能体试图删除文件或目录。目标路径: "${args.targetPath}"`;
-        } else if (request.name === 'writeFile') {
-          const targetPath = args.targetPath;
-          if (typeof targetPath === 'string') {
+        const category = tool.securityCategory;
+        if (category !== 'read') {
+          // 降级防御：如果不是显式声明的只读工具，一律判定为写入/高危操作进行确权拦截
+          const pathKey = tool.filePathParamKey;
+          if (pathKey && typeof args[pathKey] === 'string') {
+            const targetPath = args[pathKey] as string;
             try {
               const safePath = secureResolveWritePath(targetPath, sessionContext);
               if (existsSync(safePath)) {
-                isDangerous = true;
-                warningMsg = `智能体试图强行覆盖已有的文件。目标路径: "${targetPath}"`;
+                if (request.name === 'deletePath') {
+                  isDangerous = true;
+                  warningMsg = `智能体试图删除文件或目录。目标路径: "${targetPath}"`;
+                } else if (request.name !== 'createDirectory') {
+                  isDangerous = true;
+                  if (request.name === 'writeFile') {
+                    warningMsg = `智能体试图强行覆盖已有的文件。目标路径: "${targetPath}"`;
+                  } else {
+                    warningMsg = `智能体试图修改或覆盖已有的文件。工具: "${request.name}"，目标路径: "${targetPath}"`;
+                  }
+                }
+              } else {
+                // 路径不存在时，如果是 deletePath，仍需无条件确权拦截
+                if (request.name === 'deletePath') {
+                  isDangerous = true;
+                  warningMsg = `智能体试图删除文件或目录。目标路径: "${targetPath}"`;
+                }
               }
             } catch {
-              // 路径解析越权或错误直接交给工具自身 execute 跑 checkSafety，这里跳过
+              // 路径解析越权或错误，直接交给工具自身的 execute 跑 checkSafety，这里不作硬拦截
             }
+          } else {
+            // 降级防御：如果未声明 filePathParamKey，或者参数非法，为策安全一律强制拦截
+            isDangerous = true;
+            warningMsg = `智能体试图执行高危写入操作（缺少参数元数据声明）。工具: "${request.name}"`;
           }
         }
 
@@ -211,7 +249,7 @@ export class LocalFileSystemMcpServer {
         });
       }
 
-      const resultText = await tool.execute(args, contextToPass);
+      const resultText = await tool.execute(args, contextToPass, signal);
 
       return {
         content: [

@@ -15,6 +15,9 @@ export class CreateDirectoryTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'write';
 
+  /** 可选的文件路径参数字段键名。 */
+  readonly filePathParamKey = 'directoryPath';
+
   /** 工具的名称。 */
   readonly name = 'createDirectory';
 
@@ -103,6 +106,9 @@ export class CreateDirectoryTool implements NativeTool {
 export class DeletePathTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'write';
+
+  /** 可选的文件路径参数字段键名。 */
+  readonly filePathParamKey = 'targetPath';
 
   /** 工具的名称。 */
   readonly name = 'deletePath';
@@ -202,6 +208,9 @@ export class DeletePathTool implements NativeTool {
 export class MovePathTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'write';
+
+  /** 可选的文件路径参数字段键名。 */
+  readonly filePathParamKey = 'destinationPath';
 
   /** 工具的名称。 */
   readonly name = 'movePath';
@@ -320,6 +329,9 @@ export class MovePathTool implements NativeTool {
 export class CopyPathTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'write';
+
+  /** 可选的文件路径参数字段键名。 */
+  readonly filePathParamKey = 'destinationPath';
 
   /** 工具的名称。 */
   readonly name = 'copyPath';

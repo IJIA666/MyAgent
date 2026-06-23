@@ -1,3 +1,4 @@
+import { resolve } from 'path';
 import { ToolRegistryPort } from '../../ports/driven/ToolRegistryPort.js';
 import { LlmConfig } from '../../config/index.js';
 import { AgentTracer } from '../domain/tracer.js';
@@ -17,6 +18,7 @@ import { RuleManager } from './RuleManager.js';
 import { ContextRepository } from './ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import { CompactionService } from './CompactionService.js';
+import { FileLockManager } from './FileLockManager.js';
 
 /**
  * 智能体产生的事件类型定义，外部消费者（如 UI 终端）据此渲染流式反馈过程。
@@ -302,108 +304,339 @@ export class AgentLoop {
               arguments: tc.function.arguments
             }));
 
-            // 遍历并串行处理工具调用请求
-            for (let i = 0; i < event.toolCalls.length; i++) {
-              const toolCall = event.toolCalls[i];
-              const functionName = toolCall.function.name;
-              let functionArgs: Record<string, unknown> = {};
+            // 解析物理路径并排序，防范死锁的纯函数
+            const resolveFilePaths = (args: Record<string, unknown>, pathKey?: string, workspaceDir?: string): string[] => {
+              const rootDir = workspaceDir || process.cwd();
+              const paths: string[] = [];
 
+              const addPath = (p: string) => {
+                const trimmed = p.trim();
+                if (!trimmed) return;
+                if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                  try {
+                    const parsed = JSON.parse(trimmed);
+                    if (Array.isArray(parsed)) {
+                      for (const item of parsed) {
+                        if (typeof item === 'string' && item.trim()) {
+                          paths.push(resolve(rootDir, item.trim()));
+                        }
+                      }
+                      return;
+                    }
+                  } catch {
+                    // 降级为普通字符串处理
+                  }
+                }
+                const parts = trimmed.split(',').map(item => item.trim()).filter(Boolean);
+                for (const item of parts) {
+                  paths.push(resolve(rootDir, item));
+                }
+              };
+
+              if (pathKey && typeof args[pathKey] === 'string') {
+                addPath(args[pathKey] as string);
+              } else {
+                const heuristicKeys = new Set([
+                  'targetPath',
+                  'targetPaths',
+                  'target',
+                  'file',
+                  'filePath',
+                  'directoryPath',
+                  'destinationPath',
+                  'sourcePath',
+                  'path'
+                ]);
+                for (const key of Object.keys(args)) {
+                  if (heuristicKeys.has(key) && typeof args[key] === 'string') {
+                    addPath(args[key] as string);
+                  }
+                }
+              }
+
+              return Array.from(new Set(paths)).sort();
+            };
+
+            // 构造并发控制超时 Abort 信号（超时限制从 runtimeLimits 提取，默认 30 秒）
+            const timeoutMs = this.context.appConfig?.runtimeLimits?.toolTimeoutMs ?? 30000;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => {
+              controller.abort();
+            }, timeoutMs);
+
+            // 实时事件队列挂载机制，桥接 Promise 并行调度与 Generator 异步流式 yield 抛出，防止审批挂起死锁
+            let resolveNextEvent: (() => void) | null = null;
+            const pushSuspendEvent = (evt: AgentEvent) => {
+              emitEvent(evt);
+              if (resolveNextEvent) {
+                resolveNextEvent();
+                resolveNextEvent = null;
+              }
+            };
+
+            interface ToolExecutionResult {
+              index: number;
+              events: AgentEvent[];
+              toolMessage?: ChatMessage;
+              hasWrite: boolean;
+              finalCallUpdate: {
+                error?: string;
+                result?: string;
+              };
+              aborted: boolean;
+              abortReason?: string;
+            }
+
+            const executeToolTask = async (
+              index: number,
+              toolCall: { id: string; function: { name: string; arguments: string } },
+              signal: AbortSignal
+            ): Promise<ToolExecutionResult> => {
+              const functionName = toolCall.function.name;
+              const taskEvents: AgentEvent[] = [];
+              const taskFinalCallUpdate: { error?: string; result?: string } = {};
+              let hasWrite = false;
+              let toolMessage: ChatMessage | undefined;
+
+              // 区分对待事件类型：suspend 挂起审批事件实时通过 global queue 广播给外层 UI 确权以防死锁；其它事件暂存做顺序渲染
+              const taskEmitEvent = (evt: unknown) => {
+                const agentEvt = evt as AgentEvent;
+                if (agentEvt.type === 'suspend') {
+                  pushSuspendEvent(agentEvt);
+                } else {
+                  taskEvents.push(agentEvt);
+                }
+              };
+
+              let functionArgs: Record<string, unknown>;
               try {
                 functionArgs = JSON.parse(toolCall.function.arguments);
               } catch (parseError: unknown) {
                 const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
-                finalToolCalls[i].error = `解析参数失败：${errorMsg}`;
-                yield { type: 'error', message: `解析工具参数失败：${errorMsg}`, cause: parseError };
+                taskFinalCallUpdate.error = `解析参数失败：${errorMsg}`;
+                taskEvents.push({ type: 'error', message: `解析工具参数失败：${errorMsg}`, cause: parseError });
+                return {
+                  index,
+                  events: taskEvents,
+                  hasWrite,
+                  finalCallUpdate: taskFinalCallUpdate,
+                  aborted: false
+                };
               }
 
-              // 触发 BeforeTool 钩子
-              const beforeToolResult = await runHookPipeline(
-                HookEventName.BeforeTool,
-                this.context,
-                this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeTool),
-                { toolCall: { name: functionName, arguments: functionArgs }, emitEvent, toolRegistry: this.toolRegistry }
-              );
-              while (eventQueue.length > 0) {
+              try {
+                if (signal.aborted) {
+                  throw new Error("工具执行已被 Abort 阻断（超时）");
+                }
+                const beforeToolResult = await runHookPipeline(
+                  HookEventName.BeforeTool,
+                  this.context,
+                  this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeTool),
+                  {
+                    toolCall: { name: functionName, arguments: functionArgs },
+                    emitEvent: taskEmitEvent,
+                    toolRegistry: this.toolRegistry
+                  }
+                );
+
+                if (beforeToolResult.control.action === 'abort') {
+                  const toolResult = `错误：工具调用被插件拦截拦截：${beforeToolResult.control.reason ?? '安全策略限制'}`;
+                  taskFinalCallUpdate.error = beforeToolResult.control.reason ?? '安全策略限制';
+                  taskEvents.push({ type: 'error', message: `[插件拦截] 工具调用被拦截阻断：${beforeToolResult.control.reason ?? '策略安全限制'}` });
+                  taskEvents.push({ type: 'tool_call_result', functionName, result: toolResult });
+                  toolMessage = {
+                    role: 'tool',
+                    tool_call_id: toolCall.id,
+                    content: toolResult
+                  };
+                  return {
+                    index,
+                    events: taskEvents,
+                    toolMessage,
+                    hasWrite,
+                    finalCallUpdate: taskFinalCallUpdate,
+                    aborted: false
+                  };
+                }
+
+                const actualArgs = beforeToolResult.toolCall?.arguments ?? functionArgs;
+                taskEvents.push({ type: 'tool_call_start', functionName, functionArgs: actualArgs });
+
+                const toolInstance = this.toolRegistry.getTool(functionName);
+                if (toolInstance && toolInstance.securityCategory === 'write') {
+                  hasWrite = true;
+                }
+
+                if (signal.aborted) {
+                  throw new Error("工具执行已被 Abort 阻断（超时）");
+                }
+
+                // 并发锁物理路径冲突排队编排
+                const pathsToLock = resolveFilePaths(actualArgs, toolInstance?.filePathParamKey, this.context.appConfig?.workspace);
+                const lockType = (toolInstance?.securityCategory === 'read') ? 'read' : 'write';
+                const releases: Array<() => void> = [];
+
+                let toolResult = '';
+                try {
+                  for (const p of pathsToLock) {
+                    const release = await FileLockManager.getInstance().acquireLock(p, lockType);
+                    releases.push(release);
+                  }
+
+                  if (signal.aborted) {
+                    throw new Error("工具执行已被 Abort 阻断（超时）");
+                  }
+
+                  const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs, this.context, signal);
+                  const rawResult = JSON.stringify(mcpResult);
+                  toolResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
+                } catch (toolError: unknown) {
+                  const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
+                  const isAbortError = toolError instanceof Error && (toolError.name === 'AbortError' || errorMsg.includes('Abort') || errorMsg.includes('abort'));
+                  if (isAbortError) {
+                    throw new Error(`工具执行超时熔断阻断: ${errorMsg}`, { cause: toolError });
+                  }
+                  throw toolError;
+                } finally {
+                  for (let r = releases.length - 1; r >= 0; r--) {
+                    releases[r]();
+                  }
+                }
+
+                if (signal.aborted) {
+                  throw new Error("工具执行已被 Abort 阻断（超时）");
+                }
+                const afterToolResult = await runHookPipeline(
+                  HookEventName.AfterTool,
+                  this.context,
+                  this.pluginRegistry.getPluginsForEvent(HookEventName.AfterTool),
+                  {
+                    toolCall: { name: functionName, arguments: actualArgs },
+                    toolResult: { content: toolResult },
+                    emitEvent: taskEmitEvent
+                  }
+                );
+
+                if (afterToolResult.control.action === 'abort') {
+                  return {
+                    index,
+                    events: taskEvents,
+                    hasWrite,
+                    finalCallUpdate: taskFinalCallUpdate,
+                    aborted: true,
+                    abortReason: afterToolResult.control.reason ?? '无原因'
+                  };
+                }
+
+                const finalToolResultContent = afterToolResult.toolResult?.content ?? toolResult;
+                taskFinalCallUpdate.result = finalToolResultContent;
+
+                if (afterToolResult.tailToolCallRequest) {
+                  const tailCall = afterToolResult.tailToolCallRequest;
+                  taskEvents.push({ type: 'thinking', content: `[尾随调用] 插件触发尾随工具链调用: ${tailCall.name}` });
+                  if (signal.aborted) {
+                    throw new Error("工具执行已被 Abort 阻断（超时）");
+                  }
+                  const tailResultRaw = await this.toolRegistry.callTool(tailCall.name, tailCall.args, this.context, signal);
+                  taskFinalCallUpdate.result = JSON.stringify(tailResultRaw);
+                }
+
+                taskEvents.push({ type: 'tool_call_result', functionName, result: taskFinalCallUpdate.result ?? '' });
+
+                toolMessage = {
+                  role: 'tool',
+                  tool_call_id: toolCall.id,
+                  content: taskFinalCallUpdate.result ?? ''
+                };
+              } catch (toolError: unknown) {
+                const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
+                const isAbortError = toolError instanceof Error && (toolError.name === 'AbortError' || errorMsg.includes('Abort') || errorMsg.includes('abort'));
+                const finalErrorMsg = isAbortError ? `工具执行超时熔断阻断: ${errorMsg}` : `错误：${errorMsg}`;
+                taskFinalCallUpdate.error = finalErrorMsg;
+                taskEvents.push({ type: 'error', message: isAbortError ? `工具执行超时阻断` : `工具执行失败：${errorMsg}`, cause: toolError });
+                taskEvents.push({ type: 'tool_call_result', functionName, result: finalErrorMsg });
+                toolMessage = {
+                  role: 'tool',
+                  tool_call_id: toolCall.id,
+                  content: finalErrorMsg
+                };
+              }
+
+              return {
+                index,
+                events: taskEvents,
+                toolMessage,
+                hasWrite,
+                finalCallUpdate: taskFinalCallUpdate,
+                aborted: false
+              };
+            };
+
+            const toolTasks = event.toolCalls.map((tc, idx) => executeToolTask(idx, tc, controller.signal));
+
+            // 实时消费并 yield 并行工具执行流中抛出的 suspend 事件
+            let tasksCompleted = false;
+            const allTasksPromise = Promise.allSettled(toolTasks).then((results) => {
+              tasksCompleted = true;
+              if (resolveNextEvent) {
+                resolveNextEvent();
+              }
+              return results;
+            });
+
+            while (!tasksCompleted || eventQueue.length > 0) {
+              if (eventQueue.length > 0) {
                 yield eventQueue.shift()!;
+              } else {
+                await new Promise<void>((resolve) => {
+                  resolveNextEvent = resolve;
+                });
               }
+            }
 
-              if (beforeToolResult.control.action === 'abort') {
-                const toolResult = `错误：工具调用被插件拦截拦截：${beforeToolResult.control.reason ?? '安全策略限制'}`;
-                finalToolCalls[i].error = beforeToolResult.control.reason ?? '安全策略限制';
-                yield { type: 'error', message: `[插件拦截] 工具调用被拦截阻断：${beforeToolResult.control.reason ?? '策略安全限制'}` };
-                yield { type: 'tool_call_result', functionName, result: toolResult };
+            const settledResults = await allTasksPromise;
+            clearTimeout(timeoutId);
+
+            // 按原本的工具调用顺序，依次结算并触发 UI 事件流和数据链追加
+            for (let i = 0; i < settledResults.length; i++) {
+              const res = settledResults[i];
+              if (res.status === 'fulfilled') {
+                const taskRes = res.value;
+                for (const evt of taskRes.events) {
+                  yield evt;
+                }
+
+                if (taskRes.finalCallUpdate.error) {
+                  finalToolCalls[i].error = taskRes.finalCallUpdate.error;
+                }
+                if (taskRes.finalCallUpdate.result) {
+                  finalToolCalls[i].result = taskRes.finalCallUpdate.result;
+                }
+
+                if (taskRes.toolMessage) {
+                  this.context.addMessage(taskRes.toolMessage);
+                }
+
+                if (taskRes.hasWrite) {
+                  hasWriteOperation = true;
+                }
+
+                if (taskRes.aborted) {
+                  yield { type: 'error', message: `[插件终止] 触发终止信号：${taskRes.abortReason ?? '无原因'}` };
+                  return;
+                }
+              } else {
+                const toolCall = event.toolCalls[i];
+                const errorMsg = res.reason instanceof Error ? res.reason.message : String(res.reason);
+                finalToolCalls[i].error = errorMsg;
+                yield { type: 'error', message: `工具运行发生灾难性内部异常：${errorMsg}`, cause: res.reason };
+                yield { type: 'tool_call_result', functionName: toolCall.function.name, result: `错误：${errorMsg}` };
                 this.context.addMessage({
                   role: 'tool',
                   tool_call_id: toolCall.id,
-                  content: toolResult
+                  content: `错误：${errorMsg}`
                 });
-                continue; // 跳过物理执行
               }
-
-              const actualArgs = beforeToolResult.toolCall?.arguments ?? functionArgs;
-              yield { type: 'tool_call_start', functionName, functionArgs: actualArgs };
-
-              // 检测是否执行了 write 类别工具
-              const toolInstance = this.toolRegistry.getTool(functionName);
-              if (toolInstance && toolInstance.securityCategory === 'write') {
-                hasWriteOperation = true;
-              }
-
-              let toolResult = '';
-              try {
-                const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs, this.context);
-                const rawResult = JSON.stringify(mcpResult);
-                toolResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
-              } catch (toolError: unknown) {
-                const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
-                toolResult = `错误：${errorMsg}`;
-                finalToolCalls[i].error = errorMsg;
-                yield { type: 'error', message: `工具执行失败：${errorMsg}`, cause: toolError };
-              }
-
-              // 触发 AfterTool 钩子，支持对结果改写以及尾随工具调用
-              const afterToolResult = await runHookPipeline(
-                HookEventName.AfterTool,
-                this.context,
-                this.pluginRegistry.getPluginsForEvent(HookEventName.AfterTool),
-                {
-                  toolCall: { name: functionName, arguments: actualArgs },
-                  toolResult: { content: toolResult },
-                  emitEvent
-                }
-              );
-              while (eventQueue.length > 0) {
-                yield eventQueue.shift()!;
-              }
-
-              if (afterToolResult.control.action === 'abort') {
-                yield { type: 'error', message: `[插件终止] 触发终止信号：${afterToolResult.control.reason ?? '无原因'}` };
-                return;
-              }
-
-              const finalToolResultContent = afterToolResult.toolResult?.content ?? toolResult;
-              finalToolCalls[i].result = finalToolResultContent;
-
-              // 检查是否有尾随工具请求
-              if (afterToolResult.tailToolCallRequest) {
-                const tailCall = afterToolResult.tailToolCallRequest;
-                yield { type: 'thinking', content: `[尾随调用] 插件触发尾随工具链调用: ${tailCall.name}` };
-                try {
-                  const tailResultRaw = await this.toolRegistry.callTool(tailCall.name, tailCall.args, this.context);
-                  finalToolCalls[i].result = JSON.stringify(tailResultRaw);
-                } catch (tailError: unknown) {
-                  const errorMsg = tailError instanceof Error ? tailError.message : String(tailError);
-                  finalToolCalls[i].result = `错误：尾随工具执行失败：${errorMsg}`;
-                }
-              }
-
-              yield { type: 'tool_call_result', functionName, result: finalToolCalls[i].result ?? '' };
-
-              this.context.addMessage({
-                role: 'tool',
-                tool_call_id: toolCall.id,
-                content: finalToolCalls[i].result ?? ''
-              });
             }
 
             const purifiedContext = snapshotContext.map((msg: ChatMessage) => {

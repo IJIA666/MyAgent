@@ -12,6 +12,9 @@ export class ReadManyFilesTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'read';
 
+  /** 可选的文件路径参数字段键名。 */
+  readonly filePathParamKey = 'targetPaths';
+
   /** 工具的名称。 */
   readonly name = 'readManyFiles';
 

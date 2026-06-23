@@ -1,7 +1,6 @@
-## 新增需求
+## 修改需求
 
 ### Requirement: 工具安全类别自声明
-
 工具类 **MUST** 暴露自身的安全级别元数据，并实现异步安全校验契约方法，从而将特化的安全判定逻辑从全局及脑插件中彻底解耦。
 
 #### Scenario: 原生工具安全属性与统一 ToolMetadata 契约实现
@@ -9,8 +8,7 @@
 - **THEN**：每个系统工具必须实现统一的元数据类型 `ToolMetadata`（包含 name、securityCategory 与可选的 filePathParamKey 元数据字段），且必须实现异步安全审查方法 `checkSafety(args: Record<string, unknown>): Promise<SafetyCheckResult>`。
 
 ### Requirement: 审批插件动态确权拦截
-
-系统 **MUST** 在运行时动态评估当前被调工具 of `checkSafety` 返回结果，并执行相应的安全前置核准流，网关插件本身保持通用无状态。
+系统 **MUST** 在运行时动态评估当前被调工具的 `checkSafety` 返回结果，并执行相应的安全前置核准流，网关插件本身保持通用无状态。
 
 #### Scenario: 高危写操作确权挂起
 - **WHEN**：智能体尝试执行工具，且该工具的异步 `checkSafety` 结果返回状态为 `'suspend'`。

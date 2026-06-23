@@ -122,7 +122,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.ruleManager = new RuleManager(this.context);
     this.contextRepo = new ContextRepository(this.context);
     this.toolDispatcher = new ToolDispatcher(this.context);
-    this.compactionService = new CompactionService(this.context, this.driver, this.contextRepo);
+    this.compactionService = new CompactionService(this.context, this.driver, this.contextRepo, this.toolRegistry);
 
     // 初始化并注册拦截插件
     this.pluginRegistry = new PluginRegistry();

@@ -170,4 +170,6 @@ export interface RuntimeLimitsConfig {
   compactionFailureLimit: number;
   /** 上下文提炼后最近被读写并挂在上下文头部的关联文件路径上限数 */
   compactionRecentFilesLimit: number;
+  /** 工具调用超时的时限（毫秒） */
+  toolTimeoutMs: number;
 }

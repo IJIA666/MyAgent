@@ -140,7 +140,7 @@ export class ExecuteCommandTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 终端输出摘要结果
    */
-  async execute(args: Record<string, unknown>, sessionContext?: SessionEventPort & EventNotificationPort): Promise<string> {
+  async execute(args: Record<string, unknown>, sessionContext?: SessionEventPort & EventNotificationPort, signal?: AbortSignal): Promise<string> {
     const command = args.command;
     if (typeof command !== 'string') {
       throw new Error("command 必须是字符串");
@@ -166,6 +166,7 @@ export class ExecuteCommandTool implements NativeTool {
       isBackground,
       {
         watch_patterns,
+        signal,
         onNotification: (event) => {
           process.stdout.write(`\n[事件通知] 任务 ${event.taskId} 触发通知: ${event.type}${event.pattern ? `, 模式: ${event.pattern}` : ''}\n`);
           if (sessionContext) {

@@ -3,7 +3,7 @@
  * 提供路径安全校验约束下的文本读取（支持行范围精读）、文件写入、特征匹配增量编辑以及目录清单列举功能。
  */
 
-import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
+import { existsSync, statSync, mkdirSync, readdirSync, promises as fsPromises } from 'fs';
 import { dirname, resolve, basename } from 'path';
 import { secureResolveReadPath, secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
@@ -26,6 +26,9 @@ function isSensitiveEnvFile(filePath: string): boolean {
 export class ReadFileTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'read';
+
+  /** 可选的文件路径参数字段键名。 */
+  readonly filePathParamKey = 'targetPath';
 
   /**
    * 记录读取快照的内存字典，用于实现基于 mtime 的缓存拦截去重机制。
@@ -110,7 +113,7 @@ export class ReadFileTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 读取的文件内容或缓存未修改提示
    */
-  execute(args: Record<string, unknown>): string {
+  async execute(args: Record<string, unknown>, _sessionContext?: SessionEventPort, signal?: AbortSignal): Promise<string> {
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
       throw new Error("targetPath 必须是字符串");
@@ -142,7 +145,7 @@ export class ReadFileTool implements NativeTool {
       return "File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.";
     }
 
-    const content = readFileSync(safePath, 'utf-8');
+    const content = await fsPromises.readFile(safePath, { encoding: 'utf-8', signal });
     let resultText: string;
 
     if (lineStart === undefined && lineEnd === undefined) {
@@ -179,6 +182,9 @@ export class ReadFileTool implements NativeTool {
 export class WriteFileTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'write';
+
+  /** 可选的文件路径参数字段键名。 */
+  readonly filePathParamKey = 'targetPath';
 
   /**
    * 工具的名称。
@@ -268,7 +274,7 @@ export class WriteFileTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 写入成功提示信息
    */
-  execute(args: Record<string, unknown>): string {
+  async execute(args: Record<string, unknown>, _sessionContext?: SessionEventPort, signal?: AbortSignal): Promise<string> {
     const targetPath = args.targetPath;
     const content = args.content;
     if (typeof targetPath !== 'string') {
@@ -289,7 +295,7 @@ export class WriteFileTool implements NativeTool {
       mkdirSync(parentDir, { recursive: true });
     }
 
-    writeFileSync(safePath, content, 'utf-8');
+    await fsPromises.writeFile(safePath, content, { encoding: 'utf-8', signal });
     return `写入执行成功："${targetPath}"。`;
   }
 }
@@ -301,6 +307,9 @@ export class WriteFileTool implements NativeTool {
 export class EditFileTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'write';
+
+  /** 可选的文件路径参数字段键名。 */
+  readonly filePathParamKey = 'targetPath';
 
   /**
    * 工具的名称。
@@ -399,7 +408,7 @@ export class EditFileTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 局部修改成功提示信息
    */
-  execute(args: Record<string, unknown>): string {
+  async execute(args: Record<string, unknown>, _sessionContext?: SessionEventPort, signal?: AbortSignal): Promise<string> {
     const targetPath = args.targetPath;
     const oldString = args.old_string;
     const newString = args.new_string;
@@ -437,7 +446,7 @@ export class EditFileTool implements NativeTool {
       throw new Error("拒绝安全风险操作：在修改已有文件前，必须先调用 readFile 工具阅读该文件的最新内容。");
     }
 
-    const content = readFileSync(safePath, 'utf-8');
+    const content = await fsPromises.readFile(safePath, { encoding: 'utf-8', signal });
 
     let replacementsCount = 0;
     let offset = 0;
@@ -458,7 +467,7 @@ export class EditFileTool implements NativeTool {
       ? content.split(oldString).join(newString)
       : content.replace(oldString, newString);
 
-    writeFileSync(safePath, newContent, 'utf-8');
+    await fsPromises.writeFile(safePath, newContent, { encoding: 'utf-8', signal });
 
     return `文件局部修改成功："${targetPath}"。共替换了 ${replacementsCount} 处。`;
   }
@@ -471,6 +480,9 @@ export class EditFileTool implements NativeTool {
 export class ListFilesTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'read';
+
+  /** 可选的文件路径参数字段键名。 */
+  readonly filePathParamKey = 'targetPath';
 
   /**
    * 工具的名称。

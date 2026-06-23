@@ -1,8 +1,8 @@
-import { LocalFileSystemMcpServer, NativeTool } from './virtual-mcp.js';
+import { LocalFileSystemMcpServer } from './virtual-mcp.js';
 import { McpToolManager } from './mcp-client.js';
 import type { SessionEventPort } from '../../ports/driven/SessionEventPort.js';
 import type { ApprovalPort } from '../../ports/driven/ApprovalPort.js';
-import type { ToolRegistryPort } from '../../ports/driven/ToolRegistryPort.js';
+import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/ToolRegistryPort.js';
 import type { McpManagerPort } from '../../ports/driven/McpManagerPort.js';
 
 /**
@@ -32,12 +32,12 @@ export class ToolRegistry implements ToolRegistryPort {
   }
 
   /**
-   * 根据工具名称获取本地内置的 NativeTool 实例。
+   * 根据工具名称获取本地内置的 NativeTool 实例元数据。
    *
    * @param name - 工具名称
-   * @returns 工具实例，若未找到则返回 undefined
+   * @returns 工具实例元数据，若未找到则返回 undefined
    */
-  public getTool(name: string): NativeTool | undefined {
+  public getTool(name: string): ToolMetadata | undefined {
     return this.localMcpServer.getTool(name);
   }
 
@@ -75,7 +75,8 @@ export class ToolRegistry implements ToolRegistryPort {
   public async callTool(
     functionName: string,
     functionArgs: Record<string, unknown>,
-    sessionContext?: SessionEventPort & ApprovalPort
+    sessionContext?: SessionEventPort & ApprovalPort,
+    signal?: AbortSignal
   ): Promise<unknown> {
     // 先行加载本地工具清单以供比对
     const localToolsDef = await this.localMcpServer.getTools();
@@ -89,10 +90,10 @@ export class ToolRegistry implements ToolRegistryPort {
       return await this.localMcpServer.callTool({
         name: functionName,
         arguments: functionArgs
-      }, sessionContext);
+      }, sessionContext, signal);
     } else if (this.mcpManager) {
       // 命中外部工具，跨进程分发至对应的 MCP Client 实例
-      return await this.mcpManager.callMcpTool(functionName, functionArgs);
+      return await this.mcpManager.callMcpTool(functionName, functionArgs, signal);
     } else {
       // 异常分支：不存在该工具，阻断调用链路并抛出异常
       throw new Error(`未知的工具名称："${functionName}"`);

@@ -2,6 +2,7 @@
  * @fileoverview CompactionService 的单元测试，用于验证历史记录压缩与提取。
  */
 
+import { resolve } from 'path';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CompactionService } from '../../src/core/usecases/CompactionService.js';
 import { SessionContext } from '../../src/core/domain/context.js';
@@ -102,7 +103,7 @@ describe('CompactionService', () => {
 
       expect(mockLlmPort.generateSummaryAsync).toHaveBeenCalled();
       expect(context.getCheckpointSummary()).toBe('Mocked Summary Text');
-      expect(context.getRecentFiles()).toEqual(['foo.ts']);
+      expect(context.getRecentFiles()).toEqual([resolve(process.cwd(), 'foo.ts')]);
       expect(compactionService['lastSummaryTokenLevel']).toBe(6000);
       expect(mockContextRepo.saveState).toHaveBeenCalled();
     });
@@ -155,7 +156,7 @@ describe('CompactionService', () => {
 
       const files = compactionService.collectReadToolFilePaths(messages);
       expect(files.length).toBe(5);
-      expect(files).toEqual(['c.ts', 'd.ts', 'e.ts', 'f.ts', 'a.ts']);
+      expect(files).toEqual(['c.ts', 'd.ts', 'e.ts', 'f.ts', 'a.ts'].map(p => resolve(process.cwd(), p)));
     });
   });
 });

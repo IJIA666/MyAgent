@@ -15,6 +15,9 @@ export class ApplyPatchTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'write';
 
+  /** 可选的文件路径参数字段键名。 */
+  readonly filePathParamKey = 'targetPath';
+
   /** 工具的名称。 */
   readonly name = 'applyPatch';
 

@@ -268,6 +268,7 @@ export async function runCommandEngine(
       pattern?: string;
       output?: string;
     }) => void;
+    signal?: AbortSignal;
   },
   sessionId?: string
 ): Promise<string> {
@@ -437,6 +438,30 @@ export async function runCommandEngine(
   };
   activeTasks.set(taskId, taskInfo);
 
+  // 监听并透传 AbortSignal 物理强杀子进程树
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      if (transitionTaskState(taskId, 'FAILED')) {
+        taskInfo.failureReason = 'timeout';
+        if (child.pid) {
+          killProcessTree(child.pid).then(() => cleanup());
+        } else {
+          cleanup();
+        }
+      }
+    }
+    options.signal.addEventListener('abort', () => {
+      if (transitionTaskState(taskId, 'FAILED')) {
+        taskInfo.failureReason = 'timeout';
+        if (child.pid) {
+          killProcessTree(child.pid).then(() => cleanup());
+        } else {
+          cleanup();
+        }
+      }
+    });
+  }
+
   // 启动后立即流转状态为 RUNNING
   transitionTaskState(taskId, 'RUNNING');
 
@@ -568,7 +593,7 @@ export async function runCommandEngine(
     resolvePromise = res;
   });
 
-  const cleanup = () => {
+  function cleanup() {
     clearTimers();
     logStream.end();
 
@@ -624,7 +649,7 @@ export async function runCommandEngine(
         }
       }
     }
-  };
+  }
 
   // 绑定子进程事件
   overallTimeoutTimer = setTimeout(() => {

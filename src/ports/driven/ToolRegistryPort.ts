@@ -8,6 +8,18 @@ import type { McpManagerPort } from './McpManagerPort.js';
 import type { ApprovalPort } from './ApprovalPort.js';
 
 /**
+ * 统一的工具元数据接口契约。
+ */
+export interface ToolMetadata {
+  /** 工具的名称 */
+  readonly name: string;
+  /** 工具的安全级别类别 */
+  readonly securityCategory: 'read' | 'write';
+  /** 可选的文件路径参数字段键名 */
+  readonly filePathParamKey?: string;
+}
+
+/**
  * 工具注册表与调度管理器输出端口接口。
  * 提供大循环获取工具列表、路由工具调用、以及生命周期自毁关闭的抽象能力。
  */
@@ -28,22 +40,24 @@ export interface ToolRegistryPort {
    * @param functionName - 调用的工具名称
    * @param functionArgs - 工具参数
    * @param sessionContext - 可选的会话事件契约上下文
+   * @param signal - 可选的 AbortSignal，用于物理取消工具执行
    * @returns 工具执行完毕后返回的序列化数据
    */
   callTool(
     functionName: string,
     functionArgs: Record<string, unknown>,
-    sessionContext?: SessionEventPort & ApprovalPort
+    sessionContext?: SessionEventPort & ApprovalPort,
+    signal?: AbortSignal
   ): Promise<unknown>;
 
   /**
    * 根据工具名称获取本地工具实例的元信息。
-   * 用于安全类别（securityCategory）的快速研判。
+   * 用于安全类别及路径字段参数的快速研判。
    *
    * @param name - 工具名称
-   * @returns 包含安全类别元信息的对象，若未找到则返回 undefined
+   * @returns 包含工具元信息的对象，若未找到则返回 undefined
    */
-  getTool(name: string): { securityCategory: string; name: string } | undefined;
+  getTool(name: string): ToolMetadata | undefined;
 
   /**
    * 优雅断开并清理工具注册表内管理的所有物理连接（如 MCP 子进程），防止产生僵尸进程。

@@ -155,6 +155,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const compactionTriggerDelta = parseEnvInt(env.AGENT_COMPACTION_TRIGGER_DELTA, 5000);
   const compactionFailureLimit = parseEnvInt(env.AGENT_COMPACTION_FAILURE_LIMIT, 3);
   const compactionRecentFilesLimit = parseEnvInt(env.AGENT_COMPACTION_RECENT_FILES_LIMIT, 5);
+  const toolTimeoutMs = parseEnvInt(env.AGENT_TOOL_TIMEOUT_MS, 30000);
 
   // 加载 Embedding 配置（支持独立环境变量配置，并高保真向 LLM 配置降级）
   const envEmbeddingApiKey = env.AGENT_EMBEDDING_API_KEY;
@@ -198,6 +199,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       compactionTriggerDelta,
       compactionFailureLimit,
       compactionRecentFilesLimit,
+      toolTimeoutMs,
     }
   };
 
