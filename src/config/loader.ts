@@ -11,7 +11,7 @@ import { existsSync, copyFileSync, readFileSync, writeFileSync, realpathSync } f
 import { config as dotenvConfig } from 'dotenv';
 
 
-import { AppConfig, McpConfig, WorkMode } from './types.js';
+import { AppConfig, McpConfig, WorkMode, EmbeddingConfig } from './types.js';
 import { getModelConfig } from './models.js';
 import { interpolateEnvVars } from './env.js';
 import { logger } from '../utils/logger.js';
@@ -145,8 +145,30 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const searchLimit = parseEnvInt(env.AGENT_SEARCH_LIMIT, 100);
   const compactionWatermarkFactor = parseEnvFloat(env.AGENT_COMPACTION_WATERMARK_FACTOR, 0.8);
 
+  // 加载 Embedding 配置（支持独立环境变量配置，并高保真向 LLM 配置降级）
+  const envEmbeddingApiKey = env.AGENT_EMBEDDING_API_KEY;
+  const envEmbeddingBaseUrl = env.AGENT_EMBEDDING_BASE_URL;
+  const envEmbeddingModel = env.AGENT_EMBEDDING_MODEL || 'text-embedding-3-small';
+
+  const embedding: EmbeddingConfig = {
+    apiKey: envEmbeddingApiKey || llm.apiKey,
+    baseUrl: envEmbeddingBaseUrl || llm.baseUrl,
+    model: envEmbeddingModel,
+  };
+  if (llm.timeout !== undefined) {
+    embedding.timeout = llm.timeout;
+  }
+  if (llm.maxRetries !== undefined) {
+    embedding.maxRetries = llm.maxRetries;
+  }
+  // 当且仅当没有配置独立的 AGENT_EMBEDDING_API_KEY 时才向 embedding.headers 透传 llm.headers，防止信息泄露
+  if (llm.headers !== undefined && !envEmbeddingApiKey) {
+    embedding.headers = llm.headers;
+  }
+
   const config: AppConfig = {
     llm,
+    embedding,
     workspace,
     mcp,
     workMode,
@@ -162,6 +184,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   // 6. 深度冻结，防止业务代码意外修改
   Object.freeze(config);
   Object.freeze(config.llm);
+  Object.freeze(config.embedding);
   Object.freeze(config.mcp);
   Object.freeze(config.runtimeLimits);
   // mcpServers 内的每个 entry 也需要冻结

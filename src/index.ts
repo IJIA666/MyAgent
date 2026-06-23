@@ -50,7 +50,7 @@ async function main() {
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
     const contextAdapter = new DefaultContextAdapter(tokenEstimator);
-    const embeddingAdapter = new OpenAiEmbeddingAdapter(appConfig.llm);
+    const embeddingAdapter = new OpenAiEmbeddingAdapter(appConfig.embedding);
     const vectorDbAdapter = new LocalVectorDbAdapter(
       path.resolve(appConfig.workspace, '.agent/lancedb'),
       path.resolve(appConfig.workspace, '.agent/vectordb.json')

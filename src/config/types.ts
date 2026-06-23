@@ -57,6 +57,26 @@ export interface LlmConfig {
 }
 
 /**
+ * 文本嵌入（Embedding）模型连接配置。
+ * 包含 API 认证凭据、接口地址、目标嵌入模型以及可选的网络请求属性。
+ */
+export interface EmbeddingConfig {
+  /** API 认证密钥 */
+  apiKey: string;
+  /** API 接口基础地址（兼容 OpenAI 协议） */
+  baseUrl: string;
+  /** 目标嵌入模型名称（如 text-embedding-3-small） */
+  model: string;
+  /** 网络请求超时限制（毫秒） */
+  timeout?: number;
+  /** 最大重试次数 */
+  maxRetries?: number;
+  /** 自定义请求头 */
+  headers?: Record<string, string>;
+}
+
+
+/**
   * 支持的推理努力度（思考等级）字面量列表。
   */
 export const VALID_REASONING_EFFORTS = ['low', 'medium', 'high', 'max', 'disabled'] as const;
@@ -106,6 +126,8 @@ export type WorkMode = 'Safe' | 'Auto' | 'YOLO' | 'Plan';
 export interface AppConfig {
   /** 大语言模型连接配置 */
   llm: LlmConfig;
+  /** 文本嵌入模型连接配置 */
+  embedding: EmbeddingConfig;
   /** 授权工作区的绝对路径 */
   workspace: string;
   /** MCP Server 连接配置（可能为空对象） */

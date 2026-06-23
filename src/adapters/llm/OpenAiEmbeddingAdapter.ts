@@ -1,5 +1,5 @@
 import { OpenAI, type ClientOptions } from 'openai';
-import type { LlmConfig } from '../../config/index.js';
+import type { EmbeddingConfig } from '../../config/index.js';
 import type { EmbeddingPort } from '../../ports/driven/EmbeddingPort.js';
 
 /**
@@ -12,34 +12,25 @@ export class OpenAiEmbeddingAdapter implements EmbeddingPort {
 
   /**
    * 构造函数。
-   * 优先读取独立的 Embedding 专属环境变量（AGENT_EMBEDDING_API_KEY、AGENT_EMBEDDING_BASE_URL），
-   * 若未配置则降级复用 llmConfig 中的 apiKey 与 baseUrl，实现 Embedding 服务与 LLM 服务的厂商解耦。
    *
-   * @param llmConfig - 大语言模型连接配置（作为兜底来源）
-   * @param embeddingModel - 可选。指定的嵌入模型名称，默认读取 AGENT_EMBEDDING_MODEL 环境变量或 'text-embedding-3-small'
+   * @param config - 文本嵌入模型连接配置
    */
-  constructor(llmConfig: LlmConfig, embeddingModel?: string) {
-    /* eslint-disable-next-line n/no-process-env */
-    const envEmbeddingApiKey = process.env.AGENT_EMBEDDING_API_KEY;
-    /* eslint-disable-next-line n/no-process-env */
-    const envEmbeddingBaseUrl = process.env.AGENT_EMBEDDING_BASE_URL;
-    /* eslint-disable-next-line n/no-process-env */
-    this.modelName = embeddingModel || process.env.AGENT_EMBEDDING_MODEL || 'text-embedding-3-small';
+  constructor(config: EmbeddingConfig) {
+    this.modelName = config.model;
 
-    // 优先使用独立的 Embedding 专属配置，允许 Embedding 服务与 LLM 服务使用不同厂商
     const clientOptions: ClientOptions = {
-      apiKey: envEmbeddingApiKey || llmConfig.apiKey,
-      baseURL: envEmbeddingBaseUrl || llmConfig.baseUrl
+      apiKey: config.apiKey,
+      baseURL: config.baseUrl
     };
-    if (llmConfig.timeout !== undefined) {
-      clientOptions.timeout = llmConfig.timeout;
+    if (config.timeout !== undefined) {
+      clientOptions.timeout = config.timeout;
     }
-    if (llmConfig.maxRetries !== undefined) {
-      clientOptions.maxRetries = llmConfig.maxRetries;
+    if (config.maxRetries !== undefined) {
+      clientOptions.maxRetries = config.maxRetries;
     }
-    if (llmConfig.headers !== undefined && !envEmbeddingApiKey) {
-      // 仅在复用 LLM 配置时才透传自定义请求头，避免将 LLM 特有头部发送到 Embedding 服务
-      clientOptions.defaultHeaders = llmConfig.headers;
+    if (config.headers !== undefined) {
+      // 仅在存在有效自定义请求头时透传给客户端，隔离第三方或LLM网关专有认证请求头
+      clientOptions.defaultHeaders = config.headers;
     }
     this.client = new OpenAI(clientOptions);
   }
