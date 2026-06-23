@@ -278,6 +278,11 @@ export class LongTermMemoryPlugin implements Plugin {
    * @param context - 拦截执行的上下文对象
    */
   private handleSessionEndAsync(context: HookContext): void {
+    // 1. 如果显式配置了禁用 RAG，则直接跳过会话结束时的自省与记忆提炼任务
+    if (this.appConfig && this.appConfig.runtimeLimits.ragEnabled === false) {
+      return;
+    }
+
     const history = context.sessionContext.getHistory();
     // 过滤掉 system 消息，计算真实对话轮数
     const effectiveHistory = history.filter(m => m.role !== 'system');

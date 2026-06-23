@@ -162,11 +162,13 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       this.handleAsyncEvent();
     });
 
-    // 异步尝试重建向量数据库，仅当库为空且物理 MEMORY.md 存在时生效
-    this.memoryService.rebuildVectorDbIfEmpty().catch((error: unknown) => {
-      const msg = error instanceof Error ? error.message : String(error);
-      logger.error(`[SessionManager] 异步重建向量库失败: ${msg}`);
-    });
+    // 仅当开启了长期记忆 RAG 时，才异步尝试重建向量数据库，避免无谓的库初始化和 LanceDB 加载日志
+    if (appConfig.runtimeLimits.ragEnabled !== false) {
+      this.memoryService.rebuildVectorDbIfEmpty().catch((error: unknown) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error(`[SessionManager] 异步重建向量库失败: ${msg}`);
+      });
+    }
   }
 
   /**

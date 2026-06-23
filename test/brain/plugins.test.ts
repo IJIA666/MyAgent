@@ -859,5 +859,32 @@ describe('Plugins Lifecycle & Action Tests', () => {
       expect(llmRequest.messages?.[1].content).toContain('- **偏好**：用户喜欢 TypeScript。');
       expect(next).toHaveBeenCalled();
     });
+
+    it('should skip session end refinement if ragEnabled is configured to false in AppConfig', async () => {
+      const mockVectorDb = {} as unknown as VectorDbPort;
+      const mockEmbedding = {} as unknown as EmbeddingPort;
+      const mockConfig = createMockAppConfig();
+      // 显式配置 ragEnabled 为 false，以拦截自省提炼任务
+      (mockConfig.runtimeLimits as unknown as { ragEnabled: boolean }).ragEnabled = false;
+
+      const mockCallback = vi.fn();
+      const plugin = new LongTermMemoryPlugin(mockVectorDb, mockEmbedding, tempMemoryPath, mockCallback, mockConfig);
+
+      sessionContext.addMessage({ role: 'user', content: '测试消息 1' });
+      sessionContext.addMessage({ role: 'assistant', content: '回复消息 1' });
+
+      const context: HookContext = {
+        sessionContext,
+        eventName: HookEventName.SessionEnd,
+        control: { action: 'continue' }
+      };
+
+      const next = vi.fn().mockResolvedValue(undefined);
+      await plugin.hooks[HookEventName.SessionEnd](context, next);
+
+      // 验证在 RAG 关闭时，没有触发自省提炼的回调逻辑
+      expect(mockCallback).not.toHaveBeenCalled();
+      expect(next).toHaveBeenCalled();
+    });
   });
 });
