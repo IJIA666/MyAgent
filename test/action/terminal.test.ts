@@ -222,4 +222,51 @@ describe('Terminal Tool 单元测试', () => {
     expect(safetyNegative.message).toContain("外壳包装: 'powershell -Command \"npm run lint\"'");
     expect(safetyNegative.message).toContain("实际执行的核心命令为: 'npm run lint'");
   });
+
+  test('12. 新增防分号、反引号和命令替换注入测试（含引号感知放行）', () => {
+    // A. 基础分号与反引号拼接及命令替换注入拦截（反引号在非单引号下视为命令替换强力阻断）
+    expect(() => validateCommand('echo 1; echo 2')).toThrow('拒绝执行');
+    expect(() => validateCommand('echo 1 `whoami`')).toThrow('拒绝执行');
+    expect(() => validateCommand('echo `feat;fix`')).toThrow('检测到非法的反引号命令替换符');
+    expect(() => validateCommand('echo $(whoami)')).toThrow('拒绝执行');
+    expect(() => validateCommand('echo \\(whoami)')).toThrow('拒绝执行');
+
+    // B. 引号感知安全避让放行（只放行单引号与双引号包裹内的分号/安全元字符）
+    expect(() => validateCommand('git log --grep="feat;fix"')).not.toThrow();
+    expect(() => validateCommand("grep 'a;b'")).not.toThrow();
+
+    // C. 引号失衡校验（防止不平衡闭合逃逸）
+    expect(() => validateCommand('grep "a;b')).toThrow('不平衡的引号结构');
+    expect(() => validateCommand("grep 'a;b")).toThrow('不平衡的引号结构');
+
+    // D. 外壳包装下的分号注入（解包后发现 unquoted 分号，应当抛错）
+    expect(() => validateCommand('powershell -Command "dir; whoami"')).toThrow('拒绝执行');
+    expect(() => validateCommand('cmd /c "dir; whoami"')).toThrow('拒绝执行');
+  });
+
+  test('13. 终端 Git 写变更操作绝对硬阻断测试', () => {
+    const mockSession = new SessionContext();
+
+    // 无论在 YOLO 模式还是其它模式下，git commit 等写操作均应在 checkSafety 中被直接 deny 拦截
+    mockSession.setWorkMode('YOLO');
+    const safetyCommitYolo = executeCommandToolInstance.checkSafety({ command: 'git commit -m "update"' }, mockSession);
+    expect(safetyCommitYolo.status).toBe('deny');
+    expect(safetyCommitYolo.message).toContain('BLOCKED (Hardline Blocklist)');
+
+    // 在 Auto 模式下也应被绝对拦截
+    mockSession.setWorkMode('Auto');
+    const safetyCheckoutAuto = executeCommandToolInstance.checkSafety({ command: 'git checkout main' }, mockSession);
+    expect(safetyCheckoutAuto.status).toBe('deny');
+    expect(safetyCheckoutAuto.message).toContain('BLOCKED (Hardline Blocklist)');
+
+    // validateCommand 物理执行阶段同样直接抛错阻断
+    expect(() => validateCommand('git commit -m "update"')).toThrow('严禁执行除只读查看外的任何 Git 变更操作');
+    expect(() => validateCommand('git checkout -b branch')).toThrow('严禁执行除只读查看外的任何 Git 变更操作');
+    expect(() => validateCommand('git add .')).toThrow('严禁执行除只读查看外的任何 Git 变更操作');
+    
+    // 只读的 Git 查看命令应该被安全放行（不属于 Hardline 黑名单，在 YOLO 模式下直接 pass，在 Auto/Plan 模式下按常规则处理）
+    mockSession.setWorkMode('YOLO');
+    const safetyLogYolo = executeCommandToolInstance.checkSafety({ command: 'git log' }, mockSession);
+    expect(safetyLogYolo.status).toBe('pass'); // YOLO 下只读 git 命令直接通过
+  });
 });
