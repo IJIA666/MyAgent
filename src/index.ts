@@ -11,7 +11,7 @@ import { DefaultContextAdapter } from './adapters/context/DefaultContextAdapter.
 import { loadSkillContent } from './core/usecases/contextLoader.js';
 import { OpenAiEmbeddingAdapter } from './adapters/llm/OpenAiEmbeddingAdapter.js';
 import { LocalVectorDbAdapter } from './adapters/vectordb/LocalVectorDbAdapter.js';
-import { initLogger, disposeLogger } from './utils/logger.js';
+import { initLogger } from './utils/logger.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -46,6 +46,10 @@ async function main() {
   try {
     const mcpManager = new McpToolManager(appConfig.mcp);
     await mcpManager.connectAll();
+    const { LifecycleManager } = await import('./core/usecases/LifecycleManager.js');
+    LifecycleManager.register('mcp-manager', () => mcpManager.close());
+    const { BrowserSession } = await import('./adapters/tools/tools/browser/browser-action.js');
+    LifecycleManager.register('browser-session', () => BrowserSession.close());
     const toolRegistry = new ToolRegistry(mcpManager, { loadSkill: loadSkillContent });
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
@@ -76,21 +80,21 @@ async function main() {
   startCli(session);
 }
 
-// 挂载进程退出监听器，在应用异步终止时强制执行日志刷盘
-const handleExitSignal = async () => {
-  try {
-    await disposeLogger();
-  } catch {
-    // 忽略日志刷盘本身的失败，防止阻碍退出
-  }
-  process.exit(0);
-};
-
-process.on('SIGINT', handleExitSignal);
-process.on('SIGTERM', handleExitSignal);
+// 挂载全局进程退出监听器，交由 LifecycleManager 统一托管优雅清理流程
+process.on('SIGINT', async () => {
+  const { LifecycleManager } = await import('./core/usecases/LifecycleManager.js');
+  void LifecycleManager.shutdown(0);
+});
+process.on('SIGTERM', async () => {
+  const { LifecycleManager } = await import('./core/usecases/LifecycleManager.js');
+  void LifecycleManager.shutdown(143);
+});
 
 // 启动主程序
-main().catch((err) => {
+main().catch(async (err) => {
+  const { theme } = await import('./adapters/input/interface/views/theme.js');
   console.error(theme.error('致命错误：'), err);
   process.exit(1);
 });
+
+

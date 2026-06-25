@@ -26,12 +26,7 @@ export class McpToolManager implements McpManagerPort {
   // 已加载的 MCP 配置（通过构造函数注入）
   private config: McpConfig;
 
-  /**
-   * 异步的信号监听回调，用于 SIGINT/SIGTERM 信号
-   */
-  private cleanupHandler = () => {
-    this.close().catch(() => {});
-  };
+
 
   /**
    * 同步的 exit 事件回调。
@@ -67,9 +62,6 @@ export class McpToolManager implements McpManagerPort {
     // 绑定生命周期信号处理器，防止产生僵尸进程
     // exit 使用同步处理器（因为 exit 事件中 async 无效）
     process.on('exit', this.syncExitHandler);
-    // SIGINT/SIGTERM 使用异步处理器
-    process.on('SIGINT', this.cleanupHandler);
-    process.on('SIGTERM', this.cleanupHandler);
   }
 
   /**
@@ -311,8 +303,6 @@ export class McpToolManager implements McpManagerPort {
     this.isClosed = true;
 
     process.off('exit', this.syncExitHandler);
-    process.off('SIGINT', this.cleanupHandler);
-    process.off('SIGTERM', this.cleanupHandler);
 
     if (this.connections.size > 0) {
       logger.info(`[MCP Client] 正在安全断开所有连接并清理子进程...`);

@@ -308,7 +308,7 @@ export class GrepSearchTool implements NativeTool {
       await Promise.all(tasks);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`全文检索时流式扫描发生错误: ${msg}`);
+      throw new Error(`全文检索时流式扫描发生错误: ${msg}`, { cause: err });
     }
 
     if (countOnly) {
@@ -421,7 +421,7 @@ export class GlobSearchTool implements NativeTool {
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`通配符定位时流式扫描发生错误: ${msg}`);
+      throw new Error(`通配符定位时流式扫描发生错误: ${msg}`, { cause: err });
     }
 
     const totalCount = matchedPaths.length;

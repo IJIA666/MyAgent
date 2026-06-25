@@ -1,4 +1,6 @@
 /* eslint-disable n/no-process-env */
+import { exec, execSync } from 'child_process';
+import { promisify } from 'util';
 import { chromium, BrowserContext, Page } from 'playwright';
 import { logger } from '../../../../utils/logger.js'; // 导入统一日志单例 logger
 import { BrowserDetector } from './browser-detector.js';
@@ -32,19 +34,6 @@ export class BrowserSession {
     }
     this.hasRegisteredExitHandlers = true;
 
-    const cleanup = async () => {
-      const tenantIds = Array.from(this.contextsMap.keys());
-      for (const tenantId of tenantIds) {
-        await this.closeTenant(tenantId, false);
-      }
-    };
-
-    const sigHandler = async (signal: string) => {
-      logger.info(`[BrowserSession] 接收到信号 ${signal}，正在释放所有浏览器上下文并退出进程...`);
-      await cleanup();
-      process.exit(0);
-    };
-
     process.on('exit', () => {
       for (const tenantId of this.contextsMap.keys()) {
         const page = this.pagesMap.get(tenantId);
@@ -65,9 +54,6 @@ export class BrowserSession {
         }
       }
     });
-
-    process.on('SIGINT', () => sigHandler('SIGINT'));
-    process.on('SIGTERM', () => sigHandler('SIGTERM'));
   }
 
   /**
@@ -166,6 +152,13 @@ export class BrowserSession {
       this.contextsMap.delete(tenantId);
     }
 
+    // 执行物理进程强杀兜底以释放挂起的浏览器残留
+    try {
+      await this.killTenantProcesses(tenantId);
+    } catch (err) {
+      logger.error(`[BrowserSession] 强杀残留浏览器进程发生异常: ${err}`);
+    }
+
     if (cleanup) {
       const baseDir = process.env.BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
       const userDataDir = resolve(baseDir, tenantId);
@@ -180,10 +173,74 @@ export class BrowserSession {
   }
 
   /**
-   * 关闭当前的浏览器实例与会话，释放所有的底层物理流资源。
+   * 跨平台检索并强杀特定租户关联的 Chromium 浏览器子进程。
+   *
+   * @param tenantId - 租户标识
    */
+  public static async killTenantProcesses(tenantId: string): Promise<void> {
+    const baseDir = process.env.BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
+    const userDataDir = resolve(baseDir, tenantId);
+    const targetDirPattern = userDataDir.replace(/\\/g, '/');
+
+    const execPromise = promisify(exec);
+    try {
+      if (process.platform === 'win32') {
+        const { stdout } = await execPromise(
+          `wmic process where "name='chrome.exe' or name='chromium.exe'" get processid,commandline`,
+          { windowsHide: true }
+        );
+        const lines = stdout.split(/\r?\n/);
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const normalizedLine = line.replace(/\\/g, '/');
+          if (normalizedLine.includes(targetDirPattern)) {
+            const match = line.trim().match(/(\d+)$/);
+            if (match) {
+              const pid = parseInt(match[1], 10);
+              logger.warn(`[BrowserSession] [win32] 检索到残留浏览器 PID: ${pid}，执行物理进程树强杀。`);
+              try {
+                execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
+              } catch {
+                // 忽略
+              }
+            }
+          }
+        }
+      } else {
+        const { stdout } = await execPromise(`ps -ef`, { windowsHide: true });
+        const lines = stdout.split('\n');
+        for (const line of lines) {
+          if (line.includes(targetDirPattern) && (line.includes('chrome') || line.includes('chromium'))) {
+            const parts = line.trim().split(/\s+/);
+            const pid = parseInt(parts[1], 10);
+            if (pid && !isNaN(pid)) {
+              logger.warn(`[BrowserSession] [unix] 检索到残留浏览器 PID: ${pid}，执行 SIGKILL 强杀。`);
+              try {
+                process.kill(-pid, 'SIGKILL');
+              } catch {
+                try {
+                  process.kill(pid, 'SIGKILL');
+                } catch {
+                  // 忽略
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.error(`[BrowserSession] 执行物理进程强杀检索时失败: ${err}`);
+    }
+  }
+
   public static async close(): Promise<void> {
-    await this.closeTenant('default');
+    const tenantIds = Array.from(this.contextsMap.keys());
+    if (tenantIds.length === 0) {
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      await this.closeTenant(tenantId, false);
+    }
   }
 }
 

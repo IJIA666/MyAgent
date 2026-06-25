@@ -93,18 +93,13 @@ describe('BrowserSession 多租户隔离集成测试', () => {
     expect(existsSync(dirTemp)).toBe(false);
   });
 
-  test('意外强退生命周期监听：能够注册 SIGINT/SIGTERM 等进程信号并在触发时清空租户映射', async () => {
-    // 1. 拦截注册信号，保存原始 process.on/process.exit
+  test('意外强退生命周期监听：能够注册 exit 进程事件并在退出时清理各租户资源', async () => {
+    // 1. 拦截注册信号，保存原始 process.on
     const signalHandlers = new Map<string | symbol, (...args: unknown[]) => void>();
 
     const onSpy = vi.spyOn(process, 'on').mockImplementation((event, handler) => {
       signalHandlers.set(event, handler as (...args: unknown[]) => void);
       return process;
-    });
-
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code) => {
-      void code;
-      return undefined as never;
     });
 
     interface BrowserSessionInternals {
@@ -119,32 +114,34 @@ describe('BrowserSession 多租户隔离集成测试', () => {
     sessionInternals.hasRegisteredExitHandlers = false;
     BrowserSession.registerExitHandlers();
 
-    // 3. 验证是否监听了 SIGINT 与 SIGTERM
-    expect(onSpy).toHaveBeenCalledWith('SIGINT', expect.any(Function));
-    expect(onSpy).toHaveBeenCalledWith('SIGTERM', expect.any(Function));
+    // 3. 验证是否监听了 exit
+    expect(onSpy).toHaveBeenCalledWith('exit', expect.any(Function));
 
-    // 4. 模拟调起一个新的测试租户页面以注入 contextsMap/pagesMap
+    // 4. 模拟调起一个新的测试租户页面以注入 contextsMap/pagesMap 并 mock 其 close 方法
+    const pageCloseSpy = vi.fn();
+    const contextCloseSpy = vi.fn();
+
     sessionInternals.contextsMap.set('tenant-mock', {
-      close: async () => { }
+      close: contextCloseSpy
     } as unknown as BrowserContext);
     sessionInternals.pagesMap.set('tenant-mock', {
-      close: async () => { }
+      close: pageCloseSpy
     } as unknown as Page);
 
-    const sigintHandler = signalHandlers.get('SIGINT');
-    expect(sigintHandler).toBeDefined();
+    const exitHandler = signalHandlers.get('exit');
+    expect(exitHandler).toBeDefined();
 
-    // 模拟触发 SIGINT 信号
-    await sigintHandler!('SIGINT');
+    // 模拟触发 exit 信号
+    exitHandler!();
 
-    // 验证是否释放并清空了该租户映射
-    expect(sessionInternals.contextsMap.has('tenant-mock')).toBe(false);
-    expect(sessionInternals.pagesMap.has('tenant-mock')).toBe(false);
+    // 验证同步 close 是否被调用
+    expect(pageCloseSpy).toHaveBeenCalled();
+    expect(contextCloseSpy).toHaveBeenCalled();
 
     // 还原 process 全局属性
     onSpy.mockRestore();
-    exitSpy.mockRestore();
   });
+
 
   /**
    * 验证人机协作模式下的浏览器实例重建逻辑。

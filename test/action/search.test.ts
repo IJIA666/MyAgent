@@ -84,7 +84,7 @@ describe('GrepSearchTool & GlobSearchTool 异步与剪枝集成测试', () => {
     expect(result.status).toBe('success');
     
     // 应当只能在 src/app.ts 里搜到，而绝不能在 .venv 里面搜到
-    const files = result.matches.map((m: any) => m.file);
+    const files = result.matches.map((m: { file: string }) => m.file);
     expect(files).toContain('src/app.ts');
     expect(files).not.toContain('.venv/lib.ts');
   });

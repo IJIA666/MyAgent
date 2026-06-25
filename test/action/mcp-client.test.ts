@@ -100,10 +100,8 @@ describe('McpToolManager 单元测试', () => {
     // 触发 close() 以解除信号挂载
     await manager.close();
 
-    // 应该分别解除 exit、SIGINT、SIGTERM 信号的绑定
+    // 应该解除 exit 信号的绑定
     expect(processOffSpy).toHaveBeenCalledWith('exit', expect.any(Function));
-    expect(processOffSpy).toHaveBeenCalledWith('SIGINT', expect.any(Function));
-    expect(processOffSpy).toHaveBeenCalledWith('SIGTERM', expect.any(Function));
 
     processOffSpy.mockRestore();
   });
