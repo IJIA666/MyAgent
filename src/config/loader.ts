@@ -156,6 +156,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const compactionFailureLimit = parseEnvInt(env.AGENT_COMPACTION_FAILURE_LIMIT, 3);
   const compactionRecentFilesLimit = parseEnvInt(env.AGENT_COMPACTION_RECENT_FILES_LIMIT, 5);
   const toolTimeoutMs = parseEnvInt(env.AGENT_TOOL_TIMEOUT_MS, 30000);
+  const excludeDirsStr = env.AGENT_SEARCH_EXCLUDE || '.git,node_modules,.venv,.myagent';
+  const excludeDirs = excludeDirsStr.split(',').map((d: string) => d.trim()).filter(Boolean);
 
   // 加载 Embedding 配置（支持独立环境变量配置，并高保真向 LLM 配置降级）
   const envEmbeddingApiKey = env.AGENT_EMBEDDING_API_KEY;
@@ -200,8 +202,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       compactionFailureLimit,
       compactionRecentFilesLimit,
       toolTimeoutMs,
+      excludeDirs,
     }
   };
+
 
   // 6. 深度冻结，防止业务代码意外修改
   Object.freeze(config);

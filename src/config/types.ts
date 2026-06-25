@@ -172,4 +172,6 @@ export interface RuntimeLimitsConfig {
   compactionRecentFilesLimit: number;
   /** 工具调用超时的时限（毫秒） */
   toolTimeoutMs: number;
+  /** 文件检索时过滤排除的目录名列表 */
+  excludeDirs?: string[];
 }
