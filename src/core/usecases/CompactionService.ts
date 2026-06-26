@@ -1,4 +1,4 @@
-import { resolve } from 'path';
+import { resolve, relative } from 'path';
 import type { ChatMessage, LlmPort } from '../../ports/driven/LlmPort.js';
 import { SessionContext } from '../domain/context.js';
 import { buildCompactionSummaryPrompt, buildStaticFallbackSummary } from './prompts.js';
@@ -17,7 +17,8 @@ export class CompactionService {
   /** 后台提炼是否在途 */
   private isCompacting = false;
 
-  private compactionRetainCount = 4;
+  /** 保留最近历史消息条数默认上限，由 4 扩大至 8 以保留充足 ReAct 上下文 */
+  private compactionRetainCount = 8;
   private compactionTriggerDelta = 5000;
   private compactionFailureLimit = 3;
   private compactionRecentFilesLimit = 5;
@@ -95,7 +96,7 @@ export class CompactionService {
         if (summary && summary.trim().length > 0) {
           this.context.setCheckpointSummary(summary.trim());
           this.lastSummaryTokenLevel = currentTokens;
-          const recentFiles = this.collectReadToolFilePaths(messagesToCompact);
+          const recentFiles = this.collectRecentFileOperations(messagesToCompact);
           this.context.setRecentFiles(recentFiles);
           await this.contextRepo.saveState();
           this.compactionFailures = 0;
@@ -115,43 +116,26 @@ export class CompactionService {
   }
 
   /**
-   * 从待剔除的历史消息中，反向扫描找出最近大模型读写过的核心代码文件路径。
+   * 从待剔除的历史消息中，反向扫描找出最近大模型读写过的核心代码文件绝对路径及其操作类型。
    *
    * @param messages - 待扫描的历史消息数组
-   * @returns 收集到的核心代码文件路径数组（去重后）
+   * @returns 收集到的核心代码文件路径及操作类型数组（去重后）
    */
-  /**
-   * 从待剔除的历史消息中，反向扫描找出最近大模型读写过的核心代码文件绝对路径。
-   *
-   * @param messages - 待扫描的历史消息数组
-   * @returns 收集到的核心代码文件绝对路径数组（去重后）
-   */
-  public collectReadToolFilePaths(messages: ChatMessage[]): string[] {
-    const files = new Set<string>();
+  public collectRecentFileOperations(messages: ChatMessage[]): { filePath: string; opType: 'read' | 'edit' }[] {
+    const filesMap = new Map<string, { filePath: string; opType: 'read' | 'edit' }>();
     const rootDir = this.context.appConfig?.workspace || process.cwd();
 
-    const addPathOrPaths = (pathVal: string) => {
-      const trimmed = pathVal.trim();
-      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-        try {
-          const parsed = JSON.parse(trimmed);
-          if (Array.isArray(parsed)) {
-            for (const p of parsed) {
-              if (typeof p === 'string' && p.trim()) {
-                files.add(resolve(rootDir, p.trim()));
-              }
-            }
-            return;
-          }
-        } catch {
-          // 忽略并降级为逗号拆分
+    const getOpType = (name: string): 'read' | 'edit' => {
+      if (this.toolRegistry) {
+        const meta = this.toolRegistry.getTool(name);
+        if (meta && meta.securityCategory) {
+          return meta.securityCategory === 'write' ? 'edit' : 'read';
         }
       }
-
-      const parts = trimmed.split(',').map(p => p.trim()).filter(Boolean);
-      for (const p of parts) {
-        files.add(resolve(rootDir, p));
+      if (name === 'editFile' || name === 'applyPatch' || name === 'writeFile') {
+        return 'edit';
       }
+      return 'read';
     };
 
     const heuristicKeys = new Set([
@@ -167,7 +151,9 @@ export class CompactionService {
     ]);
 
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (files.size >= this.compactionRecentFilesLimit) break;
+      if (filesMap.size >= this.compactionRecentFilesLimit) {
+        // 如果已满，但历史中仍然有已存在文件的修改记录，我们仍需允许状态升级，因此不能直接 break
+      }
       const msg = messages[i];
       const customMsg = msg as {
         tool_calls?: Array<{
@@ -186,7 +172,6 @@ export class CompactionService {
               if (!args || typeof args !== 'object') continue;
 
               let pathKey: string | undefined;
-              // 优先查找工具注册表元数据声明
               if (this.toolRegistry) {
                 const meta = this.toolRegistry.getTool(name);
                 if (meta && meta.filePathParamKey) {
@@ -194,26 +179,70 @@ export class CompactionService {
                 }
               }
 
+              const opType = getOpType(name);
+
+              const addPathOrPaths = (pathVal: string) => {
+                const trimmed = pathVal.trim();
+                const pathsList: string[] = [];
+                if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                  try {
+                    const parsed = JSON.parse(trimmed);
+                    if (Array.isArray(parsed)) {
+                      for (const p of parsed) {
+                        if (typeof p === 'string' && p.trim()) {
+                          pathsList.push(resolve(rootDir, p.trim()));
+                        }
+                      }
+                    }
+                  } catch {
+                    // 忽略并降级
+                  }
+                }
+                if (pathsList.length === 0) {
+                  const parts = trimmed.split(',').map(p => p.trim()).filter(Boolean);
+                  for (const p of parts) {
+                    pathsList.push(resolve(rootDir, p));
+                  }
+                }
+
+                for (const absolutePath of pathsList) {
+                  if (filesMap.has(absolutePath)) {
+                    const existing = filesMap.get(absolutePath)!;
+                    if (existing.opType === 'read' && opType === 'edit') {
+                      filesMap.set(absolutePath, { filePath: absolutePath, opType: 'edit' });
+                    }
+                  } else {
+                    if (filesMap.size < this.compactionRecentFilesLimit) {
+                      filesMap.set(absolutePath, { filePath: absolutePath, opType });
+                    }
+                  }
+                }
+              };
+
               if (pathKey && typeof args[pathKey] === 'string') {
                 addPathOrPaths(args[pathKey]);
               } else {
-                // 启发式参数名解析
                 for (const key of Object.keys(args)) {
                   if (heuristicKeys.has(key) && typeof args[key] === 'string') {
                     addPathOrPaths(args[key]);
                   }
                 }
               }
-
-              if (files.size >= this.compactionRecentFilesLimit) break;
             } catch {
-              // 忽略参数反序列化失败 of 异常
+              // 忽略参数反序列化异常
             }
           }
         }
       }
     }
 
-    return Array.from(files);
+    return Array.from(filesMap.values()).map(item => {
+      const relativePath = relative(rootDir, item.filePath).replace(/\\/g, '/');
+      return {
+        filePath: relativePath,
+        opType: item.opType
+      };
+    });
   }
 }
+

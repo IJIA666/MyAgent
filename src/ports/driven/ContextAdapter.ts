@@ -18,7 +18,7 @@ export interface ContextAdapter {
    * @param transientContext - 临时需要注入的技能或上下文文本内容
    * @param localRules - 项目局部的外部规则文件内容，可选参数
    * @param summary - 物理轮换产生的历史提炼摘要，可选参数
-   * @param recentFiles - 剔除历史中大模型读写过的核心代码文件路径，可选参数
+   * @param recentFiles - 剔除历史中大模型读写过的文件及操作类型列表，可选参数
    * @returns 组装好的、可直接发送给大模型的完整消息参数数组
    */
   assemble(
@@ -26,6 +26,6 @@ export interface ContextAdapter {
     transientContext?: string,
     localRules?: string,
     summary?: string | null,
-    recentFiles?: string[]
+    recentFiles?: { filePath: string; opType: 'read' | 'edit' }[]
   ): ChatMessage[];
 }

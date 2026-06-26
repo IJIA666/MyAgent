@@ -5,6 +5,7 @@
 
 import { existsSync, statSync, mkdirSync, readdirSync, promises as fsPromises } from 'fs';
 import { dirname, resolve, basename } from 'path';
+import { createPatch } from 'diff';
 import { secureResolveReadPath, secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import { getWorkMode } from '../system/terminal.js';
@@ -469,8 +470,27 @@ export class EditFileTool implements NativeTool {
 
     await fsPromises.writeFile(safePath, newContent, { encoding: 'utf-8', signal });
 
-    return `文件局部修改成功："${targetPath}"。共替换了 ${replacementsCount} 处。`;
+    const diffSummary = generateLightDiff(oldString, newString);
+    return `文件局部修改成功："${targetPath}"。共替换了 ${replacementsCount} 处。${diffSummary}`;
   }
+}
+
+function generateLightDiff(oldStr: string, newStr: string): string {
+  const patch = createPatch('patch.txt', oldStr, newStr, '', '', { context: 3 });
+  const lines = patch.split(/\r?\n/);
+  // 过滤掉不必要的 Index: 和 =================================================================== 头部
+  const cleanLines = lines.filter(line => !line.startsWith('Index:') && !line.startsWith('==='));
+  
+  const MAX_LINES = 25;
+  const half = Math.floor(MAX_LINES / 2);
+  const finalPatch = cleanLines.length > MAX_LINES
+    ? [
+        ...cleanLines.slice(0, half),
+        `... [共被截断了 ${cleanLines.length - MAX_LINES} 行 diff 以防爆仓] ...`,
+        ...cleanLines.slice(-half)
+      ].join('\n')
+    : cleanLines.join('\n');
+  return `\n\n轻量级变更 Diff 摘要：\n\`\`\`diff\n${finalPatch}\n\`\`\``;
 }
 
 /**

@@ -29,7 +29,10 @@ describe('ContextRepository', () => {
   describe('saveState and loadState', () => {
     it('should save session state to temp files and load it back correctly', async () => {
       context.setCheckpointSummary('Last summary context');
-      context.setRecentFiles(['src/main.ts', 'src/utils.ts']);
+      context.setRecentFiles([
+        { filePath: 'src/main.ts', opType: 'read' },
+        { filePath: 'src/utils.ts', opType: 'read' }
+      ]);
       context.addMessage({ role: 'user', content: 'hello' });
       context.addMessage({ role: 'assistant', content: 'world' });
 
@@ -40,7 +43,10 @@ describe('ContextRepository', () => {
 
       const content = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
       expect(content.checkpointSummary).toBe('Last summary context');
-      expect(content.recentFiles).toEqual(['src/main.ts', 'src/utils.ts']);
+      expect(content.recentFiles).toEqual([
+        { filePath: 'src/main.ts', opType: 'read' },
+        { filePath: 'src/utils.ts', opType: 'read' }
+      ]);
       expect(content.messages.length).toBe(3);
 
       const newContext = new SessionContext('empty-session');
@@ -50,7 +56,10 @@ describe('ContextRepository', () => {
       expect(loadSuccess).toBe(true);
       expect(newContext.getSessionId()).toBe('test-repo-session');
       expect(newContext.getCheckpointSummary()).toBe('Last summary context');
-      expect(newContext.getRecentFiles()).toEqual(['src/main.ts', 'src/utils.ts']);
+      expect(newContext.getRecentFiles()).toEqual([
+        { filePath: 'src/main.ts', opType: 'read' },
+        { filePath: 'src/utils.ts', opType: 'read' }
+      ]);
       expect(newContext.getHistory().length).toBe(3);
     });
 
@@ -70,6 +79,31 @@ describe('ContextRepository', () => {
       expect(context.getSessionId()).toBe('legacy-session');
       expect(context.getHistory().length).toBe(2);
       expect(context.getHistory()[1].content).toBe('hi');
+    });
+
+    it('should support loading legacy session data with string array recentFiles', async () => {
+      const sessionDir = path.join(tempDir, '.myagent/sessions');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const sessionFile = path.join(sessionDir, 'legacy-session-recent.json');
+      
+      const mockState = {
+        checkpointSummary: 'Legacy Summary',
+        recentFiles: ['src/main.ts', 'src/utils.ts'],
+        messages: [
+          { role: 'system', content: 'sys' },
+          { role: 'user', content: 'hi' }
+        ]
+      };
+      fs.writeFileSync(sessionFile, JSON.stringify(mockState), 'utf-8');
+
+      const success = await contextRepo.loadState('legacy-session-recent');
+      expect(success).toBe(true);
+      expect(context.getSessionId()).toBe('legacy-session-recent');
+      expect(context.getCheckpointSummary()).toBe('Legacy Summary');
+      expect(context.getRecentFiles()).toEqual([
+        { filePath: 'src/main.ts', opType: 'read' },
+        { filePath: 'src/utils.ts', opType: 'read' }
+      ]);
     });
 
     it('should return false gracefully if the target session file does not exist or has invalid JSON', async () => {

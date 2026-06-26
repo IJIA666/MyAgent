@@ -67,7 +67,18 @@ export class ContextRepository {
         this.context.updateHistory(parsed.messages);
         this.context.setSessionId(targetSessionId);
         this.context.setCheckpointSummary(parsed.checkpointSummary || null);
-        this.context.setRecentFiles(parsed.recentFiles || []);
+        const rawRecent = parsed.recentFiles || [];
+        const recentFiles = rawRecent.map((item: unknown) => {
+          if (typeof item === 'string') {
+            return { filePath: item, opType: 'read' as const };
+          }
+          const obj = item as { filePath: string; opType: 'read' | 'edit' };
+          return {
+            filePath: obj.filePath,
+            opType: obj.opType
+          };
+        });
+        this.context.setRecentFiles(recentFiles);
         return true;
       }
     } catch {

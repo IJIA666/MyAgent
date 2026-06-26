@@ -43,7 +43,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   private sessionId: string;
   private tenantId: string;
   private checkpointSummary: string | null = null;
-  private recentFiles: string[] = [];
+  private recentFiles: { filePath: string; opType: 'read' | 'edit' }[] = [];
   /** 当前会话持有的工作安全模式，初始时从全局默认配置中拷贝 */
   private workMode: WorkMode;
   /** 会话是否正在处理生命周期 Hook 中间件（忙状态并发锁，内部存储变量） */
@@ -203,20 +203,20 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   }
 
   /**
-   * 获取最近读写的文件记忆列表。
+   * 获取最近读写的文件操作记忆列表。
    *
-   * @returns 被剔除历史中最近访问的文件相对路径列表
+   * @returns 最近访问的文件及操作类型列表
    */
-  public getRecentFiles(): string[] {
+  public getRecentFiles(): { filePath: string; opType: 'read' | 'edit' }[] {
     return this.recentFiles;
   }
 
   /**
-   * 设定最近读写的文件记忆列表。
+   * 设定最近读写的文件操作记忆列表。
    *
-   * @param files - 最近访问的文件相对路径列表
+   * @param files - 最近访问的文件及操作类型列表
    */
-  public setRecentFiles(files: string[]): void {
+  public setRecentFiles(files: { filePath: string; opType: 'read' | 'edit' }[]): void {
     this.recentFiles = files;
   }
 

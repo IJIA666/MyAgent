@@ -1,8 +1,6 @@
 import type { ChatMessage } from '../../ports/driven/LlmPort.js';
 import type { TokenEstimatorPort } from '../../ports/driven/TokenEstimatorPort.js';
 import type { ContextAdapter } from '../../ports/driven/ContextAdapter.js';
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
 import { HANDOFF_INSTRUCTION } from '../../core/usecases/prompts.js';
 
 /**
@@ -37,7 +35,7 @@ export class DefaultContextAdapter implements ContextAdapter {
     transientContext?: string,
     localRules?: string,
     summary?: string | null,
-    recentFiles?: string[]
+    recentFiles?: { filePath: string; opType: 'read' | 'edit' }[]
   ): ChatMessage[] {
     // 1. 浅拷贝基础消息数组，防止对数组的增删插操作污染原始引用
     const historySnapshot = [...baseHistory];
@@ -51,40 +49,16 @@ export class DefaultContextAdapter implements ContextAdapter {
       });
     }
 
-    let totalPinnedTokens = 0;
-    const MAX_TOTAL_TOKENS = 25000;
-    const MAX_SINGLE_TOKENS = 5000;
-
     if (recentFiles && recentFiles.length > 0) {
-      for (const filePath of recentFiles) {
-        if (totalPinnedTokens >= MAX_TOTAL_TOKENS) break;
-        try {
-          const absolutePath = join(process.cwd(), filePath);
-          if (existsSync(absolutePath)) {
-            let fileContent = readFileSync(absolutePath, 'utf-8');
-            let fileTokens = this.tokenEstimator.countTokens(fileContent);
-
-            if (fileTokens > MAX_SINGLE_TOKENS) {
-              const ratio = MAX_SINGLE_TOKENS / fileTokens;
-              const keepLen = Math.floor(fileContent.length * ratio / 2);
-              fileContent = fileContent.substring(0, keepLen) + '\n...[内容过长，已被 Token 预算系统硬性截断]...\n' + fileContent.substring(fileContent.length - keepLen);
-              fileTokens = MAX_SINGLE_TOKENS;
-            }
-
-            if (totalPinnedTokens + fileTokens > MAX_TOTAL_TOKENS) {
-              continue;
-            }
-
-            totalPinnedTokens += fileTokens;
-            headInjections.push({
-              role: 'system',
-              content: `<transient_file path="${filePath}">\n${fileContent}\n</transient_file>`
-            });
-          }
-        } catch {
-          // 容错处理：文件读取失败时不影响主上下文流程
-        }
-      }
+      const lines = recentFiles.map(fileItem => {
+        const prefix = fileItem.opType === 'edit' ? '[EDITED]' : '[READ]';
+        return `${prefix} ${fileItem.filePath}`;
+      });
+      const inventoryText = `<recent_files_inventory>\n${lines.join('\n')}\n</recent_files_inventory>`;
+      headInjections.push({
+        role: 'system',
+        content: inventoryText
+      });
     }
     // 时序追加至首条 System Prompt 之后以锁定头部前缀
     if (headInjections.length > 0) {

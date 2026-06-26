@@ -2,12 +2,12 @@
  * @fileoverview CompactionService 的单元测试，用于验证历史记录压缩与提取。
  */
 
-import { resolve } from 'path';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CompactionService } from '../../src/core/usecases/CompactionService.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 import type { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
 import type { ContextRepository } from '../../src/core/usecases/ContextRepository.js';
+import type { AppConfig } from '../../src/config/index.js';
 
 describe('CompactionService', () => {
   let context: SessionContext;
@@ -17,7 +17,16 @@ describe('CompactionService', () => {
 
   beforeEach(() => {
     context = new SessionContext('test-session');
-    
+    context.appConfig = {
+      workspace: process.cwd(),
+      runtimeLimits: {
+        compactionRetainCount: 4,
+        compactionTriggerDelta: 5000,
+        compactionFailureLimit: 3,
+        compactionRecentFilesLimit: 5
+      }
+    } as unknown as AppConfig;
+
     // Mock LlmPort
     mockLlmPort = {
       getModelName: vi.fn(),
@@ -39,15 +48,15 @@ describe('CompactionService', () => {
   });
 
   describe('compact', () => {
-    it('当历史记录小于等于 4 条时，应该直接返回 false', async () => {
+    it('当历史记录小于等于 Retain 阈值时，应该直接返回 false', async () => {
       expect(context.getHistory().length).toBe(1);
-      
+
       const success = await compactionService.compact();
       expect(success).toBe(false);
       expect(mockContextRepo.saveState).not.toHaveBeenCalled();
     });
 
-    it('当历史记录大于 4 条时，应该执行指针级截断并保留最后 4 条消息', async () => {
+    it('当历史记录大于 Retain 阈值时，应该执行指针级截断并保留最后 Retain 条消息', async () => {
       context.addMessage({ role: 'user', content: 'msg 1' });
       context.addMessage({ role: 'assistant', content: 'msg 2' });
       context.addMessage({ role: 'user', content: 'msg 3' });
@@ -93,9 +102,11 @@ describe('CompactionService', () => {
 
     it('如果提炼成功，应当更新摘要、recentFiles、lastSummaryTokenLevel，并保存状态', async () => {
       context.addMessage({ role: 'user', content: 'msg 1' });
-      context.addMessage({ role: 'assistant', content: 'msg 2', tool_calls: [
-        { id: '1', type: 'function', function: { name: 'readFile', arguments: JSON.stringify({ targetPath: 'foo.ts' }) } }
-      ] });
+      context.addMessage({
+        role: 'assistant', content: 'msg 2', tool_calls: [
+          { id: '1', type: 'function', function: { name: 'readFile', arguments: JSON.stringify({ targetPath: 'foo.ts' }) } }
+        ]
+      });
 
       vi.mocked(mockLlmPort.generateSummaryAsync).mockResolvedValue('Mocked Summary Text');
 
@@ -103,7 +114,7 @@ describe('CompactionService', () => {
 
       expect(mockLlmPort.generateSummaryAsync).toHaveBeenCalled();
       expect(context.getCheckpointSummary()).toBe('Mocked Summary Text');
-      expect(context.getRecentFiles()).toEqual([resolve(process.cwd(), 'foo.ts')]);
+      expect(context.getRecentFiles()).toEqual([{ filePath: 'foo.ts', opType: 'read' }]);
       expect(compactionService['lastSummaryTokenLevel']).toBe(6000);
       expect(mockContextRepo.saveState).toHaveBeenCalled();
     });
@@ -126,8 +137,8 @@ describe('CompactionService', () => {
     });
   });
 
-  describe('collectReadToolFilePaths', () => {
-    it('应当能正确识别 readFile 和 writeFile 的文件路径并去重、且上限最多 5 个', () => {
+  describe('collectRecentFileOperations', () => {
+    it('应当能正确识别 readFile 和 writeFile 的文件相对路径、操作类型并去重，且上限最多 5 个', () => {
       const messages: ChatMessage[] = [
         {
           role: 'assistant',
@@ -154,9 +165,15 @@ describe('CompactionService', () => {
         }
       ];
 
-      const files = compactionService.collectReadToolFilePaths(messages);
+      const files = compactionService.collectRecentFileOperations(messages);
       expect(files.length).toBe(5);
-      expect(files).toEqual(['c.ts', 'd.ts', 'e.ts', 'f.ts', 'a.ts'].map(p => resolve(process.cwd(), p)));
+      expect(files).toEqual([
+        { filePath: 'c.ts', opType: 'edit' },
+        { filePath: 'd.ts', opType: 'read' },
+        { filePath: 'e.ts', opType: 'read' },
+        { filePath: 'f.ts', opType: 'read' },
+        { filePath: 'a.ts', opType: 'read' }
+      ]);
     });
   });
 });

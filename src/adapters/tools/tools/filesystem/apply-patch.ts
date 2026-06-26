@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { applyPatch } from 'diff';
+import { applyPatch, createPatch } from 'diff';
 import { resolve } from 'path';
 import { secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import { ReadFileTool } from './file-system.js';
@@ -133,7 +133,8 @@ export class ApplyPatchTool implements NativeTool {
         throw new Error("Patch apply failed: context mismatch");
       }
       writeFileSync(safePath, result, 'utf-8');
-      return `严格补丁应用成功："${targetPath}"。`;
+      const limitedPatch = limitPatchSize(patchContent);
+      return `严格补丁应用成功："${targetPath}"。\n\n轻量级变更 Diff 摘要：\n\`\`\`diff\n${limitedPatch}\n\`\`\``;
     } else {
       // replace 块模式
       const expectedContent = args.expectedContent;
@@ -150,7 +151,46 @@ export class ApplyPatchTool implements NativeTool {
       });
 
       writeFileSync(safePath, newContent, 'utf-8');
-      return `通过特征签名对齐块替换成功："${targetPath}"，替换了从第 ${matchedLine} 行开始的 ${matchedLinesCount} 行内容。`;
+      const diffSummary = generateLightDiff(expectedContent, patchContent);
+      return `通过特征签名对齐块替换成功："${targetPath}"，替换了从第 ${matchedLine} 行开始的 ${matchedLinesCount} 行内容。${diffSummary}`;
     }
   }
+}
+
+/**
+ * 限制补丁显示尺寸，防止 Tool Result 发生大文本 Token 溢出。
+ */
+function limitPatchSize(patch: string): string {
+  const lines = patch.split(/\r?\n/);
+  const MAX_LINES = 25;
+  if (lines.length > MAX_LINES) {
+    const half = Math.floor(MAX_LINES / 2);
+    return [
+      ...lines.slice(0, half),
+      `... [共被截断了 ${lines.length - half * 2} 行原始补丁以防膨胀] ...`,
+      ...lines.slice(-half)
+    ].join('\n');
+  }
+  return patch;
+}
+
+/**
+ * 产生内存中轻量级 Diff 的辅助函数。
+ */
+function generateLightDiff(oldStr: string, newStr: string): string {
+  const patch = createPatch('patch.txt', oldStr, newStr, '', '', { context: 3 });
+  const lines = patch.split(/\r?\n/);
+  // 过滤掉不必要的 Index: 和 =================================================================== 头部
+  const cleanLines = lines.filter(line => !line.startsWith('Index:') && !line.startsWith('==='));
+  
+  const MAX_LINES = 25;
+  const half = Math.floor(MAX_LINES / 2);
+  const finalPatch = cleanLines.length > MAX_LINES
+    ? [
+        ...cleanLines.slice(0, half),
+        `... [共被截断了 ${cleanLines.length - MAX_LINES} 行 diff 以防爆仓] ...`,
+        ...cleanLines.slice(-half)
+      ].join('\n')
+    : cleanLines.join('\n');
+  return `\n\n轻量级变更 Diff 摘要：\n\`\`\`diff\n${finalPatch}\n\`\`\``;
 }

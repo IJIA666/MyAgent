@@ -14,8 +14,8 @@ import type { AppConfig } from '../../src/config/index.js';
 describe('安全与并发增强特性测试', () => {
   const testWorkspace = resolve('d:\\Projects\\MyAgent');
 
-  describe('1. 元数据追踪收集 ( collectReadToolFilePaths )', () => {
-    it('应根据工具声明的 filePathParamKey 提取物理绝对路径，并支持启发式提取', () => {
+  describe('1. 元数据追踪收集 ( collectRecentFileOperations )', () => {
+    it('应根据工具声明的 filePathParamKey 提取物理相对路径，并支持启发式提取', () => {
       const context = new SessionContext('test-compaction');
       context.appConfig = { workspace: testWorkspace } as unknown as AppConfig;
 
@@ -58,9 +58,9 @@ describe('安全与并发增强特性测试', () => {
         }
       ];
 
-      const collected = compaction.collectReadToolFilePaths(messages);
-      expect(collected).toContain(resolve(testWorkspace, 'src/main.ts'));
-      expect(collected).toContain(resolve(testWorkspace, 'src/utils.ts'));
+      const collected = compaction.collectRecentFileOperations(messages);
+      expect(collected).toContainEqual({ filePath: 'src/main.ts', opType: 'read' });
+      expect(collected).toContainEqual({ filePath: 'src/utils.ts', opType: 'read' });
     });
   });
 
