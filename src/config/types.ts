@@ -172,6 +172,10 @@ export interface RuntimeLimitsConfig {
   compactionRecentFilesLimit: number;
   /** 工具调用超时的时限（毫秒） */
   toolTimeoutMs: number;
+  /** 大模型请求单次超时的时限（毫秒） */
+  modelTimeoutMs?: number;
+  /** 后台自省子智能体的总超时时限（毫秒） */
+  subAgentTimeoutMs?: number;
   /** 文件检索时过滤排除的目录名列表 */
   excludeDirs?: string[];
 }

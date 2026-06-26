@@ -6,7 +6,7 @@ import { MemoryService } from '../../src/core/usecases/MemoryService.js';
 import { AppConfig, LlmConfig } from '../../src/config/index.js';
 import type { VectorDbPort } from '../../src/ports/driven/VectorDbPort.js';
 import type { EmbeddingPort } from '../../src/ports/driven/EmbeddingPort.js';
-import type { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
+import type { LlmPort, ChatMessage, LlmStreamEvent } from '../../src/ports/driven/LlmPort.js';
 import type { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
 import { createMockAppConfig } from '../mock-factory.js';
 
@@ -185,6 +185,69 @@ describe('MemoryService 单元测试', () => {
       const content = fs.readFileSync(filePath, 'utf-8');
       expect(content).toContain('- **自省结果**：自测试中的提炼信息');
       expect(mockVectorDb.add).toHaveBeenCalled();
+    });
+  });
+
+  describe('triggerMemoryRefinementAsync 超时强杀与降级', () => {
+    it('当自省子智能体卡死超时，应当被 Abort 终止并不影响主流程运行', async () => {
+      // 1. 设置极短的 subAgentTimeoutMs 以方便触发超时
+      appConfig.runtimeLimits = {
+        maxIterations: 20,
+        largeToolOutputLimit: 1000,
+        readManyFilesLimit: 10,
+        searchLimit: 100,
+        compactionWatermarkFactor: 0.8,
+        ragEnabled: true,
+        ragScoreThreshold: 0.5,
+        ragRecallLimit: 5,
+        ragRefinementThreshold: 2,
+        loopPreventionLimit: 5,
+        compactionRetainCount: 4,
+        compactionTriggerDelta: 1000,
+        compactionFailureLimit: 3,
+        compactionRecentFilesLimit: 5,
+        toolTimeoutMs: 1000,
+        subAgentTimeoutMs: 50 // 仅有 50 毫秒超时
+      };
+
+      // 2. 模拟一个永远挂起（不返回 chunk）的模型流式接口，直到超时 Abort
+      const longPendingDriver = {
+        getModelName: () => 'MockLlm',
+        switchModel: vi.fn(),
+        abort: vi.fn(),
+        streamChat: async function* (
+          messages: unknown,
+          tools: unknown,
+          options: { signal?: AbortSignal } | unknown
+        ) {
+          const opts = options as { signal?: AbortSignal };
+          const dummy = false;
+          if (dummy) {
+            yield {} as unknown as LlmStreamEvent;
+          }
+          // 等待外部信号取消
+          await new Promise<void>((resolve, reject) => {
+            if (opts?.signal?.aborted) {
+              reject(new Error('AbortError'));
+              return;
+            }
+            opts?.signal?.addEventListener('abort', () => reject(new Error('AbortError')));
+          });
+        }
+      } as unknown as LlmPort;
+
+      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, longPendingDriver, mockContextAdapter);
+      const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+      const history: ChatMessage[] = [
+        { role: 'user', content: 'hello' }
+      ];
+
+      // 3. 执行 triggerMemoryRefinementAsync，即使它内部超时，也不应该对外抛出错误崩溃，而是优雅地静默降级（通过 catch 拦截）
+      await expect(service.triggerMemoryRefinementAsync(history, mockLlmConfig)).resolves.not.toThrow();
+
+      // 验证未写入文件
+      const filePath = service.getMemoryFilePath();
+      expect(fs.existsSync(filePath)).toBe(false);
     });
   });
 });

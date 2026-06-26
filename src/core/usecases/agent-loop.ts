@@ -141,12 +141,14 @@ export class AgentLoop {
    * @param transientSkillContent - 当前请求独占的临时技能规范内容
    * @param tracer - 活动的日志跟踪器，运行时动态传入以防止引用过期
    * @param llmConfig - 活动的大模型连接配置，运行时动态传入以保障实时状态等同
+   * @param options - 可选的运行时交互配置选项
    * @returns 异步生成 AgentEvent 流，由外部消费者负责呈现
    */
   public async *chat(
     transientSkillContent: string | undefined,
     tracer: AgentTracer,
-    llmConfig: LlmConfig
+    llmConfig: LlmConfig,
+    options?: { signal?: AbortSignal }
   ): AsyncGenerator<AgentEvent, void, unknown> {
     // 初始化迭代计数器
     let iteration = 0;
@@ -244,23 +246,52 @@ export class AgentLoop {
           tools: filteredTools as Record<string, unknown>[]
         };
 
-        // 获取底层的 Stream 响应
-        let stream: AsyncGenerator<LlmStreamEvent, void, unknown>;
-        if (beforeModelResult.llmResponse) {
-          // 如果插件直接 Mock 了响应，利用生成器做模拟回包
-          const mockResponse = beforeModelResult.llmResponse;
-          stream = (async function* () {
-            yield mockResponse as LlmStreamEvent;
-          })() as unknown as AsyncGenerator<LlmStreamEvent, void, unknown>;
-        } else {
-          stream = this.driver.streamChat(
-            actualRequest.messages || [],
-            actualRequest.tools || []
-          );
-        }
+        let cleanupCascade: (() => void) | undefined = undefined;
+        let hasToolCalls = false;
+        try {
+          // 获取底层的 Stream 响应
+          let stream: AsyncGenerator<LlmStreamEvent, void, unknown>;
+          if (beforeModelResult.llmResponse) {
+            // 如果插件直接 Mock 了响应，利用生成器做模拟回包
+            const mockResponse = beforeModelResult.llmResponse;
+            stream = (async function* () {
+              yield mockResponse as LlmStreamEvent;
+            })() as unknown as AsyncGenerator<LlmStreamEvent, void, unknown>;
+          } else {
+            const modelTimeoutMs = this.context.appConfig?.runtimeLimits?.modelTimeoutMs ?? 60000;
+            const localTimeoutSignal = AbortSignal.timeout(modelTimeoutMs);
+            let combinedSignal = localTimeoutSignal;
+
+            if (options?.signal) {
+              const abortSignalClass = AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal };
+              if (typeof abortSignalClass.any === 'function') {
+                combinedSignal = abortSignalClass.any([localTimeoutSignal, options.signal]);
+              } else {
+                const combinedController = new AbortController();
+                const onAbort = () => combinedController.abort();
+                if (options.signal.aborted || localTimeoutSignal.aborted) {
+                  combinedController.abort();
+                } else {
+                  options.signal.addEventListener('abort', onAbort);
+                  localTimeoutSignal.addEventListener('abort', onAbort);
+                }
+                combinedSignal = combinedController.signal;
+                cleanupCascade = () => {
+                  options.signal?.removeEventListener('abort', onAbort);
+                  localTimeoutSignal.removeEventListener('abort', onAbort);
+                };
+              }
+            }
+
+            stream = this.driver.streamChat(
+              actualRequest.messages || [],
+              actualRequest.tools || [],
+              { signal: combinedSignal }
+            );
+          }
 
         // 标记在当前响应块中是否嗅探到了动作指令（工具调用）
-        let hasToolCalls = false;
+        hasToolCalls = false;
         // 格式化后的工具清单集合
         let finalToolCalls: Array<{ name: string, arguments: string, result?: string, error?: string }> = [];
 
@@ -728,6 +759,9 @@ export class AgentLoop {
             await this.contextRepo.saveState();
             return;
           }
+        }
+        } finally {
+          cleanupCascade?.();
         }
 
         // 如果本轮存在工具动作被执行，那么状态已改变，进行递归（开启新的循环），再次请求大模型进行研判

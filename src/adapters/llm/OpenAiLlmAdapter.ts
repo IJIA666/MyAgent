@@ -1,7 +1,7 @@
 import { OpenAI, type ClientOptions } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { LlmConfig } from '../../config/index.js';
-import type { ChatMessage, LlmPort, LlmStreamEvent } from '../../ports/driven/LlmPort.js';
+import type { ChatMessage, LlmPort, LlmStreamEvent, LlmPortOptions } from '../../ports/driven/LlmPort.js';
 import type { ApiUsage } from '../../ports/driven/TokenEstimatorPort.js';
 
 /**
@@ -44,7 +44,7 @@ export class OpenAiLlmAdapter implements LlmPort {
   private llmConfig: LlmConfig;
   private modelName: string;
   private modelOptions?: Record<string, unknown>;
-  private abortController: AbortController | null = null;
+  private activeControllers = new Set<AbortController>();
 
   /**
    * 实例初始化。
@@ -112,10 +112,11 @@ export class OpenAiLlmAdapter implements LlmPort {
    * 中断当前正在进行的流式生成或网络请求。
    */
   public abort(): void {
-    if (this.abortController) {
-      this.abortController.abort(new Error('APIUserAbortError'));
-      this.abortController = null;
+    const error = new Error('APIUserAbortError');
+    for (const controller of this.activeControllers) {
+      controller.abort(error);
     }
+    this.activeControllers.clear();
   }
 
   /**
@@ -127,9 +128,30 @@ export class OpenAiLlmAdapter implements LlmPort {
    */
   public async *streamChat(
     messages: ChatMessage[],
-    tools: Record<string, unknown>[]
+    tools: Record<string, unknown>[],
+    options?: LlmPortOptions
   ): AsyncGenerator<LlmStreamEvent, void, unknown> {
-    this.abortController = new AbortController();
+    const localAC = new AbortController();
+    this.activeControllers.add(localAC);
+
+    let combinedSignal = localAC.signal;
+    let onAbort: (() => void) | undefined = undefined;
+
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        localAC.abort();
+      } else {
+        const abortSignalClass = AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal };
+        if (typeof abortSignalClass.any === 'function') {
+          combinedSignal = abortSignalClass.any([localAC.signal, options.signal]);
+        } else {
+          onAbort = () => {
+            localAC.abort();
+          };
+          options.signal.addEventListener('abort', onAbort);
+        }
+      }
+    }
 
     try {
       const openAiMessages = messages.map(toOpenAiMessage);
@@ -145,7 +167,7 @@ export class OpenAiLlmAdapter implements LlmPort {
           ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
           ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions, this.llmConfig) : {})
         },
-        { signal: this.abortController.signal }
+        { signal: combinedSignal }
       );
 
       let fullContent = '';
@@ -216,7 +238,10 @@ export class OpenAiLlmAdapter implements LlmPort {
       }
 
     } finally {
-      this.abortController = null;
+      this.activeControllers.delete(localAC);
+      if (onAbort && options?.signal) {
+        options.signal.removeEventListener('abort', onAbort);
+      }
     }
   }
 
@@ -224,10 +249,32 @@ export class OpenAiLlmAdapter implements LlmPort {
    * 发起非流式的大模型交互请求。
    * 
    * @param messages - 大模型所需的消息上下文序列
+   * @param options - 可选的运行时交互配置选项
    * @returns 大模型生成的完整文本回复内容
    */
-  public async chat(messages: ChatMessage[]): Promise<string> {
-    this.abortController = new AbortController();
+  public async chat(messages: ChatMessage[], options?: LlmPortOptions): Promise<string> {
+    const localAC = new AbortController();
+    this.activeControllers.add(localAC);
+
+    let combinedSignal = localAC.signal;
+    let onAbort: (() => void) | undefined = undefined;
+
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        localAC.abort();
+      } else {
+        const abortSignalClass = AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal };
+        if (typeof abortSignalClass.any === 'function') {
+          combinedSignal = abortSignalClass.any([localAC.signal, options.signal]);
+        } else {
+          onAbort = () => {
+            localAC.abort();
+          };
+          options.signal.addEventListener('abort', onAbort);
+        }
+      }
+    }
+
     try {
       const openAiMessages = messages.map(toOpenAiMessage);
       const response = await this.client.chat.completions.create(
@@ -239,11 +286,14 @@ export class OpenAiLlmAdapter implements LlmPort {
           ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
           ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions, this.llmConfig) : {})
         },
-        { signal: this.abortController.signal }
+        { signal: combinedSignal }
       );
       return response.choices[0]?.message?.content || '';
     } finally {
-      this.abortController = null;
+      this.activeControllers.delete(localAC);
+      if (onAbort && options?.signal) {
+        options.signal.removeEventListener('abort', onAbort);
+      }
     }
   }
 
@@ -254,6 +304,9 @@ export class OpenAiLlmAdapter implements LlmPort {
    * @returns 大模型生成的提炼文本
    */
   public async generateSummaryAsync(messages: ChatMessage[]): Promise<string> {
+    // 此处刻意使用游离于 activeControllers 之外的局部 AbortController。
+    // 因为 generateSummaryAsync 用于后台异步 Summary 提炼任务，其执行生命周期独立于主推理循环，
+    // 不应被主交互流程的全局 abort() 操作所中断取消，以保障后台摘要数据落盘的事务完整性。
     const localAbortController = new AbortController();
     const openAiMessages = messages.map(toOpenAiMessage);
     const response = await this.client.chat.completions.create(

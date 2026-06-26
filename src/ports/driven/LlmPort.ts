@@ -1,3 +1,8 @@
+/**
+ * @file 大语言模型（LLM）的驱动端口与相关数据结构定义。
+ * 包含通用聊天消息、大模型流式输出事件流以及 LlmPort 接口契约。
+ */
+
 import type { LlmConfig } from '../../config/index.js';
 
 /**
@@ -25,6 +30,14 @@ export type LlmStreamEvent =
   | { type: 'content'; content: string }
   | { type: 'tool_calls'; toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>; assistantMessage: ChatMessage; usage?: unknown }
   | { type: 'complete'; content: string; reasoning: string; assistantMessage: ChatMessage; usage?: unknown };
+
+/**
+ * 大模型调用运行时可选的配置选项。
+ */
+export interface LlmPortOptions {
+  /** 可选的在途请求取消信号 */
+  signal?: AbortSignal;
+}
 
 /**
  * 大语言模型通用交互 Port 契约接口。
@@ -56,20 +69,23 @@ export interface LlmPort {
    *
    * @param messages - 发送的完整上下文历史数组
    * @param tools - 挂载的可用工具定义集
+   * @param options - 可选的运行时交互配置选项
    * @returns 异步生成事件流
    */
   streamChat(
     messages: ChatMessage[],
-    tools: Record<string, unknown>[]
+    tools: Record<string, unknown>[],
+    options?: LlmPortOptions
   ): AsyncGenerator<LlmStreamEvent, void, unknown>;
 
   /**
    * 发起非流式的同步交互请求。
    *
    * @param messages - 消息上下文序列
+   * @param options - 可选的运行时交互配置选项
    * @returns 大模型生成的完整文本回复内容
    */
-  chat(messages: ChatMessage[]): Promise<string>;
+  chat(messages: ChatMessage[], options?: LlmPortOptions): Promise<string>;
 
   /**
    * 非阻塞的异步摘要生成。

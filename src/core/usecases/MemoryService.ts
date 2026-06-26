@@ -281,10 +281,28 @@ ${historyText}
       maxIterations: 3
     });
 
-    // 7. 用 for await 驱动子智能体并静默消费其输出
-    const generator = forkedAgent.chat('', subTracer, llmConfig);
-    for await (const chunk of generator) {
-      void chunk;
+    const subAgentTimeoutMs = this.appConfig?.runtimeLimits?.subAgentTimeoutMs ?? 60000;
+    const subAgentAC = new AbortController();
+    const timeoutId = setTimeout(() => {
+      subAgentAC.abort(new Error('SubAgentIntrospectionTimeout'));
+    }, subAgentTimeoutMs);
+
+    try {
+      // 7. 用 for await 驱动子智能体并静默消费其输出
+      const generator = forkedAgent.chat('', subTracer, llmConfig, { signal: subAgentAC.signal });
+      for await (const chunk of generator) {
+        void chunk;
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const isAbort = error instanceof Error && (error.name === 'AbortError' || msg.includes('Abort') || msg.includes('abort') || msg.includes('IntrospectionTimeout'));
+      if (isAbort) {
+        logger.warn(`[MemoryService] 子智能体自省超时或被取消，已静默中断: ${msg}`);
+      } else {
+        throw error;
+      }
+    } finally {
+      clearTimeout(timeoutId);
     }
 
     // 8. 确保物理记忆文件异步追加写入以及向量数据库同步重建全部落盘完毕，避免单元测试或异步链路中出现未完成竞态
