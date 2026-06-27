@@ -15,6 +15,7 @@ import { AgentEvent } from '../../src/core/usecases/agent-loop.js';
 import type { VectorDbPort } from '../../src/ports/driven/VectorDbPort.js';
 import type { EmbeddingPort } from '../../src/ports/driven/EmbeddingPort.js';
 import { createMockAppConfig } from '../mock-factory.js';
+import { ShellQualityCheckAdapter } from '../../src/adapters/tools/ShellQualityCheckAdapter.js';
 
 // 使用 vi.hoisted 提前在加载阶段劫持并 mock 掉 child_process.exec 行为，隔离物理执行
 const { mockExecPromisified, execMockFunc } = vi.hoisted(() => {
@@ -347,27 +348,15 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
   });
 
   it('应该能够运行后置质量强校验 runPostRunCheck', async () => {
-    const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
-    const mockDriver = { getModelName: () => 'MockModel', switchModel: () => { }, abort: () => { } } as unknown as LlmPort;
-    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
-    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}) } as unknown as ToolRegistryPort;
-    const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
-
-    const session = new SessionManager(
-      mockLlmConfig,
-      mockDriver,
-      mockEstimator,
-      mockToolRegistry,
-      mockContextAdapter,
-      mockVectorDb,
-      mockEmbedding,
-      createMockAppConfig()
-    );
-
-    const loop = session['agentLoop'] as unknown as VirtualAgentLoop;
+    const qualityCheckAdapter = new ShellQualityCheckAdapter();
 
     // 1. 成功测试
-    const successResult = await loop.runPostRunCheck();
+    mockExecPromisified.mockResolvedValue({
+      stdout: 'lint/tsc mock passed',
+      stderr: ''
+    });
+
+    const successResult = await qualityCheckAdapter.runPostRunCheck();
     expect(successResult.success).toBe(true);
     expect(successResult.output).toContain('lint/tsc mock passed');
 
@@ -378,7 +367,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       message: 'Mock lint tsc exception'
     });
 
-    const failResult = await loop.runPostRunCheck();
+    const failResult = await qualityCheckAdapter.runPostRunCheck();
     expect(failResult.success).toBe(false);
     expect(failResult.output).toContain('ESLint 检查失败');
     expect(failResult.output).toContain('stdout error snippet');

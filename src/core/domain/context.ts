@@ -320,6 +320,23 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   }
 
   /**
+   * 基于指定起始索引进行物理截断。
+   * 丢弃中间的消息数组，保留 system prompt (index 0) 以及从指定索引开始的后续所有消息。
+   *
+   * @param startIndex - 保留历史消息的起始索引点
+   */
+  public truncateHistoryFromIndex(startIndex: number): void {
+    // 忙状态并发锁断言保护
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
+    if (startIndex <= 1 || startIndex >= this.messageHistory.length) return;
+    const systemMsg = this.messageHistory[0];
+    const keptMsgs = this.messageHistory.slice(startIndex);
+    this.messageHistory = [systemMsg, ...keptMsgs];
+  }
+
+  /**
    * 设定当前会话唯一标识（用于恢复会话状态重新绑定）。
    *
    * @param id - 新的会话唯一标识符
@@ -435,7 +452,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    * @returns 在白名单中返回 true，否则返回 false
    */
   public hasTemporaryReadWhitelist(pathStr: string): boolean {
-    return SecurityService.getInstance().hasTemporaryReadWhitelist(pathStr);
+    return SecurityService.getInstance().hasTemporaryReadWhitelist(this.sessionId, pathStr);
   }
 
   /**
@@ -445,6 +462,43 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    * @returns 在白名单中返回 true，否则返回 false
    */
   public hasTemporaryWriteWhitelist(pathStr: string): boolean {
-    return SecurityService.getInstance().hasTemporaryWriteWhitelist(pathStr);
+    return SecurityService.getInstance().hasTemporaryWriteWhitelist(this.sessionId, pathStr);
+  }
+
+  /**
+   * 将指定物理绝对路径加入当前会话的临时只读白名单。
+   * 受到 busy 状态锁防护。
+   *
+   * @param pathStr - 物理绝对路径
+   */
+  public addTemporaryReadWhitelist(pathStr: string): void {
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
+    SecurityService.getInstance().addTemporaryReadWhitelist(this.sessionId, pathStr);
+  }
+
+  /**
+   * 将指定物理绝对路径加入当前会话的临时可写白名单。
+   * 受到 busy 状态锁防护。
+   *
+   * @param pathStr - 物理绝对路径
+   */
+  public addTemporaryWriteWhitelist(pathStr: string): void {
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
+    SecurityService.getInstance().addTemporaryWriteWhitelist(this.sessionId, pathStr);
+  }
+
+  /**
+   * 清空当前会话在内存中暂存的所有临时读写白名单。
+   * 受到 busy 状态锁防护。
+   */
+  public clearTemporaryWhitelists(): void {
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
+    SecurityService.getInstance().clearTemporaryWhitelists(this.sessionId);
   }
 }

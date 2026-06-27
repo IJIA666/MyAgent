@@ -56,18 +56,21 @@ describe('CompactionService', () => {
       expect(mockContextRepo.saveState).not.toHaveBeenCalled();
     });
 
-    it('当历史记录大于 Retain 阈值时，应该执行指针级截断并保留最后 Retain 条消息', async () => {
+    it('当历史记录中的 user 消息总数大于 retain 阈值时，应该执行基于 user 轮数的硬截断并保留最近的对话', async () => {
+      compactionService['compactionRetainCount'] = 2;
+
       context.addMessage({ role: 'user', content: 'msg 1' });
       context.addMessage({ role: 'assistant', content: 'msg 2' });
       context.addMessage({ role: 'user', content: 'msg 3' });
       context.addMessage({ role: 'assistant', content: 'msg 4' });
-      context.addMessage({ role: 'user', content: 'msg 5' }); // 共 6 条消息
+      context.addMessage({ role: 'user', content: 'msg 5' }); // 共 6 条消息，3 个 user 角色消息
 
       expect(context.getHistory().length).toBe(6);
 
       const success = await compactionService.compact();
       expect(success).toBe(true);
-      expect(context.getHistory().length).toBe(5);
+      expect(context.getHistory().length).toBe(4);
+      expect(context.getHistory()[1].content).toBe('msg 3');
       expect(context.getCheckpointSummary()).toBeDefined();
       expect(mockContextRepo.saveState).toHaveBeenCalled();
     });

@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ChatMessage } from '../../ports/driven/LlmPort.js';
 import { SessionContext } from '../domain/context.js';
+import { logger } from '../../utils/logger.js';
 
 /**
  * 负责会话状态的物理落盘生命周期与上下文回溯。
@@ -41,8 +42,9 @@ export class ContextRepository {
         recentFiles: this.context.getRecentFiles()
       };
       await fs.writeFile(file, JSON.stringify(stateToSave, null, 2), 'utf-8');
-    } catch {
-      // 捕获并吞掉异常，静默落盘失败不应阻断核心流程
+    } catch (e) {
+      // 捕获并吞掉异常，静默落盘失败不应阻断核心流程，但需记录警告日志保持可观测性
+      logger.warn(`[ContextRepository] 写入会话状态文件失败: ${e}`);
     }
   }
 

@@ -19,6 +19,7 @@ import { LoopPreventionPlugin } from './LoopPreventionPlugin.js';
 import { LongTermMemoryPlugin } from './LongTermMemoryPlugin.js';
 import type { EmbeddingPort } from '../../ports/driven/EmbeddingPort.js';
 import type { VectorDbPort } from '../../ports/driven/VectorDbPort.js';
+import { QualityCheckPort } from '../../ports/driven/QualityCheckPort.js';
 
 // 导入领域服务
 import { RuleManager } from './RuleManager.js';
@@ -67,6 +68,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   private compactionService: CompactionService;
   /** 插件注册中心 */
   private pluginRegistry: PluginRegistry;
+  /** 后置质量校验端口 */
+  private qualityCheckPort?: QualityCheckPort;
 
   /** 独立的智能体执行循环引擎 */
   private agentLoop: AgentLoop;
@@ -95,12 +98,14 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     vectorDb: VectorDbPort,
     embedding: EmbeddingPort,
     appConfig: AppConfig,
+    qualityCheckPort?: QualityCheckPort,
     taskAborter?: TaskAborterPort
   ) {
     super();
     this.llmConfig = llmConfig;
     this.toolRegistry = toolRegistry;
     this.taskAborter = taskAborter;
+    this.qualityCheckPort = qualityCheckPort;
     this.context = new SessionContext();
     this.context.appConfig = appConfig;
     this.maxIterations = appConfig.runtimeLimits.maxIterations;
@@ -154,6 +159,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       toolDispatcher: this.toolDispatcher,
       compactionService: this.compactionService,
       pluginRegistry: this.pluginRegistry,
+      qualityCheckPort: this.qualityCheckPort,
       maxIterations: this.maxIterations
     });
 

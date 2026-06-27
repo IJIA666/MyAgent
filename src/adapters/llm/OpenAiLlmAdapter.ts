@@ -304,11 +304,8 @@ export class OpenAiLlmAdapter implements LlmPort {
    * @returns 大模型生成的提炼文本
    */
   public async generateSummaryAsync(messages: ChatMessage[]): Promise<string> {
-    // 此处刻意使用游离于 activeControllers 之外的局部 AbortController。
-    // 因为 generateSummaryAsync 用于后台异步 Summary 提炼任务，其执行生命周期独立于主推理循环，
-    // 不应被主交互流程的全局 abort() 操作所中断取消，以保障后台摘要数据落盘的事务完整性。
-    const localAbortController = new AbortController();
     const openAiMessages = messages.map(toOpenAiMessage);
+    const timeoutMs = this.llmConfig.timeout ?? 60000;
     const response = await this.client.chat.completions.create(
       {
         model: this.modelName,
@@ -318,7 +315,7 @@ export class OpenAiLlmAdapter implements LlmPort {
         ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
         ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions, this.llmConfig) : {})
       },
-      { signal: localAbortController.signal }
+      { signal: AbortSignal.timeout(timeoutMs) }
     );
     return response.choices[0]?.message?.content || '';
   }

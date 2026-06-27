@@ -58,22 +58,26 @@ describe('SecurityService', () => {
   describe('内存临时读写路径白名单', () => {
     it('应能正确添加、校验及清空只读与可写临时路径', () => {
       const service = SecurityService.getInstance(configPath);
+      const sessionId = 'test-session-id';
       
       const readPath = path.resolve('/test/workspace/read.ts');
       const writePath = path.resolve('/test/workspace/write.ts');
 
-      expect(service.hasTemporaryReadWhitelist(readPath)).toBe(false);
-      expect(service.hasTemporaryWriteWhitelist(writePath)).toBe(false);
+      expect(service.hasTemporaryReadWhitelist(sessionId, readPath)).toBe(false);
+      expect(service.hasTemporaryWriteWhitelist(sessionId, writePath)).toBe(false);
 
-      service.addTemporaryReadWhitelist(readPath);
-      service.addTemporaryWriteWhitelist(writePath);
+      service.addTemporaryReadWhitelist(sessionId, readPath);
+      service.addTemporaryWriteWhitelist(sessionId, writePath);
 
-      expect(service.hasTemporaryReadWhitelist(readPath)).toBe(true);
-      expect(service.hasTemporaryWriteWhitelist(writePath)).toBe(true);
+      expect(service.hasTemporaryReadWhitelist(sessionId, readPath)).toBe(true);
+      expect(service.hasTemporaryWriteWhitelist(sessionId, writePath)).toBe(true);
 
-      service.clearTemporaryWhitelists();
-      expect(service.hasTemporaryReadWhitelist(readPath)).toBe(false);
-      expect(service.hasTemporaryWriteWhitelist(writePath)).toBe(false);
+      // 并发会话隔离性校验：跨会话的 other-session 应无权限
+      expect(service.hasTemporaryReadWhitelist('other-session', readPath)).toBe(false);
+
+      service.clearTemporaryWhitelists(sessionId);
+      expect(service.hasTemporaryReadWhitelist(sessionId, readPath)).toBe(false);
+      expect(service.hasTemporaryWriteWhitelist(sessionId, writePath)).toBe(false);
     });
   });
 });

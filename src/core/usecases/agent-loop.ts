@@ -10,8 +10,7 @@ import { purifyContent } from '../../common/purify.js';
 import { PluginRegistry } from './plugin-registry.js';
 import { runHookPipeline } from './plugin-runner.js';
 import { HookEventName, type LlmRequest } from './plugin-types.js';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { QualityCheckPort } from '../../ports/driven/QualityCheckPort.js';
 
 // 导入领域服务
 import { RuleManager } from './RuleManager.js';
@@ -54,6 +53,8 @@ export interface AgentLoopOptions {
   compactionService: CompactionService;
   /** 插件注册管理器 */
   pluginRegistry: PluginRegistry;
+  /** 后置质量校验端口 */
+  qualityCheckPort?: QualityCheckPort;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
   maxIterations?: number;
 }
@@ -80,6 +81,8 @@ export class AgentLoop {
   private compactionService: CompactionService;
   /** 插件注册管理器 */
   private pluginRegistry: PluginRegistry;
+  /** 后置质量校验端口 */
+  private qualityCheckPort?: QualityCheckPort;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
   private maxIterations: number;
 
@@ -114,6 +117,7 @@ export class AgentLoop {
     this.toolDispatcher = options.toolDispatcher;
     this.compactionService = options.compactionService;
     this.pluginRegistry = options.pluginRegistry;
+    this.qualityCheckPort = options.qualityCheckPort;
     this.maxIterations = options.maxIterations ?? 20;
   }
 
@@ -717,13 +721,16 @@ export class AgentLoop {
             this.context.addMessage(finalAssistantMessage);
 
             if (event.usage) {
-              this.context.updateLastApiUsage(event.usage as ApiUsage, this.context.getHistory().length);
+              const diagGen = this.checkCacheAndCalibrate(event.usage as ApiUsage);
+              for (const diagEvent of diagGen) {
+                yield diagEvent;
+              }
             }
 
             // PostRunHook：在完成响应后且存在写操作时运行后置 lint/typecheck 自测
-            if (hasWriteOperation) {
+            if (hasWriteOperation && this.qualityCheckPort) {
               yield { type: 'thinking', content: '[PostRunHook] 正在执行修改后自动代码规范与类型检查自测...' };
-              const checkResult = await this.runPostRunCheck();
+              const checkResult = await this.qualityCheckPort.runPostRunCheck();
               if (!checkResult.success) {
                 yield { type: 'thinking', content: `[PostRunHook] 校验未通过，正在将报错反馈给模型进行自我修复...\n${checkResult.output}` };
                 this.context.addMessage({
@@ -800,6 +807,7 @@ export class AgentLoop {
         // 无论正常结束还是抛错中断，强制性确保当前上下文得到文件落盘保存
         this.context.flushPendingNotifications();
         await this.contextRepo.saveState();
+        this.context.clearTemporaryWhitelists();
       }
     }
 
@@ -807,36 +815,7 @@ export class AgentLoop {
     throw new Error(`超出了工具调用的最大迭代轮数限制（${this.maxIterations} 轮）。`);
   }
 
-  /**
-   * 执行后置质量自测校验，对项目运行代码规范与类型检查。
-   *
-   * @returns 异步返回校验结果对象，包含是否成功以及控制台报错文本
-   */
-  private async runPostRunCheck(): Promise<{ success: boolean; output: string }> {
-    const execPromise = promisify(exec);
-    let output = '';
-    try {
-      // 1. 运行 ESLint 静态代码规范检查
-      const { stdout: lintStdout, stderr: lintStderr } = await execPromise('npm run lint', { cwd: process.cwd() });
-      output += lintStdout + lintStderr;
-    } catch (lintError: unknown) {
-      const err = lintError as { stdout?: string; stderr?: string; message?: string };
-      output += (err.stdout || '') + (err.stderr || '') + (err.message || '');
-      return { success: false, output: `ESLint 检查失败:\n${output}` };
-    }
 
-    try {
-      // 2. 运行 TypeScript 编译类型检查
-      const { stdout: tscStdout, stderr: tscStderr } = await execPromise('npx tsc --noEmit', { cwd: process.cwd() });
-      output += tscStdout + tscStderr;
-    } catch (tscError: unknown) {
-      const err = tscError as { stdout?: string; stderr?: string; message?: string };
-      const errorOutput = (err.stdout || '') + (err.stderr || '') + (err.message || '');
-      return { success: false, output: `TypeScript 类型检查失败:\n${errorOutput}` };
-    }
-
-    return { success: true, output };
-  }
 
   /**
    * 后置缓存失效检测与归因校准逻辑。

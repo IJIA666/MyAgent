@@ -19,3 +19,7 @@
 #### Scenario: Instantiate Session In Entrypoint
 - **WHEN** 客户端 Facade 入口启动并初始化会话时
 - **THEN** 必须（MUST）由 Facade 统一实例化具体适配器 ToolRegistry，并作为 ToolRegistryPort 注入构造函数，保证核心对工具具体实现的零物理耦合。
+
+#### Scenario: Code Quality Auto Check Port Inversion
+- **WHEN** 智能体大脑引擎完成推理后，在 PostRunHook 检查点触发物理项目 Lint 与编译强校验时
+- **THEN** 绝对不允许（MUST NOT）在领域层（`AgentLoop`）直接引入 `child_process` 或物理 Shell 命令；必须（MUST）定义 `QualityCheckPort` 作为抽象驱动端口，并在应用装配入口（`index.ts`）实例化对应的物理执行适配器并由外围注入。

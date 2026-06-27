@@ -55,12 +55,29 @@ export class CompactionService {
   public async compact(): Promise<boolean> {
     try {
       const fullHistory = this.context.getHistory();
-      if (fullHistory.length <= this.compactionRetainCount) return false;
 
-      // 指针级截断：保留最后 compactionRetainCount 条消息
-      this.context.truncateHistory(this.compactionRetainCount);
+      // 1. 统计 user 角色消息的总数，反向扫描定位第 compactionRetainCount 个 user 消息（限制在 index 1 及之后）
+      let userCount = 0;
+      let cutoffIndex = -1;
+      for (let i = fullHistory.length - 1; i >= 1; i--) {
+        if (fullHistory[i].role === 'user') {
+          userCount++;
+          if (userCount === this.compactionRetainCount) {
+            cutoffIndex = i;
+            break;
+          }
+        }
+      }
 
-      // 如果兜底也没有摘要，则塞一个默认兜底
+      // 2. 前置守卫：如果 user 角色消息总数不足 compactionRetainCount，不予截断
+      if (cutoffIndex === -1) {
+        return false;
+      }
+
+      // 3. 调用新 API 执行基于索引的物理截断
+      this.context.truncateHistoryFromIndex(cutoffIndex);
+
+      // 4. 如果兜底也没有摘要，则塞一个默认兜底
       if (!this.context.getCheckpointSummary()) {
         const fallback = buildStaticFallbackSummary(undefined, undefined);
         this.context.setCheckpointSummary(fallback);

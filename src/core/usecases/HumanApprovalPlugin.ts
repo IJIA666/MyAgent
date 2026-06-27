@@ -141,11 +141,10 @@ export class HumanApprovalPlugin implements Plugin {
           securityCategory = tool.securityCategory;
         }
 
-        const securityService = SecurityService.getInstance();
         if (securityCategory === 'read') {
-          securityService.addTemporaryReadWhitelist(safetyResult.targetPath);
+          sessionContext.addTemporaryReadWhitelist(safetyResult.targetPath);
         } else {
-          securityService.addTemporaryWriteWhitelist(safetyResult.targetPath);
+          sessionContext.addTemporaryWriteWhitelist(safetyResult.targetPath);
         }
       }
     }

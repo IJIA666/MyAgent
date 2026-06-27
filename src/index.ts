@@ -13,6 +13,7 @@ import { readFileSync } from 'fs';
 import { OpenAiEmbeddingAdapter } from './adapters/llm/OpenAiEmbeddingAdapter.js';
 import { LocalVectorDbAdapter } from './adapters/vectordb/LocalVectorDbAdapter.js';
 import { initLogger } from './utils/logger.js';
+import { ShellQualityCheckAdapter } from './adapters/tools/ShellQualityCheckAdapter.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -77,6 +78,7 @@ async function main() {
       path.resolve(appConfig.workspace, '.agent/lancedb'),
       path.resolve(appConfig.workspace, '.agent/vectordb.json')
     );
+    const qualityCheckAdapter = new ShellQualityCheckAdapter();
     session = new SessionManager(
       appConfig.llm,
       llmAdapter,
@@ -86,6 +88,7 @@ async function main() {
       vectorDbAdapter,
       embeddingAdapter,
       appConfig,
+      qualityCheckAdapter,
       abortSessionTasks
     );
   } catch (initError: unknown) {
