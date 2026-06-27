@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { buildSystemPrompt } from '../../src/core/usecases/prompts.js';
+import { buildSystemPrompt, OS_INSTRUCTIONS_MAP, RESOLVED_BASE_PROMPT } from '../../src/core/usecases/prompts.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 
 let mockGlobalRules = '';
@@ -75,5 +75,19 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     expect(updatedContent).toContain('GLOBAL_RULE_TEST_TEXT');
     expect(updatedContent).toContain('LOCAL_RULE_TEST_TEXT');
     expect(updatedContent).toContain('test-skill: desc');
+  });
+
+  test('6. 跨平台安全性指令映射白盒检验与 RESOLVED_BASE_PROMPT 校验', () => {
+    // 1. 验证 OS_INSTRUCTIONS_MAP 中包含了 win32, darwin, linux 的特定定义
+    expect(OS_INSTRUCTIONS_MAP.win32).toContain('宿主操作系统是 Windows');
+    expect(OS_INSTRUCTIONS_MAP.win32).toContain('execute_command');
+    expect(OS_INSTRUCTIONS_MAP.darwin).toContain('macOS (Darwin)');
+    expect(OS_INSTRUCTIONS_MAP.linux).toContain('Linux');
+
+    // 2. 验证 RESOLVED_BASE_PROMPT 确实被成功装配了当前 process.platform 对应的指令
+    const currentPlatform = process.platform;
+    const expectedInstruction = OS_INSTRUCTIONS_MAP[currentPlatform] ?? OS_INSTRUCTIONS_MAP.linux;
+    expect(RESOLVED_BASE_PROMPT).toContain(expectedInstruction);
+    expect(RESOLVED_BASE_PROMPT).not.toContain('{{OS_SECURITY_INSTRUCTIONS}}');
   });
 });

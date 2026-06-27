@@ -11,6 +11,7 @@ import { DefaultContextAdapter } from './adapters/context/DefaultContextAdapter.
 import { findSkillFiles, parseSkillFrontmatter } from './core/usecases/contextLoader.js';
 import { readFileSync } from 'fs';
 import { OpenAiEmbeddingAdapter } from './adapters/llm/OpenAiEmbeddingAdapter.js';
+import { DashScopeEmbeddingAdapter } from './adapters/llm/DashScopeEmbeddingAdapter.js';
 import { LocalVectorDbAdapter } from './adapters/vectordb/LocalVectorDbAdapter.js';
 import { initLogger } from './utils/logger.js';
 import { ShellQualityCheckAdapter } from './adapters/tools/ShellQualityCheckAdapter.js';
@@ -73,7 +74,11 @@ async function main() {
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
     const contextAdapter = new DefaultContextAdapter(tokenEstimator);
-    const embeddingAdapter = new OpenAiEmbeddingAdapter(appConfig.embedding);
+    const isDashScope = appConfig.embedding.model.toLowerCase().includes('text-embedding-v3') ||
+      (appConfig.embedding.baseUrl && appConfig.embedding.baseUrl.includes('dashscope'));
+    const embeddingAdapter = isDashScope
+      ? new DashScopeEmbeddingAdapter(appConfig.embedding)
+      : new OpenAiEmbeddingAdapter(appConfig.embedding);
     const vectorDbAdapter = new LocalVectorDbAdapter(
       path.resolve(appConfig.workspace, '.agent/lancedb'),
       path.resolve(appConfig.workspace, '.agent/vectordb.json')

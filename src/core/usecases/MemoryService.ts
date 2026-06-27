@@ -121,14 +121,7 @@ export class MemoryService {
    * @returns 与 chunks 等长的向量数组
    */
   private async batchEmbeddings(chunks: string[]): Promise<number[][]> {
-    const BATCH_SIZE = 10;
-    const result: number[][] = [];
-    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-      const batch = chunks.slice(i, i + BATCH_SIZE);
-      const batchEmbeddings = await this.embedding.generateEmbeddings(batch);
-      result.push(...batchEmbeddings);
-    }
-    return result;
+    return await this.embedding.generateEmbeddings(chunks);
   }
 
   /**

@@ -38,3 +38,10 @@
 #### 场景: 规避 PostRunHook 高昂规范化质检开销
 - **WHEN** 提炼子智能体调用 `writeMemoryFile` 追加写入记忆
 - **THEN** 该工具必须显式标记其 `securityCategory` 为 `'safe'`（ 或 `'read'` ）， 从而不触发 `AgentLoop` 中针对代码写操作 `'write'` 的 `PostRunHook` 全量编译与 `eslint` 质检拦截， 规避额外的 CPU 损耗与环境缺失风险。
+
+### 需求: 嵌入向量拆批职责下沉
+领域核心长期记忆服务在处理批量文本生成嵌入向量时，必须对物理提供商的单次请求限制（如阿里单次上限 10 条）保持零感知。
+
+#### 场景: 提交大批量文本嵌入向量请求
+- **WHEN** 领域层 MemoryService 触发 batchEmbeddings 调用
+- **THEN** 必须直接将全量文本数组传达给下游驱动 `EmbeddingPort.generateEmbeddings(texts)`，由具体适配器（如 DashScopeEmbeddingAdapter 自理拆批与并发限流）实现分发与批合并，保证领域层绝对无偏差。

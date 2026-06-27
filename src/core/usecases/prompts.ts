@@ -16,15 +16,35 @@ const BASE_SYSTEM_PROMPT = `你是一个专业且精确的本地智能体助手�
 2. 如果工具在运行过程中返回错误（例如文件未找到、路径越权等），请分析错误原因并优雅地向用户解释，或者在修正参数后重新尝试调用。
 3. 请直接、专业且精准地回答用户问题，避免冗余的客套话、假设性警告或占位信息。
 4. 【语言强制】你必须始终使用简体中文进行思考（内部逻辑和推理链）以及最终回复，仅在必要时保留英文的专业术语或代码片段。
-5. 【终端命令原子化与 Windows 安全】你当前运行的宿主操作系统是 Windows。当你需要使用 execute_command 工具执行命令时：
-   - 必须且仅能执行单一、原子的 Windows 原生命令（例如使用 'tasklist' 替代 'top/ps'，使用 'ipconfig' 替代 'ifconfig'）。
-   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符（如 &, &&, |, ||, ;, <, >, \\n 等）将多个独立操作拼接为单条长命令，否则将被沙箱引擎强制拦截执行。
+5. 【终端命令安全性约束】
+{{OS_SECURITY_INSTRUCTIONS}}
 6. 【最小重构与零注释污染原则】
    - 最小重构：仅针对请求的范围进行修改，绝对禁止顺便清理周围代码、增加未请求的 feature 或设计过度抽象。
    - 零注释污染：修改代码时必须在 API 声明正上方编写严格的 JSDoc/TSDoc 注释（ JSDoc/TSDoc 必须移除 {type} 声明，参数用 @param name - 描述 语法，返回值描述采用 @returns 描述 语法），非必要不乱加注释，严禁对未修改的代码乱加或改动 JSDoc。
 7. 【专用工具优先】
    - 凡是可用原生工具（如文件读写 read_file/write_to_file、目录查询 list_dir、ripgrep 检索 grep_search 等）完成的操作，绝对禁止调用通用的终端 Shell 工具（ExecuteCommandTool）执行 cat, sed, awk, find, grep 等文件操作。终端命令仅用于编译、跑测试等确实无法由原生工具覆盖的系统管理。
 8. 【长期记忆参考指令】在对话过程中，您必须参考最新 User 消息中注入的 <long-term-memory> 长期记忆事实。`;
+
+/**
+ * 针对不同操作系统的特定命令约束与安全性要求映射。
+ * 显式导出以允许白盒测试直接对其各分支文本进行内容校验，免去 mock 环境变量的复杂性。
+ */
+export const OS_INSTRUCTIONS_MAP: Record<string, string> = {
+  win32: `你当前运行的宿主操作系统是 Windows。当你需要使用 execute_command 工具执行命令时：
+   - 必须且仅能执行单一、原子的 Windows 原生命令（例如使用 'tasklist' 替代 'top/ps'，使用 'ipconfig' 替代 'ifconfig'）。
+   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符（如 &, &&, |, ||, ;, <, >, \\n 等）将多个独立操作拼接为单条长命令，否则将被沙箱引擎强制拦截执行。`,
+  darwin: `你当前运行的宿主操作系统是 macOS (Darwin)。当你需要使用 execute_command 工具执行命令时：
+   - 必须且仅能执行单一、原子的 POSIX 命令。
+   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符将多个独立操作拼接为单条长命令，否则将被拦截。`,
+  linux: `你当前运行的宿主操作系统是 Linux。当你需要使用 execute_command 工具执行命令时：
+   - 必须且仅能执行单一、原子的 POSIX/Linux 命令。
+   - absolute 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符将多个独立操作拼接为单条长命令，否则将被拦截。`
+};
+
+// 在模块加载初始化时，一次性自适应替换占位符并固化为 RESOLVED_BASE_PROMPT，满足全局 stable 层的绝对静态性。
+const osPlatform = process.platform;
+const osInstruction = OS_INSTRUCTIONS_MAP[osPlatform] ?? OS_INSTRUCTIONS_MAP.linux;
+export const RESOLVED_BASE_PROMPT = BASE_SYSTEM_PROMPT.replace('{{OS_SECURITY_INSTRUCTIONS}}', osInstruction);
 
 /**
  * 组装并获取最终的系统级人设文本。
@@ -46,7 +66,7 @@ export function buildSystemPrompt(
   const parts: string[] = [];
 
   // 1. stable (稳定人设层，绝对静态，100% 缓存命中)
-  parts.push(`<!-- 1. stable (稳定人设层，绝对静态，100% 缓存命中) -->\n${BASE_SYSTEM_PROMPT}`);
+  parts.push(`<!-- 1. stable (稳定人设层，绝对静态，100% 缓存命中) -->\n${RESOLVED_BASE_PROMPT}`);
 
   // 2. context (上下文环境层，工作区级稳定)
   const globalRules = customGlobalRules ?? '';
@@ -70,7 +90,7 @@ export function buildSystemPrompt(
   const cwdStr = process.cwd();
   const osStr = process.platform === 'win32' ? 'Windows' : process.platform;
   
-  parts.push(`\n<!-- 3. volatile (易变数据层，高频变动，不予缓存) -->\n<volatile_context>
+  parts.push(`\n<!-- 3. volatile (易变数据层流通，高频变动，不予缓存) -->\n<volatile_context>
   <date>${dateStr}</date>
   <cwd>${cwdStr}</cwd>
   <os>${osStr}</os>
