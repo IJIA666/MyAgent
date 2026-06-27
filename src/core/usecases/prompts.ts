@@ -4,7 +4,7 @@
  */
 
 import type { ChatMessage } from '../../ports/driven/LlmPort.js';
-import { loadGlobalRules, loadLocalRules, loadSkills } from './contextLoader.js';
+import type { SkillMetadata } from './contextLoader.js';
 
 // 预设的人设和最底层的不可撼动之规则
 const BASE_SYSTEM_PROMPT = `你是一个专业且精确的本地智能体助手。
@@ -33,22 +33,26 @@ const BASE_SYSTEM_PROMPT = `你是一个专业且精确的本地智能体助手�
  * 2. context: 工作区级的规则配置与技能大纲（相对稳定，仅在工作区改变或技能更新时失效）
  * 3. volatile: 高频变动的动态瞬时参数（不予缓存，置于尾部作为牺牲层）
  * 
- * @param customGlobalRules - 可选的已缓存全局规则内容，若不传则自动从磁盘加载最新的全局规则
- * @param customLocalRules - 可选的已缓存局部规则内容，若不传则自动从磁盘加载最新的局部规则
+ * @param customGlobalRules - 可选的已缓存全局规则内容
+ * @param customLocalRules - 可选的已缓存局部规则内容
+ * @param skills - 可选的技能元数据列表
  * @returns 组装好的符合三层 XML 结构且缓存友好的单个系统提示词字符串
  */
-export function buildSystemPrompt(customGlobalRules?: string, customLocalRules?: string): string {
+export function buildSystemPrompt(
+  customGlobalRules?: string,
+  customLocalRules?: string,
+  skills?: SkillMetadata[]
+): string {
   const parts: string[] = [];
 
   // 1. stable (稳定人设层，绝对静态，100% 缓存命中)
   parts.push(`<!-- 1. stable (稳定人设层，绝对静态，100% 缓存命中) -->\n${BASE_SYSTEM_PROMPT}`);
 
   // 2. context (上下文环境层，工作区级稳定)
-  const globalRules = customGlobalRules !== undefined ? customGlobalRules : loadGlobalRules();
-  const localRules = customLocalRules !== undefined ? customLocalRules : loadLocalRules();
-  const allSkills = loadSkills();
-  const indexLines = allSkills.length > 0
-    ? allSkills.map((s: { name: string; description: string }) => `- ${s.name}: ${s.description}`).join('\n')
+  const globalRules = customGlobalRules ?? '';
+  const localRules = customLocalRules ?? '';
+  const indexLines = skills && skills.length > 0
+    ? skills.map((s) => `- ${s.name}: ${s.description}`).join('\n')
     : '';
 
   parts.push(`\n<!-- 2. context (上下文环境层，工作区级稳定) -->\n<context_rules>`);

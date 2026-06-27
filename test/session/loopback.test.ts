@@ -93,13 +93,13 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
     // 4. 释放忙锁
     context.isProcessing = false;
 
-    // 5. 验证在释放的当前同步 Tick 内依然没有写入
+    // 5. 验证当前依然在暂存队列中
     expect(context.getHistory().length).toBe(initialHistoryLength);
 
-    // 6. 等待一个微任务/Tick
-    await new Promise<void>((resolve) => process.nextTick(resolve));
+    // 6. 显式调用同步 flush 合并通知
+    context.flushPendingNotifications();
 
-    // 7. 验证在 microtask 执行后消息成功刷入
+    // 7. 验证消息成功同步刷入
     const history = context.getHistory();
     expect(history.length).toBe(initialHistoryLength + 1);
     expect(history[history.length - 1].content).toBe('test-notification-1');

@@ -756,6 +756,7 @@ export class AgentLoop {
               actual_tokens: event.usage as ApiUsage
             });
 
+            this.context.flushPendingNotifications();
             await this.contextRepo.saveState();
             return;
           }
@@ -778,7 +779,6 @@ export class AgentLoop {
           yield { type: 'error', message: '已收到中断指令，强行终止推理生成。' };
           // 意外终止时同样要触发后台提炼检查与物理落盘
           this.compactionService.triggerAsyncCompactionIfNeeded(this.lastEstimatedUsage?.total || 0).catch(() => { });
-          await this.contextRepo.saveState();
           return;
         }
 
@@ -798,6 +798,7 @@ export class AgentLoop {
           yield eventQueue.shift()!;
         }
         // 无论正常结束还是抛错中断，强制性确保当前上下文得到文件落盘保存
+        this.context.flushPendingNotifications();
         await this.contextRepo.saveState();
       }
     }

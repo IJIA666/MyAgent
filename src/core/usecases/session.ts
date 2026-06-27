@@ -58,7 +58,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
 
   // ==== 领域服务集群 ====
   /** 全局与局部规则热加载服务 */
-  private ruleManager: RuleManager;
+  public readonly ruleManager: RuleManager;
   /** 会话状态物理落盘与回溯服务 */
   private contextRepo: ContextRepository;
   /** 工具调度与返回文本处理服务 */

@@ -1,20 +1,25 @@
 /**
- * 核心上下文加载器模块。
- * 负责从物理磁盘中动态加载并缓存全局规则、项目局部规则和扩展沙盒技能。
+ * 核心上下文加载器工具模块。
+ * 负责从物理磁盘中安全读取全局规则、项目局部规则和扩展沙盒技能文件，不持有全局状态与缓存。
  */
 
-import { existsSync, readFileSync, readdirSync, lstatSync, watch, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, lstatSync, statSync } from 'fs';
 import { join } from 'path';
 import matter from 'gray-matter';
 import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 
-// 开发环境硬编码路径，用于获取各项规则和技能
-const DEV_GLOBAL_RULES_PATH = 'D:\\Projects\\MyAgent\\.agent\\global_rules.md';
-const DEV_LOCAL_RULES_PATH = 'D:\\Projects\\MyAgent\\.agent\\rules\\guize.md';
-const DEV_SKILLS_DIR = 'D:\\Projects\\MyAgent\\.agent\\skills';
-
 // 设定单文件最大加载为 20KB (20480 字节)，防止 Token 溢出
 const RULE_MAX_BYTES = 20480;
+
+/**
+ * 技能元数据接口
+ * 描述了一个扩展技能的基本信息与文件路径，不包含臃肿的正文。
+ */
+export interface SkillMetadata {
+  name: string;
+  description: string;
+  filePath: string;
+}
 
 /**
  * 安全地读取规则文件，若文件过大则进行物理截断并拼入标志语（Token 防爆熔断）。
@@ -22,7 +27,7 @@ const RULE_MAX_BYTES = 20480;
  * @param filePath - 待读取的规则文件路径
  * @returns 截断后或完整的规则内容
  */
-function readAndLimitFile(filePath: string): string {
+export function readAndLimitFile(filePath: string): string {
   try {
     if (!existsSync(filePath)) {
       return '';
@@ -45,37 +50,26 @@ function readAndLimitFile(filePath: string): string {
 /**
  * 加载全局规则 (Global Rules)。
  * 
+ * @param workspacePath - 工作区根路径
  * @param customPath - 可选的自定义规则文件物理路径
  * @returns 成功读取时返回全局规则内容的字符串，否则返回空字符串
  */
-export function loadGlobalRules(customPath?: string): string {
-  return readAndLimitFile(customPath ?? DEV_GLOBAL_RULES_PATH);
+export function loadGlobalRules(workspacePath: string, customPath?: string): string {
+  const targetPath = customPath ?? join(workspacePath, '.agent/global_rules.md');
+  return readAndLimitFile(targetPath);
 }
 
 /**
  * 加载局部/工作区规则 (Local Rules)。
  * 
+ * @param workspacePath - 工作区根路径
  * @param customPath - 可选的自定义规则文件物理路径
  * @returns 成功读取时返回局部规则内容的字符串，否则返回空字符串
  */
-export function loadLocalRules(customPath?: string): string {
-  return readAndLimitFile(customPath ?? DEV_LOCAL_RULES_PATH);
+export function loadLocalRules(workspacePath: string, customPath?: string): string {
+  const targetPath = customPath ?? join(workspacePath, '.agent/rules/guize.md');
+  return readAndLimitFile(targetPath);
 }
-
-/**
- * 技能元数据接口
- * 描述了一个扩展技能的基本信息与文件路径，不包含臃肿的正文。
- */
-export interface SkillMetadata {
-  name: string;
-  description: string;
-  filePath: string;
-}
-
-// 模块级缓存池，用于在内存中长期保存技能索引，避免反复查盘
-const skillsCache = new Map<string, SkillMetadata>();
-// 标识位，用于判断是否已经启动了后台监听服务
-let isWatching = false;
 
 /**
  * 使用 gray-matter 剥离并解析文件中的 YAML Frontmatter 元数据。
@@ -83,7 +77,7 @@ let isWatching = false;
  * @param content - 包含 YAML 头部和 Markdown 正文的原始文件内容
  * @returns 提取出名称、描述和纯净的正文主体
  */
-function parseSkillFrontmatter(content: string): { name: string, description: string, body: string } {
+export function parseSkillFrontmatter(content: string): { name: string, description: string, body: string } {
   try {
     const parsed = matter(content);
     return {
@@ -106,7 +100,7 @@ function parseSkillFrontmatter(content: string): { name: string, description: st
  * @param maxDepth - 允许向下遍历的最大深度上限（默认值为 3）
  * @returns 返回所有找到的 SKILL.md 的完整绝对路径数组
  */
-function findSkillFiles(dir: string, fileList: string[] = [], currentDepth: number = 1, maxDepth: number = 3): string[] {
+export function findSkillFiles(dir: string, fileList: string[] = [], currentDepth: number = 1, maxDepth: number = 3): string[] {
   // 如果达到最大深度或者目录本身不存在，立刻回溯
   if (currentDepth > maxDepth || !existsSync(dir)) return fileList;
 
@@ -137,86 +131,49 @@ function findSkillFiles(dir: string, fileList: string[] = [], currentDepth: numb
 }
 
 /**
- * 主动扫描文件系统并刷新内存中的技能索引缓存
- * 该方法会清空现有缓存池并从磁盘重构状态。
+ * 扫描指定工作区目录下的所有扩展技能元数据。
+ * 
+ * @param workspacePath - 工作区根路径
+ * @returns 扫描并解析出的技能元数据数组
  */
-export function refreshSkillsCache(): void {
-  const skillFiles = findSkillFiles(DEV_SKILLS_DIR);
-  skillsCache.clear();
+export function scanSkills(workspacePath: string): SkillMetadata[] {
+  const skillsDir = join(workspacePath, '.agent/skills');
+  const skillFiles = findSkillFiles(skillsDir);
+  const list: SkillMetadata[] = [];
 
   for (const file of skillFiles) {
     try {
       const rawContent = readFileSync(file, 'utf-8');
       const parsed = parseSkillFrontmatter(rawContent);
-      // 只缓存必要的元数据，坚决不缓存 Markdown 正文以防内存溢出
       if (parsed.name !== 'unknown') {
-        skillsCache.set(parsed.name, {
+        list.push({
           name: parsed.name,
           description: parsed.description,
           filePath: file
         });
       }
     } catch (e) {
-      logger.warn(`[ContextLoader] 缓存技能文件失败: ${file}, 错误: ${e}`);
+      logger.warn(`[ContextLoader] 解析技能文件失败: ${file}, 错误: ${e}`);
     }
   }
+  return list;
 }
 
 /**
- * 初始化后台异步监听服务（Watcher）
- * 在第一次请求索引时懒加载调用，保证文件系统发生变动时能够触发缓存的自动刷新。
- */
-export function initSkillsWatcher(): void {
-  // 保证只会启动一次监听
-  if (isWatching) return;
-  
-  refreshSkillsCache();
-  
-  try {
-    if (existsSync(DEV_SKILLS_DIR)) {
-      watch(DEV_SKILLS_DIR, { recursive: true }, () => {
-        // 文件一旦有任何变更，简单粗暴地触发缓存全量刷新
-        refreshSkillsCache();
-      });
-      isWatching = true;
-    }
-  } catch (e) {
-    logger.warn(`[ContextLoader] 技能监听初始化失败: ${e}`);
-  }
-}
-
-/**
- * 极速获取所有已安装技能的索引列表，支持针对 Watcher 的惰性初始化。
+ * 读取特定技能文件的完整 Markdown 正文内容。
  * 
- * @returns 返回纯净的技能元数据数组
+ * @param filePath - 技能文件的物理路径
+ * @returns 技能的纯正文内容，若找不到或读取出错则返回 null
  */
-export function loadSkills(): SkillMetadata[] {
-  if (!isWatching) {
-    initSkillsWatcher();
-  }
-  // 将内存中 Map 的值转为数组快速抛出
-  return Array.from(skillsCache.values());
-}
-
-/**
- * 懒加载获取特定技能的完整 Markdown 内容。
- * 该方法仅在当前会话明确需要某技能（例如工具被调用）时才会真正发生磁盘 I/O。
- * 
- * @param name - 待拉取详情的技能名称
- * @returns 成功读取并解析后返回技能的纯正文内容，若找不到或出错则返回 null
- */
-export function loadSkillContent(name: string): string | null {
-  const meta = skillsCache.get(name);
-  if (!meta) return null;
-  
+export function readSkillContent(filePath: string): string | null {
   try {
-    if (existsSync(meta.filePath)) {
-      const rawContent = readFileSync(meta.filePath, 'utf-8');
+    if (existsSync(filePath)) {
+      const rawContent = readFileSync(filePath, 'utf-8');
       const parsed = parseSkillFrontmatter(rawContent);
       return parsed.body;
     }
   } catch (e) {
-    logger.warn(`[ContextLoader] 按需读取技能全文失败: ${name}, 错误: ${e}`);
+    logger.warn(`[ContextLoader] 读取技能全文失败: ${filePath}, 错误: ${e}`);
   }
   return null;
 }

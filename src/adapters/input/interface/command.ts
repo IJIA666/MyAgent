@@ -13,7 +13,7 @@ import {
 } from './commands/index.js';
 import * as p from '@clack/prompts';
 import { theme } from './views/theme.js';
-import { loadSkills } from '../../../core/usecases/contextLoader.js';
+import { scanSkills } from '../../../core/usecases/contextLoader.js';
 
 // 显式重导出 CommandContext 和 CommandResult 接口类型，避免在 ESM 下因类型擦除引发运行时加载错误
 export type { CommandContext, CommandResult };
@@ -98,7 +98,7 @@ export async function showInteractiveMenu(): Promise<string | null> {
   }
 
   if (mainAction === 'skill') {
-    const allSkills = loadSkills();
+    const allSkills = scanSkills(process.cwd());
     if (allSkills.length === 0) {
       p.outro(theme.info('未发现任何可用技能。'));
       return null;

@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { EventEmitter } from 'node:events';
 import type { ChatMessage } from '../../ports/driven/LlmPort.js';
 import { buildSystemPrompt } from '../usecases/prompts.js';
+import type { SkillMetadata } from '../usecases/contextLoader.js';
 import { ApprovalService } from '../usecases/ApprovalService.js';
 import { AppConfig, WorkMode, getDefaultWorkMode } from '../../config/index.js';
 import { SessionEventPort } from '../../ports/driven/SessionEventPort.js';
@@ -62,15 +63,11 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
 
   /**
    * 设定会话是否正在处理生命周期 Hook 中间件。
-   * 当设为 false 释放锁时，会自动在微任务阶段触发暂存消息的 flush。
    *
    * @param val - 新的忙锁状态值
    */
   public set isProcessing(val: boolean) {
     this._isProcessing = val;
-    if (!val) {
-      this.flushPendingNotifications();
-    }
   }
 
   /**
@@ -87,17 +84,13 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   }
 
   /**
-   * 物理将暂存的后台系统通知消息追加并刷入当前的对话历史栈。
-   * 使用 process.nextTick 延迟到当前 Tick 同步调用清空后，以规避 plugin-runner 同步覆写的风险。
+   * 物理地将暂存的后台系统通知消息同步追加并刷入当前的对话历史栈，然后清空队列。
+   * 彻底废除 process.nextTick 异步隐式操作，改用确定性的同步合并，规避 Immer 覆写风险。
    */
-  private flushPendingNotifications(): void {
+  public flushPendingNotifications(): void {
     if (this.pendingNotifications.length > 0) {
-      process.nextTick(() => {
-        if (this.pendingNotifications.length > 0) {
-          this.messageHistory.push(...this.pendingNotifications);
-          this.pendingNotifications = [];
-        }
-      });
+      this.messageHistory.push(...this.pendingNotifications);
+      this.pendingNotifications = [];
     }
   }
 
@@ -139,16 +132,22 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
 
   /**
    * 重新组装并更新会话消息历史中的首条系统提示词（System Prompt）。
-   * 此方法保持消息历史中的第 0 个系统消息节点，直接覆写其 content，常用于规则热重载。
+   * 此方法保持消息历史中的第 0 个系统消息节点，直接覆写其 content，常用于规则和技能热重载。
    *
-   * @param customGlobalRules - 可选的全局规则内容缓存，用于覆盖并锁定
+   * @param customGlobalRules - 可选的全局规则内容缓存
+   * @param customLocalRules - 可选的局部规则内容缓存
+   * @param skills - 可选的技能元数据列表
    */
-  public updateSystemPrompt(customGlobalRules?: string): void {
+  public updateSystemPrompt(
+    customGlobalRules?: string,
+    customLocalRules?: string,
+    skills?: SkillMetadata[]
+  ): void {
     // 忙状态并发锁断言保护
     if (this.isProcessing) {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
-    const systemPrompt = buildSystemPrompt(customGlobalRules);
+    const systemPrompt = buildSystemPrompt(customGlobalRules, customLocalRules, skills);
     if (this.messageHistory.length > 0 && this.messageHistory[0].role === 'system') {
       this.messageHistory[0].content = systemPrompt;
     }

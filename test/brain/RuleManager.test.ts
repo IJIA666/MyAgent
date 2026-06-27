@@ -34,9 +34,11 @@ describe('RuleManager', () => {
 
   it('应该在有规则文件时正确检测加载并更新系统提示词', () => {
     const agentDir = path.join(tempDir, '.agent');
+    const rulesDir = path.join(agentDir, 'rules');
     fs.mkdirSync(agentDir);
+    fs.mkdirSync(rulesDir);
     fs.writeFileSync(path.join(agentDir, 'global_rules.md'), 'Global Rule Config', 'utf-8');
-    fs.writeFileSync(path.join(tempDir, '.myagent.md'), 'Local Project Config', 'utf-8');
+    fs.writeFileSync(path.join(rulesDir, 'guize.md'), 'Local Project Config', 'utf-8');
 
     const manager = new RuleManager(context);
     expect(manager.getGlobalRules()).toBe('Global Rule Config');
@@ -46,15 +48,17 @@ describe('RuleManager', () => {
 
   it('应该在 reloadRules 调用后从磁盘重新加载最新内容并热更新', () => {
     const agentDir = path.join(tempDir, '.agent');
+    const rulesDir = path.join(agentDir, 'rules');
     fs.mkdirSync(agentDir);
+    fs.mkdirSync(rulesDir);
     fs.writeFileSync(path.join(agentDir, 'global_rules.md'), 'Initial Global', 'utf-8');
-    fs.writeFileSync(path.join(tempDir, '.myagent.md'), 'Initial Local', 'utf-8');
+    fs.writeFileSync(path.join(rulesDir, 'guize.md'), 'Initial Local', 'utf-8');
 
     const manager = new RuleManager(context);
     expect(manager.getGlobalRules()).toBe('Initial Global');
 
     fs.writeFileSync(path.join(agentDir, 'global_rules.md'), 'Updated Global', 'utf-8');
-    fs.writeFileSync(path.join(tempDir, '.myagent.md'), 'Updated Local', 'utf-8');
+    fs.writeFileSync(path.join(rulesDir, 'guize.md'), 'Updated Local', 'utf-8');
 
     manager.reloadRules();
 
@@ -65,10 +69,12 @@ describe('RuleManager', () => {
 
   it('should handle readFileSync exceptions and fallback to empty string', () => {
     const agentDir = path.join(tempDir, '.agent');
+    const rulesDir = path.join(agentDir, 'rules');
     fs.mkdirSync(agentDir);
+    fs.mkdirSync(rulesDir);
     // 创建为目录，读取目录会导致 readFileSync 抛出 EISDIR 异常
     fs.mkdirSync(path.join(agentDir, 'global_rules.md'));
-    fs.mkdirSync(path.join(tempDir, '.myagent.md'));
+    fs.mkdirSync(path.join(rulesDir, 'guize.md'));
 
     const manager = new RuleManager(context);
     expect(manager.getGlobalRules()).toBe('');

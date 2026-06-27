@@ -28,4 +28,8 @@
 #### Scenario: 组装文件清单记忆（解决 Windows 绝对路径 Bug）
 - **WHEN** 调度器发起组装上下文请求， 且传入了被剔除历史中大模型读写过的核心操作文件及操作状态列表时
 - **THEN** 系统必须执行跨平台路径规范化， 将文件绝对路径解析转换为相对于工作区根目录的相对路径， 规避在 Windows 平台下强行拼接 `process.cwd()` 与绝对路径导致的路径非法 Bug
-- **THEN** 系统必须将这些相对路径按读/写状态序列化为 `<recent_files_inventory>` 清单文本， 区分 `[READ]` 与 `[EDITED]`， 并时序追加至 System Prompt 之后挂载， 绝对不允许读取并注入文件的物理原文
+- **THEN** 系统必须将这些相对路径按读/写状态序列化为 `<recent_files_inventory>` 清单文本， 区分 `[READ]` 与 `[EDITED]`， 绝对不允许读取并注入文件的物理原文
+
+#### Scenario: recentFiles 存在时的请求装配
+- **WHEN** 上下文装配器 `DefaultContextAdapter` 检测到 `recentFiles` 集合存在并需要注入历史。
+- **THEN** 系统在装配发送给大模型的历史消息时，必须确保 `system`/`developer` 消息仅位于序列第一位。当 `summary` 存在时，系统必须将最近文件索引数据物理追加合并到第一条 `user` 角色消息（Checkpoint 消息）的 `content` 末尾；当 `summary` 不存在时，系统必须通过生成一个独立的 `user` 角色消息专门包装 recentFiles 数据并推入历史，保持规范交替的消息序列。

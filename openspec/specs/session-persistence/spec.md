@@ -33,3 +33,10 @@
 #### Scenario: 启动时保持幂等
 - **WHEN** 用户冷启动 `myagent` 进程
 - **THEN** 系统默认生成全新的 `sessionId` 与空上下文，不自动加载任何文件
+
+### Requirement: 系统通知同步合并落盘
+在会话执行过程中产生的系统通知消息，在 Hooks 执行期必须（MUST）先在暂存队列中积压。在当前交互 Loop 结束的确定同步上下文中，系统必须同步且强制地将它们刷入历史栈中并执行持久化保存，绝对不允许（SHALL NOT）在异步微任务或 `process.nextTick` 回调中执行可能被 Immer 脏写覆盖的操作。
+
+#### Scenario: 多 Hook 连续执行期间收到后台系统通知
+- **WHEN** 在 `BeforeToolSelection` 钩子处理结束且进入下一个 Hook `BeforeModel` 之间，有外部异步模块发出并追加了新的系统通知。
+- **THEN** 该通知会被安全暂存至 `pendingNotifications` 队列中；在整个 `AgentLoop` 结束或 `SessionEnd` 后，系统同步且强制执行 `flushPendingNotifications`，将队列中的所有通知一次性同步追加至历史中并执行 `saveState()`，确保通知 100% 递达且绝不发生消息覆盖。

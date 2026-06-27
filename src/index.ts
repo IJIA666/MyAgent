@@ -8,7 +8,8 @@ import { OpenAiLlmAdapter } from './adapters/llm/OpenAiLlmAdapter.js';
 import { TiktokenEstimator } from './adapters/llm/TiktokenEstimator.js';
 import { abortSessionTasks } from './adapters/tools/tools/system/terminal-engine.js';
 import { DefaultContextAdapter } from './adapters/context/DefaultContextAdapter.js';
-import { loadSkillContent } from './core/usecases/contextLoader.js';
+import { findSkillFiles, parseSkillFrontmatter } from './core/usecases/contextLoader.js';
+import { readFileSync } from 'fs';
 import { OpenAiEmbeddingAdapter } from './adapters/llm/OpenAiEmbeddingAdapter.js';
 import { LocalVectorDbAdapter } from './adapters/vectordb/LocalVectorDbAdapter.js';
 import { initLogger } from './utils/logger.js';
@@ -50,7 +51,24 @@ async function main() {
     LifecycleManager.register('mcp-manager', () => mcpManager.close());
     const { BrowserSession } = await import('./adapters/tools/tools/browser/browser-action.js');
     LifecycleManager.register('browser-session', () => BrowserSession.close());
-    const toolRegistry = new ToolRegistry(mcpManager, { loadSkill: loadSkillContent });
+    const toolRegistry = new ToolRegistry(mcpManager, {
+      loadSkill: (name: string) => {
+        const skillsDir = path.join(appConfig.workspace, '.agent/skills');
+        const files = findSkillFiles(skillsDir);
+        for (const file of files) {
+          try {
+            const raw = readFileSync(file, 'utf-8');
+            const parsed = parseSkillFrontmatter(raw);
+            if (parsed.name === name) {
+              return parsed.body;
+            }
+          } catch {
+            // 忽略单个解析失败，继续寻找
+          }
+        }
+        return null;
+      }
+    });
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
     const contextAdapter = new DefaultContextAdapter(tokenEstimator);

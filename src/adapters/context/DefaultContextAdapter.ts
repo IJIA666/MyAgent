@@ -42,24 +42,34 @@ export class DefaultContextAdapter implements ContextAdapter {
 
     // 1.1 组装并前置注入物理会话轮换的 Checkpoint 摘要与文件记忆附件
     const headInjections: ChatMessage[] = [];
-    if (summary) {
-      headInjections.push({
-        role: 'user',
-        content: `<conversation-checkpoint>\n${summary}\n</conversation-checkpoint>\n\n${HANDOFF_INSTRUCTION}`
-      });
-    }
-
+    
+    // 构造 recentFiles 文本内容
+    let inventoryText = '';
     if (recentFiles && recentFiles.length > 0) {
       const lines = recentFiles.map(fileItem => {
         const prefix = fileItem.opType === 'edit' ? '[EDITED]' : '[READ]';
         return `${prefix} ${fileItem.filePath}`;
       });
-      const inventoryText = `<recent_files_inventory>\n${lines.join('\n')}\n</recent_files_inventory>`;
+      inventoryText = `<recent_files_inventory>\n${lines.join('\n')}\n</recent_files_inventory>`;
+    }
+
+    if (summary) {
+      let content = `<conversation-checkpoint>\n${summary}\n</conversation-checkpoint>\n\n${HANDOFF_INSTRUCTION}`;
+      if (inventoryText) {
+        content += `\n\n${inventoryText}`;
+      }
       headInjections.push({
-        role: 'system',
+        role: 'user',
+        content
+      });
+    } else if (inventoryText) {
+      // 边界对齐：摘要不存在，但最近读写文件列表存在，为防 API 400，以独立 user 消息角色追加
+      headInjections.push({
+        role: 'user',
         content: inventoryText
       });
     }
+
     // 时序追加至首条 System Prompt 之后以锁定头部前缀
     if (headInjections.length > 0) {
       if (historySnapshot.length > 0) {
