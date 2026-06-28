@@ -20,6 +20,8 @@ import { LongTermMemoryPlugin } from '../plugins/LongTermMemoryPlugin.js';
 import type { EmbeddingPort } from '../../../ports/driven/llm/EmbeddingPort.js';
 import type { VectorDbPort } from '../../../ports/driven/db/VectorDbPort.js';
 import { QualityCheckPort } from '../../../ports/driven/security/QualityCheckPort.js';
+import { LifecycleManager } from './LifecycleManager.js';
+import { FileBackupManager } from '../security/FileBackupManager.js';
 
 // 导入领域服务
 import { RuleManager } from '../brain/RuleManager.js';
@@ -147,6 +149,10 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     );
     this.pluginRegistry.register(new LoopPreventionPlugin(appConfig));
     this.pluginRegistry.register(new HumanApprovalPlugin());
+
+    LifecycleManager.register('file-backup-manager', async () => {
+      FileBackupManager.cleanup(appConfig.workspace);
+    });
 
     // 初始化独立的执行引擎实例
     this.agentLoop = new AgentLoop({
@@ -494,5 +500,19 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
    */
   public __testRunInternalGeneration(): Promise<void> {
     return this.runInternalGeneration();
+  }
+
+  /**
+   * 将会话消息和物理文件系统同步回退到指定的快照点。
+   * 
+   * @param snapshotId - 要回退的目标快照 ID
+   */
+  public rollbackToSnapshot(snapshotId: string): void {
+    const workspace = this.context.appConfig?.workspace || process.cwd();
+    // 1. 物理层回退，写回备份文件并删除后增文件
+    const messageHistoryLength = FileBackupManager.rollbackToSnapshot(snapshotId, workspace);
+    // 2. 内存层回退，截断消息历史
+    this.context.rollbackHistoryToLength(messageHistoryLength);
+    logger.info(`[SessionManager] 会话和文件系统已成功双轨回退至快照: ${snapshotId}, 消息历史长度截断至: ${messageHistoryLength}`);
   }
 }

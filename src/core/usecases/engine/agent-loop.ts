@@ -18,6 +18,7 @@ import { ContextRepository } from '../brain/ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import { CompactionService } from '../brain/CompactionService.js';
 import { FileLockManager } from '../security/FileLockManager.js';
+import { FileBackupManager } from '../security/FileBackupManager.js';
 
 /**
  * 智能体产生的事件类型定义，外部消费者（如 UI 终端）据此渲染流式反馈过程。
@@ -510,6 +511,15 @@ export class AgentLoop {
                 const pathsToLock = resolveFilePaths(actualArgs, toolInstance?.filePathParamKey, this.context.appConfig?.workspace);
                 const lockType = (toolInstance?.securityCategory === 'read') ? 'read' : 'write';
                 const releases: Array<() => void> = [];
+
+                if (toolInstance && toolInstance.securityCategory === 'write') {
+                  const snapshotId = `snap_${this.context.getSessionId()}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+                  const workspace = this.context.appConfig?.workspace || process.cwd();
+                  const historyLength = this.context.getHistory().length;
+                  for (const p of pathsToLock) {
+                    FileBackupManager.captureSnapshot(snapshotId, p, historyLength, workspace);
+                  }
+                }
 
                 let toolResult = '';
                 let outputResult: { content: string; originalPath?: string; isTruncated: boolean; } | null = null;

@@ -24,12 +24,14 @@
   - `messageHistoryLength`: 该快照点对应的会话内存历史数组长度。
   - `addedFiles`: 自该快照点后，智能体调用创建文件工具新增的文件路径列表（用于回退时定向 `unlink` 物理删除）。
 
-### 2. 快照记录拦截时机 (Record Snapshot)
-* **拦截点**：
-  在 `agent-loop.ts` 执行工具的 `executeToolTask` 内部，当检索到调用的工具其 `securityCategory` 属于 `write`（具有物理脏改副作用）时：
-  1. 在执行工具的真实写入前，判断目标文件是否存在。若存在，读取其原始内容，并在 `.myagent/backups/` 下写入备份文件。
-  2. 若目标文件为即将被创建的新增文件，将该路径加入 `addedFiles` 清单中。
-  3. 将当前 `messageHistory.length` 作为基准，随同文件备份记录，持久化写入 `snapshot_manifest.json`。
+### 2. 快照记录拦截时机与前置研判 (Record Snapshot)
+* **插入位置**：
+  必须作为核心引擎职责，直接实现在 `src/core/usecases/engine/agent-loop.ts` 的 `executeToolTask` 内部：**紧随敏感写操作分类判定之后（`securityCategory === 'write'` 判断分支之后），且在工具物理调用（`callTool`）执行前**。
+* **时序与前置研判逻辑**：
+  在调用 `callTool` 前，必须通过 `FileBackupManager` 立即对写操作涉及的目标文件路径执行 `fs.existsSync` 检测：
+  - **若文件存在**：判定为“已存在文件修改”，立即将其物理复制备份至 `.myagent/backups/` 目录，并将备份映射记录到该快照点的 `backupFiles` 清单中。
+  - **若文件不存在**：判定为“即将创建的后增文件”，将该路径记录到该快照点的 `addedFiles` 队列中。
+  同时，记录当前的内存历史数组长度 `messageHistory.length` 并将整个快照持久化写入 `snapshot_manifest.json`。
 
 ### 3. 一致性回退与倒带算法 (Rollback & Undo)
 * **回滚触发机制**：

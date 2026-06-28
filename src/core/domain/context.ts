@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { logger } from '../../utils/logger.js';
 import { EventEmitter } from 'node:events';
 import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
 import { buildSystemPrompt } from '../usecases/brain/prompts.js';
@@ -170,6 +171,23 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    */
   public getSessionId(): string {
     return this.sessionId;
+  }
+
+  /**
+   * 将会话消息历史回滚至指定的长度。
+   * 用于物理与内存双轨倒退。
+   *
+   * @param length - 回滚到的目标历史长度
+   */
+  public rollbackHistoryToLength(length: number): void {
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
+    if (length < 0 || length > this.messageHistory.length) {
+      throw new Error(`Invalid rollback length: ${length}, current length: ${this.messageHistory.length}`);
+    }
+    this.messageHistory = this.messageHistory.slice(0, length);
+    logger.info(`[SessionContext] 消息历史回滚截断至长度: ${length}`);
   }
 
   /**
