@@ -2,7 +2,7 @@ import { resolve } from 'path';
 import { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
 import { LlmConfig } from '../../../config/index.js';
 import { AgentTracer } from '../../domain/tracer.js';
-import { SessionContext, ContextTokenUsage } from '../../domain/context.js';
+import { SessionContext, ContextTokenUsage, StoredChatMessage } from '../../domain/context.js';
 import type { ChatMessage, LlmPort, LlmStreamEvent } from '../../../ports/driven/llm/LlmPort.js';
 import type { ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
@@ -412,7 +412,7 @@ export class AgentLoop {
             interface ToolExecutionResult {
               index: number;
               events: AgentEvent[];
-              toolMessage?: ChatMessage;
+              toolMessage?: StoredChatMessage;
               hasWrite: boolean;
               finalCallUpdate: {
                 error?: string;
@@ -431,7 +431,7 @@ export class AgentLoop {
               const taskEvents: AgentEvent[] = [];
               const taskFinalCallUpdate: { error?: string; result?: string } = {};
               let hasWrite = false;
-              let toolMessage: ChatMessage | undefined;
+              let toolMessage: StoredChatMessage | undefined;
 
               // 区分对待事件类型：suspend 挂起审批事件实时通过 global queue 广播给外层 UI 确权以防死锁；其它事件暂存做顺序渲染
               const taskEmitEvent = (evt: unknown) => {
@@ -512,6 +512,7 @@ export class AgentLoop {
                 const releases: Array<() => void> = [];
 
                 let toolResult = '';
+                let outputResult: { content: string; originalPath?: string; isTruncated: boolean; } | null = null;
                 try {
                   for (const p of pathsToLock) {
                     const release = await FileLockManager.getInstance().acquireLock(p, lockType);
@@ -524,7 +525,8 @@ export class AgentLoop {
 
                   const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs, this.context, signal);
                   const rawResult = JSON.stringify(mcpResult);
-                  toolResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
+                  outputResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
+                  toolResult = outputResult.content;
                 } catch (toolError: unknown) {
                   const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
                   const isAbortError = toolError instanceof Error && (toolError.name === 'AbortError' || errorMsg.includes('Abort') || errorMsg.includes('abort'));
@@ -581,7 +583,9 @@ export class AgentLoop {
                 toolMessage = {
                   role: 'tool',
                   tool_call_id: toolCall.id,
-                  content: taskFinalCallUpdate.result ?? ''
+                  content: taskFinalCallUpdate.result ?? '',
+                  originalPath: (outputResult && outputResult.isTruncated) ? outputResult.originalPath : undefined,
+                  isTruncated: (outputResult && outputResult.isTruncated) ? true : false
                 };
               } catch (toolError: unknown) {
                 const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);

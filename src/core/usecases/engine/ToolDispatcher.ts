@@ -1,6 +1,7 @@
 import { join, dirname, resolve, relative } from 'path';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { SessionContext } from '../../domain/context.js';
+import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
 
 /**
  * 负责工具返回值的拦截与加工：
@@ -12,30 +13,43 @@ export class ToolDispatcher {
    * 实例初始化。
    *
    * @param context - 会话上下文管理实例
+   * @param toolRegistry - 可选的工具注册端口实例，用于动态获取工具的配额
    * @param workspacePath - 可选的工作区根路径，用于重定向大文本拦截缓存与 JIT 规则寻路
    */
   constructor(
     private context: SessionContext,
+    private toolRegistry?: ToolRegistryPort,
     private workspacePath?: string
   ) {}
 
   /**
    * 拦截并处理超大工具输出。
-   * 如果输出长度超过 8000 字符，执行落盘到工作区内的 .myagent/temp/ 目录，
-   * 并将内容替换为带有首尾预览及分页读取引导的占位符。
+   * 若输出超出去中心化行数与字节配额，执行同步落盘到 .myagent/tool-outputs/ 目录，
+   * 触发双向行级及字节对折算法，产生大文本折叠预览并返回包含原始路径等元数据的复合结果。
    * 
    * @param functionName - 被调用的工具名称
    * @param toolResult - 原始工具输出结果
-   * @returns 过滤或拦截后的工具输出结果
+   * @returns 包含折叠预览内容、完整文本物理路径及截断标志的复合结果对象
    */
-  public handleLargeToolOutput(functionName: string, toolResult: string): string {
-    const limit = this.context.appConfig?.runtimeLimits.largeToolOutputLimit ?? 8000;
-    if (toolResult.length <= limit) {
-      return toolResult;
+  public handleLargeToolOutput(functionName: string, toolResult: string): {
+    content: string;
+    originalPath?: string;
+    isTruncated: boolean;
+  } {
+    const tool = this.toolRegistry?.getTool(functionName);
+    const maxLines = tool?.maxLines ?? 2000;
+    const maxBytes = tool?.maxBytes ?? 50 * 1024; // 50KB
+
+    const lines = toolResult.split('\n');
+    const totalBytes = Buffer.byteLength(toolResult, 'utf-8');
+
+    // 若行数和字节数都在限额之内，则不执行任何裁剪
+    if (lines.length <= maxLines && totalBytes <= maxBytes) {
+      return { content: toolResult, isTruncated: false };
     }
 
     // 确定临时落盘目录，并确保目录存在
-    const tempDir = join(this.workspacePath || process.cwd(), '.myagent/temp');
+    const tempDir = join(this.workspacePath || process.cwd(), '.myagent/tool-outputs');
     if (!existsSync(tempDir)) {
       mkdirSync(tempDir, { recursive: true });
     }
@@ -43,26 +57,41 @@ export class ToolDispatcher {
     // 产生唯一的随机文件名
     const randomId = Math.random().toString(36).substring(2, 10);
     const timestamp = Date.now();
-    const tempFileName = `output_${timestamp}_${randomId}.txt`;
+    const tempFileName = `tool_${timestamp}_${randomId}.log`;
     const fullPath = join(tempDir, tempFileName);
 
-    // 将大文本输出写入本地物理文件
+    // 将完整的原始大文本写入本地物理文件，保障原始日志 100% 物理保全
     writeFileSync(fullPath, toolResult, 'utf-8');
+    const relativePath = `.myagent/tool-outputs/${tempFileName}`;
 
-    // 截取前部和尾部预览
-    const previewStart = toolResult.substring(0, 1000);
-    const previewEnd = toolResult.substring(toolResult.length - 1000);
-    const relativePath = `.myagent/temp/${tempFileName}`;
+    // 双向行对半对折算法
+    const headLines = Math.ceil(maxLines / 2);
+    const tailLines = Math.floor(maxLines / 2);
+    const headPart = lines.slice(0, headLines).join('\n');
+    const tailPart = tailLines > 0 ? lines.slice(lines.length - tailLines).join('\n') : '';
 
-    // 返回经过过滤与占位指引后的文本提示
-    return `[警告：工具 "${functionName}" 的输出内容过长（共 ${toolResult.length} 字符），已自动拦截并落盘至临时文件。]
-[临时文件路径：${relativePath}]
-[前 1000 字符预览]：
-${previewStart}
-...
-[后 1000 字符预览]：
-${previewEnd}
-[提示：若要调阅上述完整或指定行范围的内容，请调用 "readFile" 工具，传入 "targetPath": "${relativePath}" 并指定 lineStart 和 lineEnd。]`;
+    let foldedText = tailPart ? `${headPart}\n\n[... output truncated ...]\n\n${tailPart}` : headPart;
+
+    // 若行级折叠后依然超出字节限制，则降级为字节级截取
+    if (Buffer.byteLength(foldedText, 'utf-8') > maxBytes) {
+      const byteHalf = Math.floor(maxBytes / 2);
+      const buf = Buffer.from(toolResult, 'utf-8');
+      const headBuf = buf.subarray(0, byteHalf);
+      const tailBuf = buf.subarray(buf.length - byteHalf);
+      foldedText = `${headBuf.toString('utf-8')}\n\n[... output truncated ...]\n\n${tailBuf.toString('utf-8')}`;
+    }
+
+    // 组装模型及终端渲染用的带引导折叠预览文本
+    const content = `[警告：工具 "${functionName}" 的输出内容已超标，完整内容已同步落盘至临时文件：${relativePath}]
+[提示：若要调阅完整内容，请调用 "readFile" 工具，传入 "targetPath": "${relativePath}"。]
+[以下为对折截断后的预览]：
+${foldedText}`;
+
+    return {
+      content,
+      originalPath: relativePath,
+      isTruncated: true
+    };
   }
 
   /**

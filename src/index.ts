@@ -6,7 +6,7 @@ import { startCli } from './adapters/input/interface/index.js';
 import { theme } from './adapters/input/interface/views/theme.js';
 import { OpenAiLlmAdapter } from './adapters/llm/OpenAiLlmAdapter.js';
 import { TiktokenEstimator } from './adapters/llm/TiktokenEstimator.js';
-import { abortSessionTasks } from './adapters/tools/tools/system/terminal-engine.js';
+import { abortSessionTasks } from './adapters/tools/impl/system/terminal-engine.js';
 import { DefaultContextAdapter } from './adapters/context/DefaultContextAdapter.js';
 import { findSkillFiles, parseSkillFrontmatter } from './core/usecases/brain/contextLoader.js';
 import { readFileSync } from 'fs';
@@ -51,7 +51,7 @@ async function main() {
     await mcpManager.connectAll();
     const { LifecycleManager } = await import('./core/usecases/engine/LifecycleManager.js');
     LifecycleManager.register('mcp-manager', () => mcpManager.close());
-    const { BrowserSession } = await import('./adapters/tools/tools/browser/browser-action.js');
+    const { BrowserSession } = await import('./adapters/tools/impl/browser/browser-action.js');
     LifecycleManager.register('browser-session', () => BrowserSession.close());
     const toolRegistry = new ToolRegistry(mcpManager, {
       loadSkill: (name: string) => {

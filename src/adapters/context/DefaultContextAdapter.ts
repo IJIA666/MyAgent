@@ -2,6 +2,7 @@ import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
 import type { TokenEstimatorPort } from '../../ports/driven/llm/TokenEstimatorPort.js';
 import type { ContextAdapter } from '../../ports/driven/session/ContextAdapter.js';
 import { HANDOFF_INSTRUCTION } from '../../core/usecases/brain/prompts.js';
+import type { StoredChatMessage } from '../../core/domain/context.js';
 
 /**
  * 默认上下文适配器实现类。
@@ -121,6 +122,12 @@ export class DefaultContextAdapter implements ContextAdapter {
       }
     }
 
-    return historySnapshot;
+    return historySnapshot.map(msg => {
+      // 浅拷贝单条消息，防范物理 delete 污染 SessionContext 里的原始历史记录，并彻底消除 unused-vars 报错
+      const cleanMsg = { ...msg } as StoredChatMessage;
+      delete cleanMsg.originalPath;
+      delete cleanMsg.isTruncated;
+      return cleanMsg;
+    });
   }
 }

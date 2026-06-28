@@ -1,6 +1,6 @@
 import { resolve, relative } from 'path';
 import type { ChatMessage, LlmPort } from '../../../ports/driven/llm/LlmPort.js';
-import { SessionContext } from '../../domain/context.js';
+import { SessionContext, StoredChatMessage } from '../../domain/context.js';
 import { buildCompactionSummaryPrompt, buildStaticFallbackSummary } from './prompts.js';
 import { ContextRepository } from './ContextRepository.js';
 import { logger } from '../../../utils/logger.js'; // 导入统一日志单例 logger
@@ -47,46 +47,97 @@ export class CompactionService {
   }
 
   /**
-   * 执行无延迟硬截断（Pointer-based Truncation）。
-   * 丢弃中间消息并在头部拼接 session_summary.md。
+   * 执行首尾双保中段有损压缩（Middle Compaction）。
+   * 保留 System 提示词、第一轮交互与最近第 N 轮交互，将中段消息提炼总结为单条摘要消息进行原位合并替代。
    * 
    * @returns 压缩轮换是否成功
    */
   public async compact(): Promise<boolean> {
     try {
       const fullHistory = this.context.getHistory();
+      if (fullHistory.length <= 4) {
+        return false;
+      }
 
-      // 1. 统计 user 角色消息的总数，反向扫描定位第 compactionRetainCount 个 user 消息（限制在 index 1 及之后）
+      // 1. 界定首部保护区截止点
+      // 必须包含 index 0 (System Prompt)，以及首轮交互：
+      // 首个 user (通常在 index 1) -> 紧随其后的首个 assistant (含 tool_calls) -> 紧随其后的首个 tool (或多个 tool_result)
+      let headEndIndex = 0;
+      let foundFirstUser = false;
+      let foundFirstAssistant = false;
+
+      for (let i = 1; i < fullHistory.length; i++) {
+        const msg = fullHistory[i];
+        if (msg.role === 'user' && !foundFirstUser) {
+          foundFirstUser = true;
+          headEndIndex = i;
+        } else if (msg.role === 'assistant' && foundFirstUser && !foundFirstAssistant) {
+          foundFirstAssistant = true;
+          headEndIndex = i;
+        } else if (msg.role === 'tool' && foundFirstAssistant) {
+          headEndIndex = i;
+        } else if (foundFirstAssistant && msg.role !== 'tool') {
+          // 当遇到非 tool 消息，说明首轮 tool_result 结算结束，跳出
+          break;
+        }
+      }
+
+      // 2. 界定尾部保护区起始点
+      // 从后往前数第 compactionRetainCount 个 role === "user" 消息的起点索引
       let userCount = 0;
-      let cutoffIndex = -1;
+      let tailStartIndex = -1;
       for (let i = fullHistory.length - 1; i >= 1; i--) {
         if (fullHistory[i].role === 'user') {
           userCount++;
           if (userCount === this.compactionRetainCount) {
-            cutoffIndex = i;
+            tailStartIndex = i;
             break;
           }
         }
       }
 
-      // 2. 前置守卫：如果 user 角色消息总数不足 compactionRetainCount，不予截断
-      if (cutoffIndex === -1) {
+      // 3. 边界检查：若没有足够的 user 消息，或者首尾保护区重叠交叉，直接安全跳过
+      if (tailStartIndex === -1 || tailStartIndex <= headEndIndex) {
         return false;
       }
 
-      // 3. 调用新 API 执行基于索引的物理截断
-      this.context.truncateHistoryFromIndex(cutoffIndex);
-
-      // 4. 如果兜底也没有摘要，则塞一个默认兜底
-      if (!this.context.getCheckpointSummary()) {
-        const fallback = buildStaticFallbackSummary(undefined, undefined);
-        this.context.setCheckpointSummary(fallback);
+      // 4. 精确划定中段有损压缩区
+      const middleMessages = fullHistory.slice(headEndIndex + 1, tailStartIndex);
+      if (middleMessages.length === 0) {
+        return false;
       }
 
+      // 5. 提炼中段消息
+      let summaryText = '';
+      try {
+        const summaryPrompt = buildCompactionSummaryPrompt(middleMessages);
+        summaryText = await this.driver.generateSummaryAsync(summaryPrompt);
+      } catch (summaryError: unknown) {
+        logger.warn(`[CompactionService] 提炼中段摘要失败，执行兜底：${summaryError}`);
+      }
+
+      if (!summaryText || summaryText.trim().length === 0) {
+        summaryText = buildStaticFallbackSummary(undefined, undefined);
+      }
+
+      // 组装中段总结消息 (Summary Notice)
+      const summaryNotice: StoredChatMessage = {
+        role: 'user',
+        content: `[Summary of Previous Operations: ${summaryText.trim()}]`
+      };
+
+      // 6. 重组历史消息：[首部保护] + [中段总结] + [尾部保护]
+      const newHistory = [
+        ...fullHistory.slice(0, headEndIndex + 1),
+        summaryNotice,
+        ...fullHistory.slice(tailStartIndex)
+      ];
+
+      this.context.updateHistory(newHistory);
       await this.contextRepo.saveState();
       return true;
     } catch (e) {
-      logger.warn(`[CompactionService] 上下文硬截断失败: ${e}`);
+      logger.warn(`[CompactionService] 首尾双保中段有损压缩失败: ${e}`);
       return false;
     }
   }

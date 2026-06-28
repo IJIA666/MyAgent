@@ -257,7 +257,7 @@ ${historyText}
     // 5. 实例化隔离的子领域服务
     const subRuleManager = new RuleManager(subContext);
     const subContextRepo = new ContextRepository(subContext, undefined, true);
-    const subToolDispatcher = new ToolDispatcher(subContext);
+    const subToolDispatcher = new ToolDispatcher(subContext, subToolRegistry);
     const subCompactionService = new CompactionService(subContext, this.driver, subContextRepo);
 
     // 6. 实例化隔离的子 AgentLoop，限制最大步数为 3 轮

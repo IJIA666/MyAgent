@@ -8,6 +8,16 @@ import { AppConfig, WorkMode, getDefaultWorkMode } from '../../config/index.js';
 import { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import { SecurityService } from '../usecases/security/SecurityService.js';
 
+/**
+ * 内部会话扩展消息接口契约，继承底层大模型消息，
+ * 扩充 originalPath 与 isTruncated 属性，供大文本去噪和快照记录使用。
+ */
+export interface StoredChatMessage extends ChatMessage {
+  /** 完整工具大输出外带临时文件的物理路径 */
+  originalPath?: string;
+  /** 本条消息内容是否已被截断 */
+  isTruncated?: boolean;
+}
 
 // 显式重导出 ApiUsage 和 ContextTokenUsage 类型，避免在 ESM 下因类型擦除引发运行时加载错误
 export type { ApiUsage, ContextTokenUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
@@ -40,7 +50,7 @@ export function computeStringHash(text: string): string {
  * 2. 管理会话唯一标识（Session ID）。
  */
 export class SessionContext extends EventEmitter implements SessionEventPort {
-  private messageHistory: ChatMessage[] = [];
+  private messageHistory: StoredChatMessage[] = [];
   private sessionId: string;
   private tenantId: string;
   private checkpointSummary: string | null = null;
@@ -50,7 +60,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   /** 会话是否正在处理生命周期 Hook 中间件（忙状态并发锁，内部存储变量） */
   private _isProcessing = false;
   /** 缓冲在 Hook 忙锁执行期间到达的后台系统通知 */
-  private pendingNotifications: ChatMessage[] = [];
+  private pendingNotifications: StoredChatMessage[] = [];
 
   /**
    * 获取会话是否正在处理生命周期 Hook 中间件。
@@ -75,7 +85,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    *
    * @param message - 系统通知消息对象
    */
-  public addNotification(message: ChatMessage): void {
+  public addNotification(message: StoredChatMessage): void {
     if (this._isProcessing) {
       this.pendingNotifications.push(message);
     } else {
@@ -270,7 +280,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    *
    * @returns 包含所有历史消息的数组
    */
-  public getHistory(): ChatMessage[] {
+  public getHistory(): StoredChatMessage[] {
     return this.messageHistory;
   }
 
@@ -279,7 +289,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    *
    * @param message - 待追加的标准模型消息载体对象
    */
-  public addMessage(message: ChatMessage): void {
+  public addMessage(message: StoredChatMessage): void {
     // 忙状态并发锁断言保护
     if (this.isProcessing) {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
@@ -293,7 +303,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    *
    * @returns 从队尾弹出的最新一条消息，若历史为空则返回 undefined
    */
-  public popMessage(): ChatMessage | undefined {
+  public popMessage(): StoredChatMessage | undefined {
     // 忙状态并发锁断言保护
     if (this.isProcessing) {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
@@ -411,7 +421,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    *
    * @param history - 新的消息历史数组
    */
-  public updateHistory(history: ChatMessage[]): void {
+  public updateHistory(history: StoredChatMessage[]): void {
     // 忙状态并发锁断言保护
     if (this.isProcessing) {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');

@@ -17,6 +17,10 @@ export interface ToolMetadata {
   readonly securityCategory: 'read' | 'write';
   /** 可选的文件路径参数字段键名 */
   readonly filePathParamKey?: string;
+  /** 可选的去中心化最大行数配额，超限触发折叠 */
+  readonly maxLines?: number;
+  /** 可选的去中心化最大字节数配额，超限触发折叠 */
+  readonly maxBytes?: number;
 }
 
 /**

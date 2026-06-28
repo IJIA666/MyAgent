@@ -1,6 +1,6 @@
 # 业务能力: context-compaction
 
-本规范定义了会话上下文的静默自适应压缩、基于 Token 的指针级硬截断、异步 Checkpoint 注入、文件 Pinning 记忆重建，以及大模型覆写下的窗口管理与防漏自适应机制。
+本规范定义了会话上下文的静默自适应压缩、首尾双保中段有损压缩、异步 Checkpoint 注入、文件 Pinning 记忆重建，以及大模型覆写下的窗口管理与防漏自适应机制。
 
 ## 业务需求
 
@@ -11,19 +11,19 @@
 - **WHEN** 距离上一次提炼的 Token 增量达到了预设的后台阈值（如 5000 Token），且用户交互结束（回合间隙）
 - **THEN** 系统在后台启动异步 Promise 任务，使用辅助大模型将未总结的历史记录与上一次的 Summary 进行合并，写入并更新本地 `session_summary.md` 文件
 
-### 需求: 无延迟指针级硬截断 (Zero-Latency Truncation)
-系统必须在会话进行时提供指针级硬截断以防爆仓。当会话接近爆仓风险时，系统必须瞬间执行指针级的消息截断，直接读取硬盘现存最新的状态文件作为替换前缀，并物理保留最近的滚动窗口交互。
+### 需求: 对抗 Lost-in-the-Middle 的首尾双保中段压缩 (Head & Tail Preserved Compaction)
+当历史会话 Token 数量超限触发 Compaction 时，系统必须(MUST)对第一轮 Prompt 交互（System Prompt、用户首问及首个工具结果）和最近 $N$ 轮（默认 4 轮）的 Raw 交互进行强行保护不予裁剪，仅对处于两部分中间的“中段历史”进行 LLM 语义总结，并用一条 human 摘要消息（Summary Notice）在原位置将其合并替代。
 
-#### 场景: 会话整体逼近物理 Token 警戒线
-- **WHEN** 用户新问题发出前， 会话占用率预测达到物理总限额的 80%
-- **THEN** 系统立即丢弃历史对话数组，以 `compactionRetainCount`（默认 4，对应 4 轮 user 会话，即最近 3.5 轮交互）为准执行硬截断。若 `user` 角色消息总数少于等于保留轮数，则不予截断。截断切片扫描（仅限于 index 1 及之后的有效范围，绝对禁止扫描或篡改 index 0 的 system 消息）反向寻找倒数第 `compactionRetainCount` 个 `user` 消息作为起点，保留该 user 及其之后的所有消息作为安全水位线，并在 System Prompt 头部注入最新的 `session_summary.md`，期间无需等待任何大模型即时响应
+#### 场景: Token超额时触发中段有损压缩
+- **WHEN** 当前会话累积 Token 水平触发系统 Compaction 阈值。
+- **THEN** 系统强行锁死 System Prompt 及最前一轮 and 最近 4 轮的原始对话块，仅将中段的所有交互（包括中间的大报错、海量工具过程）发送给 LLM 提炼为一段摘要，在内存中将中段整体替换为 `Summary Notice`，并将后续活跃运行的工具调用完整拼接在摘要之后。
 
 ### 需求: 标识符防篡改护栏 (Strict Identifier Preservation)
 无论在任何阶段的提炼任务中，系统必须向负责压缩的大模型注入核心特征数据的防篡改护栏。
 
 #### 场景: 抵御 UUID 与路径在压缩中丢失或重组
 - **WHEN** 系统向辅助模型提交并组装 `generateSummary` 请求体时
-- **THEN** 提示词内部必须注入严格不可更改的 `Identifier Preservation` 禁令：“绝不允许缩写、省略或重构任何长相怪异的 UUID、Hash、IP、端口、URL 以及绝对文件路径，违者截断。”
+- **THEN** 提示词内部必须注入严格不可更改的 `Identifier Preservation` 禁令：“绝不允许缩写、省略或重构任何长相怪异 of UUID、Hash、IP、端口、URL 以及绝对文件路径，违者截断。”
 
 ### 需求: 交接班角色防偏离 (Handoff Instructions)
 当因深度截断发生重构，使得后续推演可能与早期历史断层时，系统必须注入当前模型的指挥层级认知。

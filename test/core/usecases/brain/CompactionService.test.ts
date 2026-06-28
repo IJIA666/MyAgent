@@ -1,5 +1,5 @@
 /**
- * @fileoverview CompactionService 的单元测试，用于验证历史记录压缩与提取。
+ * @fileoverview CompactionService 的单元测试，用于验证历史记录首尾双保中段压缩与提炼。
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -20,7 +20,7 @@ describe('CompactionService', () => {
     context.appConfig = {
       workspace: process.cwd(),
       runtimeLimits: {
-        compactionRetainCount: 4,
+        compactionRetainCount: 2,
         compactionTriggerDelta: 5000,
         compactionFailureLimit: 3,
         compactionRecentFilesLimit: 5
@@ -48,30 +48,71 @@ describe('CompactionService', () => {
   });
 
   describe('compact', () => {
-    it('当历史记录小于等于 Retain 阈值时，应该直接返回 false', async () => {
-      expect(context.getHistory().length).toBe(1);
+    it('当历史记录小于等于 4 条时，应该直接返回 false 拒绝压缩', async () => {
+      expect(context.getHistory().length).toBe(1); // 仅有 system
 
       const success = await compactionService.compact();
       expect(success).toBe(false);
       expect(mockContextRepo.saveState).not.toHaveBeenCalled();
     });
 
-    it('当历史记录中的 user 消息总数大于 retain 阈值时，应该执行基于 user 轮数的硬截断并保留最近的对话', async () => {
-      compactionService['compactionRetainCount'] = 2;
+    it('当首部保护区与尾部保护区发生重叠交叉时，应当安全卡关直接返回 false', async () => {
+      compactionService['compactionRetainCount'] = 3;
 
+      // 仅有 2 个 user 消息，而 tailStartIndex 的 userCount 无法达到 3
       context.addMessage({ role: 'user', content: 'msg 1' });
       context.addMessage({ role: 'assistant', content: 'msg 2' });
       context.addMessage({ role: 'user', content: 'msg 3' });
-      context.addMessage({ role: 'assistant', content: 'msg 4' });
-      context.addMessage({ role: 'user', content: 'msg 5' }); // 共 6 条消息，3 个 user 角色消息
-
-      expect(context.getHistory().length).toBe(6);
 
       const success = await compactionService.compact();
+      expect(success).toBe(false);
+    });
+
+    it('应当对中段消息执行有损压缩并在原位替换为单条 Summary Notice，而首尾保护区无损保全', async () => {
+      compactionService['compactionRetainCount'] = 1; // 仅保护最后 1 个 user 消息及其后续
+
+      // 首部保护区：System Prompt (index 0) 
+      // 加上首轮交互：第一个 user (index 1) -> 紧随其后的首个 assistant (index 2) -> 紧随其后的首个 tool (index 3)
+      context.addMessage({ role: 'user', content: 'user 1 (first turn)' }); // index 1
+      context.addMessage({ role: 'assistant', content: 'assistant 1 (first turn)' }); // index 2
+      context.addMessage({ role: 'tool', tool_call_id: 'tc-1', content: 'tool 1 (first turn)' }); // index 3
+
+      // 中段消息（应当被有损压缩）：
+      context.addMessage({ role: 'user', content: 'user 2 (middle)' }); // index 4
+      context.addMessage({ role: 'assistant', content: 'assistant 2 (middle)' }); // index 5
+
+      // 尾部保护区：从后往前数第 1 个 user 消息（即 user 3，index 6）及其后的全部
+      context.addMessage({ role: 'user', content: 'user 3 (tail)' }); // index 6
+      context.addMessage({ role: 'assistant', content: 'assistant 3 (tail)' }); // index 7
+
+      expect(context.getHistory().length).toBe(8);
+
+      vi.mocked(mockLlmPort.generateSummaryAsync).mockResolvedValue('Mocked Mid Summary');
+
+      const success = await compactionService.compact();
+      
       expect(success).toBe(true);
-      expect(context.getHistory().length).toBe(4);
-      expect(context.getHistory()[1].content).toBe('msg 3');
-      expect(context.getCheckpointSummary()).toBeDefined();
+      const newHistory = context.getHistory();
+
+      // 新历史长度应为：首部 (4) + 中段总结 (1) + 尾部 (2) = 7 条
+      expect(newHistory.length).toBe(7);
+
+      // System Prompt 保全
+      expect(newHistory[0].role).toBe('system');
+
+      // 首轮交互保全
+      expect(newHistory[1].content).toBe('user 1 (first turn)');
+      expect(newHistory[2].content).toBe('assistant 1 (first turn)');
+      expect(newHistory[3].content).toBe('tool 1 (first turn)');
+
+      // 中段总结原位替换
+      expect(newHistory[4].role).toBe('user');
+      expect(newHistory[4].content).toContain('[Summary of Previous Operations: Mocked Mid Summary]');
+
+      // 尾部保护无损
+      expect(newHistory[5].content).toBe('user 3 (tail)');
+      expect(newHistory[6].content).toBe('assistant 3 (tail)');
+
       expect(mockContextRepo.saveState).toHaveBeenCalled();
     });
 
