@@ -86,7 +86,11 @@ export class ExecuteCommandTool implements NativeTool {
 
     if (workMode === 'Plan') {
       if (safetyLevel !== 'allow') {
-        return { status: 'deny', message: 'BLOCKED (Plan Mode Only): 只读模式下禁止执行任何具有写入/修改副作用的指令。' };
+        // 在 Plan 模式下实施终端硬拦截，并返回针对大模型的自愈引导报错，促使其转向专属只读工具或任务规划
+        return {
+          status: 'deny',
+          message: 'BLOCKED (Plan Mode Only): 只读规划模式下禁止执行任何非白名单终端命令。由于您当前处于只读的 Plan 模式下，请优先改用专属的只读文件 API 工具（如 list_dir、readFile 或 grep_search ）来诊断和了解系统状态；若该命令为必要的写入/修改步骤，请将其记录在任务清单或计划中供后续阶段在 Auto 或 YOLO 模式下执行。'
+        };
       }
     }
 

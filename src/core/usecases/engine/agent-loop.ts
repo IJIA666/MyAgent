@@ -274,6 +274,15 @@ export class AgentLoop {
             ...userMsg,
             content: (userMsg.content || '') + reminderBubble
           };
+
+          // 动态挂载 systemReminder 属性到物理历史消息中，供落盘审计与调试可见
+          const history = this.context.getHistory();
+          for (let i = history.length - 1; i >= 0; i--) {
+            if (history[i].role === 'user') {
+              (history[i] as ChatMessage & { systemReminder?: string }).systemReminder = reminderBubble;
+              break;
+            }
+          }
         }
 
         // 3. 动态物理裁剪：若开启 enablePlanToolStripping 且处于 Plan 模式，剔除所有写倾向（securityCategory === 'write'）的工具定义
