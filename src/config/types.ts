@@ -134,6 +134,8 @@ export interface AppConfig {
   mcp: McpConfig;
   /** 终端安全执行工作模式 */
   workMode?: WorkMode;
+  /** 在 Plan 只读模式下是否物理裁剪写倾向工具的声明 */
+  enablePlanToolStripping?: boolean;
   /** 运行资源与行为限制配置 */
   runtimeLimits: RuntimeLimitsConfig;
 }

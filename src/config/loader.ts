@@ -180,12 +180,18 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     embedding.headers = llm.headers;
   }
 
+  // 解析是否启用 Plan 模式下动态物理过滤裁剪写操作工具的开关
+  const enablePlanToolStripping = env.ENABLE_PLAN_TOOL_STRIPPING !== undefined
+    ? env.ENABLE_PLAN_TOOL_STRIPPING.trim().toLowerCase() === 'true'
+    : false;
+
   const config: AppConfig = {
     llm,
     embedding,
     workspace,
     mcp,
     workMode,
+    enablePlanToolStripping,
     runtimeLimits: {
       maxIterations,
       largeToolOutputLimit,

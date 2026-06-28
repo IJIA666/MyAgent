@@ -85,14 +85,10 @@ export function buildSystemPrompt(
   }
   parts.push(`</context_rules>`);
 
-  // 3. volatile (易变数据层，高频变动，不予缓存)
-  const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
-  const cwdStr = process.cwd();
+  // 3. volatile (已静态化，仅保留平台常量)
   const osStr = process.platform === 'win32' ? 'Windows' : process.platform;
   
-  parts.push(`\n<!-- 3. volatile (易变数据层流通，高频变动，不予缓存) -->\n<volatile_context>
-  <date>${dateStr}</date>
-  <cwd>${cwdStr}</cwd>
+  parts.push(`\n<!-- 3. volatile (已静态化，仅保留平台常量) -->\n<volatile_context>
   <os>${osStr}</os>
 </volatile_context>`);
 

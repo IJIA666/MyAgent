@@ -251,6 +251,40 @@ export class AgentLoop {
           tools: filteredTools as Record<string, unknown>[]
         };
 
+        // 1. 克隆待发送的消息数组，避免副作用直接污染外部物理上下文 messageHistory
+        const finalRequestMessages = [...(actualRequest.messages || [])];
+        const currentMode = this.context.getWorkMode();
+        
+        // 2. 向前追溯定位到当前请求消息数组中最新的一条 user 角色消息，防范非 user 消息在末尾导致的交替报错
+        let latestUserMessageIdx = -1;
+        for (let i = finalRequestMessages.length - 1; i >= 0; i--) {
+          if (finalRequestMessages[i].role === 'user') {
+            latestUserMessageIdx = i;
+            break;
+          }
+        }
+        
+        if (latestUserMessageIdx !== -1) {
+          const userMsg = finalRequestMessages[latestUserMessageIdx];
+          const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+          const cwdStr = process.cwd();
+          const reminderBubble = `\n\n<system-reminder>\n[System Notification]\nDate: ${dateStr}\nCwd: ${cwdStr}\nSecurityMode: ${currentMode}\n</system-reminder>`;
+          
+          finalRequestMessages[latestUserMessageIdx] = {
+            ...userMsg,
+            content: (userMsg.content || '') + reminderBubble
+          };
+        }
+
+        // 3. 动态物理裁剪：若开启 enablePlanToolStripping 且处于 Plan 模式，剔除所有写倾向（securityCategory === 'write'）的工具定义
+        const enablePlanToolStripping = this.context.appConfig?.enablePlanToolStripping ?? false;
+        let finalRequestTools = actualRequest.tools || [];
+        if (enablePlanToolStripping && currentMode === 'Plan') {
+          finalRequestTools = finalRequestTools.filter((t: unknown) => {
+            return (t as { securityCategory?: string }).securityCategory !== 'write';
+          });
+        }
+
         let cleanupCascade: (() => void) | undefined = undefined;
         let hasToolCalls = false;
         try {
@@ -266,7 +300,7 @@ export class AgentLoop {
             const modelTimeoutMs = this.context.appConfig?.runtimeLimits?.modelTimeoutMs ?? 60000;
             const localTimeoutSignal = AbortSignal.timeout(modelTimeoutMs);
             let combinedSignal = localTimeoutSignal;
-
+ 
             if (options?.signal) {
               const abortSignalClass = AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal };
               if (typeof abortSignalClass.any === 'function') {
@@ -287,10 +321,10 @@ export class AgentLoop {
                 };
               }
             }
-
+ 
             stream = this.driver.streamChat(
-              actualRequest.messages || [],
-              actualRequest.tools || [],
+              finalRequestMessages,
+              finalRequestTools,
               { signal: combinedSignal }
             );
           }

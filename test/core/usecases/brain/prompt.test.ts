@@ -51,12 +51,14 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     expect(prompt).toContain('LOCAL_RULE_TEST_TEXT');
   });
 
-  test('4. CWD 动态感知校验', () => {
+  test('4. CWD 动态感知校验（改动后：已从 System Prompt 中移除以保全缓存）', () => {
     const prompt = buildSystemPrompt(mockGlobalRules, mockLocalRules, mockSkills);
-    const currentCwd = process.cwd();
     
-    // 验证 <cwd> 标签内部是否包含当前工作目录绝对路径
-    expect(prompt).toContain(`<cwd>${currentCwd}</cwd>`);
+    // 验证已从头部系统提示词中移除了 <cwd> 和 <date> 标签
+    expect(prompt).not.toContain('<cwd>');
+    expect(prompt).not.toContain('<date>');
+    expect(prompt).toContain('<volatile_context>');
+    expect(prompt).toContain('<os>');
   });
 
   test('5. SessionContext 实例中的 System 消息缓存结构校验', () => {

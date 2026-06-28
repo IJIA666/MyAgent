@@ -31,7 +31,7 @@ describe('Terminal Tool 单元测试', () => {
     // 每次测试前，将工作模式重置为 YOLO，防止测试由于人工交互阻断卡死
     setWorkMode('YOLO');
     saveWorkMode('YOLO');
-    
+
     // 清空白名单
     saveAllowedCommands([]);
 
@@ -43,7 +43,7 @@ describe('Terminal Tool 单元测试', () => {
     // 正常命令提取 Root + Subcommand
     expect(extractSafePrefix('npm run build')).toBe('npm run');
     expect(extractSafePrefix('git add src/index.ts')).toBe('git add');
-    
+
     // 带有特殊符号或参数的 Subcommand 应无法提取前缀
     expect(extractSafePrefix('python -m pip install')).toBeNull(); // "-m" 含有特殊符号 -
     expect(extractSafePrefix('node ./src/index.js')).toBeNull(); // "./src/index.js" 含有路径斜杠
@@ -53,13 +53,13 @@ describe('Terminal Tool 单元测试', () => {
   test('2. 安全硬编码正则阻断拦截复合指令', async () => {
     // 带拼接符 & 的命令
     await expect(executeCommandToolInstance.execute({ command: 'echo 1 & echo 2' })).rejects.toThrow('拒绝执行');
-    
+
     // 带管道符 | 的命令
     await expect(executeCommandToolInstance.execute({ command: 'cat file | grep text' })).rejects.toThrow('拒绝执行');
-    
+
     // 带重定向符 > 的命令
     await expect(executeCommandToolInstance.execute({ command: 'echo hello > output.txt' })).rejects.toThrow('拒绝执行');
-    
+
     // 带换行符的命令
     await expect(executeCommandToolInstance.execute({ command: 'echo hello\necho world' })).rejects.toThrow('拒绝执行');
   });
@@ -74,14 +74,14 @@ describe('Terminal Tool 单元测试', () => {
     // 工作模式存取测试
     saveWorkMode('Safe');
     expect(loadWorkMode()).toBe('Safe');
-    
+
     saveWorkMode('Auto');
     expect(loadWorkMode()).toBe('Auto');
 
     // 白名单存取测试
     const mockRules = ['npm run:*', 'git add:*'];
     saveAllowedCommands(mockRules);
-    
+
     const loaded = loadAllowedCommands();
     expect(loaded).toContain('npm run:*');
     expect(loaded).toContain('git add:*');
@@ -100,7 +100,7 @@ describe('Terminal Tool 单元测试', () => {
     // 执行一个简单的 echo 指令，由于在 Windows 环境下可能没有全局 echo，
     // 我们使用 node.exe 执行一段 JS 脚本作为跨平台的执行测试，确保子进程能正常跑起来
     const result = await executeCommandToolInstance.execute({ command: 'node -e "console.log(\'LineA\'); console.log(\'LineB\')"' });
-    
+
     expect(result).toContain('LineA');
     expect(result).toContain('LineB');
     expect(result).toContain('<shell_metadata>');
@@ -109,7 +109,7 @@ describe('Terminal Tool 单元测试', () => {
 
   test('6. 启动观察期 200ms 后台驻留捕获测试', async () => {
     setWorkMode('YOLO');
-    
+
     // 场景 A: 在 200ms 内立即报错退出的命令，executeCommandTool 应同步返回错误结果，而不是后台 ID 提示
     const invalidCommand = 'non_existent_command_xxxx';
     const resultInvalid = await executeCommandToolInstance.execute({ command: invalidCommand, isBackground: true });
@@ -131,7 +131,7 @@ describe('Terminal Tool 单元测试', () => {
     // 独立测试 cwd 沙箱边界
     expect(() => validateCwd('../../etc')).toThrow('Operation not permitted');
     expect(() => validateCwd('C:\\Windows')).toThrow('Operation not permitted');
-    
+
     // 正确路径不报错
     const correctPath = validateCwd('src');
     expect(correctPath).toContain('path_terminal_test');
@@ -263,7 +263,7 @@ describe('Terminal Tool 单元测试', () => {
     expect(() => validateCommand('git commit -m "update"')).toThrow('严禁执行除只读查看外的任何 Git 变更操作');
     expect(() => validateCommand('git checkout -b branch')).toThrow('严禁执行除只读查看外的任何 Git 变更操作');
     expect(() => validateCommand('git add .')).toThrow('严禁执行除只读查看外的任何 Git 变更操作');
-    
+
     // 只读的 Git 查看命令应该被安全放行（不属于 Hardline 黑名单，在 YOLO 模式下直接 pass，在 Auto/Plan 模式下按常规则处理）
     mockSession.setWorkMode('YOLO');
     const safetyLogYolo = executeCommandToolInstance.checkSafety({ command: 'git log' }, mockSession);
