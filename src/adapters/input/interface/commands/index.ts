@@ -9,3 +9,4 @@ export { SkillCommand } from './skill.js';
 export { McpCommand } from './mcp.js';
 export { ToolCommand } from './tool.js';
 export { ModelCommand } from './model.js';
+export { WorkModeCommand } from './workmode.js';

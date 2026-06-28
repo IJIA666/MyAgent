@@ -9,7 +9,8 @@ import {
   SkillCommand, 
   McpCommand, 
   ToolCommand, 
-  ModelCommand 
+  ModelCommand,
+  WorkModeCommand
 } from './commands/index.js';
 import * as p from '@clack/prompts';
 import { theme } from './views/theme.js';
@@ -35,6 +36,7 @@ class CommandRegistry {
     this.register(new McpCommand());
     this.register(new ToolCommand());
     this.register(new ModelCommand());
+    this.register(new WorkModeCommand());
   }
 
   private register(command: ICommand): void {
@@ -86,6 +88,7 @@ export async function showInteractiveMenu(): Promise<string | null> {
       { value: 'resume', label: '恢复历史会话 (Resume)' },
       { value: 'tool', label: '查看扩展工具清单 (Tool)' },
       { value: 'mcp', label: '管理 MCP 服务 (MCP)' },
+      { value: 'workmode', label: '切换安全执行模式 (WorkMode)' },
       { value: 'reload-rules', label: '重载全局和项目规则 (Reload Rules)' },
       { value: 'help', label: '查看帮助 (Help)' },
       { value: 'cancel', label: '取消' },
@@ -133,7 +136,7 @@ export async function showInteractiveMenu(): Promise<string | null> {
     return `/skill ${skillSelect as string} ${taskText as string}`;
   }
 
-  if (['model', 'history', 'tool', 'help', 'reload-rules'].includes(mainAction as string)) {
+  if (['model', 'history', 'tool', 'help', 'reload-rules', 'workmode'].includes(mainAction as string)) {
     return `/${mainAction}`;
   }
 

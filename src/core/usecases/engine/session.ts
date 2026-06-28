@@ -515,4 +515,13 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.context.rollbackHistoryToLength(messageHistoryLength);
     logger.info(`[SessionManager] 会话和文件系统已成功双轨回退至快照: ${snapshotId}, 消息历史长度截断至: ${messageHistoryLength}`);
   }
+
+  /**
+   * 获取当前会话绑定的上下文实例。
+   *
+   * @returns 会话上下文实例
+   */
+  public getContext(): SessionContext {
+    return this.context;
+  }
 }
