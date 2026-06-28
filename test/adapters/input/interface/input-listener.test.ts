@@ -1,0 +1,157 @@
+import { PassThrough } from 'node:stream';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { InputListener } from '../../../../src/adapters/input/interface/io/input-listener.js';
+
+describe('InputListener Dependency Injection & Lifecycle Tests', () => {
+  let mockStdin: PassThrough;
+  let mockStdout: PassThrough;
+  let listener: InputListener;
+
+  /**
+   * 触发底层 input 流的 keypress 监听回调辅助函数
+   */
+  function simulateKeypress(mockStream: PassThrough, keyObj: { name?: string; ctrl?: boolean; meta?: boolean }) {
+    mockStream.emit('keypress', '', keyObj);
+  }
+
+  beforeEach(() => {
+    mockStdin = new PassThrough();
+    mockStdout = new PassThrough();
+    // 仿真 isTTY 终端属性，保证 readline 底层不会发生行为退化
+    (mockStdin as unknown as { isTTY: boolean }).isTTY = true;
+    (mockStdout as unknown as { isTTY: boolean }).isTTY = true;
+  });
+
+  afterEach(() => {
+    if (listener) {
+      listener.close();
+    }
+    // 物理注销隔离 Mock 流，排空 Node.js Libuv 事件泵，杜绝测试挂起悬挂
+    mockStdin.destroy();
+    mockStdout.destroy();
+  });
+
+  it('应该支持输入输出流的依赖注入并能正常启动与提交数据', async () => {
+    let submittedLine = '';
+    const linePromise = new Promise<string>((resolve) => {
+      listener = new InputListener({
+        getIsGenerating: () => false,
+        getModelName: () => 'test-model',
+        onAbort: () => {},
+        onRollback: () => {},
+        onLineSubmit: (line) => {
+          submittedLine = line;
+          resolve(line);
+        },
+        input: mockStdin,
+        output: mockStdout
+      });
+    });
+
+    listener.start();
+    expect(listener.getInterface()).not.toBeNull();
+
+    // 仿真用户输入并推送回车
+    mockStdin.push('hello unit test\n');
+
+    const result = await linePromise;
+    expect(result).toBe('hello unit test');
+    expect(submittedLine).toBe('hello unit test');
+  });
+
+  it('应该在挂起状态下物理拦截并丢弃 line 事件，且在 resume 恢复后无任何历史数据积压溢出', async () => {
+    let lineSubmittedCount = 0;
+
+    listener = new InputListener({
+      getIsGenerating: () => false,
+      getModelName: () => 'test-model',
+      onAbort: () => {},
+      onRollback: () => {},
+      onLineSubmit: () => {
+        lineSubmittedCount++;
+      },
+      input: mockStdin,
+      output: mockStdout
+    });
+
+    listener.start();
+
+    // 挂起输入常规监听
+    listener.pause();
+
+    // 挂起期间，向共享输入流写入垃圾测试指令
+    mockStdin.push('garbage text 1\n');
+    mockStdin.push('garbage text 2\n');
+
+    // 稍微等待异步事件轮询，确保事件已被物理阻断
+    await new Promise((resolve) => process.nextTick(resolve));
+    expect(lineSubmittedCount).toBe(0);
+
+    // 建立事件驱动型 Promise 以防 Flaky tests 盲等
+    const nextLinePromise = new Promise<void>((resolve) => {
+      vi.spyOn(listener as unknown as { onLineSubmit: (line: string) => void }, 'onLineSubmit').mockImplementation(() => {
+        lineSubmittedCount++;
+        resolve();
+      });
+    });
+
+    // 恢复常规监听
+    listener.resume();
+
+    // 将合法行的推送延迟到下一事件循环 tick（在 isPaused 成功解禁后）
+    setImmediate(() => {
+      mockStdin.push('legit command line\n');
+    });
+
+    await nextLinePromise;
+
+    // 验证：只有合法命令触发了 line 提交，挂起期间写入的所有垃圾命令全部被干净丢弃，未积压涌出
+    expect(lineSubmittedCount).toBe(1);
+  });
+
+  it('应该在非生成状态下双击 ESC 键物理 close 销毁全局实例以防回显污染，并能在确认后物理重建 start', async () => {
+    let rollbackTriggered = false;
+
+    listener = new InputListener({
+      getIsGenerating: () => false,
+      getModelName: () => 'test-model',
+      onAbort: vi.fn(),
+      onRollback: () => {
+        rollbackTriggered = true;
+      },
+      onLineSubmit: () => {},
+      input: mockStdin,
+      output: mockStdout
+    });
+
+    listener.start();
+    expect(listener.getInterface()).not.toBeNull();
+
+    // 模拟快速双击 ESC 动作以唤起二次撤销弹窗
+    simulateKeypress(mockStdin, { name: 'escape' });
+    simulateKeypress(mockStdin, { name: 'escape' });
+
+    // 等待 microtask 确保 InputListener 执行了 close
+    await new Promise((resolve) => process.nextTick(resolve));
+
+    // 验证：全局实例已物理注销清空，此时 Stdin 所有权被完全解绑让渡给临时 tempRl
+    expect(listener.getInterface()).toBeNull();
+
+    // 向临时 readline 写入 y 并回车以模拟用户允许撤销回滚
+    mockStdin.push('y\n');
+
+    // 异步等待重建回调动作完成
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        if (listener.getInterface() !== null) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 5);
+    });
+
+    // 验证：用户回滚确实被唤醒，且全局实例成功物理重建，可继续响应后续输入
+    expect(rollbackTriggered).toBe(true);
+    expect(listener.getInterface()).not.toBeNull();
+  });
+});

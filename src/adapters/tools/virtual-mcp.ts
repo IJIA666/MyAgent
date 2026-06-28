@@ -1,11 +1,11 @@
-import { gitTools } from './tools/git/index.js';
-import { fileSystemTools } from './tools/filesystem/index.js';
-import { systemTools } from './tools/system/index.js';
-import { getSkillTools } from './tools/skill/index.js';
+import { gitTools } from './impl/git/index.js';
+import { fileSystemTools } from './impl/filesystem/index.js';
+import { systemTools } from './impl/system/index.js';
+import { getSkillTools } from './impl/skill/index.js';
 import type { SafetyCheckResult } from '../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
-import { secureResolveWritePath } from './tools/base.js';
+import { secureResolveWritePath } from './impl/base.js';
 import { existsSync } from 'fs';
 import {
   BrowserNavigateTool,
@@ -17,7 +17,7 @@ import {
   BrowserVisionTool,
   BrowserEnsureLoginTool,
   BrowserGetTextTool
-} from './tools/browser/browser-action.js';
+} from './impl/browser/browser-action.js';
 export type { SafetyCheckResult };
 
 /**

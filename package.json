@@ -9,7 +9,7 @@
     "dev": "node --disable-warning=DEP0040 --import tsx src/index.ts",
     "build": "tsc",
     "lint": "eslint .",
-    "test": "vitest run test/brain test/config test/action test/interface test/session",
+    "test": "vitest run test/core test/adapters test/common test/config",
     "test:integration": "vitest run test/integration"
   },
   "keywords": [],

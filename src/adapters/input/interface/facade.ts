@@ -6,7 +6,7 @@ import { redrawHistory, renderTokenPanel } from './views/widget-renderer.js';
 import { dispatchCommand, showInteractiveMenu } from './command.js';
 import { theme } from './views/theme.js';
 import { waitUserIntervention } from './cli.js';
-import { BrowserSession } from '../../tools/tools/browser/browser-action.js';
+import { BrowserSession } from '../../tools/impl/browser/browser-action.js';
 
 /**
  * 终端界面控制门面（Facade）。
