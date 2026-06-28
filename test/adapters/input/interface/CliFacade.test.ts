@@ -27,6 +27,9 @@ vi.mock('../../../../src/adapters/input/interface/cli.js', () => {
 class MockSessionManager extends EventEmitter {
   getIsGenerating = vi.fn().mockReturnValue(false);
   getModelName = vi.fn().mockReturnValue('mock-llama-3');
+  getContext = vi.fn().mockReturnValue({
+    getWorkMode: vi.fn().mockReturnValue('Auto')
+  });
   abort = vi.fn();
   rollback = vi.fn();
   getHistory = vi.fn().mockReturnValue([]);

@@ -36,6 +36,7 @@ export class CliFacade {
     this.listener = new InputListener({
       getIsGenerating: () => this.session.getIsGenerating(),
       getModelName: () => this.session.getModelName(),
+      getWorkMode: () => this.session.getContext().getWorkMode(),
       onAbort: () => {
         this.session.abort();
       },

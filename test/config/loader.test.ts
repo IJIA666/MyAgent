@@ -5,10 +5,23 @@
  * 特别是针对内部隐式环境变量 AUTHORIZED_WORKSPACE_DIR 的物理重定向与安全回退逻辑的校验。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { realpathSync, mkdirSync, rmdirSync, existsSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { realpathSync, mkdirSync, rmdirSync, existsSync, PathLike } from 'fs';
 import { resolve } from 'path';
 import { loadConfig } from '../../src/config/loader.js';
+
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    existsSync: (path: PathLike) => {
+      if (typeof path === 'string' && path.includes('.agent')) {
+        return false;
+      }
+      return actual.existsSync(path);
+    }
+  };
+});
 
 describe('Global Config Loader Workspace Relocation Tests', () => {
   const tempTestDir = resolve('test-temp-workspace');
@@ -58,6 +71,7 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
     afterEach(() => {
       // 恢复原有的环境变量
       process.env = { ...originalEnv };
+      vi.restoreAllMocks();
     });
 
     it('当向 loadConfig(env) 注入局部 Mock 环境时，各项配置解析决不能穿透读取真实的全局 process.env 变量', () => {
