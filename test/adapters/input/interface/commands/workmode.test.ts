@@ -3,6 +3,7 @@ import { WorkModeCommand } from '../../../../../src/adapters/input/interface/com
 import { CommandContext } from '../../../../../src/adapters/input/interface/commands/base.js';
 import * as p from '@clack/prompts';
 import { getWorkMode as getTerminalWorkMode, setWorkMode as setTerminalWorkMode } from '../../../../../src/adapters/tools/impl/system/terminal-config.js';
+import * as terminalConfig from '../../../../../src/adapters/tools/impl/system/terminal-config.js';
 
 vi.mock('@clack/prompts', () => {
   return {
@@ -32,6 +33,10 @@ describe('WorkModeCommand', () => {
 
     vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
       outputBuffer.push(args.join(' ') + '\n');
+    });
+
+    vi.spyOn(terminalConfig, 'saveWorkMode').mockImplementation((mode) => {
+      terminalConfig.setWorkMode(mode);
     });
 
     mockSessionContext = {
