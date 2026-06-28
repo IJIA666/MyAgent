@@ -4,8 +4,8 @@ import { secureResolveWritePath, secureResolveReadPath, getAuthorizedDir, getPhy
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import { copyRecursiveSync } from './directory-manager-helper.js';
 import { getWorkMode, loadWorkMode } from '../system/terminal.js';
-import type { SessionEventPort } from '../../../../ports/driven/SessionEventPort.js';
-import type { ApprovalPort } from '../../../../ports/driven/ApprovalPort.js';
+import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
+import type { ApprovalPort } from '../../../../ports/driven/session/ApprovalPort.js';
 
 /**
  * 目录创建工具类。

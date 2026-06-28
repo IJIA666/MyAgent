@@ -1,14 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import { resolve } from 'path';
-import { FileLockManager } from '../../src/core/usecases/FileLockManager.js';
+import { FileLockManager } from '../../src/core/usecases/security/FileLockManager.js';
 import { LocalFileSystemMcpServer, NativeTool } from '../../src/adapters/tools/virtual-mcp.js';
 import { SessionContext } from '../../src/core/domain/context.js';
-import { CompactionService } from '../../src/core/usecases/CompactionService.js';
+import { CompactionService } from '../../src/core/usecases/brain/CompactionService.js';
 import { runCommandEngine } from '../../src/adapters/tools/tools/system/terminal-engine.js';
-import type { ChatMessage } from '../../src/ports/driven/LlmPort.js';
-import type { LlmPort } from '../../src/ports/driven/LlmPort.js';
-import type { ContextRepository } from '../../src/core/usecases/ContextRepository.js';
-import type { ToolRegistryPort } from '../../src/ports/driven/ToolRegistryPort.js';
+import type { ChatMessage } from '../../src/ports/driven/llm/LlmPort.js';
+import type { LlmPort } from '../../src/ports/driven/llm/LlmPort.js';
+import type { ContextRepository } from '../../src/core/usecases/brain/ContextRepository.js';
+import type { ToolRegistryPort } from '../../src/ports/driven/tools/ToolRegistryPort.js';
 import type { AppConfig } from '../../src/config/index.js';
 
 describe('安全与并发增强特性测试', () => {

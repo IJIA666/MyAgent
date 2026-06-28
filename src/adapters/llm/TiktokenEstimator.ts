@@ -1,6 +1,6 @@
 import { getEncoding } from 'js-tiktoken';
-import type { ChatMessage } from '../../ports/driven/LlmPort.js';
-import type { TokenEstimatorPort, ContextTokenUsage, ApiUsage } from '../../ports/driven/TokenEstimatorPort.js';
+import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
+import type { TokenEstimatorPort, ContextTokenUsage, ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
 import type { LlmConfig } from '../../config/index.js';
 
 const encoder = getEncoding('cl100k_base');

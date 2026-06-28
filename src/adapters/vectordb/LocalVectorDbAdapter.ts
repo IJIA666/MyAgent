@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { VectorDbPort, VectorSearchResult } from '../../ports/driven/VectorDbPort.js';
+import type { VectorDbPort, VectorSearchResult } from '../../ports/driven/db/VectorDbPort.js';
 import { JsonVectorDbAdapter } from './JsonVectorDbAdapter.js';
 import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 

@@ -1,6 +1,6 @@
 import { OpenAI, type ClientOptions } from 'openai';
 import type { EmbeddingConfig } from '../../config/index.js';
-import type { EmbeddingPort } from '../../ports/driven/EmbeddingPort.js';
+import type { EmbeddingPort } from '../../ports/driven/llm/EmbeddingPort.js';
 
 /**
  * OpenAI 兼容的文本嵌入（Embedding）生成适配器。

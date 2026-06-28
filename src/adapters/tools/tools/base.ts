@@ -5,7 +5,7 @@
 
 import { resolve, sep, dirname } from 'path';
 import { realpathSync, existsSync } from 'fs';
-import type { SessionEventPort } from '../../../ports/driven/SessionEventPort.js';
+import type { SessionEventPort } from '../../../ports/driven/session/SessionEventPort.js';
 
 /**
  * 授权工作区的绝对物理路径。

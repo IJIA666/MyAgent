@@ -4,8 +4,8 @@ import { existsSync, mkdirSync, rmSync } from 'fs';
 import { initWorkspace } from '../../src/adapters/tools/tools.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 import { ExecuteCommandTool } from '../../src/adapters/tools/tools/system/terminal.js';
-import { HumanApprovalPlugin } from '../../src/core/usecases/HumanApprovalPlugin.js';
-import { HookEventName, HookContext } from '../../src/core/usecases/plugin-types.js';
+import { HumanApprovalPlugin } from '../../src/core/usecases/plugins/HumanApprovalPlugin.js';
+import { HookEventName, HookContext } from '../../src/core/usecases/plugins/plugin-types.js';
 
 describe('安全隔离与级联熔断集成测试', () => {
   const testDir = resolve(__dirname, 'temp_integration_dir');

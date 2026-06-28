@@ -1,17 +1,17 @@
 import { createHash } from 'crypto';
 import { EventEmitter } from 'node:events';
-import type { ChatMessage } from '../../ports/driven/LlmPort.js';
-import { buildSystemPrompt } from '../usecases/prompts.js';
-import type { SkillMetadata } from '../usecases/contextLoader.js';
-import { ApprovalService } from '../usecases/ApprovalService.js';
+import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
+import { buildSystemPrompt } from '../usecases/brain/prompts.js';
+import type { SkillMetadata } from '../usecases/brain/contextLoader.js';
+import { ApprovalService } from '../usecases/security/ApprovalService.js';
 import { AppConfig, WorkMode, getDefaultWorkMode } from '../../config/index.js';
-import { SessionEventPort } from '../../ports/driven/SessionEventPort.js';
-import { SecurityService } from '../usecases/SecurityService.js';
+import { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
+import { SecurityService } from '../usecases/security/SecurityService.js';
 
 
 // 显式重导出 ApiUsage 和 ContextTokenUsage 类型，避免在 ESM 下因类型擦除引发运行时加载错误
-export type { ApiUsage, ContextTokenUsage } from '../../ports/driven/TokenEstimatorPort.js';
-import { ApiUsage } from '../../ports/driven/TokenEstimatorPort.js';
+export type { ApiUsage, ContextTokenUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
+import { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
 
 export interface PluginPatchGroup {
   timestamp: string;

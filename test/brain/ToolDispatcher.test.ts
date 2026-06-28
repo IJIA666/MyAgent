@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ToolDispatcher } from '../../src/core/usecases/ToolDispatcher.js';
+import { ToolDispatcher } from '../../src/core/usecases/engine/ToolDispatcher.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 import { AppConfig } from '../../src/config/index.js';
 

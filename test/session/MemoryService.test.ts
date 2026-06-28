@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { MemoryService } from '../../src/core/usecases/MemoryService.js';
+import { MemoryService } from '../../src/core/usecases/brain/MemoryService.js';
 import { AppConfig, LlmConfig } from '../../src/config/index.js';
-import type { VectorDbPort } from '../../src/ports/driven/VectorDbPort.js';
-import type { EmbeddingPort } from '../../src/ports/driven/EmbeddingPort.js';
-import type { LlmPort, ChatMessage, LlmStreamEvent } from '../../src/ports/driven/LlmPort.js';
-import type { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
+import type { VectorDbPort } from '../../src/ports/driven/db/VectorDbPort.js';
+import type { EmbeddingPort } from '../../src/ports/driven/llm/EmbeddingPort.js';
+import type { LlmPort, ChatMessage, LlmStreamEvent } from '../../src/ports/driven/llm/LlmPort.js';
+import type { ContextAdapter } from '../../src/ports/driven/session/ContextAdapter.js';
 import { createMockAppConfig } from '../mock-factory.js';
 
 describe('MemoryService 单元测试', () => {

@@ -1,6 +1,6 @@
 import { OpenAI, type ClientOptions } from 'openai';
 import type { EmbeddingConfig } from '../../config/index.js';
-import type { EmbeddingPort } from '../../ports/driven/EmbeddingPort.js';
+import type { EmbeddingPort } from '../../ports/driven/llm/EmbeddingPort.js';
 
 /**
  * 阿里 DashScope 专用的文本嵌入生成适配器。

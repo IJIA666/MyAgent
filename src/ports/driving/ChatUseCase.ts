@@ -3,10 +3,10 @@
  * @description 定义外部用户界面或适配器驱动核心智能体会话运行的输入端口用例接口契约。
  */
 
-import type { ChatMessage } from '../driven/LlmPort.js';
-import type { ApiUsage, ContextTokenUsage } from '../driven/TokenEstimatorPort.js';
-import type { ApprovalService } from '../../core/usecases/ApprovalService.js';
-import type { AgentEvent } from '../../core/usecases/agent-loop.js';
+import type { ChatMessage } from '../driven/llm/LlmPort.js';
+import type { ApiUsage, ContextTokenUsage } from '../driven/llm/TokenEstimatorPort.js';
+import type { ApprovalService } from '../../core/usecases/security/ApprovalService.js';
+import type { AgentEvent } from '../../core/usecases/engine/agent-loop.js';
 
 /**
  * 驱动核心进行会话与对话交互的用例契约接口。

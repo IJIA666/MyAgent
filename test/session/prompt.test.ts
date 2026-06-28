@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { buildSystemPrompt, OS_INSTRUCTIONS_MAP, RESOLVED_BASE_PROMPT } from '../../src/core/usecases/prompts.js';
+import { buildSystemPrompt, OS_INSTRUCTIONS_MAP, RESOLVED_BASE_PROMPT } from '../../src/core/usecases/brain/prompts.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 
 let mockGlobalRules = '';

@@ -1,6 +1,6 @@
 import readline from 'readline';
-import { SessionManager } from '../../../core/usecases/session.js';
-import { AgentEvent } from '../../../core/usecases/agent-loop.js';
+import { SessionManager } from '../../../core/usecases/engine/session.js';
+import { AgentEvent } from '../../../core/usecases/engine/agent-loop.js';
 import { InputListener } from './io/input-listener.js';
 import { redrawHistory, renderTokenPanel } from './views/widget-renderer.js';
 import { dispatchCommand, showInteractiveMenu } from './command.js';

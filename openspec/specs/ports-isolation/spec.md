@@ -23,3 +23,10 @@
 #### Scenario: Code Quality Auto Check Port Inversion
 - **WHEN** 智能体大脑引擎完成推理后，在 PostRunHook 检查点触发物理项目 Lint 与编译强校验时
 - **THEN** 绝对不允许（MUST NOT）在领域层（`AgentLoop`）直接引入 `child_process` 或物理 Shell 命令；必须（MUST）定义 `QualityCheckPort` 作为抽象驱动端口，并在应用装配入口（`index.ts`）实例化对应的物理执行适配器并由外围注入。
+
+### Requirement: Usecases and Ports Subdomain Cohesion
+源码用例物理文件摆放和驱动接口协议定义文件，必须依据插件、控制引擎、记忆人设与安全拦截等高内聚的子域分类，隔离存放在各自独立的子文件夹中，杜绝平铺冗余，确保概念和依赖清晰。
+
+#### Scenario: Cascade Dependencies Work in Subdomains
+- **WHEN** 35 个文件被物理分批移动并在系统各处修正引入路径后，运行全量测试时
+- **THEN** 级联 ESM 模块（`.js`）导入无任何找不到文件的死锁报错，且全量 205 个测试绿灯通过。

@@ -14,8 +14,10 @@ import { ApplyPatchTool } from '../../src/adapters/tools/tools/filesystem/apply-
 import { GitShowStatusTool } from '../../src/adapters/tools/tools/git/git-show-status.js';
 import { GitShowDiffTool } from '../../src/adapters/tools/tools/git/git-show-diff.js';
 import { GitShowLogTool } from '../../src/adapters/tools/tools/git/git-show-log.js';
-import { ApprovalService } from '../../src/core/usecases/ApprovalService.js';
+import { ApprovalService } from '../../src/core/usecases/security/ApprovalService.js';
 import { ReadFileTool } from '../../src/adapters/tools/tools/filesystem/file-system.js';
+import type { SessionEventPort } from '../../src/ports/driven/session/SessionEventPort.js';
+import type { ApprovalPort } from '../../src/ports/driven/session/ApprovalPort.js';
 
 describe('新增原生内置工具单元测试', () => {
   const testDir = resolve('./test_action_new_tools_temp');
@@ -78,9 +80,10 @@ describe('新增原生内置工具单元测试', () => {
         options: unknown,
         warningMsg?: string
       ) => {
-        return approvalService.wait(approvalId, actionInfo, options, warningMsg);
+        const safeActionInfo = { ...actionInfo, arguments: actionInfo.arguments || {} };
+        return approvalService.wait(approvalId, safeActionInfo, options as string | undefined, warningMsg);
       }
-    };
+    } as unknown as SessionEventPort & ApprovalPort;
     const waitPromise = tool.execute({ targetPath: 'delete_me.txt' }, mockContext);
     
     // 挂起中，文件仍应该存在

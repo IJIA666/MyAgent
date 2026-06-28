@@ -1,5 +1,5 @@
 import { Interface } from 'readline';
-import { SessionManager } from '../../../../core/usecases/session.js';
+import { SessionManager } from '../../../../core/usecases/engine/session.js';
 
 /**
  * 命令执行上下文接口，包含当前会话状态和交互界面

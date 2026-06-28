@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SessionContext } from '../../src/core/domain/context.js';
 import { TiktokenEstimator } from '../../src/adapters/llm/TiktokenEstimator.js';
-import type { ChatMessage } from '../../src/ports/driven/LlmPort.js';
+import type { ChatMessage } from '../../src/ports/driven/llm/LlmPort.js';
 
 describe('SessionContext Token & Hash Tests', () => {
   let context: SessionContext;

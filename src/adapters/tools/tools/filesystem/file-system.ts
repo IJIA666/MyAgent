@@ -9,7 +9,7 @@ import { createPatch } from 'diff';
 import { secureResolveReadPath, secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import { getWorkMode } from '../system/terminal.js';
-import type { SessionEventPort } from '../../../../ports/driven/SessionEventPort.js';
+import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 
 /** 判断给定的文件路径是否属于敏感的环境变量配置文件 */
 function isSensitiveEnvFile(filePath: string): boolean {

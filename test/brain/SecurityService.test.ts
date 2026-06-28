@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { SecurityService } from '../../src/core/usecases/SecurityService.js';
+import { SecurityService } from '../../src/core/usecases/security/SecurityService.js';
 
 describe('SecurityService', () => {
   let tempDir: string;

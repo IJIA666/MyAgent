@@ -1,7 +1,7 @@
-import type { ChatMessage } from '../../ports/driven/LlmPort.js';
-import type { TokenEstimatorPort } from '../../ports/driven/TokenEstimatorPort.js';
-import type { ContextAdapter } from '../../ports/driven/ContextAdapter.js';
-import { HANDOFF_INSTRUCTION } from '../../core/usecases/prompts.js';
+import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
+import type { TokenEstimatorPort } from '../../ports/driven/llm/TokenEstimatorPort.js';
+import type { ContextAdapter } from '../../ports/driven/session/ContextAdapter.js';
+import { HANDOFF_INSTRUCTION } from '../../core/usecases/brain/prompts.js';
 
 /**
  * 默认上下文适配器实现类。

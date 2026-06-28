@@ -1,8 +1,8 @@
 import { OpenAI, type ClientOptions } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { LlmConfig } from '../../config/index.js';
-import type { ChatMessage, LlmPort, LlmStreamEvent, LlmPortOptions } from '../../ports/driven/LlmPort.js';
-import type { ApiUsage } from '../../ports/driven/TokenEstimatorPort.js';
+import type { ChatMessage, LlmPort, LlmStreamEvent, LlmPortOptions } from '../../ports/driven/llm/LlmPort.js';
+import type { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
 
 /**
  * 大模型增量流式返回的碎片数据结构定义（兼容 DeepSeek 扩展协议）。

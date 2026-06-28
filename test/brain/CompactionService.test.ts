@@ -3,10 +3,10 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { CompactionService } from '../../src/core/usecases/CompactionService.js';
+import { CompactionService } from '../../src/core/usecases/brain/CompactionService.js';
 import { SessionContext } from '../../src/core/domain/context.js';
-import type { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
-import type { ContextRepository } from '../../src/core/usecases/ContextRepository.js';
+import type { LlmPort, ChatMessage } from '../../src/ports/driven/llm/LlmPort.js';
+import type { ContextRepository } from '../../src/core/usecases/brain/ContextRepository.js';
 import type { AppConfig } from '../../src/config/index.js';
 
 describe('CompactionService', () => {

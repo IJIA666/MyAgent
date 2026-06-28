@@ -1,6 +1,6 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import type { QualityCheckPort } from '../../ports/driven/QualityCheckPort.js';
+import type { QualityCheckPort } from '../../ports/driven/security/QualityCheckPort.js';
 
 /**
  * 基于本地子进程 Shell 的代码规范及 TypeScript 类型校验适配器。

@@ -1,8 +1,8 @@
 import { resolve } from 'path';
 import { existsSync, mkdirSync, appendFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import type { ChatMessage } from '../../ports/driven/LlmPort.js';
-import type { ApiUsage } from '../../ports/driven/TokenEstimatorPort.js';
+import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
+import type { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
 
 /**
  * 记录单次 ReAct 交互闭环的结构化信息

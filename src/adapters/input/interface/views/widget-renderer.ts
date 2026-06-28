@@ -6,8 +6,8 @@
  * 3. 渲染 Token 预测预算和实际结算花费的监控面板。
  */
 
-import type { ChatMessage } from '../../../../ports/driven/LlmPort.js';
-import type { ApiUsage, ContextTokenUsage } from '../../../../ports/driven/TokenEstimatorPort.js';
+import type { ChatMessage } from '../../../../ports/driven/llm/LlmPort.js';
+import type { ApiUsage, ContextTokenUsage } from '../../../../ports/driven/llm/TokenEstimatorPort.js';
 import { theme } from './theme.js';
 
 /**

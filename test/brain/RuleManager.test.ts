@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { RuleManager } from '../../src/core/usecases/RuleManager.js';
+import { RuleManager } from '../../src/core/usecases/brain/RuleManager.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 
 describe('RuleManager', () => {

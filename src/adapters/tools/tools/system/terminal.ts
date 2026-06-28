@@ -7,8 +7,8 @@ import { validateCommand, validateCwd, checkCommandSafetyLevel, isHardlineDanger
 import { runCommandEngine } from './terminal-engine.js';
 import { getWorkMode, extractSafePrefix, loadAllowedCommands } from './terminal-config.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
-import type { SessionEventPort } from '../../../../ports/driven/SessionEventPort.js';
-import type { EventNotificationPort } from '../../../../ports/driven/EventNotificationPort.js';
+import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
+import type { EventNotificationPort } from '../../../../ports/driven/session/EventNotificationPort.js';
 
 /**
  * 终端指令执行工具类。

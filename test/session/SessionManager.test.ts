@@ -4,16 +4,16 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { SessionManager } from '../../src/core/usecases/session.js';
-import { MemoryService } from '../../src/core/usecases/MemoryService.js';
+import { SessionManager } from '../../src/core/usecases/engine/session.js';
+import { MemoryService } from '../../src/core/usecases/brain/MemoryService.js';
 import { LlmConfig } from '../../src/config/index.js';
-import { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
-import { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
-import { ToolRegistryPort } from '../../src/ports/driven/ToolRegistryPort.js';
-import { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
-import { AgentEvent } from '../../src/core/usecases/agent-loop.js';
-import type { VectorDbPort } from '../../src/ports/driven/VectorDbPort.js';
-import type { EmbeddingPort } from '../../src/ports/driven/EmbeddingPort.js';
+import { LlmPort, ChatMessage } from '../../src/ports/driven/llm/LlmPort.js';
+import { TokenEstimatorPort } from '../../src/ports/driven/llm/TokenEstimatorPort.js';
+import { ToolRegistryPort } from '../../src/ports/driven/tools/ToolRegistryPort.js';
+import { ContextAdapter } from '../../src/ports/driven/session/ContextAdapter.js';
+import { AgentEvent } from '../../src/core/usecases/engine/agent-loop.js';
+import type { VectorDbPort } from '../../src/ports/driven/db/VectorDbPort.js';
+import type { EmbeddingPort } from '../../src/ports/driven/llm/EmbeddingPort.js';
 import { createMockAppConfig } from '../mock-factory.js';
 import { ShellQualityCheckAdapter } from '../../src/adapters/tools/ShellQualityCheckAdapter.js';
 

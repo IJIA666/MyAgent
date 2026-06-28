@@ -9,27 +9,27 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
-import { TokenWatermarkPlugin } from '../../src/core/usecases/TokenWatermarkPlugin.js';
-import { JitRulesPlugin } from '../../src/core/usecases/JitRulesPlugin.js';
-import { TracerLogPlugin } from '../../src/core/usecases/TracerLogPlugin.js';
-import { LoopPreventionPlugin } from '../../src/core/usecases/LoopPreventionPlugin.js';
-import { LongTermMemoryPlugin } from '../../src/core/usecases/LongTermMemoryPlugin.js';
-import { HookEventName, HookContext, LlmRequest } from '../../src/core/usecases/plugin-types.js';
-import { runHookPipeline } from '../../src/core/usecases/plugin-runner.js';
+import { TokenWatermarkPlugin } from '../../src/core/usecases/plugins/TokenWatermarkPlugin.js';
+import { JitRulesPlugin } from '../../src/core/usecases/plugins/JitRulesPlugin.js';
+import { TracerLogPlugin } from '../../src/core/usecases/plugins/TracerLogPlugin.js';
+import { LoopPreventionPlugin } from '../../src/core/usecases/plugins/LoopPreventionPlugin.js';
+import { LongTermMemoryPlugin } from '../../src/core/usecases/plugins/LongTermMemoryPlugin.js';
+import { HookEventName, HookContext, LlmRequest } from '../../src/core/usecases/plugins/plugin-types.js';
+import { runHookPipeline } from '../../src/core/usecases/plugins/plugin-runner.js';
 import { SessionContext } from '../../src/core/domain/context.js';
-import type { CompactionService } from '../../src/core/usecases/CompactionService.js';
+import type { CompactionService } from '../../src/core/usecases/brain/CompactionService.js';
 import type { LlmConfig } from '../../src/config/index.js';
-import type { ToolDispatcher } from '../../src/core/usecases/ToolDispatcher.js';
+import type { ToolDispatcher } from '../../src/core/usecases/engine/ToolDispatcher.js';
 import type { AgentTracer } from '../../src/core/domain/tracer.js';
-import type { TokenEstimatorPort } from '../../src/ports/driven/TokenEstimatorPort.js';
-import type { LlmPort, ChatMessage } from '../../src/ports/driven/LlmPort.js';
-import { SessionManager } from '../../src/core/usecases/session.js';
-import { MemoryService } from '../../src/core/usecases/MemoryService.js';
-import type { ContextAdapter } from '../../src/ports/driven/ContextAdapter.js';
-import type { ToolRegistryPort } from '../../src/ports/driven/ToolRegistryPort.js';
+import type { TokenEstimatorPort } from '../../src/ports/driven/llm/TokenEstimatorPort.js';
+import type { LlmPort, ChatMessage } from '../../src/ports/driven/llm/LlmPort.js';
+import { SessionManager } from '../../src/core/usecases/engine/session.js';
+import { MemoryService } from '../../src/core/usecases/brain/MemoryService.js';
+import type { ContextAdapter } from '../../src/ports/driven/session/ContextAdapter.js';
+import type { ToolRegistryPort } from '../../src/ports/driven/tools/ToolRegistryPort.js';
 import { createMockAppConfig } from '../mock-factory.js';
-import type { VectorDbPort } from '../../src/ports/driven/VectorDbPort.js';
-import type { EmbeddingPort } from '../../src/ports/driven/EmbeddingPort.js';
+import type { VectorDbPort } from '../../src/ports/driven/db/VectorDbPort.js';
+import type { EmbeddingPort } from '../../src/ports/driven/llm/EmbeddingPort.js';
 
 describe('Plugins Lifecycle & Action Tests', () => {
   let sessionContext: SessionContext;

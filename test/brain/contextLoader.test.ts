@@ -15,7 +15,7 @@ import {
   loadLocalRules,
   scanSkills,
   readSkillContent
-} from '../../src/core/usecases/contextLoader.js';
+} from '../../src/core/usecases/brain/contextLoader.js';
 
 describe('ContextLoader 规则熔断单元测试', () => {
   // 临时沙箱根目录路径

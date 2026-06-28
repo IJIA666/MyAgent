@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import readline from 'readline';
 import { EventEmitter } from 'events';
 import { CliFacade } from '../../src/adapters/input/interface/facade.js';
-import { SessionManager } from '../../src/core/usecases/session.js';
+import { SessionManager } from '../../src/core/usecases/engine/session.js';
 import { dispatchCommand, showInteractiveMenu } from '../../src/adapters/input/interface/command.js';
 import { BrowserSession } from '../../src/adapters/tools/tools/browser/browser-action.js';
 import { waitUserIntervention } from '../../src/adapters/input/interface/cli.js';

@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ContextRepository } from '../../src/core/usecases/ContextRepository.js';
+import { ContextRepository } from '../../src/core/usecases/brain/ContextRepository.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 
 describe('ContextRepository', () => {

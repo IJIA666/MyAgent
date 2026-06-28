@@ -5,6 +5,6 @@
  * 2. 导出 Token 水位监测、JIT 规则伴生、Trace 审计与死循环熔断等四个切面业务插件。
  */
 
-export * from '../../core/usecases/plugin-types.js';
-export { PluginRegistry } from '../../core/usecases/plugin-registry.js';
-export { runHookPipeline } from '../../core/usecases/plugin-runner.js';
+export * from '../../core/usecases/plugins/plugin-types.js';
+export { PluginRegistry } from '../../core/usecases/plugins/plugin-registry.js';
+export { runHookPipeline } from '../../core/usecases/plugins/plugin-runner.js';

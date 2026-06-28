@@ -4,7 +4,7 @@
  * 1. 保持对外的 startCli 与 redrawHistory 签名契约向前兼容；
  * 2. 将控制台按行输入和回回绘视图的行为委托给 CliFacade 和 WidgetRenderer 执行。
  */
-import { SessionManager } from '../../../core/usecases/session.js';
+import { SessionManager } from '../../../core/usecases/engine/session.js';
 import { CliFacade } from './facade.js';
 import { 
   renderContentWithWidgets, 

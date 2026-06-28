@@ -1,9 +1,9 @@
 import { LocalFileSystemMcpServer } from './virtual-mcp.js';
 import { McpToolManager } from './mcp-client.js';
-import type { SessionEventPort } from '../../ports/driven/SessionEventPort.js';
-import type { ApprovalPort } from '../../ports/driven/ApprovalPort.js';
-import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/ToolRegistryPort.js';
-import type { McpManagerPort } from '../../ports/driven/McpManagerPort.js';
+import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
+import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
+import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
+import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
 
 /**
  * 工具注册表管理类。

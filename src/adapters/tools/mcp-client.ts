@@ -4,7 +4,7 @@ import { McpConfig, McpServerEntry, buildSubprocessEnv } from '../../config/inde
 import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 import { Readable } from 'node:stream';
 import { execSync } from 'node:child_process';
-import { McpManagerPort } from '../../ports/driven/McpManagerPort.js';
+import { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
 
 // 系统本地内置文件操作及技能载入工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
 const BUILTIN_TOOL_NAMES = new Set([

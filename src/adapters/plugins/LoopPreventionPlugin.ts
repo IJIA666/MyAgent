@@ -1,5 +1,5 @@
-import type { HookContext, Plugin } from '../../core/usecases/plugin-types.js';
-import { HookEventName } from '../../core/usecases/plugin-types.js';
+import type { HookContext, Plugin } from '../../core/usecases/plugins/plugin-types.js';
+import { HookEventName } from '../../core/usecases/plugins/plugin-types.js';
 
 /**
  * 推理死循环防护插件。
