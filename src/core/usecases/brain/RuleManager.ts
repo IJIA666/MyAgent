@@ -21,6 +21,8 @@ export class RuleManager {
   private skillsCache = new Map<string, SkillMetadata>();
   /** 监听状态标识 */
   private isWatching = false;
+  /** 防抖定时器句柄，用于合并短期内的并发文件系统事件 */
+  private watchDebounceTimer: NodeJS.Timeout | null = null;
 
   /**
    * 实例初始化，并首次将规则和技能加载到缓存中。
@@ -94,9 +96,13 @@ export class RuleManager {
       const skillsDir = join(workspacePath, '.agent/skills');
       if (existsSync(skillsDir)) {
         watch(skillsDir, { recursive: true }, () => {
-          logger.info('[RuleManager] 检测到技能文件变动，正在自动刷新缓存...');
-          this.refreshSkillsCache(workspacePath);
-          this.reloadRules();
+          // 引入 100ms 防抖合并高频并发文件变动事件，消除 Windows 底层触发多次的抖动缺陷
+          clearTimeout(this.watchDebounceTimer || undefined);
+          this.watchDebounceTimer = setTimeout(() => {
+            logger.info('[RuleManager] 检测到技能文件变动，正在自动刷新缓存...');
+            this.refreshSkillsCache(workspacePath);
+            this.reloadRules();
+          }, 100);
         });
         this.isWatching = true;
       }

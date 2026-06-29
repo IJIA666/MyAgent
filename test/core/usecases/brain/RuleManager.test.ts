@@ -9,6 +9,18 @@ import * as os from 'os';
 import { RuleManager } from '../../../../src/core/usecases/brain/RuleManager.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 
+// Mock fs.watch 以绕过 ESM 只读 Module Namespace 的拦截限制，同时透传其他文件 IO API
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return {
+    ...actual,
+    watch: vi.fn((_path: unknown, _options: unknown, callback: unknown) => {
+      (globalThis as unknown as { lastFsWatchCallback?: unknown }).lastFsWatchCallback = callback;
+      return { close: vi.fn() };
+    })
+  };
+});
+
 describe('RuleManager', () => {
   let context: SessionContext;
   let tempDir: string;
@@ -79,5 +91,44 @@ describe('RuleManager', () => {
     const manager = new RuleManager(context);
     expect(manager.getGlobalRules()).toBe('');
     expect(manager.getLocalRules()).toBe('');
+  });
+
+  it('应该在 initSkillsWatcher 检测到高频变动时执行 100ms 防抖合并', () => {
+    vi.useFakeTimers();
+
+    // 1. 设置模拟的技能目录以供 existsSync 校验通过
+    const agentDir = path.join(tempDir, '.agent');
+    const skillsDir = path.join(agentDir, 'skills');
+    fs.mkdirSync(agentDir);
+    fs.mkdirSync(skillsDir);
+
+    // 1. 初始化 RuleManager，构造函数内部由于 skills 目录存在会自动触发 getSkills() 并完成 Watcher 的挂载
+    const manager = new RuleManager(context);
+    const reloadSpy = vi.spyOn(manager, 'reloadRules').mockImplementation(() => {});
+
+    // 2. 直接从 mock 捕获的全局上下文获取已挂载的 Watcher 回调函数
+    const watchCallback = (globalThis as unknown as { lastFsWatchCallback?: () => void }).lastFsWatchCallback;
+    expect(watchCallback).toBeDefined();
+
+    if (watchCallback) {
+      // 3. 连续高频模拟文件变动事件调用 5 次，每次间隔 10ms
+      for (let i = 0; i < 5; i++) {
+        watchCallback();
+        vi.advanceTimersByTime(10);
+      }
+
+      // 在这 50ms 连续事件流中，重载由于防抖仍应被挂起拦截，未曾执行
+      expect(reloadSpy).not.toHaveBeenCalled();
+
+      // 4. 步进 100ms 让定时器窗口彻底完成
+      vi.advanceTimersByTime(100);
+
+      // 到期后 reloadRules 应当仅被单次调用
+      expect(reloadSpy).toHaveBeenCalledTimes(1);
+    }
+
+    delete (globalThis as unknown as { lastFsWatchCallback?: unknown }).lastFsWatchCallback;
+
+    vi.useRealTimers();
   });
 });
