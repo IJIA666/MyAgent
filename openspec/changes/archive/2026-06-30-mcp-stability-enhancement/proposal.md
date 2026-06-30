@@ -21,5 +21,5 @@
 
 ## 影响范围
 
-- **受影响模块**： `src/adapters/tools/virtual-mcp.ts` （驱动层保活重启）， `src/core/usecases/brain/prompts.ts` （系统提示词异常响应引导）。
+- **受影响模块**： `src/adapters/tools/mcp-client.ts` （驱动层保活重启）， `src/core/usecases/brain/prompts.ts` （系统提示词异常响应引导）。
 - **受影响依赖**： 仅针对外部进程连接及大模型提示词策略进行优化，对其他文件 IO 及核心推理无副作用。

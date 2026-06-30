@@ -251,10 +251,11 @@ export class McpToolManager implements McpManagerPort {
   }
 
   /**
-   * 透传执行指定的外部工具，根据内部路由表找到对应的 Server。
+   * 透传执行指定的外部工具，根据内部路由表找到对应的 Server，并具备底层超时/断连的热重启自愈重试能力。
    *
    * @param name - 工具名称
    * @param args - 工具参数键值对
+   * @param signal - 可选的取消信号
    * @returns 工具执行后的返回结果 Promise
    */
   async callMcpTool(name: string, args: Record<string, unknown>, signal?: AbortSignal) {
@@ -267,28 +268,128 @@ export class McpToolManager implements McpManagerPort {
       throw new Error(`找不到提供工具 "${name}" 的 MCP Server`);
     }
 
-    const connection = this.connections.get(serverName);
-    if (!connection) {
-      throw new Error(`MCP Server "${serverName}" 连接异常`);
-    }
+    let attempts = 0;
+    const maxAttempts = 3;
+    let delay = 1000;
 
-    // 监听 AbortSignal 以彻底释放并强杀 MCP 悬空连接与子进程
-    if (signal) {
-      if (signal.aborted) {
-        throw new Error("工具执行已被 Abort 阻断");
+    while (true) {
+      const connection = this.connections.get(serverName);
+      if (!connection) {
+        attempts++;
+        if (attempts > maxAttempts) {
+          throw new Error(`MCP Server "${serverName}" 连接缺失，且重试已达最大次数上限`);
+        }
+
+        logger.warn(`[MCP Client] MCP Server "${serverName}" 连接缺失，触发第 ${attempts} 次热重启自愈。`);
+
+        // 执行热重启 (重建连接并刷新路由表)
+        try {
+          await this.reconnectServer(serverName);
+        } catch (reconnectErr) {
+          logger.error(`[MCP Client] 热重启 Server "${serverName}" 失败:`, reconnectErr);
+          if (attempts >= maxAttempts) {
+            throw reconnectErr;
+          }
+        }
+
+        // 指数退避延迟
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay *= 2;
+        continue;
       }
-      signal.addEventListener('abort', () => {
-        logger.warn(`[MCP Client] 触发 Abort 超时，正在强制关闭连接并清理进程 [${serverName}]`);
-        this.disconnectServer(serverName).catch((disconnectError: unknown) => {
-          logger.error(`[MCP Client] 强制清理进程失败:`, disconnectError);
+
+      // 监听 AbortSignal 以彻底释放并强杀 MCP 悬空连接与子进程
+      let abortHandler: (() => void) | undefined;
+      if (signal) {
+        if (signal.aborted) {
+          throw new Error("工具执行已被 Abort 阻断");
+        }
+        abortHandler = () => {
+          logger.warn(`[MCP Client] 触发 Abort 超时，正在强制关闭连接并清理进程 [${serverName}]`);
+          this.disconnectServer(serverName).catch((disconnectError: unknown) => {
+            logger.error(`[MCP Client] 强制清理进程失败:`, disconnectError);
+          });
+        };
+        signal.addEventListener('abort', abortHandler);
+      }
+
+      try {
+        return await connection.client.callTool({
+          name,
+          arguments: args
         });
-      });
+      } catch (error: unknown) {
+        attempts++;
+        const isNetworkOrTimeout = this.isNetworkOrTimeoutError(error);
+        if (!isNetworkOrTimeout || attempts > maxAttempts) {
+          throw error;
+        }
+
+        logger.warn(`[MCP Client] 调用工具 "${name}" 发生异常，触发第 ${attempts} 次热重启自愈重试。错误: ${error instanceof Error ? error.message : String(error)}`);
+
+        // 执行热重启 (重建连接并刷新路由表)
+        try {
+          await this.reconnectServer(serverName);
+        } catch (reconnectErr) {
+          logger.error(`[MCP Client] 热重启 Server "${serverName}" 失败:`, reconnectErr);
+          if (attempts >= maxAttempts) {
+            throw reconnectErr;
+          }
+        }
+
+        // 指数退避延迟
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay *= 2;
+      } finally {
+        if (signal && abortHandler) {
+          signal.removeEventListener('abort', abortHandler);
+        }
+      }
+    }
+  }
+
+  /** 判定错误是否为网络超时、断连或子进程挂死等基础设施级异常 */
+  private isNetworkOrTimeoutError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    const lowerMsg = msg.toLowerCase();
+    return (
+      lowerMsg.includes('timeout') ||
+      lowerMsg.includes('timed out') ||
+      lowerMsg.includes('network error') ||
+      lowerMsg.includes('econnreset') ||
+      lowerMsg.includes('disconnected') ||
+      lowerMsg.includes('channel closed') ||
+      lowerMsg.includes('broken pipe') ||
+      lowerMsg.includes('write epipe') ||
+      (lowerMsg.includes('connection') && (
+        lowerMsg.includes('refused') ||
+        lowerMsg.includes('reset') ||
+        lowerMsg.includes('lost') ||
+        lowerMsg.includes('closed') ||
+        lowerMsg.includes('timeout') ||
+        lowerMsg.includes('error') ||
+        lowerMsg.includes('disconnected')
+      ))
+    );
+  }
+
+  /** 优雅重建指定名称 of MCP 服务连接，并恢复工具路由 */
+  private async reconnectServer(name: string): Promise<void> {
+    // 销毁并断开旧连接
+    await this.disconnectServer(name);
+    // 重启拉起连接
+    await this.connectServer(name);
+
+    const connection = this.connections.get(name);
+    if (!connection) {
+      throw new Error(`MCP Server "${name}" 重连后连接未建立`);
     }
 
-    return await connection.client.callTool({
-      name,
-      arguments: args
-    });
+    // 重新拉取工具并同步回路由表，保证后续路由可用
+    const response = await connection.client.listTools();
+    for (const tool of response.tools) {
+      this.toolRouter.set(tool.name, name);
+    }
   }
 
   /**

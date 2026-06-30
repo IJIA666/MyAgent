@@ -105,4 +105,62 @@ describe('McpToolManager 单元测试', () => {
 
     processOffSpy.mockRestore();
   });
+
+  test('callMcpTool 超时/断连热重启自愈重试测试', async () => {
+    vi.useRealTimers();
+    const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((cb: () => void) => {
+      cb();
+      return {} as unknown as NodeJS.Timeout;
+    });
+
+    const originalClient = new Client({ name: 'c1', version: '1.0' }, { capabilities: {} });
+    const healthyClient = new Client({ name: 'c1-rebuilt', version: '1.0' }, { capabilities: {} });
+
+    // 让原 client 调用时抛出断连异常
+    const callToolSpy1 = vi.spyOn(originalClient, 'callTool')
+      .mockRejectedValueOnce(new Error('connection disconnected'));
+
+    // 让新 client 调用时成功返回
+    const callToolSpy2 = vi.spyOn(healthyClient, 'callTool')
+      .mockResolvedValue({
+        content: [{ type: 'text', text: 'success_data' }]
+      });
+
+    // 写入路由与连接
+    manager['toolRouter'].set('test_tool', 'test-server');
+    (manager as unknown as ExposedMcpToolManager).connections.set('test-server', {
+      client: originalClient,
+      transport: {}
+    });
+
+    // Spy 掉私有的 reconnectServer 并在重连时将 connections 替换为 healthyClient
+    const reconnectSpy = vi.spyOn(
+      manager as unknown as { reconnectServer: (name: string) => Promise<void> },
+      'reconnectServer'
+    )
+      .mockImplementation(async () => {
+        (manager as unknown as ExposedMcpToolManager).connections.set('test-server', {
+          client: healthyClient,
+          transport: {}
+        });
+      });
+
+    const result = await manager.callMcpTool('test_tool', { param: 'val' });
+
+    // 验证结果
+    expect(result).toEqual({
+      content: [{ type: 'text', text: 'success_data' }]
+    });
+
+    // 验证确实调用了 reconnectServer 且只调用了一次
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    expect(reconnectSpy).toHaveBeenCalledWith('test-server');
+    
+    // 验证两次 callTool 都被触发了
+    expect(callToolSpy1).toHaveBeenCalledTimes(1);
+    expect(callToolSpy2).toHaveBeenCalledTimes(1);
+
+    setTimeoutSpy.mockRestore();
+    vi.useFakeTimers();
+  });
 });
