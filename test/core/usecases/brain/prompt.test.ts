@@ -4,7 +4,21 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
-import { buildSystemPrompt, OS_INSTRUCTIONS_MAP, RESOLVED_BASE_PROMPT } from '../../../../src/core/usecases/brain/prompts.js';
+import {
+  buildSystemPrompt,
+  OS_INSTRUCTIONS_MAP,
+  RESOLVED_BASE_PROMPT,
+  SYSTEM_RULES,
+  RULE_FILE_SANDBOX,
+  RULE_ERROR_HANDLING,
+  RULE_COMMUNICATION,
+  RULE_LANGUAGE,
+  RULE_TERMINAL_SAFETY,
+  RULE_MINIMAL_REFACTOR,
+  RULE_TOOL_PRIORITY,
+  RULE_LONG_TERM_MEMORY,
+  RULE_ERROR_ATTRIBUTION
+} from '../../../../src/core/usecases/brain/prompts.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 
 let mockGlobalRules = '';
@@ -91,5 +105,38 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     const expectedInstruction = OS_INSTRUCTIONS_MAP[currentPlatform] ?? OS_INSTRUCTIONS_MAP.linux;
     expect(RESOLVED_BASE_PROMPT).toContain(expectedInstruction);
     expect(RESOLVED_BASE_PROMPT).not.toContain('{{OS_SECURITY_INSTRUCTIONS}}');
+  });
+
+  test('7. 验证提示词常量抽取完整性与装配安全性', () => {
+    // 1. 验证最终装配渲染后的 RESOLVED_BASE_PROMPT 不包含冷启动占位符
+    expect(RESOLVED_BASE_PROMPT).not.toContain('{{OS_SECURITY_INSTRUCTIONS}}');
+
+    // 2. 验证所有 9 个导出的核心规则常量均被完整装配入最终提示词中
+    const rulesToVerify = [
+      RULE_FILE_SANDBOX,
+      RULE_ERROR_HANDLING,
+      RULE_COMMUNICATION,
+      RULE_LANGUAGE,
+      RULE_TERMINAL_SAFETY,
+      RULE_MINIMAL_REFACTOR,
+      RULE_TOOL_PRIORITY,
+      RULE_LONG_TERM_MEMORY,
+      RULE_ERROR_ATTRIBUTION,
+    ];
+
+    for (const rule of rulesToVerify) {
+      if (rule === RULE_TERMINAL_SAFETY) {
+        // 对于终端命令安全约束，验证其冷启动替换后的完整内容是否存在于提示词中
+        const currentPlatform = process.platform;
+        const osInstruction = OS_INSTRUCTIONS_MAP[currentPlatform] ?? OS_INSTRUCTIONS_MAP.linux;
+        const resolvedTerminalSafety = RULE_TERMINAL_SAFETY.replace('{{OS_SECURITY_INSTRUCTIONS}}', osInstruction);
+        expect(RESOLVED_BASE_PROMPT).toContain(resolvedTerminalSafety);
+      } else {
+        expect(RESOLVED_BASE_PROMPT).toContain(rule);
+      }
+    }
+
+    // 3. 校验装配数组中的规则数量，确保没有漏装
+    expect(SYSTEM_RULES.length).toBe(9);
   });
 });
