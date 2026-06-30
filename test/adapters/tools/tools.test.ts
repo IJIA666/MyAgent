@@ -6,7 +6,9 @@ import { WriteFileTool, EditFileTool } from '../../../src/adapters/tools/impl/fi
 import { SessionContext } from '../../../src/core/domain/context.js';
 
 describe('安全沙箱 tools.ts 单元测试', () => {
-  const mockRootDir = resolve('D:\\authorized\\path');
+  const mockRootDir = process.platform === 'win32'
+    ? resolve('D:\\authorized\\path')
+    : '/tmp/authorized/path';
 
   beforeAll(() => {
     initWorkspace(mockRootDir);
@@ -28,7 +30,7 @@ describe('安全沙箱 tools.ts 单元测试', () => {
     expect(() => secureResolvePath(maliciousRelative)).toThrow('拒绝访问');
 
     // 绝对路径越权，试图读取系统根目录
-    const maliciousAbsolute = 'C:\\Windows\\win.ini';
+    const maliciousAbsolute = process.platform === 'win32' ? 'C:\\Windows\\win.ini' : '/etc/passwd';
     expect(() => secureResolvePath(maliciousAbsolute)).toThrow('拒绝访问');
   });
 

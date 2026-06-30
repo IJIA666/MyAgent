@@ -42,7 +42,9 @@ describe('BrowserDetector 浏览器检测辅助工具单元测试', () => {
 
   test('即使配置了 BROWSER_EXECUTABLE_PATH，但如果该路径不存在，仍应回退并扫描系统默认目录', () => {
     const originalEnv = process.env.BROWSER_EXECUTABLE_PATH;
-    process.env.BROWSER_EXECUTABLE_PATH = 'C:\\non-existent-path-for-test\\chrome.exe';
+    process.env.BROWSER_EXECUTABLE_PATH = process.platform === 'win32'
+      ? 'C:\\non-existent-path-for-test\\chrome.exe'
+      : '/non-existent-path-for-test/chrome';
 
     try {
       const detected = BrowserDetector.detectExecutablePath();

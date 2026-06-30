@@ -20,4 +20,4 @@ trigger: always_on
 
 - 这是一个新项目，没有什么历史包袱，不需要总是向后兼容。
 
-- 目前主要的平台是Windows，主要适配OpenAI协议
+- 目前主要适配OpenAI协议

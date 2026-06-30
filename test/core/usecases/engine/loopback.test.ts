@@ -50,7 +50,9 @@ import type { EmbeddingPort } from '../../../../src/ports/driven/llm/EmbeddingPo
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 
 describe('Terminal Notification Loopback & Buffering Tests', () => {
-  const mockRootDir = resolve('D:\\authorized\\path_loopback_test');
+  const mockRootDir = process.platform === 'win32'
+    ? resolve('D:\\authorized\\path_loopback_test')
+    : '/tmp/authorized/path_loopback_test';
 
   beforeAll(() => {
     // 初始化测试工作区路径

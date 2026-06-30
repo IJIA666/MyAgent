@@ -7,7 +7,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { logger } from '../../../../src/utils/logger.js';
-import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -69,18 +69,25 @@ describe('ContextLoader 规则熔断单元测试', () => {
   });
 
   test('3. 扫描并加载技能索引列表与正文', () => {
-    // 物理加载真实工作区下的技能索引，使用当前工作区路径进行扫描
-    const skills = scanSkills(process.cwd());
+    // 在隔离的 tempDir 中物理创建模拟的技能目录结构以支持测试自包含
+    const fakeSkillDir = join(tempDir, '.agent/skills/test-skill');
+    mkdirSync(fakeSkillDir, { recursive: true });
+    const fakeSkillFile = join(fakeSkillDir, 'SKILL.md');
+    writeFileSync(
+      fakeSkillFile,
+      '---\nname: test-skill\ndescription: A mock skill for testing\n---\nBody content here.'
+    );
+
+    const skills = scanSkills(tempDir);
     expect(skills.length).toBeGreaterThan(0);
     
     const firstSkill = skills[0];
-    expect(firstSkill.name).toBeDefined();
+    expect(firstSkill.name).toBe('test-skill');
     expect(firstSkill.filePath).toContain('SKILL.md');
 
     // 验证正常载入真实技能详情
     const body = readSkillContent(firstSkill.filePath);
-    expect(body).not.toBeNull();
-    expect(typeof body).toBe('string');
+    expect(body).toBe('Body content here.');
   });
 
   test('4. 异常与边界分支覆盖', () => {

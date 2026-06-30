@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { existsSync, writeFileSync, unlinkSync } from 'fs';
+import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { resolve } from 'path';
 import { LocalFileSystemMcpServer } from '../../../src/adapters/tools/virtual-mcp.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
@@ -8,9 +8,15 @@ import { initWorkspace } from '../../../src/adapters/tools/impl/base.js';
 describe('高危操作安全硬拦截单元测试', () => {
   let mcpServer: LocalFileSystemMcpServer;
   let sessionContext: SessionContext;
-  const testWorkspace = resolve('d:\\Projects\\MyAgent');
+  const testWorkspace = process.platform === 'win32'
+    ? resolve('d:\\Projects\\MyAgent')
+    : resolve('/tmp/Projects/MyAgent');
 
   beforeEach(() => {
+    // 确保测试物理工作区目录在磁盘上真实存在
+    if (!existsSync(testWorkspace)) {
+      mkdirSync(testWorkspace, { recursive: true });
+    }
     // 确保工作区正确初始化
     initWorkspace(testWorkspace);
     mcpServer = new LocalFileSystemMcpServer();

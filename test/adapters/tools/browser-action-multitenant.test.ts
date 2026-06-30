@@ -74,7 +74,7 @@ describe('BrowserSession 多租户隔离集成测试', () => {
     const dirB = resolve(testBaseDir, 'tenant-b');
     expect(existsSync(dirA)).toBe(true);
     expect(existsSync(dirB)).toBe(true);
-  });
+  }, 20000);
 
   test('特定租户生命周期回收：调用 closeTenant 带有 cleanup=true 应彻底物理删除对应缓存目录', async () => {
     const ctxTemp = new SessionContext('session-temp', 'tenant-temp');

@@ -19,7 +19,9 @@ import { validateCommand, validateCwd, unboxNestedCommand } from '../../../src/a
 import { SessionContext } from '../../../src/core/domain/context.js';
 
 describe('Terminal Tool 单元测试', () => {
-  const mockRootDir = resolve('D:\\authorized\\path_terminal_test');
+  const mockRootDir = process.platform === 'win32'
+    ? resolve('D:\\authorized\\path_terminal_test')
+    : '/tmp/authorized/path_terminal_test';
   let executeCommandToolInstance: ExecuteCommandTool;
 
   beforeAll(() => {
@@ -67,7 +69,8 @@ describe('Terminal Tool 单元测试', () => {
   test('3. 沙箱隔离边界路径校验', async () => {
     // 使用越界的 cwd 参数
     await expect(executeCommandToolInstance.execute({ command: 'npm run build', cwd: '../../etc' })).rejects.toThrow('Operation not permitted');
-    await expect(executeCommandToolInstance.execute({ command: 'npm run build', cwd: 'C:\\Windows' })).rejects.toThrow('Operation not permitted');
+    const maliciousCwd = process.platform === 'win32' ? 'C:\\Windows' : '/etc';
+    await expect(executeCommandToolInstance.execute({ command: 'npm run build', cwd: maliciousCwd })).rejects.toThrow('Operation not permitted');
   });
 
   test('4. 工作模式与白名单持久化配置测试', () => {
@@ -130,7 +133,8 @@ describe('Terminal Tool 单元测试', () => {
 
     // 独立测试 cwd 沙箱边界
     expect(() => validateCwd('../../etc')).toThrow('Operation not permitted');
-    expect(() => validateCwd('C:\\Windows')).toThrow('Operation not permitted');
+    const maliciousCwd = process.platform === 'win32' ? 'C:\\Windows' : '/etc';
+    expect(() => validateCwd(maliciousCwd)).toThrow('Operation not permitted');
 
     // 正确路径不报错
     const correctPath = validateCwd('src');

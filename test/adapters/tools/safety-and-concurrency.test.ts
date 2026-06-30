@@ -12,7 +12,7 @@ import type { ToolRegistryPort } from '../../../src/ports/driven/tools/ToolRegis
 import type { AppConfig } from '../../../src/config/index.js';
 
 describe('安全与并发增强特性测试', () => {
-  const testWorkspace = resolve('d:\\Projects\\MyAgent');
+  const testWorkspace = process.cwd();
 
   describe('1. 元数据追踪收集 ( collectRecentFileOperations )', () => {
     it('应根据工具声明的 filePathParamKey 提取物理相对路径，并支持启发式提取', () => {
@@ -163,7 +163,7 @@ describe('安全与并发增强特性测试', () => {
 
       const startTime = Date.now();
       const result = await runCommandEngine(
-        'node -e "setTimeout(() => {}, 10000)"',
+        `"${process.execPath}" -e "setTimeout(() => {}, 10000)"`,
         testWorkspace,
         false,
         {
