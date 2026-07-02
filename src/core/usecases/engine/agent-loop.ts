@@ -11,6 +11,7 @@ import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { HookEventName, type LlmRequest } from '../plugins/plugin-types.js';
 import { QualityCheckPort } from '../../../ports/driven/security/QualityCheckPort.js';
+import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 
 // 导入领域服务
 import { RuleManager } from '../brain/RuleManager.js';
@@ -56,6 +57,8 @@ export interface AgentLoopOptions {
   pluginRegistry: PluginRegistry;
   /** 后置质量校验端口 */
   qualityCheckPort?: QualityCheckPort;
+  /** 人机对话交互端口（agent 提问用户并等待回答） */
+  interactionPort?: InteractionPort;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
   maxIterations?: number;
 }
@@ -84,6 +87,8 @@ export class AgentLoop {
   private pluginRegistry: PluginRegistry;
   /** 后置质量校验端口 */
   private qualityCheckPort?: QualityCheckPort;
+  /** 人机对话交互端口（延迟注入，通过 setInteractionPort 设置） */
+  interactionPort?: InteractionPort;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
   private maxIterations: number;
 
@@ -576,7 +581,7 @@ export class AgentLoop {
                     throw new Error("工具执行已被 Abort 阻断（超时）");
                   }
 
-                  const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs, this.context, signal);
+                  const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs, this.context, this.interactionPort, signal);
                   const rawResult = JSON.stringify(mcpResult);
                   outputResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
                   toolResult = outputResult.content;
@@ -627,7 +632,7 @@ export class AgentLoop {
                   if (signal.aborted) {
                     throw new Error("工具执行已被 Abort 阻断（超时）");
                   }
-                  const tailResultRaw = await this.toolRegistry.callTool(tailCall.name, tailCall.args, this.context, signal);
+                  const tailResultRaw = await this.toolRegistry.callTool(tailCall.name, tailCall.args, this.context, this.interactionPort, signal);
                   taskFinalCallUpdate.result = JSON.stringify(tailResultRaw);
                 }
 

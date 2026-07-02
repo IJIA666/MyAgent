@@ -20,6 +20,7 @@ import { LongTermMemoryPlugin } from '../plugins/LongTermMemoryPlugin.js';
 import type { EmbeddingPort } from '../../../ports/driven/llm/EmbeddingPort.js';
 import type { VectorDbPort } from '../../../ports/driven/db/VectorDbPort.js';
 import { QualityCheckPort } from '../../../ports/driven/security/QualityCheckPort.js';
+import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 import { LifecycleManager } from './LifecycleManager.js';
 import { FileBackupManager } from '../security/FileBackupManager.js';
 
@@ -221,6 +222,17 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       }
     }
     return baseName;
+  }
+
+  /**
+   * 延迟注入人机对话交互端口。
+   * 由于 InteractionPort 依赖 CLI 层的 InputListener（在 CliFacade 构造时创建），
+   * 无法在 SessionManager 构造时同步注入，需通过此方法在 CliFacade 就绪后回注。
+   *
+   * @param interactionPort - 人机对话交互端口实现
+   */
+  public setInteractionPort(interactionPort: InteractionPort): void {
+    this.agentLoop.interactionPort = interactionPort;
   }
 
   /**

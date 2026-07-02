@@ -6,6 +6,7 @@ import { redrawHistory, renderTokenPanel } from './views/widget-renderer.js';
 import { dispatchCommand, showInteractiveMenu } from './command.js';
 import { theme } from './views/theme.js';
 import { waitUserIntervention } from './cli.js';
+import { InteractionHandler } from './interaction-handler.js';
 import { BrowserSession } from '../../tools/impl/browser/browser-action.js';
 
 /**
@@ -49,6 +50,10 @@ export class CliFacade {
         await this.handleLineSubmit(line);
       }
     });
+
+    // 创建人机对话交互处理器并通过 SessionManager 回注到 AgentLoop，
+    // 使 agent 推理过程中可以调用 ask_user_question 工具并同步等待用户回答
+    this.session.setInteractionPort(new InteractionHandler({ listener: this.listener }));
 
     // 注册底座的审批卡关回调，实现实时非阻塞终端交互，防止 Generator 原地挂起造成死锁
     this.session.approvalService.registerApprovalHandler(async (id: string, toolCall: { name: string; arguments: Record<string, unknown> }, allowedPrefix?: string, message?: string) => {

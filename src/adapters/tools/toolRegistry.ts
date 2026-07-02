@@ -2,6 +2,7 @@ import { LocalFileSystemMcpServer } from './virtual-mcp.js';
 import { McpToolManager } from './mcp-client.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
+import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
 import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
 
@@ -76,6 +77,7 @@ export class ToolRegistry implements ToolRegistryPort {
     functionName: string,
     functionArgs: Record<string, unknown>,
     sessionContext?: SessionEventPort & ApprovalPort,
+    interactionPort?: InteractionPort,
     signal?: AbortSignal
   ): Promise<unknown> {
     // 先行加载本地工具清单以供比对
@@ -90,7 +92,7 @@ export class ToolRegistry implements ToolRegistryPort {
       return await this.localMcpServer.callTool({
         name: functionName,
         arguments: functionArgs
-      }, sessionContext, signal);
+      }, sessionContext, interactionPort, signal);
     } else if (this.mcpManager) {
       // 命中外部工具，跨进程分发至对应的 MCP Client 实例
       return await this.mcpManager.callMcpTool(functionName, functionArgs, signal);

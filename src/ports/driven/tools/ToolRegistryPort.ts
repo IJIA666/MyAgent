@@ -6,6 +6,7 @@
 import type { SessionEventPort } from '../session/SessionEventPort.js';
 import type { McpManagerPort } from './McpManagerPort.js';
 import type { ApprovalPort } from '../session/ApprovalPort.js';
+import type { InteractionPort } from '../session/InteractionPort.js';
 
 /**
  * 统一的工具元数据接口契约。
@@ -51,6 +52,7 @@ export interface ToolRegistryPort {
     functionName: string,
     functionArgs: Record<string, unknown>,
     sessionContext?: SessionEventPort & ApprovalPort,
+    interactionPort?: InteractionPort,
     signal?: AbortSignal
   ): Promise<unknown>;
 

@@ -43,3 +43,6 @@ ENV/
 
 # Test coverage reports
 coverage/
+
+# IDE
+.idea/

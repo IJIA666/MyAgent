@@ -2,9 +2,11 @@ import { gitTools } from './impl/git/index.js';
 import { fileSystemTools } from './impl/filesystem/index.js';
 import { systemTools } from './impl/system/index.js';
 import { getSkillTools } from './impl/skill/index.js';
+import { getInteractionTools } from './impl/interaction/index.js';
 import type { SafetyCheckResult } from '../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
+import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import { secureResolveWritePath } from './impl/base.js';
 import { existsSync } from 'fs';
 import {
@@ -56,7 +58,8 @@ export interface NativeTool {
   execute(
     args: Record<string, unknown>,
     _sessionContext?: SessionEventPort,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    _interactionPort?: InteractionPort
   ): Promise<string> | string;
 
   /**
@@ -122,6 +125,7 @@ export class LocalFileSystemMcpServer {
       ...fileSystemTools,
       ...systemTools,
       ...getSkillTools(options?.loadSkill),
+      ...getInteractionTools(),
       new BrowserNavigateTool(),
       new BrowserClickTool(),
       new BrowserTypeTool(),
@@ -175,6 +179,7 @@ export class LocalFileSystemMcpServer {
   async callTool(
     request: CallToolRequest,
     sessionContext?: SessionEventPort & ApprovalPort,
+    interactionPort?: InteractionPort,
     signal?: AbortSignal
   ): Promise<CallToolResult> {
     try {
@@ -249,7 +254,7 @@ export class LocalFileSystemMcpServer {
         });
       }
 
-      const resultText = await tool.execute(args, contextToPass, signal);
+      const resultText = await tool.execute(args, contextToPass, signal, interactionPort);
 
       return {
         content: [
