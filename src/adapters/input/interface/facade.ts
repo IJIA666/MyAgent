@@ -287,8 +287,7 @@ export class CliFacade {
 
       case 'error':
         console.log(theme.error(`\n[异常] ${event.message}\n`));
-        this.isRendering = false;
-        this.listener.resume(); // 异常退出，恢复 Stdin 监听
+        // error 仅作为流内旁注打印，不参与渲染状态管理。complete 是唯一的状态终结点
         break;
 
       case 'complete':

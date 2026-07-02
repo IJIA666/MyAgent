@@ -38,6 +38,7 @@ class MockSessionManager extends EventEmitter {
   getSystemPromptHash = vi.fn().mockReturnValue('dummypromptmd5hash');
   close = vi.fn().mockResolvedValue(undefined);
   handleUserInput = vi.fn();
+  setInteractionPort = vi.fn();
   approvalService = {
     registerApprovalHandler: vi.fn(),
     resolve: vi.fn(),
@@ -48,6 +49,7 @@ describe('CliFacade', () => {
   let mockSession: SessionManager & {
     close: ReturnType<typeof vi.fn>;
     handleUserInput: ReturnType<typeof vi.fn>;
+    setInteractionPort: ReturnType<typeof vi.fn>;
     rollback: ReturnType<typeof vi.fn>;
     abort: ReturnType<typeof vi.fn>;
     getLastEstimatedUsage: ReturnType<typeof vi.fn>;

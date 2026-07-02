@@ -283,6 +283,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       const baseDir = this.context.appConfig ? this.context.appConfig.workspace : process.cwd();
       // 状态恢复成功后，重置跟踪记录仪以绑定新的 Session ID 目录
       this.tracer = new AgentTracer(baseDir, this.context.getSessionId());
+      this.agentLoop.resetTraceState();
     }
     return success;
   }
@@ -365,10 +366,21 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       throw new Error('Session is currently busy generating a response.');
     }
 
+    const previousWakeupCount = this.autoWakeupCount;
     this.isGenerating = true; // 同步原子加锁，防止同 Tick 重入
     this.autoWakeupCount = 0;  // 每次人类主动交互，重置自动唤醒计数器
 
     // 1. 同步将消息写入上下文历史
+    logger.debug('[SessionManager] generation_requested', {
+      component: 'session',
+      event: 'generation_requested',
+      sessionId: this.context.getSessionId(),
+      oldValue: previousWakeupCount,
+      newValue: this.autoWakeupCount,
+      reason: 'user_input',
+      hasPendingAsyncNotification: this.hasPendingAsyncNotification,
+      isGenerating: this.isGenerating
+    });
     this.addUserMessage(input);
 
     // 2. 异步调起内部推理并广播事件
@@ -384,6 +396,13 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
    */
   private async runInternalGeneration(transientSkillContent?: string): Promise<void> {
     let hasError = false;
+    logger.debug('[SessionManager] generation_cycle_started', {
+      component: 'session',
+      event: 'generation_cycle_started',
+      sessionId: this.context.getSessionId(),
+      wakeupCount: this.autoWakeupCount,
+      hasPendingAsyncNotification: this.hasPendingAsyncNotification
+    });
     try {
       // 订阅并逐步消费大脑层抛出的推理事件，对外分发统一的 'agent_event'
       for await (const event of this.agentLoop.chat(transientSkillContent, this.tracer, this.llmConfig)) {
@@ -392,16 +411,33 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     } catch (error: unknown) {
       hasError = true;
       const message = error instanceof Error ? error.message : String(error);
+      logger.warn('[SessionManager] generation_cycle_error', {
+        component: 'session',
+        event: 'generation_cycle_error',
+        sessionId: this.context.getSessionId(),
+        wakeupCount: this.autoWakeupCount,
+        hasPendingAsyncNotification: this.hasPendingAsyncNotification,
+        message
+      });
       this.emit('agent_event', {
         type: 'error',
         message
       });
+      // 对称契约：无论正常结束还是灾难崩溃，complete 作为本轮推理生命周期的唯一终点
+      this.emit('agent_event', { type: 'complete' });
     } finally {
       this.isGenerating = false;
+      logger.debug('[SessionManager] generation_cycle_finished', {
+        component: 'session',
+        event: 'generation_cycle_finished',
+        sessionId: this.context.getSessionId(),
+        wakeupCount: this.autoWakeupCount,
+        hasPendingAsyncNotification: this.hasPendingAsyncNotification,
+        hasError
+      });
 
-      // 判定后续是否会触发自唤醒级联，若不会则在此 emit 'complete'。
-      // 【非对称契约说明】：若推理期间抛出 error 异常，将直接由 'error' 广播事件接管
-      // 且直接由终端捕获并恢复 stdin，故无需（也不应该）在此处重复发送 'complete'。
+      // 对称契约：complete 是唯一的生命周期终点。
+      // catch 块已在灾难性异常时补发 complete，此处仅处理正常路径。
       const willWakeup = !hasError && this.hasPendingAsyncNotification && this.autoWakeupCount < 3;
       if (!hasError && !willWakeup) {
         this.emit('agent_event', { type: 'complete' });
@@ -409,10 +445,25 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
 
       // 检测本轮推理生成期间是否积压了新的后台通知事件，延迟到下一 Tick 处理，防止爆栈
       process.nextTick(() => {
-        if (!this.isGenerating && this.hasPendingAsyncNotification) {
+        if (!hasError && !this.isGenerating && this.hasPendingAsyncNotification) {
+          const previousPendingState = this.hasPendingAsyncNotification;
           this.hasPendingAsyncNotification = false;
+          logger.info('[SessionManager] async_notification_wakeup_scheduled', {
+            component: 'session',
+            event: 'async_notification_wakeup_scheduled',
+            sessionId: this.context.getSessionId(),
+            oldValue: previousPendingState,
+            newValue: this.hasPendingAsyncNotification,
+            reason: 'deferred_wakeup'
+          });
 
           if (this.autoWakeupCount >= 3) {
+            logger.warn('[SessionManager] auto_wakeup_limit_reached', {
+              component: 'session',
+              event: 'auto_wakeup_limit_reached',
+              sessionId: this.context.getSessionId(),
+              autoWakeupCount: this.autoWakeupCount
+            });
             this.emit('agent_event', {
               type: 'error',
               message: '[系统提示] 检测到连续自动唤醒次数已达上限（3次），已暂停自动唤醒，等待人工介入。'
@@ -439,12 +490,31 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   private handleAsyncEvent(): void {
     if (this.isGenerating) {
       // 忙碌状态：仅记录积压标识，避免产生竞态并发
+      const previousPendingState = this.hasPendingAsyncNotification;
       this.hasPendingAsyncNotification = true;
+      logger.info('[SessionManager] async_event_buffered', {
+        component: 'session',
+        event: 'async_event_buffered',
+        sessionId: this.context.getSessionId(),
+        oldValue: previousPendingState,
+        newValue: this.hasPendingAsyncNotification,
+        reason: 'busy_buffered',
+        hasPendingAsyncNotification: this.hasPendingAsyncNotification
+      });
       return;
     }
 
     // 限制连续自动唤醒的最大上限（无人值守防御）
     if (this.autoWakeupCount >= 3) {
+      logger.warn('[SessionManager] auto_wakeup_limit_reached', {
+        component: 'session',
+        event: 'auto_wakeup_limit_reached',
+        sessionId: this.context.getSessionId(),
+        oldValue: this.hasPendingAsyncNotification,
+        newValue: false,
+        reason: 'wakeup_limit_reached',
+        wakeupCount: this.autoWakeupCount
+      });
       this.emit('agent_event', {
         type: 'error',
         message: '[系统提示] 检测到连续自动唤醒次数已达上限（3次），已暂停自动唤醒，等待人工介入。'
@@ -453,7 +523,16 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       return;
     }
 
+    const previousWakeupCount = this.autoWakeupCount;
     this.autoWakeupCount++;
+    logger.info('[SessionManager] auto_wakeup_triggered', {
+      component: 'session',
+      event: 'auto_wakeup_triggered',
+      sessionId: this.context.getSessionId(),
+      oldValue: previousWakeupCount,
+      newValue: this.autoWakeupCount,
+      reason: 'async_event'
+    });
     // 异步调起后台任务更新研判
     this.runInternalGeneration().catch((err: unknown) => {
       logger.error('[SessionManager] 自动唤醒推理执行失败:', err);

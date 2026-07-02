@@ -82,7 +82,16 @@ export async function runHookPipeline(
   };
 
   // 3. 启用忙锁并创建沙箱隔离 Draft
+  const processingStart = Date.now();
   sessionContext.isProcessing = true;
+  logger.debug('[PluginRunner] isProcessing_changed', {
+    component: 'plugin_runner',
+    event: 'isProcessing_changed',
+    sessionId: sessionContext.getSessionId(),
+    eventName,
+    oldValue: false,
+    newValue: true
+  });
   const draft = createDraft(baseState);
 
   // 代理原有的 SessionContext，重定向其对 messageHistory 的所有改写和读取至 Immer 的 Draft 状态上
@@ -160,7 +169,17 @@ export async function runHookPipeline(
     throw error;
   } finally {
     // 强制还原并释放并发忙状态锁，杜绝死锁风险
+    const duration = Date.now() - processingStart;
     sessionContext.isProcessing = false;
+    logger.debug('[PluginRunner] isProcessing_changed', {
+      component: 'plugin_runner',
+      event: 'isProcessing_changed',
+      sessionId: sessionContext.getSessionId(),
+      eventName,
+      oldValue: true,
+      newValue: false,
+      duration
+    });
   }
 
   // 4. 一次性安全提交 Immer 生成的不可变状态至外层 SessionContext 属性

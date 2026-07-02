@@ -206,4 +206,26 @@ describe('AgentLoop 动态安全特性测试', () => {
     expect(assistantMsg.role).toBe('assistant');
     expect(assistantMsg.content).toBe('Assistant Reply');
   });
+  it('5. 会话切换后应重置 trace 的 systemPromptHash 状态，避免跨会话缓存取值残留', async () => {
+    const loop = new AgentLoop({
+      toolRegistry: mockToolRegistry as unknown as ToolRegistryPort,
+      context,
+      driver: mockLlmDriver as unknown as LlmPort,
+      contextAdapter: mockContextAdapter as unknown as ContextAdapter,
+      ruleManager: mockRuleManager as unknown as RuleManager,
+      contextRepo: mockContextRepo as unknown as ContextRepository,
+      toolDispatcher: mockToolDispatcher as unknown as ToolDispatcher,
+      compactionService: mockCompactionService as unknown as CompactionService,
+      pluginRegistry
+    });
+
+    const tracer = new AgentTracer(process.cwd(), 'trace-reset-session');
+    for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as unknown as LlmConfig)) {
+      void event;
+    }
+
+    expect(loop.getSystemPromptHash()).not.toBe('');
+    loop.resetTraceState();
+    expect(loop.getSystemPromptHash()).toBe('');
+  });
 });

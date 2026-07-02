@@ -2,7 +2,7 @@
  * @fileoverview ContextRepository 的单元测试，验证状态落盘与记忆回退。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -38,8 +38,9 @@ describe('ContextRepository', () => {
 
       await contextRepo.saveState();
 
-      const sessionFile = path.join(tempDir, '.myagent/sessions/test-repo-session.json');
+      const sessionFile = path.join(tempDir, '.myagent/sessions/session_test-repo-session.json');
       expect(fs.existsSync(sessionFile)).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, '.myagent/sessions/test-repo-session.json'))).toBe(false);
 
       const content = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
       expect(content.checkpointSummary).toBe('Last summary context');
@@ -61,6 +62,66 @@ describe('ContextRepository', () => {
         { filePath: 'src/utils.ts', opType: 'read' }
       ]);
       expect(newContext.getHistory().length).toBe(3);
+    });
+
+    it('should serialize concurrent saveState calls and keep the snapshot valid', async () => {
+      context.setCheckpointSummary('Concurrent summary');
+      context.addMessage({ role: 'user', content: 'hello' });
+      context.addMessage({ role: 'assistant', content: 'world' });
+
+      await Promise.all([contextRepo.saveState(), contextRepo.saveState(), contextRepo.saveState()]);
+
+      const sessionFile = path.join(tempDir, '.myagent/sessions/session_test-repo-session.json');
+      const content = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
+      expect(content.messages).toHaveLength(3);
+      expect(content.checkpointSummary).toBe('Concurrent summary');
+    });
+
+    it('should restore from the newest backup file when the main snapshot is missing', async () => {
+      const sessionDir = path.join(tempDir, '.myagent/sessions');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const backupFile = path.join(sessionDir, 'session_backup-session.json.bak-123');
+      const backupState = {
+        version: 2,
+        sessionId: 'backup-session',
+        messages: [
+          { role: 'system', content: 'sys' },
+          { role: 'user', content: 'recover me' }
+        ],
+        checkpointSummary: 'Backup summary',
+        recentFiles: ['src/main.ts']
+      };
+      fs.writeFileSync(backupFile, JSON.stringify(backupState), 'utf-8');
+
+      const restoredContext = new SessionContext('empty-session');
+      const restoredRepo = new ContextRepository(restoredContext, tempDir);
+      const loadSuccess = await restoredRepo.loadState('backup-session');
+      expect(loadSuccess).toBe(true);
+      expect(restoredContext.getSessionId()).toBe('backup-session');
+      expect(restoredContext.getCheckpointSummary()).toBe('Backup summary');
+      expect(restoredContext.getHistory()[1].content).toBe('recover me');
+    });
+
+    it('should keep the old snapshot readable and clean temp files when replacement fails', async () => {
+      context.addMessage({ role: 'user', content: 'before failure' });
+      await contextRepo.saveState();
+
+      const sessionDir = path.join(tempDir, '.myagent/sessions');
+      const sessionFile = path.join(sessionDir, 'session_test-repo-session.json');
+      const originalContent = fs.readFileSync(sessionFile, 'utf-8');
+      const repoForFailure = contextRepo as unknown as {
+        replaceSnapshot: (tempFile: string, file: string) => Promise<void>;
+      };
+      const originalReplaceSnapshot = repoForFailure.replaceSnapshot;
+      repoForFailure.replaceSnapshot = vi.fn().mockRejectedValue(new Error('simulated rename failure'));
+
+      context.addMessage({ role: 'assistant', content: 'after failure' });
+      await contextRepo.saveState();
+
+      repoForFailure.replaceSnapshot = originalReplaceSnapshot;
+
+      expect(fs.readFileSync(sessionFile, 'utf-8')).toBe(originalContent);
+      expect(fs.readdirSync(sessionDir).some((name) => name.includes('.tmp'))).toBe(false);
     });
 
     it('should support loading simple array formatted session data', async () => {

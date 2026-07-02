@@ -4,7 +4,7 @@
  * 以及针对 Vitest 单元测试静音和进程异常退出时的刷盘防丢失机制。
  */
 
-import { configure, getConsoleSink, getLogger, dispose, withFilter } from "@logtape/logtape";
+import { configure, getConsoleSink, getJsonLinesFormatter, getLogger, dispose, withFilter } from "@logtape/logtape";
 import type { LogLevel } from "@logtape/logtape";
 import { getRotatingFileSink } from "@logtape/file";
 
@@ -18,7 +18,7 @@ function callRawLogger(
 ): void {
   if (propertiesOrError instanceof Error) {
     method(message, { error: propertiesOrError.message, stack: propertiesOrError.stack });
-  } else if (propertiesOrError && typeof propertiesOrError === "object") {
+  } else if (propertiesOrError !== null && typeof propertiesOrError === "object") {
     method(message, propertiesOrError as Record<string, unknown>);
   } else {
     method(message);
@@ -90,6 +90,10 @@ export async function initLogger(): Promise<void> {
       file: getRotatingFileSink(".myagent/run.log", {
         maxSize: 10 * 1024 * 1024, // 10MB
         maxFiles: 5,
+        formatter: getJsonLinesFormatter({
+          message: "rendered",
+          properties: "flatten"
+        }),
       }),
     },
     loggers: [

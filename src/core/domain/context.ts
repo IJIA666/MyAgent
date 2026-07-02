@@ -8,6 +8,7 @@ import { ApprovalService } from '../usecases/security/ApprovalService.js';
 import { AppConfig, WorkMode, getDefaultWorkMode } from '../../config/index.js';
 import { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import { SecurityService } from '../usecases/security/SecurityService.js';
+import { createSessionId } from './trace-format.js';
 
 /**
  * 内部会话扩展消息接口契约，继承底层大模型消息，
@@ -22,7 +23,7 @@ export interface StoredChatMessage extends ChatMessage {
 
 // 显式重导出 ApiUsage 和 ContextTokenUsage 类型，避免在 ESM 下因类型擦除引发运行时加载错误
 export type { ApiUsage, ContextTokenUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
-import { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
+import type { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
 
 export interface PluginPatchGroup {
   timestamp: string;
@@ -123,7 +124,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   constructor(sessionId?: string, tenantId?: string) {
     super();
     // 如果没有传入 sessionId，则使用当前时间戳作为默认会话标识
-    this.sessionId = sessionId || Date.now().toString();
+    this.sessionId = sessionId || createSessionId();
     this.tenantId = tenantId || 'default';
     // 实例化独立的人机协同审批协调服务
     this.approvalService = new ApprovalService();
@@ -392,9 +393,26 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    */
   public setWorkMode(mode: WorkMode): void {
     if (this.isProcessing) {
+      logger.warn('[SessionContext] work_mode_change_blocked', {
+        component: 'context',
+        event: 'work_mode_change_blocked',
+        sessionId: this.sessionId,
+        oldValue: this.workMode,
+        newValue: mode,
+        reason: 'isProcessing=true'
+      });
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
+    const previousMode = this.workMode;
     this.workMode = mode;
+    logger.info('[SessionContext] work_mode_changed', {
+      component: 'context',
+      event: 'work_mode_changed',
+      sessionId: this.sessionId,
+      oldValue: previousMode,
+      newValue: mode,
+      reason: 'user_request'
+    });
   }
 
   /**

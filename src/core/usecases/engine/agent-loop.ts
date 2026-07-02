@@ -6,7 +6,6 @@ import { SessionContext, ContextTokenUsage, StoredChatMessage } from '../../doma
 import type { ChatMessage, LlmPort, LlmStreamEvent } from '../../../ports/driven/llm/LlmPort.js';
 import type { ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
-import { purifyContent } from '../../../common/purify.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { HookEventName, type LlmRequest } from '../plugins/plugin-types.js';
@@ -20,6 +19,13 @@ import { ToolDispatcher } from './ToolDispatcher.js';
 import { CompactionService } from '../brain/CompactionService.js';
 import { FileLockManager } from '../security/FileLockManager.js';
 import { FileBackupManager } from '../security/FileBackupManager.js';
+import {
+  buildCanonicalSystemMessages,
+  buildTraceContextEntries,
+  computeSystemPromptHash,
+  type TraceMetaRecord,
+  type TracePromptDefinitionRecord
+} from '../../domain/trace-format.js';
 
 /**
  * 智能体产生的事件类型定义，外部消费者（如 UI 终端）据此渲染流式反馈过程。
@@ -62,6 +68,13 @@ export interface AgentLoopOptions {
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
   maxIterations?: number;
 }
+
+/** 缓存击穿校验：缓存跌幅百分比阈值（5% = 0.95 倍） */
+const CACHE_DROP_RATIO_THRESHOLD = 0.95;
+/** 缓存击穿校验：Token 下降绝对值下限 */
+const CACHE_DROP_TOKEN_MIN = 2000;
+/** 缓存击穿校验：TTL 超时嫌疑时间阈值（5 分钟） */
+const CACHE_TTL_SUSPECT_MS = 5 * 60 * 1000;
 
 /**
  * 独立的智能体执行引擎，统管单次与多轮 ReAct 推理大循环流程。
@@ -134,6 +147,19 @@ export class AgentLoop {
    */
   public getSystemPromptHash(): string {
     return this.lastSystemPromptHash;
+  }
+
+  /**
+   * 重置与当前会话绑定的 trace 状态，供会话切换或恢复后重新建立黑匣子上下文。
+   */
+  public resetTraceState(): void {
+    this.lastSystemPromptHash = '';
+    this.lastToolsHash = '';
+    this.lastCacheReadTokens = null;
+    this.lastInteractionTime = null;
+    this.pendingChanges = [];
+    this.isFirstCall = true;
+    this.lastEstimatedUsage = null;
   }
 
   /**
@@ -297,6 +323,38 @@ export class AgentLoop {
           finalRequestTools = finalRequestTools.filter((t: unknown) => {
             return (t as { securityCategory?: string }).securityCategory !== 'write';
           });
+        }
+
+        const traceSessionId = this.context.getSessionId();
+        const traceSystemMessages = buildCanonicalSystemMessages(finalRequestMessages as ChatMessage[]);
+        const traceSystemPromptHash = computeSystemPromptHash(traceSystemMessages);
+        if (this.lastSystemPromptHash !== traceSystemPromptHash) {
+          const promptDefinition: TracePromptDefinitionRecord = {
+            type: 'prompt_definition',
+            sessionId: traceSessionId,
+            promptId: traceSystemPromptHash,
+            systemPromptHash: traceSystemPromptHash,
+            messages: traceSystemMessages,
+            source: this.lastSystemPromptHash ? 'changed' : 'initial',
+            ...(this.lastSystemPromptHash ? { relatedIteration: iteration } : {})
+          };
+
+          let metaWritten = true;
+          if (!this.lastSystemPromptHash) {
+            const metaRecord: TraceMetaRecord = {
+              type: 'meta',
+              sessionId: traceSessionId,
+              startTime: new Date().toISOString(),
+              model: actualRequest.model || llmConfig.model,
+              initialSystemPromptHash: traceSystemPromptHash
+            };
+            metaWritten = tracer.logMeta(metaRecord);
+          }
+
+          const promptWritten = tracer.logPromptDefinition(promptDefinition);
+          if (metaWritten && promptWritten) {
+            this.lastSystemPromptHash = traceSystemPromptHash;
+          }
         }
 
         let cleanupCascade: (() => void) | undefined = undefined;
@@ -736,26 +794,20 @@ export class AgentLoop {
               }
             }
 
-            const purifiedContext = snapshotContext.map((msg: ChatMessage) => {
-              if (typeof msg.content === 'string') {
-                return {
-                  ...msg,
-                  content: purifyContent(msg.content)
-                } as ChatMessage;
-              }
-              return msg;
-            });
-
             // 触发审计落盘切面
-            tracer.logInteraction({
+            const traceContext = buildTraceContextEntries(finalRequestMessages as ChatMessage[], traceSystemPromptHash);
+            tracer.logIteration({
+              type: 'iteration',
+              sessionId: traceSessionId,
               timestamp: new Date().toISOString(),
               iteration,
-              context: purifiedContext,
+              context: traceContext,
               reasoning: event.assistantMessage.reasoning_content || '',
               content: event.assistantMessage.content || '',
               tool_calls: finalToolCalls,
               estimated_tokens: this.lastEstimatedUsage ?? undefined,
-              actual_tokens: event.usage as ApiUsage
+              actual_tokens: event.usage as ApiUsage,
+              systemPromptHash: traceSystemPromptHash
             });
 
           } else if (event.type === 'complete') {
@@ -805,24 +857,18 @@ export class AgentLoop {
               yield { type: 'thinking', content: '[PostRunHook] 静态规范及编译类型检查全部通过。' };
             }
 
-            const purifiedContext = snapshotContext.map((msg: ChatMessage) => {
-              if (typeof msg.content === 'string') {
-                return {
-                  ...msg,
-                  content: purifyContent(msg.content)
-                } as ChatMessage;
-              }
-              return msg;
-            });
-
-            tracer.logInteraction({
+            const traceContext = buildTraceContextEntries(finalRequestMessages as ChatMessage[], traceSystemPromptHash);
+            tracer.logIteration({
+              type: 'iteration',
+              sessionId: traceSessionId,
               timestamp: new Date().toISOString(),
               iteration,
-              context: purifiedContext,
+              context: traceContext,
               reasoning: event.reasoning,
               content: event.content,
               estimated_tokens: this.lastEstimatedUsage ?? undefined,
-              actual_tokens: event.usage as ApiUsage
+              actual_tokens: event.usage as ApiUsage,
+              systemPromptHash: traceSystemPromptHash
             });
 
             this.context.flushPendingNotifications();
@@ -894,15 +940,15 @@ export class AgentLoop {
     // 若不是首次调用，且有上次的缓存读取基准，则进行击穿校验
     if (!this.isFirstCall && this.lastCacheReadTokens !== null) {
       const tokenDrop = this.lastCacheReadTokens - currentCacheRead;
-      // 触发击穿阈值：缓存跌幅超 5% 且下降 Token 绝对值 >= 2000
-      if (currentCacheRead < this.lastCacheReadTokens * 0.95 && tokenDrop >= 2000) {
+      // 触发击穿阈值：缓存跌幅超 5% 且下降 Token 绝对值 >= 下限
+      if (currentCacheRead < this.lastCacheReadTokens * CACHE_DROP_RATIO_THRESHOLD && tokenDrop >= CACHE_DROP_TOKEN_MIN) {
         let reason: string;
         if (this.pendingChanges.length > 0) {
           reason = `前置指纹变更所致 (${this.pendingChanges.join(', ')})`;
         } else {
           // 无客户端更改，计算时间差
           const timeGap = this.lastInteractionTime ? (Date.now() - this.lastInteractionTime) : 0;
-          if (timeGap > 5 * 60 * 1000) {
+          if (timeGap > CACHE_TTL_SUSPECT_MS) {
             const minutes = Math.round(timeGap / 1000 / 60);
             reason = `提示词未变动，疑因 TTL 超时淘汰 (距上次交互已过 ${minutes} 分钟)`;
           } else {
