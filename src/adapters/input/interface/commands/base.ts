@@ -1,12 +1,10 @@
-import { Interface } from 'readline';
 import { SessionManager } from '../../../../core/usecases/engine/session.js';
 
 /**
- * 命令执行上下文接口，包含当前会话状态和交互界面
+ * 命令执行上下文接口，包含当前会话状态。
  */
 export interface CommandContext {
   session: SessionManager; // 当前活跃的会话管理器实例
-  rl: Interface;           // 绑定的 readline 交互接口
 }
 
 export interface CommandResult {

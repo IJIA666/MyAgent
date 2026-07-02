@@ -63,6 +63,18 @@ export class InputListener {
   private keypressHandler: (str: string, key: { name?: string }) => void;
   /** 缓存的历史命令记录数组，保障 rl 实例销毁重组时记忆不丢失 */
   private commandHistory: string[] = [];
+  /**
+   * 单调递增的恢复版本号，用于使过期 setImmediate 回调失效。
+   * pause() 和 close() 递增该值；resume() 的 setImmediate 回调捕获创建时版本，
+   * 执行时与当前版本比较，不匹配则跳过恢复。
+   */
+  private resumeVersion = 0;
+  /**
+   * 单调递增的 readline 实例 ID，用于使旧 readline 的延迟 line 事件失效。
+   * start() 创建新 rl 前递增；close() 递增；line 回调闭包捕获创建时 ID，
+   * 执行时与当前 ID 比较，不匹配则直接丢弃事件。
+   */
+  private rlInstanceId = 0;
 
   /**
    * 构造函数，绑定 Getter 属性与事件回调。
@@ -82,12 +94,30 @@ export class InputListener {
   }
 
   /**
+   * 幂等注册 keypress 监听器。先移除再添加，确保同一时间只存在一个实例。
+   */
+  private attachKeypressHandler(): void {
+    this.inputStream.removeListener('keypress', this.keypressHandler);
+    this.inputStream.on('keypress', this.keypressHandler);
+  }
+
+  /**
+   * 移除 keypress 监听器。
+   */
+  private detachKeypressHandler(): void {
+    this.inputStream.removeListener('keypress', this.keypressHandler);
+  }
+
+  /**
    * 初始化并启动基于 stdin/stdout 的交互监听。
    *
    * @param paused - 是否在重建后立即保持挂起暂停状态，默认不挂起
    */
   public start(paused = false): void {
     this.isPaused = paused;
+    // 递增 rlInstanceId，使之前所有 line 回调失效
+    this.rlInstanceId++;
+    const instanceId = this.rlInstanceId; // 闭包捕获当前 ID
     try {
       // 在恢复或启动时，如果有被 pause 挂起的流，且不需要保持暂停，显式执行 resume 唤醒以恢复正常读取
       const stream = this.inputStream as unknown as { resume?: () => void };
@@ -118,7 +148,11 @@ export class InputListener {
     this.updatePrompt();
 
     // 绑定回车提交监听，在挂起期间物理拦截并强行丢弃共享 Stdin 导致的任何残留回车
+    // 同时通过 instanceId 拦截旧 readline 实例的延迟 line 事件
     this.rl.on('line', (line) => {
+      if (instanceId !== this.rlInstanceId) {
+        return; // 旧 readline 实例的延迟事件，直接丢弃
+      }
       if (this.isPaused) {
         return;
       }
@@ -132,8 +166,10 @@ export class InputListener {
       process.exit(0);
     });
 
-    // 监听底层按键以捕捉全局 ESC 按键
-    this.inputStream.on('keypress', this.keypressHandler);
+    // 只有 active 状态才注册 keypress 监听；paused 状态暂不监听，由后续 resume() 统一注册
+    if (!paused) {
+      this.attachKeypressHandler();
+    }
 
     // 尊重挂起状态：若当前处于挂起状态则不主动展示提示符，否则正常展示
     if (this.isPaused) {
@@ -167,10 +203,11 @@ export class InputListener {
    */
   public pause(): void {
     this.isPaused = true;
+    this.resumeVersion++;
     if (this.rl) {
       this.rl.pause();
     }
-    this.inputStream.removeListener('keypress', this.keypressHandler);
+    this.detachKeypressHandler();
   }
 
   /**
@@ -191,12 +228,16 @@ export class InputListener {
     if (this.rl) {
       this.rl.resume();
     }
-    this.inputStream.on('keypress', this.keypressHandler);
+    this.attachKeypressHandler();
     this.updatePrompt();
     this.prompt();
 
-    // 延迟一个 tick 恢复 isPaused 状态，确保在恢复瞬间排空并丢弃 readline 内部积压的所有垃圾事件
+    // 捕获当前版本号，回调执行时比较以防止过期回调覆盖 isPaused
+    const versionAtResume = this.resumeVersion;
     setImmediate(() => {
+      if (versionAtResume !== this.resumeVersion) {
+        return; // 有更新的 pause/close 发生，此回调已过期
+      }
       this.isPaused = false;
     });
   }
@@ -205,7 +246,12 @@ export class InputListener {
    * 物理注销当前 active 的 readline 实例并注销所有监听。
    */
   public close(): void {
+    this.isPaused = true;
+    this.rlInstanceId++;
+    this.resumeVersion++;
     if (this.rl) {
+      // 显式解绑旧 line handler，防止 rl.close() 后排队事件仍触发
+      this.rl.removeAllListeners('line');
       // 备份历史记录，防止实例物理销毁时记忆丢失
       const hist = (this.rl as unknown as { history?: string[] }).history;
       if (Array.isArray(hist)) {
@@ -214,7 +260,7 @@ export class InputListener {
       this.rl.close();
       this.rl = null;
     }
-    this.inputStream.removeListener('keypress', this.keypressHandler);
+    this.detachKeypressHandler();
   }
 
   /**

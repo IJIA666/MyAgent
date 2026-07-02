@@ -157,4 +157,142 @@ describe('InputListener Dependency Injection & Lifecycle Tests', () => {
     expect(rollbackTriggered).toBe(true);
     expect(listener.getInterface()).not.toBeNull();
   });
+
+  it('pause→resume→pause 时序下，过期的 setImmediate resume 回调不应生效（resumeVersion 验证）', async () => {
+    let lineSubmittedCount = 0;
+
+    listener = new InputListener({
+      getIsGenerating: () => false,
+      getModelName: () => 'test-model',
+      getWorkMode: () => 'Auto',
+      onAbort: () => {},
+      onRollback: () => {},
+      onLineSubmit: () => {
+        lineSubmittedCount++;
+      },
+      input: mockStdin,
+      output: mockStdout
+    });
+
+    listener.start();
+
+    // 第一次 resume，调度了一个 setImmediate 回调
+    listener.resume();
+    // 在 setImmediate 回调执行前再次 pause，resumeVersion 已递增
+    listener.pause();
+
+    // 等待 setImmediate 回调执行
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // 验证：isPaused 仍为 true（过期回调被 resumeVersion 抑制）
+    expect((listener as unknown as { isPaused: boolean }).isPaused).toBe(true);
+
+    // 写入数据，验证 line 事件被正确拦截
+    mockStdin.push('should be blocked\n');
+    await new Promise((resolve) => process.nextTick(resolve));
+    expect(lineSubmittedCount).toBe(0);
+  });
+
+  it('close→start 时序下，通过 rlInstanceId 丢弃旧 readline 实例的延迟 line 事件', async () => {
+    const onLineSubmitSpy = vi.fn();
+
+    listener = new InputListener({
+      getIsGenerating: () => false,
+      getModelName: () => 'test-model',
+      getWorkMode: () => 'Auto',
+      onAbort: () => {},
+      onRollback: () => {},
+      onLineSubmit: onLineSubmitSpy,
+      input: mockStdin,
+      output: mockStdout
+    });
+
+    listener.start();
+
+    // 获取旧 rl 实例上注册的 line 回调引用
+    const oldRl = listener.getInterface()!;
+    const oldLineListeners = oldRl.listeners('line');
+    expect(oldLineListeners.length).toBeGreaterThan(0);
+    const oldHandler = oldLineListeners[0];
+
+    // close —— 递增 rlInstanceId + removeAllListeners('line')
+    listener.close();
+    // close 后旧 rl 上不再有 line 处理器
+    expect(oldRl.listeners('line').length).toBe(0);
+
+    // start —— 新 rl 实例，新 rlInstanceId
+    listener.start();
+
+    // 手动调用旧 handler，验证被 rlInstanceId 守卫丢弃
+    onLineSubmitSpy.mockClear();
+    oldHandler('stale line from old instance');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onLineSubmitSpy).not.toHaveBeenCalled();
+
+    // 新实例的正常输入仍正常处理
+    mockStdin.push('fresh line\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onLineSubmitSpy).toHaveBeenCalledWith('fresh line');
+  });
+
+  it('close→start→resume→close 时序下，过期 resume 回调不应覆盖关闭状态', async () => {
+    listener = new InputListener({
+      getIsGenerating: () => false,
+      getModelName: () => 'test-model',
+      getWorkMode: () => 'Auto',
+      onAbort: () => {},
+      onRollback: () => {},
+      onLineSubmit: () => {},
+      input: mockStdin,
+      output: mockStdout
+    });
+
+    listener.start();
+
+    // close 递增了 resumeVersion
+    listener.close();
+    // start 重建
+    listener.start();
+    // resume 调度了一个 setImmediate 回调
+    listener.resume();
+    // 在回调执行前又 close——递增 resumeVersion
+    listener.close();
+
+    // 等待过期回调执行
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // 验证：过期回调未将 isPaused 置为 false（close 后应为 true）
+    expect((listener as unknown as { isPaused: boolean }).isPaused).toBe(true);
+  });
+
+  it('多轮 start→close 不应累积 keypress 监听器（幂等验证）', () => {
+    listener = new InputListener({
+      getIsGenerating: () => false,
+      getModelName: () => 'test-model',
+      getWorkMode: () => 'Auto',
+      onAbort: () => {},
+      onRollback: () => {},
+      onLineSubmit: () => {},
+      input: mockStdin,
+      output: mockStdout
+    });
+
+    // 模拟多轮 stdin 独占事务，验证每轮 start 后计数一致（不累积）
+    const startCounts: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      listener.start();
+      startCounts.push(mockStdin.listenerCount('keypress'));
+      listener.close();
+    }
+    // 3 轮 start 后 keypress 监听器数一致
+    expect(startCounts[0]).toBe(startCounts[1]);
+    expect(startCounts[1]).toBe(startCounts[2]);
+
+    // resume 通过幂等 attach 注册，再次 resume 不额外增加
+    listener.start();
+    listener.resume();
+    const resumeCount = mockStdin.listenerCount('keypress');
+    listener.resume();
+    expect(mockStdin.listenerCount('keypress')).toBe(resumeCount);
+  });
 });

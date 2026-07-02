@@ -135,49 +135,50 @@ describe('CliFacade', () => {
       expect(promptSpy).toHaveBeenCalled();
     });
 
-    it('当输入以斜杠开头的自定义命令且不触发后续 LLM 交互时，应当直接调用并恢复输入监听', async () => {
+    it('当输入以斜杠开头的自定义命令且不触发后续 LLM 交互时，应当以 stdin 独占事务执行并恢复 active 监听', async () => {
       vi.mocked(dispatchCommand).mockResolvedValue(undefined);
       const onLineSubmit = facade['listener']['onLineSubmit'];
-      
-      const pauseSpy = vi.spyOn(facade['listener'], 'pause');
-      const resumeSpy = vi.spyOn(facade['listener'], 'resume');
+
+      const closeSpy = vi.spyOn(facade['listener'], 'close');
+      const startSpy = vi.spyOn(facade['listener'], 'start');
 
       await onLineSubmit('/help');
 
-      expect(pauseSpy).toHaveBeenCalled();
-      expect(dispatchCommand).toHaveBeenCalledWith('/help', expect.any(Object));
-      expect(resumeSpy).toHaveBeenCalled();
+      expect(closeSpy).toHaveBeenCalled();
+      expect(dispatchCommand).toHaveBeenCalledWith('/help', { session: mockSession });
+      expect(startSpy).toHaveBeenCalledWith(false); // 纯命令，active 重建
+      expect(mockSession.handleUserInput).not.toHaveBeenCalled();
     });
 
-    it('当输入命令返回了需要与 LLM 交互的追加会话与沙盒技能时，应当提交交互并不恢复输入监听', async () => {
+    it('当输入命令返回了需要与 LLM 交互的追加会话与沙盒技能时，应当以 paused 重建监听器后提交交互', async () => {
       vi.mocked(dispatchCommand).mockResolvedValue({
         transientSkillContent: 'sandbox code',
         userMessage: 'user command action'
       });
       const onLineSubmit = facade['listener']['onLineSubmit'];
-      
-      const pauseSpy = vi.spyOn(facade['listener'], 'pause');
-      const resumeSpy = vi.spyOn(facade['listener'], 'resume');
+
+      const closeSpy = vi.spyOn(facade['listener'], 'close');
+      const startSpy = vi.spyOn(facade['listener'], 'start');
 
       await onLineSubmit('/run-skill');
 
-      expect(pauseSpy).toHaveBeenCalled();
+      expect(closeSpy).toHaveBeenCalled();
+      expect(startSpy).toHaveBeenCalledWith(true); // paused，由 complete 恢复
       expect(mockSession.handleUserInput).toHaveBeenCalledWith('user command action', 'sandbox code');
-      expect(resumeSpy).not.toHaveBeenCalled();
     });
 
-    it('当输入单个斜杠启动交互菜单并退出时，不作任何提交且恢复输入监听', async () => {
+    it('当输入单个斜杠启动交互菜单并退出时，不作任何提交且恢复 active 监听', async () => {
       vi.mocked(showInteractiveMenu).mockResolvedValue(null);
       const onLineSubmit = facade['listener']['onLineSubmit'];
-      
-      const pauseSpy = vi.spyOn(facade['listener'], 'pause');
-      const resumeSpy = vi.spyOn(facade['listener'], 'resume');
+
+      const closeSpy = vi.spyOn(facade['listener'], 'close');
+      const startSpy = vi.spyOn(facade['listener'], 'start');
 
       await onLineSubmit('/');
 
-      expect(pauseSpy).toHaveBeenCalled();
+      expect(closeSpy).toHaveBeenCalled();
       expect(showInteractiveMenu).toHaveBeenCalled();
-      expect(resumeSpy).toHaveBeenCalled();
+      expect(startSpy).toHaveBeenCalledWith(false); // active 重建
     });
 
     it('当输入单个斜杠启动交互菜单并选择了有效指令时，应当重定向执行该指令', async () => {
@@ -188,16 +189,48 @@ describe('CliFacade', () => {
       await onLineSubmit('/');
 
       expect(showInteractiveMenu).toHaveBeenCalled();
-      expect(dispatchCommand).toHaveBeenCalledWith('/help', expect.any(Object));
+      expect(dispatchCommand).toHaveBeenCalledWith('/help', { session: mockSession });
     });
 
-    it('当交互菜单抛出异常时，应当安全捕获并恢复输入监听', async () => {
+    it('当交互菜单抛出异常时，应当安全恢复 active 监听（异常安全恢复）', async () => {
       vi.mocked(showInteractiveMenu).mockRejectedValue(new Error('Menu crash'));
+      const onLineSubmit = facade['listener']['onLineSubmit'];
+      const startSpy = vi.spyOn(facade['listener'], 'start');
+
+      // 异常被 facade 的 .catch() 吞掉，不传播到调用方
+      onLineSubmit('/');
+      await new Promise(resolve => setImmediate(resolve));
+
+      // finally 块已保证 active 重建
+      expect(startSpy).toHaveBeenCalledWith(false);
+    });
+
+    it('当 dispatchCommand 抛出异常时，应当安全恢复 active 监听（异常安全恢复）', async () => {
+      vi.mocked(dispatchCommand).mockRejectedValue(new Error('Command crash'));
+      const onLineSubmit = facade['listener']['onLineSubmit'];
+      const startSpy = vi.spyOn(facade['listener'], 'start');
+
+      onLineSubmit('/help');
+      await new Promise(resolve => setImmediate(resolve));
+
+      // finally 块已保证 active 重建
+      expect(startSpy).toHaveBeenCalledWith(false);
+    });
+
+    it('当 LLM 分支中 handleUserInput 同步抛错时，不应卡死在 paused 状态', async () => {
+      vi.mocked(dispatchCommand).mockResolvedValue({
+        transientSkillContent: 'sandbox code',
+        userMessage: 'user command action'
+      });
+      mockSession.handleUserInput = vi.fn(() => {
+        throw new Error('Session is busy');
+      });
       const onLineSubmit = facade['listener']['onLineSubmit'];
       const resumeSpy = vi.spyOn(facade['listener'], 'resume');
 
-      await onLineSubmit('/');
+      await onLineSubmit('/run-skill');
 
+      // 先以 paused 重建，同步抛错后立即 resume
       expect(resumeSpy).toHaveBeenCalled();
     });
 

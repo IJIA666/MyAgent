@@ -8,6 +8,7 @@ import { theme } from './views/theme.js';
 import { waitUserIntervention } from './cli.js';
 import { InteractionHandler } from './interaction-handler.js';
 import { BrowserSession } from '../../tools/impl/browser/browser-action.js';
+import { logger } from '../../../utils/logger.js';
 
 /**
  * 终端界面控制门面（Facade）。
@@ -46,8 +47,17 @@ export class CliFacade {
         // 调用解耦后的 redrawHistory 进行历史重绘，只传入数据而非 session 实例
         redrawHistory(this.session.getHistory(), this.session.getModelName());
       },
-      onLineSubmit: async (line) => {
-        await this.handleLineSubmit(line);
+      onLineSubmit: (line) => {
+        // 显式处理 Promise rejection，防止异步异常被 EventEmitter 静默吞掉
+        void this.handleLineSubmit(line).catch((error: unknown) => {
+          const msg = `输入处理失败: ${error instanceof Error ? error.message : String(error)}`;
+          logger.error('[CliFacade] onLineSubmit 异常', { error: msg });
+          console.log(theme.error(`\n[异常] ${msg}\n`));
+          // 异常输出后重新显示 prompt，防止异常日志覆盖 prompt 后用户看不到提示符
+          if (!this.session.getIsGenerating()) {
+            this.listener.prompt();
+          }
+        });
       }
     });
 
@@ -174,10 +184,16 @@ export class CliFacade {
 
   /**
    * 处理整行控制台输入的总控决策。
+   * 斜杠命令（/ 开头）采用 stdin 独占事务模式：关闭全局监听器 → Clack 菜单独占 stdin → finally 保证重建。
    *
    * @param line - 原始输入文本
    */
   private async handleLineSubmit(line: string): Promise<void> {
+    // 防御性保护：agent 生成期间忽略所有输入（存在 check-then-act 竞态，不作为主要 stdin 隔离手段）
+    if (this.session.getIsGenerating()) {
+      return;
+    }
+
     let input = line.trim();
 
     // 1. 退出指令检查
@@ -194,40 +210,55 @@ export class CliFacade {
       return;
     }
 
-    // 3. 交互式菜单激活 (输入单个 / 触发)
-    if (input === '/') {
-      this.listener.pause(); // 挂起常规输入监听，防 stdin 抢占
-      try {
-        const menuResult = await showInteractiveMenu();
-        if (!menuResult) {
-          return;
-        }
-        input = menuResult; // 覆盖原始输入，落入后面的斜杠命令处理
-      } catch {
-        return;
-      } finally {
-        this.listener.resume(); // 菜单退出，重新恢复监听
-      }
-    }
+    // 3. 交互式菜单激活 + 斜杠指令路由分发 — stdin 独占事务（统一关闭/重建，保证异常安全）
+    if (input === '/' || input.startsWith('/')) {
+      /** 记录菜单/分发完成后待提交给 handleUserInput 的 LLM 请求 */
+      let pendingLLM: { userMessage: string; transientSkillContent?: string } | null = null;
 
-    // 4. 斜杠指令路由分发 (以 / 开头)
-    if (input.startsWith('/')) {
-      this.listener.pause(); // 挂起常规输入监听
-      let shouldResume = true;
+      // 关闭全局监听器，彻底解除 readline 对 stdin 的监听，使后续 Clack 独占 stdin
+      this.listener.close();
+
       try {
+        // 若为交互式菜单入口，先解析菜单
+        if (input === '/') {
+          const menuResult = await showInteractiveMenu();
+          if (!menuResult) {
+            return; // finally 块会重建 active 监听器
+          }
+          input = menuResult; // 覆盖原始输入，落入下面的斜杠命令处理
+        }
+
+        // 分发斜杠命令
         const cmdResult = await dispatchCommand(input, {
-          session: this.session,
-          rl: this.listener.getInterface()!
+          session: this.session
         });
 
-        // 如果命令返回了需要与 LLM 交互的追加会话与沙盒技能，在此推进大循环
-        if (cmdResult && cmdResult.transientSkillContent && cmdResult.userMessage) {
-          shouldResume = false;
-          this.session.handleUserInput(cmdResult.userMessage, cmdResult.transientSkillContent);
+        // 记录 LLM 请求但不在此执行——LLM 在 finally 恢复监听器之后再执行
+        if (cmdResult?.transientSkillContent && cmdResult?.userMessage) {
+          pendingLLM = {
+            userMessage: cmdResult.userMessage,
+            transientSkillContent: cmdResult.transientSkillContent
+          };
         }
       } finally {
-        if (shouldResume) {
-          this.listener.resume(); // 命令处理完，恢复监听
+        // 保证恰好一次重建监听器，无论 try 块正常或异常
+        if (pendingLLM) {
+          this.listener.start(true);  // paused，由 complete 事件恢复
+        } else {
+          this.listener.start(false); // 立即 active
+        }
+      }
+
+      // LLM 请求在 finally 恢复监听器之后执行（不阻塞 stdin 独占事务）
+      if (pendingLLM) {
+        try {
+          this.session.handleUserInput(pendingLLM.userMessage, pendingLLM.transientSkillContent);
+        } catch (err) {
+          // handleUserInput 同步抛错（如 isGenerating 忙），监听器不能卡在 paused
+          const msg = `提交推理失败: ${err instanceof Error ? err.message : String(err)}`;
+          logger.error('[CliFacade] handleUserInput 同步抛错', { error: msg });
+          console.log(theme.error(`\n[异常] ${msg}\n`));
+          this.listener.resume();
         }
       }
       return;
