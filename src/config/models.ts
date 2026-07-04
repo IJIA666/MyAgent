@@ -5,6 +5,7 @@
  */
 
 import { ModelProfile, LlmConfig, VALID_REASONING_EFFORTS, ReasoningEffort } from './types.js';
+import { getRuntimeEnv } from './env.js';
 
 /**
  * 系统内置支持的大模型特征清单。
@@ -92,8 +93,7 @@ export function parseContextWindow(val: string): number {
  * @param id - 模型在 BUILTIN_MODELS 中的 ID
  * @returns 构建完成的大语言模型连接配置对象
  */
-// eslint-disable-next-line n/no-process-env
-export function getModelConfig(id: string, env: Record<string, string | undefined> = process.env): LlmConfig {
+export function getModelConfig(id: string, env: Record<string, string | undefined> = getRuntimeEnv()): LlmConfig {
   const profile = BUILTIN_MODELS[id];
   if (!profile) {
     throw new Error(`未知的模型 ID: ${id}`);

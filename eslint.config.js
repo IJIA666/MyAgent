@@ -32,8 +32,8 @@ export default [
     },
   },
   {
-    // 日志系统底层工具类允许直接读取 process.env 环境变量
-    files: ["src/utils/logger.ts"],
+    // 配置环境入口与测试基础设施允许直接读取 process.env 环境变量
+    files: ["src/config/env.ts", "src/utils/logger.ts", "test/**/*.ts"],
     rules: {
       "n/no-process-env": "off",
     },

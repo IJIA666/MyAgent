@@ -1,92 +1,111 @@
 /**
- * @file 环境变量解析与热修改工具集。
- * 提供对环境变量的非破坏性修改更新、必填项 Fail-fast 校验以及环境变量插值表达式的递归解析。
+ * 配置环境入口模块。
+ * 统一承接运行时环境变量读取，避免业务模块直接依赖全局 `process.env`。
  */
 
-/* eslint-disable n/no-process-env */
-import fs from 'fs';
-import path from 'path';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { resolve } from 'path';
 
 /**
- * 更新 .env 文件中指定键的值。
- * 使用基于正则的非破坏性替换策略，安全保留原有的注释和排版结构。
- * 若键不存在，则在文件末尾追加。
+ * 获取当前运行时环境变量快照。
+ * 该函数是配置装配层读取环境变量的唯一入口。
  *
- * @param key - 环境变量名（例如 'AGENT_LLM_MODEL'）
- * @param value - 新的环境变量值
+ * @returns 环境变量字典
  */
-export function updateEnvVariable(key: string, value: string): void {
-  const envPath = path.resolve(process.cwd(), '.env');
-  
-  let envContent = '';
-  try {
-    envContent = fs.readFileSync(envPath, 'utf8');
-  } catch (err: unknown) {
-    if (typeof err === 'object' && err !== null && 'code' in err && (err as { code: string }).code !== 'ENOENT') {
-      throw err;
-    }
+export function getRuntimeEnv(): Record<string, string | undefined> {
+  if (typeof process === 'undefined') {
+    return {};
   }
 
-  const regex = new RegExp(`^\\s*${key}=.*$`, 'm');
-  const newRow = `${key}=${value}`;
-
-  if (regex.test(envContent)) {
-    envContent = envContent.replace(regex, newRow);
-  } else {
-    if (envContent.length > 0 && !envContent.endsWith('\n')) {
-      envContent += '\n';
-    }
-    envContent += newRow + '\n';
-  }
-
-  fs.writeFileSync(envPath, envContent, 'utf8');
+  return process.env;
 }
 
 /**
- * 读取必填环境变量，缺失时抛出包含变量名的明确错误。
- * 实现 fail-fast 策略，阻止在缺少关键配置时继续启动。
+ * 对对象/数组/字符串执行环境变量插值。
+ * 支持 `${VAR_NAME}` 占位符语法，未命中的变量会被替换为空字符串。
  *
- * @param name - 环境变量名称
- * @returns 环境变量的值
- * @throws 当环境变量未设置或为空字符串时
+ * @param value - 待插值的目标值
+ * @param env - 环境变量字典
+ * @returns 插值后的新值
  */
-export function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value || value.trim() === '') {
-    throw new Error(
-      `必填环境变量 "${name}" 未设置。请在 .env 文件中配置该变量后重新启动。`
-    );
-  }
-  return value.trim();
-}
-
-/**
- * 递归扫描配置值，将 ${VAR} 格式的占位符替换为指定 env 环境对象中的实际值。
- * 若对应的环境变量不存在，保留占位符原文不做替换。
- *
- * @param value - 待处理的配置值（支持字符串、对象、数组的递归处理）
- * @param env - 可选的环境变量数据源，默认使用 process.env
- * @returns 完成插值替换后的配置值
- */
-export function interpolateEnvVars(value: unknown, env: Record<string, string | undefined> = process.env): unknown {
+export function interpolateEnvVars<T>(value: T, env: Record<string, string | undefined> = getRuntimeEnv()): T {
   if (typeof value === 'string') {
-    return value.replace(/\$\{([^}]+)}/g, (original, varName: string) => {
-      const envValue = env[varName];
-      return envValue !== undefined ? envValue : original;
-    });
+    return value.replace(/\$\{([A-Z0-9_]+)\}/gi, (_, key: string) => env[key] ?? '') as T;
   }
 
   if (Array.isArray(value)) {
-    return value.map(item => interpolateEnvVars(item, env));
+    return value.map((item) => interpolateEnvVars(item, env)) as T;
   }
 
-  if (value !== null && typeof value === 'object') {
-    const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      result[key] = interpolateEnvVars(val, env);
-    }
-    return result;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).map(([key, entryValue]) => [
+      key,
+      interpolateEnvVars(entryValue, env),
+    ]);
+    return Object.fromEntries(entries) as T;
   }
 
   return value;
+}
+
+/**
+ * 更新根目录 `.env` 文件中的指定键值，并同步回写当前运行时环境变量。
+ *
+ * @param key - 环境变量名
+ * @param value - 环境变量值
+ */
+export function updateEnvVariable(key: string, value: string): void {
+  const envFilePath = resolve('.env');
+  const escapedValue = value.replace(/\r?\n/g, '\\n');
+  const nextLine = `${key}=${escapedValue}`;
+
+  let lines: string[] = [];
+  if (existsSync(envFilePath)) {
+    lines = readFileSync(envFilePath, 'utf-8').split(/\r?\n/);
+  }
+
+  let updated = false;
+  const nextLines = lines.map((line) => {
+    if (line.startsWith(`${key}=`)) {
+      updated = true;
+      return nextLine;
+    }
+    return line;
+  });
+
+  if (!updated) {
+    nextLines.push(nextLine);
+  }
+
+  const content = nextLines
+    .filter((line, index, array) => !(index === array.length - 1 && line === ''))
+    .join('\n');
+  writeFileSync(envFilePath, content + '\n', 'utf-8');
+
+  if (typeof process !== 'undefined') {
+    process.env[key] = value;
+  }
+}
+
+/**
+ * 仅更新当前运行时环境变量，不触碰 `.env` 持久化文件。
+ *
+ * @param key - 环境变量名
+ * @param value - 环境变量值
+ */
+export function setRuntimeEnvVariable(key: string, value: string): void {
+  if (typeof process !== 'undefined') {
+    process.env[key] = value;
+  }
+}
+
+/**
+ * 仅删除当前运行时环境变量，不触碰 `.env` 持久化文件。
+ *
+ * @param key - 环境变量名
+ */
+export function deleteRuntimeEnvVariable(key: string): void {
+  if (typeof process !== 'undefined') {
+    delete process.env[key];
+  }
 }

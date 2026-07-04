@@ -1,4 +1,3 @@
-/* eslint-disable n/no-process-env */
 /**
  * 核心配置加载器。
  * 负责在应用程序启动阶段，一次性完成全局配置体系的引导与初始化。
@@ -13,7 +12,7 @@ import { config as dotenvConfig } from 'dotenv';
 
 import { AppConfig, McpConfig, WorkMode, EmbeddingConfig } from './types.js';
 import { getModelConfig } from './models.js';
-import { interpolateEnvVars } from './env.js';
+import { getRuntimeEnv, interpolateEnvVars } from './env.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -51,7 +50,7 @@ export function ensureConfigFiles(): void {
  * @param env - 可选的环境变量数据源，默认使用 process.env
  * @returns 完成插值替换后的 MCP 配置对象
  */
-export function loadMcpConfig(env: Record<string, string | undefined> = process.env): McpConfig {
+export function loadMcpConfig(env: Record<string, string | undefined> = getRuntimeEnv()): McpConfig {
   const configPath = resolve('mcp_config.json');
 
   if (!existsSync(configPath)) {
@@ -110,9 +109,9 @@ function parseEnvFloat(val: string | undefined, defaultValue: number): number {
  * @param env - 注入的环境变量键值字典，默认使用全局 process.env
  * @returns 深度冻结的全局配置对象
  */
-export function loadConfig(env: Record<string, string | undefined> = process.env): AppConfig {
+export function loadConfig(env: Record<string, string | undefined> = getRuntimeEnv()): AppConfig {
   // 1. 如果是全局 process.env，则加载本地 .env 环境变量文件。若是 Mock 环境对象，则不加载物理文件以保持测试隔离。
-  if (env === process.env) {
+  if (env === getRuntimeEnv()) {
     dotenvConfig();
   }
 
@@ -274,7 +273,7 @@ export function getDefaultWorkMode(): WorkMode {
  * @param env - 环境配置字典
  * @returns 配置文件的绝对物理路径
  */
-function getAgentConfigPath(env: Record<string, string | undefined> = process.env): string {
+function getAgentConfigPath(env: Record<string, string | undefined> = getRuntimeEnv()): string {
   const rootDir = env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
   return resolve(rootDir, '.agent/config.json');
 }
@@ -285,7 +284,7 @@ function getAgentConfigPath(env: Record<string, string | undefined> = process.en
  * @param env - 环境配置上下文对象
  * @returns 加载出的工作安全模式
  */
-export function loadDefaultWorkMode(env: Record<string, string | undefined> = process.env): WorkMode {
+export function loadDefaultWorkMode(env: Record<string, string | undefined> = getRuntimeEnv()): WorkMode {
   try {
     const configPath = getAgentConfigPath(env);
     if (existsSync(configPath)) {

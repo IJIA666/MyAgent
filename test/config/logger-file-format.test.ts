@@ -2,7 +2,6 @@
  * @fileoverview 验证运行日志文件采用 JSON Lines 输出，并保留结构化属性。
  */
 
-/* eslint-disable n/no-process-env -- 测试需要临时切换环境变量以覆盖 logger 初始化分支。 */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';

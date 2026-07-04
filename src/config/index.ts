@@ -5,6 +5,7 @@
  */
 
 export * from './types.js';
+export * from './env.js';
 export * from './models.js';
 export * from './mcp-env.js';
 export * from './loader.js';

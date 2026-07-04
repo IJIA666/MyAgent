@@ -1,4 +1,3 @@
-/* eslint-disable n/no-process-env */
 /**
  * @file 浏览器自动化 Native Tools 与会话生命周期的集成测试。
  * 主要覆盖：CDP 调试端口直连、Persistent 本地持久化上下文启动、AriaSnapshot 元素标号编排、

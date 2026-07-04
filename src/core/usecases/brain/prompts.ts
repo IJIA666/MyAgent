@@ -72,13 +72,16 @@ const BASE_SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT_PREFIX}\n` +
 export const OS_INSTRUCTIONS_MAP: Record<string, string> = {
   win32: `你当前运行的宿主操作系统是 Windows。当你需要使用 execute_command 工具执行命令时：
    - 必须且仅能执行单一、原子的 Windows 原生命令（例如使用 'tasklist' 替代 'top/ps'，使用 'ipconfig' 替代 'ifconfig'）。
-   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符（如 &, &&, |, ||, ;, <, >, \\n 等）将多个独立操作拼接为单条长命令，否则将被沙箱引擎强制拦截执行。`,
+   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符（如 &, &&, |, ||, ;, <, >, \\n 等）将多个独立操作拼接为单条长命令，否则将被沙箱引擎强制拦截执行。
+   - 可选的 shellKind 参数用于指定命令所需的 shell 语义族。推荐使用默认值 auto（自动选择平台默认 shell）；仅在明确需要特定 shell 语义时显式指定：posix（bash/sh 风格命令）、powershell（PowerShell 风格命令）、cmd（Windows 命令提示符）。`,
   darwin: `你当前运行的宿主操作系统是 macOS (Darwin)。当你需要使用 execute_command 工具执行命令时：
    - 必须且仅能执行单一、原子的 POSIX 命令。
-   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符将多个独立操作拼接为单条长命令，否则将被拦截。`,
+   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符将多个独立操作拼接为单条长命令，否则将被拦截。
+   - 可选的 shellKind 参数用于指定命令所需的 shell 语义族。推荐使用默认值 auto（自动选择 posix）；仅在明确需要特定 shell 语义时显式指定。`,
   linux: `你当前运行的宿主操作系统是 Linux。当你需要使用 execute_command 工具执行命令时：
    - 必须且仅能执行单一、原子的 POSIX/Linux 命令。
-   - absolute 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符将多个独立操作拼接为单条长命令，否则将被拦截。`
+   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符将多个独立操作拼接为单条长命令，否则将被拦截。
+   - 可选的 shellKind 参数用于指定命令所需的 shell 语义族。推荐使用默认值 auto（自动选择 posix）；仅在明确需要特定 shell 语义时显式指定。`
 };
 
 // 在模块加载初始化时，一次性自适应替换占位符并固化为 RESOLVED_BASE_PROMPT，满足全局 stable 层的绝对静态性。

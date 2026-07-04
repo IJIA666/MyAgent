@@ -1,4 +1,3 @@
-/* eslint-disable n/no-process-env */
 /**
  * 纯净无状态的进程执行引擎底座。
  * 核心职责：
@@ -13,7 +12,9 @@ import { existsSync, createWriteStream, WriteStream, statSync, openSync, readSyn
 import { tmpdir } from 'os';
 import { TerminalTaskStatus } from './terminal-config.js';
 import iconv from 'iconv-lite';
+import { getRuntimeEnv } from '../../../../config/env.js';
 import { detectAdvisoryWarnings } from './terminal-guard.js';
+import type { ShellExecutionPlan, PlatformExecutionOptions } from './terminal-types.js';
 
 // Windows 平台活动代码页（chcp）探测与编码识别
 let activeEncoding = 'utf-8';
@@ -119,19 +120,24 @@ export function stripAnsi(text: string): string {
 }
 
 /**
- * Windows 原生特化：强杀整棵子进程树
- * @param pid 根进程 PID
+ * 强杀整棵子进程树。
+ * 优先使用 `platformOptions.killCommand` 模板执行平台特定杀进程命令，其次回退到 `process.kill(pid, 'SIGKILL')`。
+ *
+ * @param pid - 根进程 PID
+ * @param platformOptions - 可选的平台特化选项，包含杀进程命令模板
  * @returns
  */
-export function killProcessTree(pid: number): Promise<void> {
+export function killProcessTree(pid: number, platformOptions?: PlatformExecutionOptions): Promise<void> {
   return new Promise((resolve) => {
-    if (process.platform === 'win32') {
-      // 强制使用 taskkill 递归切除子进程树
-      const taskkill = spawn('taskkill', ['/PID', pid.toString(), '/T', '/F']);
-      taskkill.on('close', () => {
+    const killCmd = platformOptions?.killCommand;
+    if (killCmd && killCmd.length > 0) {
+      // 使用 Plan 提供的平台特定杀进程命令模板
+      const args = killCmd.map(arg => arg.replace('{pid}', pid.toString()));
+      const killer = spawn(args[0], args.slice(1));
+      killer.on('close', () => {
         resolve();
       });
-      taskkill.on('error', () => {
+      killer.on('error', () => {
         // 降级使用 Node.js 基础杀进程
         try {
           process.kill(pid, 'SIGKILL');
@@ -141,6 +147,7 @@ export function killProcessTree(pid: number): Promise<void> {
         resolve();
       });
     } else {
+      // POSIX：使用 SIGKILL
       try {
         process.kill(pid, 'SIGKILL');
       } catch {
@@ -158,10 +165,11 @@ export function killProcessTree(pid: number): Promise<void> {
  */
 export function resolveNpmCliPath(name: 'npm' | 'npx'): string | null {
   const nodeDir = dirname(process.execPath);
+  const runtimeEnv = getRuntimeEnv();
   const possiblePaths = [
     resolve(nodeDir, 'node_modules/npm/bin', `${name}-cli.js`),
     resolve(nodeDir, 'node_modules/npm/bin', `${name}.js`),
-    resolve(process.env.APPDATA || '', 'npm/node_modules/npm/bin', `${name}-cli.js`)
+    resolve(runtimeEnv.APPDATA || '', 'npm/node_modules/npm/bin', `${name}-cli.js`)
   ];
   
   for (const p of possiblePaths) {
@@ -247,19 +255,24 @@ export function checkHasRealError(text: string): boolean {
 }
 
 /**
- * 核心进程执行引擎，专注于底座的 spawn 执行与状态生命周期监控
- * @param command 要执行的命令行
- * @param targetCwd 经过校验清洗的绝对工作目录
- * @param isBackground 是否显式启动为后台驻留任务
- * @param options 超时限制选项
+ * 核心进程执行引擎，专注于底座的 spawn 执行与状态生命周期监控。
+ * 当传入 `plan` 时，直接消费 Plan 中的 `executable` + `argv` + `platformOptions`，
+ * 不再自行解析命令或执行 shell 选择分支。
+ *
+ * @param command - 要执行的命令行（向后兼容路径，无 Plan 时使用）
+ * @param targetCwd - 经过校验清洗的绝对工作目录
+ * @param isBackground - 是否显式启动为后台驻留任务
+ * @param options - 超时限制选项
+ * @param sessionId - 可选的任务所属会话 ID
+ * @param plan - 可选的 ShellExecutionPlan；传入后 Engine 直接消费 Plan，不再做 shell 推断
  * @returns 包含执行日志及退出元数据的执行摘要
  */
 export async function runCommandEngine(
   command: string,
   targetCwd: string,
   isBackground?: boolean,
-  options?: { 
-    timeoutMs?: number; 
+  options?: {
+    timeoutMs?: number;
     noOutputTimeoutMs?: number;
     watch_patterns?: string[];
     onNotification?: (event: {
@@ -270,37 +283,56 @@ export async function runCommandEngine(
     }) => void;
     signal?: AbortSignal;
   },
-  sessionId?: string
+  sessionId?: string,
+  plan?: ShellExecutionPlan,
 ): Promise<string> {
-  // 解析命令行程序与参数
-  const cmdArgs = parseCommandLine(command);
-  if (cmdArgs.length === 0) {
-    throw new Error('命令不能为空。');
-  }
+  let exe: string;
+  let remainingArgs: string[];
 
-  let exe = cmdArgs[0];
-  const remainingArgs = cmdArgs.slice(1);
+  if (plan) {
+    // 新路径：直接消费 Plan，不自行解析或推断 shell
+    exe = plan.executable;
+    remainingArgs = [...plan.argv];
 
-  // Windows npm/npx 漏洞修复重定向（防止 shell: false 时无法调用 .cmd 脚本）
-  if (process.platform === 'win32') {
-    const lowerExe = exe.toLowerCase();
-    if (lowerExe === 'npm' || lowerExe === 'npx') {
-      const cliPath = resolveNpmCliPath(lowerExe as 'npm' | 'npx');
-      if (cliPath) {
-        remainingArgs.unshift(cliPath);
-        exe = process.execPath;
-      }
-    }
-  }
-
-  // Windows 乱码防御：当目标为 powershell 时注入输出编码重设逻辑
-  if (process.platform === 'win32') {
-    const lowerExe = exe.toLowerCase();
-    if (lowerExe === 'powershell' || lowerExe === 'powershell.exe') {
+    // 应用 PowerShell 编码引导（由 Plan 工厂预置）
+    if (plan.platformOptions.encodingBootstrap) {
       for (let i = 0; i < remainingArgs.length; i++) {
         if ((remainingArgs[i] === '-Command' || remainingArgs[i] === '-c') && i + 1 < remainingArgs.length) {
-          remainingArgs[i + 1] = `try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}; ${remainingArgs[i + 1]}`;
+          remainingArgs[i + 1] = plan.platformOptions.encodingBootstrap + remainingArgs[i + 1];
           break;
+        }
+      }
+    }
+  } else {
+    // 向后兼容路径：自行解析命令
+    const cmdArgs = parseCommandLine(command);
+    if (cmdArgs.length === 0) {
+      throw new Error('命令不能为空。');
+    }
+    exe = cmdArgs[0];
+    remainingArgs = cmdArgs.slice(1);
+
+    // Windows npm/npx 漏洞修复重定向（防止 shell: false 时无法调用 .cmd 脚本）
+    if (process.platform === 'win32') {
+      const lowerExe = exe.toLowerCase();
+      if (lowerExe === 'npm' || lowerExe === 'npx') {
+        const cliPath = resolveNpmCliPath(lowerExe as 'npm' | 'npx');
+        if (cliPath) {
+          remainingArgs.unshift(cliPath);
+          exe = process.execPath;
+        }
+      }
+    }
+
+    // Windows 乱码防御：当目标为 powershell 时注入输出编码重设逻辑
+    if (process.platform === 'win32') {
+      const lowerExe = exe.toLowerCase();
+      if (lowerExe === 'powershell' || lowerExe === 'powershell.exe') {
+        for (let i = 0; i < remainingArgs.length; i++) {
+          if ((remainingArgs[i] === '-Command' || remainingArgs[i] === '-c') && i + 1 < remainingArgs.length) {
+            remainingArgs[i + 1] = `try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}; ${remainingArgs[i + 1]}`;
+            break;
+          }
         }
       }
     }
@@ -414,7 +446,7 @@ export async function runCommandEngine(
   // 执行子进程的 spawn
   const child = spawn(exe, remainingArgs, {
     cwd: targetCwd,
-    env: { ...process.env },
+    env: { ...getRuntimeEnv() },
     shell: false
   });
 
@@ -444,7 +476,7 @@ export async function runCommandEngine(
       if (transitionTaskState(taskId, 'FAILED')) {
         taskInfo.failureReason = 'timeout';
         if (child.pid) {
-          killProcessTree(child.pid).then(() => cleanup());
+          killProcessTree(child.pid, plan?.platformOptions).then(() => cleanup());
         } else {
           cleanup();
         }
@@ -454,7 +486,7 @@ export async function runCommandEngine(
       if (transitionTaskState(taskId, 'FAILED')) {
         taskInfo.failureReason = 'timeout';
         if (child.pid) {
-          killProcessTree(child.pid).then(() => cleanup());
+          killProcessTree(child.pid, plan?.platformOptions).then(() => cleanup());
         } else {
           cleanup();
         }
@@ -497,7 +529,7 @@ export async function runCommandEngine(
     inactivityTimer = setTimeout(() => {
       if (transitionTaskState(taskId, 'FAILED')) {
         taskInfo.failureReason = 'timeout';
-        killProcessTree(child.pid!).then(() => {
+        killProcessTree(child.pid!, plan?.platformOptions).then(() => {
           cleanup();
         });
       }
@@ -555,7 +587,7 @@ export async function runCommandEngine(
                 });
               }
 
-              killProcessTree(child.pid!).then(() => {
+              killProcessTree(child.pid!, plan?.platformOptions).then(() => {
                 transitionTaskState(taskId, 'FAILED');
                 cleanup();
               });
@@ -655,7 +687,7 @@ export async function runCommandEngine(
   overallTimeoutTimer = setTimeout(() => {
     if (transitionTaskState(taskId, 'FAILED')) {
       taskInfo.failureReason = 'timeout';
-      killProcessTree(child.pid!).then(() => {
+      killProcessTree(child.pid!, plan?.platformOptions).then(() => {
         cleanup();
       });
     }
@@ -666,7 +698,7 @@ export async function runCommandEngine(
   absoluteTimeoutTimer = setTimeout(() => {
     if (transitionTaskState(taskId, 'FAILED')) {
       taskInfo.failureReason = 'timeout';
-      killProcessTree(child.pid!).then(() => {
+      killProcessTree(child.pid!, plan?.platformOptions).then(() => {
         cleanup();
       });
     }
@@ -732,6 +764,7 @@ export async function abortSessionTasks(sessionId: string): Promise<void> {
       if (transitionTaskState(taskId, 'FAILED')) {
         task.failureReason = 'error';
         if (task.child && typeof task.child.pid === 'number') {
+          // 会话级中止不持有 Plan，使用 process.kill 降级路径
           killPromises.push(killProcessTree(task.child.pid));
         }
         activeTasks.delete(taskId);

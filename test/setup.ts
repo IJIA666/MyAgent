@@ -30,7 +30,6 @@ const testFacts = `
 fs.writeFileSync(virtualMemoryPath, testFacts.trim() + '\n', 'utf-8');
 
 // 3. 全局重定向环境变量，使所有的 UseCases 和 Plugins 等在此临时目录下写盘
-/* eslint-disable-next-line n/no-process-env */
 process.env.AUTHORIZED_WORKSPACE_DIR = tempWorkspaceDir;
 
 // 4. 注册全局 cleanup 钩子，在测试执行完毕后自动清理临时文件

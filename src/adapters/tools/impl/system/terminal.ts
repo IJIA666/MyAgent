@@ -3,9 +3,11 @@
  * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
  */
 
-import { validateCommand, validateCwd, checkCommandSafetyLevel, isHardlineDangerous, unboxNestedCommand, DANGEROUS_WRITE_COMMAND_REGEX } from './terminal-guard.js';
+import { validateCommand, validateCwd, checkCommandSafetyLevel, isHardlineDangerous, unboxNestedCommand, DANGEROUS_WRITE_PATTERNS } from './terminal-guard.js';
 import { runCommandEngine } from './terminal-engine.js';
-import { getWorkMode, extractSafePrefix, loadAllowedCommands } from './terminal-config.js';
+import { getWorkMode, extractSafePrefix, loadAllowedCommands, loadDefaultShellFamily } from './terminal-config.js';
+import { createShellExecutionPlan } from './terminal-plan.js';
+import type { ShellKind } from './terminal-types.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { SafetyOperation, ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
@@ -18,6 +20,20 @@ import type { EventNotificationPort } from '../../../../ports/driven/session/Eve
 export class ExecuteCommandTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'write';
+
+  /**
+   * 构造带配置上下文的 ShellExecutionPlan。
+   * 统一注入当前默认 shell family，避免 checkSafety 与 execute 各自漂移。
+   *
+   * @param command - 原始命令文本
+   * @param rawShellKind - 调用方传入的 shellKind
+   * @returns 已决议的执行计划
+   */
+  private createPlan(command: string, rawShellKind: ShellKind) {
+    return createShellExecutionPlan(command, rawShellKind, {
+      defaultShellFamily: loadDefaultShellFamily(),
+    });
+  }
 
   /**
    * 工具的名称。
@@ -47,6 +63,12 @@ export class ExecuteCommandTool implements NativeTool {
             type: "boolean",
             description: "是否显式指示在后台运行。对于长时间挂起的服务，必须设为 true。"
           },
+          shellKind: {
+            type: "string",
+            enum: ['auto', 'posix', 'powershell', 'cmd'],
+            default: 'auto',
+            description: "指定命令所需的 shell 语义族（可选）。auto 自动选择平台默认 shell；posix 用于 bash/sh 风格命令；powershell 用于 PowerShell 风格命令；cmd 用于 Windows 命令提示符。推荐使用 auto，仅在明确需要特定 shell 语义时指定。"
+          },
           watch_patterns: {
             type: "array",
             items: {
@@ -73,8 +95,23 @@ export class ExecuteCommandTool implements NativeTool {
       return { status: 'deny', message: '拒绝执行：command 必须是字符串。' };
     }
 
+    const rawShellKind = (args.shellKind as ShellKind) || 'auto';
+    let plan;
+    try {
+      // 解析 shellKind 为已决议值，供 Guard 层按 shell 语义校验
+      plan = this.createPlan(command, rawShellKind);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '无法解析 shell 执行计划。';
+      return { status: 'deny', message };
+    }
+    const resolvedShellKind = plan.shellKind;
+
+    // shellKind 是否由模型显式指定（非 auto 解析）：显式指定时不进行自动剥壳
+    const isExplicitShell = rawShellKind !== 'auto';
+    const unboxShellKind = isExplicitShell ? resolvedShellKind : undefined;
+
     // 1. 绝对拦截校验：即使在 YOLO 模式下，毁灭级命令也无权豁免
-    if (isHardlineDangerous(command)) {
+    if (isHardlineDangerous(command, resolvedShellKind)) {
       return { status: 'deny', message: 'BLOCKED (Hardline Blocklist): 拒绝执行毁灭性系统破坏命令。' };
     }
 
@@ -82,8 +119,8 @@ export class ExecuteCommandTool implements NativeTool {
     const workMode = sessionContext ? sessionContext.getWorkMode() : getWorkMode();
 
     // 2. Plan 模式拦截：禁止任何有写倾向/修改副作用的终端指令
-    const unboxedCmd = unboxNestedCommand(command).trim();
-    const safetyLevel = checkCommandSafetyLevel(unboxedCmd);
+    const unboxedCmd = unboxNestedCommand(command, unboxShellKind).trim();
+    const safetyLevel = checkCommandSafetyLevel(unboxedCmd, resolvedShellKind);
 
     if (workMode === 'Plan') {
       if (safetyLevel !== 'allow') {
@@ -104,7 +141,7 @@ export class ExecuteCommandTool implements NativeTool {
 
     // 4. Auto 模式且属于非高危写动作命令，进行已授权白名单的前缀校验
     // 关键改动：安全评级判定前也先解包剥壳，以防解释器外壳导致只读规则评级失效
-    const isDangerous = DANGEROUS_WRITE_COMMAND_REGEX.test(unboxedCmd);
+    const isDangerous = DANGEROUS_WRITE_PATTERNS[resolvedShellKind].test(unboxedCmd);
     if (!isDangerous && workMode === 'Auto') {
       // 校验命令行是否命中白名单规则
       const allowed = sessionContext ? sessionContext.getSecurityAllowlist() : loadAllowedCommands();
@@ -123,11 +160,20 @@ export class ExecuteCommandTool implements NativeTool {
 
     if (needApproval) {
       const safePrefix = extractSafePrefix(command) ?? undefined;
-      
+
+      // shell family 审批知情展示
+      const shellFamilyLabel =
+        resolvedShellKind === 'posix' ? 'POSIX (bash/sh)' :
+        resolvedShellKind === 'powershell' ? 'PowerShell' :
+        resolvedShellKind === 'cmd' ? 'CMD' : resolvedShellKind;
+      const shellFamilyHint = rawShellKind === 'auto'
+        ? `（已自动选择 ${shellFamilyLabel} 语义）`
+        : `（已显式指定 ${shellFamilyLabel} 语义）`;
+
       // 知情告知融合：当解包内核与原始外壳命令不一致时，展示披露比对信息（改用单引号包裹防止引号嵌套的视觉混乱）
       const message = unboxedCmd !== command.trim()
-        ? `智能体试图在终端执行未授权命令。外壳包装: '${command.trim()}'，实际执行的核心命令为: '${unboxedCmd}'`
-        : `智能体试图在终端执行写倾向或未识别命令: '${command}'`;
+        ? `智能体试图在终端执行未授权命令。外壳包装: '${command.trim()}'，实际执行的核心命令为: '${unboxedCmd}'。Shell 语义: ${shellFamilyLabel}`
+        : `智能体试图在终端执行写倾向或未识别命令: '${command}'。${shellFamilyHint}`;
 
       const operation: SafetyOperation = {
         resources: safePrefix ? [{ kind: 'command-prefix', prefix: safePrefix }] : [],
@@ -169,13 +215,19 @@ export class ExecuteCommandTool implements NativeTool {
       ? args.watch_patterns.filter((x): x is string => typeof x === 'string')
       : undefined;
 
-    // 1. 安全网关：校验复合拼接符与命令注入风险
-    validateCommand(command);
+    // 0. 生成 ShellExecutionPlan（shellKind 在 checkSafety 阶段已决议，此处保持一致性）
+    const rawShellKind = (args.shellKind as ShellKind) || 'auto';
+    const plan = this.createPlan(command, rawShellKind);
+    const isExplicitShell = rawShellKind !== 'auto';
+    const guardShellKind = isExplicitShell ? plan.shellKind : undefined;
+
+    // 1. 安全网关：校验复合拼接符与命令注入风险（仅模型显式指定 shell 时按该 shell 语义校验）
+    validateCommand(command, guardShellKind);
 
     // 2. 沙箱隔离：校验 cwd 范围并获取规范绝对路径
     const targetCwd = validateCwd(cwd);
 
-    // 3. 进程执行：交给底座无状态进程引擎进行 spawn 调度，传入会话 ID
+    // 3. 进程执行：交给底座无状态进程引擎进行 spawn 调度，传入 Plan 与会话 ID
     const sessionId = sessionContext ? sessionContext.getSessionId() : undefined;
     return await runCommandEngine(
       command,
@@ -221,7 +273,8 @@ export class ExecuteCommandTool implements NativeTool {
           }
         }
       },
-      sessionId
+      sessionId,
+      plan,
     );
   }
 }
@@ -237,10 +290,26 @@ export {
   loadAllowedCommands,
   saveAllowedCommands,
   extractSafePrefix,
-  checkWhitelist
+  checkWhitelist,
+  getDefaultShellFamily,
+  setDefaultShellFamily,
+  loadDefaultShellFamily,
+  saveDefaultShellFamily,
 } from './terminal-config.js';
 
 export {
   type TaskInfo,
   activeTasks
 } from './terminal-engine.js';
+
+export {
+  type ShellKind,
+  type ResolvedShellKind,
+  type ShellExecutionPlan,
+  type PlatformExecutionOptions,
+} from './terminal-types.js';
+
+export {
+  createShellExecutionPlan,
+  resolveShellKind,
+} from './terminal-plan.js';

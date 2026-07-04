@@ -1,4 +1,3 @@
-/* eslint-disable n/no-process-env */
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import { writeFileSync, rmSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';

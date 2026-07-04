@@ -1,4 +1,3 @@
-/* eslint-disable n/no-process-env */
 /**
  * @file mcp-isolation.spec.ts
  * @description MCP 子进程环境变量物理隔离集成测试。

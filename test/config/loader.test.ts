@@ -1,4 +1,3 @@
-/* eslint-disable n/no-process-env */
 /**
  * @file 核心配置加载器单元测试。
  * 本文件主要负责验证全局配置加载器（loader.ts）对于环境配置的处理，

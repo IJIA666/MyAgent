@@ -1,4 +1,3 @@
-/* eslint-disable n/no-process-env */
 import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import { existsSync, rmSync } from 'fs';
 import { resolve } from 'path';

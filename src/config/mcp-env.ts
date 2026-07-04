@@ -1,9 +1,10 @@
-/* eslint-disable n/no-process-env */
 /**
  * MCP 子进程环境变量管理。
  * 专门负责构造传递给 MCP Server 子进程的隔离环境。通过严格的白名单机制，
  * 防范宿主机的敏感环境变量（如各类 API Key）泄露给不受信任的第三方 MCP 服务。
  */
+
+import { getRuntimeEnv } from './env.js';
 
 // ============================================================================
 // 子进程环境变量白名单
@@ -58,17 +59,18 @@ export const SAFE_ENV_WHITELIST: ReadonlyArray<string> = [
  */
 export function buildSubprocessEnv(userEnv?: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
+  const runtimeEnv = getRuntimeEnv();
 
   // 1. 仅提取白名单中的系统基础变量
   for (const key of SAFE_ENV_WHITELIST) {
-    const value = process.env[key];
+    const value = runtimeEnv[key];
     if (value !== undefined) {
       env[key] = value;
     }
   }
 
   // 同时允许 XDG_ 前缀的 Linux 标准目录变量通过（参照 hermes-agent）
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(runtimeEnv)) {
     if (key.startsWith('XDG_') && value !== undefined) {
       env[key] = value;
     }

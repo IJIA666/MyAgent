@@ -9,7 +9,9 @@ import { resolve, dirname } from 'path';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { getAuthorizedDir } from '../base.js';
 import { unboxNestedCommand } from './terminal-guard.js';
+import { getRuntimeEnv } from '../../../../config/env.js';
 import { logger } from '../../../../utils/logger.js'; // 导入统一日志单例 logger
+import type { ShellKind } from './terminal-types.js';
 
 /**
  * 终端执行工作模式定义
@@ -24,13 +26,26 @@ export type WorkMode = 'Safe' | 'Auto' | 'YOLO' | 'Plan';
  */
 interface GlobalState {
   workMode: WorkMode;
+  /** 默认 shell family；未配置时由平台决议逻辑提供默认值 */
+  defaultShellFamily: ShellKind;
+}
+
+/** 解析环境变量 AGENT_DEFAULT_SHELL 为合法的 ShellKind 值 */
+function resolveEnvShellKind(raw: string | undefined): ShellKind | null {
+  if (!raw) return null;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'auto' || normalized === 'posix' || normalized === 'powershell' || normalized === 'cmd') {
+    return normalized as ShellKind;
+  }
+  return null;
 }
 
 /**
- * 模块内全局默认工作模式状态（作为缺省兜底值，不推荐运行中直接修改）
+ * 模块内全局默认状态（作为缺省兜底值，不推荐运行中直接修改）
  */
 const globalState: GlobalState = {
-  workMode: 'Auto'
+  workMode: 'Auto',
+  defaultShellFamily: 'auto',
 };
 
 /**
@@ -47,6 +62,86 @@ export function getWorkMode(): WorkMode {
  */
 export function setWorkMode(mode: WorkMode): void {
   globalState.workMode = mode;
+}
+
+/**
+ * 获取当前内存中的默认 shell family（兜底回退用）
+ * @returns 默认 shell family
+ */
+export function getDefaultShellFamily(): ShellKind {
+  return globalState.defaultShellFamily;
+}
+
+/**
+ * 设置内存中的默认 shell family（兜底回退用）
+ * @param kind 目标 shell family
+ */
+export function setDefaultShellFamily(kind: ShellKind): void {
+  globalState.defaultShellFamily = kind;
+}
+
+/**
+ * 从配置文件和环境变量中读取默认 shell family。
+ * 优先级：环境变量 `AGENT_DEFAULT_SHELL` > 配置文件 > 内存兜底值。
+ *
+ * @param env - 环境变量字典（默认取 process.env）
+ * @returns 加载后的 shell family
+ */
+export function loadDefaultShellFamily(env: Record<string, string | undefined> = getRuntimeEnv()): ShellKind {
+  // 1. 环境变量最高优先级
+  const envKind = resolveEnvShellKind(env.AGENT_DEFAULT_SHELL);
+  if (envKind) {
+    globalState.defaultShellFamily = envKind;
+    return envKind;
+  }
+
+  // 2. 尝试从配置文件读取
+  try {
+    const configPath = getAgentConfigPath();
+    if (existsSync(configPath)) {
+      const data = readFileSync(configPath, 'utf-8');
+      const parsed = JSON.parse(data);
+      const raw = parsed.defaultShellFamily;
+      const resolved = resolveEnvShellKind(typeof raw === 'string' ? raw : undefined);
+      if (resolved) {
+        globalState.defaultShellFamily = resolved;
+        return resolved;
+      }
+    }
+  } catch {
+    // 忽略读取错误
+  }
+
+  // 3. 回退到内存中已有的值
+  return globalState.defaultShellFamily;
+}
+
+/**
+ * 持久化保存并更新当前默认 shell family。
+ *
+ * @param kind 目标 shell family
+ */
+export function saveDefaultShellFamily(kind: ShellKind): void {
+  try {
+    globalState.defaultShellFamily = kind;
+    const configPath = getAgentConfigPath();
+    const dir = dirname(configPath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    let parsed: Record<string, unknown> = {};
+    if (existsSync(configPath)) {
+      try {
+        parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        // 忽略解析错误，直接重新组装
+      }
+    }
+    parsed.defaultShellFamily = kind;
+    writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
+  } catch (e) {
+    logger.error(`保存默认 shell family 失败:`, e);
+  }
 }
 
 /**
@@ -135,28 +230,44 @@ export function saveAllowedCommands(commands: string[]): void {
  * 从工作区磁盘配置文件加载安全工作模式
  * @returns 加载成功或回退的工作模式
  */
-// eslint-disable-next-line n/no-process-env
-export function loadWorkMode(env: Record<string, string | undefined> = process.env): WorkMode {
+export function loadWorkMode(env: Record<string, string | undefined> = getRuntimeEnv()): WorkMode {
   try {
     const configPath = getAgentConfigPath();
     if (existsSync(configPath)) {
       const data = readFileSync(configPath, 'utf-8');
       const parsed = JSON.parse(data);
+
+      // 加载工作模式
       const val = parsed.workMode;
       if (val === 'Safe' || val === 'Auto' || val === 'YOLO' || val === 'Plan') {
         globalState.workMode = val as WorkMode;
-        return globalState.workMode;
       }
+
+      // 同步加载默认 shell family（原子性）
+      const shellRaw = parsed.defaultShellFamily;
+      const shellKind = resolveEnvShellKind(typeof shellRaw === 'string' ? shellRaw : undefined);
+      if (shellKind) {
+        globalState.defaultShellFamily = shellKind;
+      }
+
+      return globalState.workMode;
     }
   } catch {
     // 忽略加载读取错误，交由环境变量或默认值处理
   }
-  
-  // 备用兜底：尝试从系统环境变量获取
+
+  // 备用兜底：尝试从系统环境变量获取工作模式
   const envMode = env.AGENT_WORK_MODE;
   if (envMode === 'Safe' || envMode === 'Auto' || envMode === 'YOLO' || envMode === 'Plan') {
     globalState.workMode = envMode as WorkMode;
   }
+
+  // 备用兜底：尝试从系统环境变量获取默认 shell family
+  const envShell = resolveEnvShellKind(env.AGENT_DEFAULT_SHELL);
+  if (envShell) {
+    globalState.defaultShellFamily = envShell;
+  }
+
   return globalState.workMode;
 }
 

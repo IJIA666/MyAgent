@@ -28,7 +28,6 @@ export function createMockAppConfig(custom?: Partial<AppConfig>): AppConfig {
       baseUrl: 'https://api.openai.com/v1',
       model: 'text-embedding-3-small',
     },
-    /* eslint-disable-next-line n/no-process-env */
     workspace: process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd(),
     mcp: {
       mcpServers: {},

@@ -1,9 +1,9 @@
-/* eslint-disable n/no-process-env */
 import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { chromium, BrowserContext, Page } from 'playwright';
 import { logger } from '../../../../utils/logger.js'; // 导入统一日志单例 logger
 import { BrowserDetector } from './browser-detector.js';
+import { deleteRuntimeEnvVariable, getRuntimeEnv, setRuntimeEnvVariable } from '../../../../config/env.js';
 import { resolve } from 'path';
 import { existsSync, rmSync } from 'fs';
 import readline from 'readline';
@@ -107,7 +107,8 @@ export class BrowserSession {
     // 执行当前租户的环境清理以防残留
     await this.closeTenant(tenantId);
 
-    const actualCdpUrl = cdpUrl || process.env.BROWSER_CDP_URL;
+    const runtimeEnv = getRuntimeEnv();
+    const actualCdpUrl = cdpUrl || runtimeEnv.BROWSER_CDP_URL;
     if (actualCdpUrl) {
       // 1. 直连现有 Chrome 的 CDP 调试通道
       const browser = await chromium.connectOverCDP(actualCdpUrl);
@@ -121,10 +122,10 @@ export class BrowserSession {
       this.contextsMap.set(tenantId, page.context());
     } else {
       // 2. 本地持久化上下文通道
-      const baseDir = process.env.BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
+      const baseDir = runtimeEnv.BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
       const userDataDir = resolve(baseDir, tenantId);
       const executablePath = BrowserDetector.detectExecutablePath() || undefined;
-      const isHeadless = process.env.BROWSER_HEADLESS !== 'false';
+      const isHeadless = runtimeEnv.BROWSER_HEADLESS !== 'false';
 
       const context = await chromium.launchPersistentContext(userDataDir, {
         executablePath,
@@ -175,7 +176,7 @@ export class BrowserSession {
     }
 
     if (cleanup) {
-      const baseDir = process.env.BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
+      const baseDir = getRuntimeEnv().BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
       const userDataDir = resolve(baseDir, tenantId);
       try {
         if (existsSync(userDataDir)) {
@@ -193,7 +194,7 @@ export class BrowserSession {
    * @param tenantId - 租户标识
    */
   public static async killTenantProcesses(tenantId: string): Promise<void> {
-    const baseDir = process.env.BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
+    const baseDir = getRuntimeEnv().BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
     const userDataDir = resolve(baseDir, tenantId);
     const targetDirPattern = userDataDir.replace(/\\/g, '/');
 
@@ -427,7 +428,7 @@ export class BrowserNavigateTool implements NativeTool {
    */
   async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
     const url = args.url;
-    const cdpUrl = typeof args.cdpUrl === 'string' ? args.cdpUrl : process.env.BROWSER_CDP_URL;
+    const cdpUrl = typeof args.cdpUrl === 'string' ? args.cdpUrl : getRuntimeEnv().BROWSER_CDP_URL;
     if (typeof url !== 'string') {
       throw new Error("url 必须是字符串");
     }
@@ -879,15 +880,16 @@ export class BrowserEnsureLoginTool implements NativeTool {
     const reason = typeof args.reason === 'string' ? args.reason : '检测到需要人机登录验证';
     const tenantId = BrowserSession.getTenantIdFromContext(unwrapSessionContext(sessionContext));
     
-    // 备份 process.env.BROWSER_HEADLESS 的原始状态，用于非破坏性还原
-    const originalHeadless = process.env.BROWSER_HEADLESS;
+    // 备份运行时 BROWSER_HEADLESS 的原始状态，用于非破坏性还原
+    const runtimeEnv = getRuntimeEnv();
+    const originalHeadless = runtimeEnv.BROWSER_HEADLESS;
 
     // 1. 获取当前页面实例
     let page = await BrowserSession.getPage(undefined, tenantId);
 
     // 2. 如果当前是无头模式（headless），我们需要以有头模式重建浏览器以供用户手动操作
-    const isHeadless = process.env.BROWSER_HEADLESS !== 'false';
-    const cdpUrl = process.env.BROWSER_CDP_URL;
+    const isHeadless = runtimeEnv.BROWSER_HEADLESS !== 'false';
+    const cdpUrl = runtimeEnv.BROWSER_CDP_URL;
     
     if (isHeadless && !cdpUrl) {
       // 备份当前 URL
@@ -898,7 +900,7 @@ export class BrowserEnsureLoginTool implements NativeTool {
       await BrowserSession.closeTenant(tenantId);
       
       // 临时开启有头模式
-      process.env.BROWSER_HEADLESS = 'false';
+      setRuntimeEnvVariable('BROWSER_HEADLESS', 'false');
       page = await BrowserSession.getPage(undefined, tenantId);
       
       // 导航到先前的页面
@@ -921,9 +923,9 @@ export class BrowserEnsureLoginTool implements NativeTool {
     // 5. 恢复 headless 原始配置并优雅关闭有头页面，以防其常驻缓存，确保切回后台无头静默运行
     if (isHeadless && !cdpUrl) {
       if (originalHeadless !== undefined) {
-        process.env.BROWSER_HEADLESS = originalHeadless;
+        setRuntimeEnvVariable('BROWSER_HEADLESS', originalHeadless);
       } else {
-        delete process.env.BROWSER_HEADLESS;
+        deleteRuntimeEnvVariable('BROWSER_HEADLESS');
       }
 
       // 再次显式关闭并销毁协作期间创建的有头实例，解开物理磁盘锁，清除缓存

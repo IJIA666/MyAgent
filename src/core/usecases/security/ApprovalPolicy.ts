@@ -262,13 +262,17 @@ export class ApprovalPolicy {
     return true;
   }
 
-  /** 检查是否命中硬红线命令（基于 toolArgs.command 完整命令字符串） */
+  /** 检查是否命中硬红线命令（基于已决议 shell 语义 + 命令字符串） */
   private isHardlineCommand(resources: SafetyResource[], toolName: string, toolArgs: Record<string, unknown>): boolean {
-    if (toolName !== 'execute_command' && toolName !== 'bash' && toolName !== 'powershell') {
+    if (toolName !== 'execute_command') {
       return false;
     }
     const command = (toolArgs.command as string) || '';
     if (!command) return false;
+
+    // 已决议的 shell family 信息由 checkSafety 阶段传入 toolArgs.shellKind，
+    // 消除了旧版 bash/powershell 工具名不一致的隐患
+
     for (const prefix of HARDLINE_PREFIXES) {
       if (command.startsWith(prefix) || command.includes(prefix)) {
         return true;

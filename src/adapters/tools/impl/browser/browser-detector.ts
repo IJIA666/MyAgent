@@ -1,6 +1,6 @@
-/* eslint-disable n/no-process-env */
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { getRuntimeEnv } from '../../../../config/env.js';
 
 /**
  * 浏览器检测辅助工具类。
@@ -12,14 +12,17 @@ export class BrowserDetector {
   /**
    * Windows 系统下的 Chrome 和 Edge 常见安装路径列表。
    */
-  private static readonly WINDOWS_PATHS = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
-    join(process.env.USERPROFILE || '', 'AppData\\Local\\Google\\Chrome\\Application\\chrome.exe'),
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
-  ];
+  private static getWindowsPaths(): string[] {
+    const runtimeEnv = getRuntimeEnv();
+    return [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      join(runtimeEnv.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
+      join(runtimeEnv.USERPROFILE || '', 'AppData\\Local\\Google\\Chrome\\Application\\chrome.exe'),
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+    ];
+  }
 
   /**
    * macOS 系统下的 Chrome 和 Edge 常见安装路径列表。
@@ -49,8 +52,9 @@ export class BrowserDetector {
    * @returns 查找到的浏览器可执行文件绝对路径，若未找到则返回 null
    */
   public static detectExecutablePath(): string | null {
+    const runtimeEnv = getRuntimeEnv();
     // 1. 优先读取用户配置的环境变量重写项
-    const envPath = process.env.BROWSER_EXECUTABLE_PATH;
+    const envPath = runtimeEnv.BROWSER_EXECUTABLE_PATH;
     if (envPath && existsSync(envPath)) {
       return envPath;
     }
@@ -58,7 +62,7 @@ export class BrowserDetector {
     // 2. 针对不同平台分发检测
     const platform = process.platform;
     const searchPaths = platform === 'win32'
-      ? this.WINDOWS_PATHS
+      ? this.getWindowsPaths()
       : platform === 'darwin'
         ? this.MACOS_PATHS
         : this.LINUX_PATHS;

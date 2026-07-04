@@ -1,4 +1,3 @@
-/* eslint-disable n/no-process-env */
 /**
  * @file config-guide.spec.ts
  * @description 物理配置引导与加载集成测试。
