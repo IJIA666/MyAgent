@@ -4,14 +4,20 @@ import { CommandContext } from '../../../../../src/adapters/input/interface/comm
 import * as p from '@clack/prompts';
 import { getWorkMode as getTerminalWorkMode, setWorkMode as setTerminalWorkMode } from '../../../../../src/adapters/tools/impl/system/terminal-config.js';
 import * as terminalConfig from '../../../../../src/adapters/tools/impl/system/terminal-config.js';
+import * as selectMenu from '../../../../../src/adapters/input/interface/select.js';
 
 vi.mock('@clack/prompts', () => {
   return {
-    select: vi.fn(),
     cancel: vi.fn(),
     intro: vi.fn(),
     outro: vi.fn(),
     isCancel: (val: unknown) => typeof val === 'symbol'
+  };
+});
+
+vi.mock('../../../../../src/adapters/input/interface/select.js', () => {
+  return {
+    selectWithCleanCancel: vi.fn()
   };
 });
 
@@ -79,23 +85,23 @@ describe('WorkModeCommand', () => {
   });
 
   it('3. 空参且在向导中选择 Plan 时应当成功切换', async () => {
-    vi.mocked(p.select).mockResolvedValue('Plan');
+    vi.mocked(selectMenu.selectWithCleanCancel).mockResolvedValue('Plan');
 
     const cmd = new WorkModeCommand();
     await cmd.execute([], mockContext as unknown as CommandContext);
 
-    expect(p.select).toHaveBeenCalled();
+    expect(selectMenu.selectWithCleanCancel).toHaveBeenCalled();
     expect(mockSessionContext.setWorkMode).toHaveBeenCalledWith('Plan');
     expect(getTerminalWorkMode()).toBe('Plan');
   });
 
   it('4. 空参且在向导中选择取消时不修改任何状态', async () => {
-    vi.mocked(p.select).mockResolvedValue(Symbol.for('clack:cancel'));
+    vi.mocked(selectMenu.selectWithCleanCancel).mockResolvedValue(Symbol.for('clack:cancel'));
 
     const cmd = new WorkModeCommand();
     await cmd.execute([], mockContext as unknown as CommandContext);
 
-    expect(p.select).toHaveBeenCalled();
+    expect(selectMenu.selectWithCleanCancel).toHaveBeenCalled();
     expect(p.cancel).toHaveBeenCalled();
     expect(mockSessionContext.setWorkMode).not.toHaveBeenCalled();
     expect(getTerminalWorkMode()).toBe('Auto');

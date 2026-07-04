@@ -15,6 +15,7 @@ import {
 import * as p from '@clack/prompts';
 import { theme } from './views/theme.js';
 import { scanSkills } from '../../../core/usecases/brain/contextLoader.js';
+import { selectWithCleanCancel } from './select.js';
 
 // 显式重导出 CommandContext 和 CommandResult 接口类型，避免在 ESM 下因类型擦除引发运行时加载错误
 export type { CommandContext, CommandResult };
@@ -78,7 +79,7 @@ export async function dispatchCommand(input: string, context: CommandContext): P
  */
 export async function showInteractiveMenu(): Promise<string | null> {
   console.log();
-  const mainAction = await p.select({
+  const mainAction = await selectWithCleanCancel({
     message: '选择要执行的操作:',
     options: [
       { value: 'skill', label: '调用特殊技能 (Skill)' },
@@ -107,7 +108,7 @@ export async function showInteractiveMenu(): Promise<string | null> {
       return null;
     }
 
-    const skillSelect = await p.select({
+    const skillSelect = await selectWithCleanCancel({
       message: '请选择要挂载的临时技能:',
       options: allSkills.map((s: { name: string; description: string }) => ({
         value: s.name,

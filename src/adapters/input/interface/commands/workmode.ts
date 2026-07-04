@@ -2,6 +2,7 @@ import { ICommand, CommandContext } from './base.js';
 import { theme } from '../views/theme.js';
 import { saveWorkMode as saveTerminalWorkMode, WorkMode } from '../../../../adapters/tools/impl/system/terminal-config.js';
 import * as p from '@clack/prompts';
+import { selectWithCleanCancel } from '../select.js';
 
 /**
  * 切换智能体安全执行工作模式的 Slash 命令类实现
@@ -21,7 +22,7 @@ export class WorkModeCommand implements ICommand {
       const currentMode = sessionContext.getWorkMode();
       console.log(theme.info(`当前安全工作模式为: ${theme.highlight(currentMode)}`));
 
-      const modeSelect = await p.select({
+      const modeSelect = await selectWithCleanCancel({
         message: '请选择目标安全执行工作模式:',
         options: [
           { value: 'Safe', label: 'Safe (每次执行写操作命令都必须人工确认)' },

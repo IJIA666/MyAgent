@@ -3,6 +3,7 @@ import { theme } from '../views/theme.js';
 import * as p from '@clack/prompts';
 import { getModelConfig, BUILTIN_MODELS } from '../../../../config/index.js';
 import { updateEnvVariable } from '../../../../config/env.js';
+import { selectWithCleanCancel } from '../select.js';
 
 export class ModelCommand implements ICommand {
   name = 'model';
@@ -17,7 +18,7 @@ export class ModelCommand implements ICommand {
       label: id
     }));
 
-    const modelSelect = await p.select({
+    const modelSelect = await selectWithCleanCancel({
       message: '请选择目标大模型:',
       options: modelOptions,
       initialValue: args[0] && BUILTIN_MODELS[args[0]] ? args[0] : undefined
@@ -30,7 +31,7 @@ export class ModelCommand implements ICommand {
 
     const targetModelId = modelSelect as string;
 
-    const reasoningSelect = await p.select({
+    const reasoningSelect = await selectWithCleanCancel({
       message: '请选择思考等级 (Reasoning Effort):',
       options: [
         { value: 'max', label: 'Max (最高推理，适合复杂 Agent 任务)' },
