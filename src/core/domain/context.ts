@@ -9,6 +9,47 @@ import { AppConfig, WorkMode, getDefaultWorkMode } from '../../config/index.js';
 import { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import { SecurityService } from '../usecases/security/SecurityService.js';
 import { createSessionId } from './trace-format.js';
+import type { SafetyResource } from '../usecases/security/SafetyResource.js';
+
+/**
+ * 单次工具调用的授权令牌生命周期状态。
+ */
+export type CallCapabilityState = 'registered' | 'claimed' | 'removed';
+
+/**
+ * 单次工具调用的授权令牌（Call Capability）。
+ * 绑定 toolCallId + 工具名 + 资源 + 参数摘要，遵循 registered→claimed→removed 三状态生命周期。
+ */
+export interface CallCapability {
+  /** 工具调用唯一标识符 */
+  toolCallId: string;
+  /** 工具名称 */
+  toolName: string;
+  /** 本次调用所涉及的原子资源列表 */
+  resources: SafetyResource[];
+  /** 规范化参数摘要，用于 claim 时比对防篡改 */
+  argumentsDigest: string;
+  /** 令牌生命周期状态 */
+  state: CallCapabilityState;
+  /** 领取该令牌的调用标识（claim 时填入） */
+  claimedBy?: string;
+  /** 令牌创建时间戳 */
+  createdAt: number;
+}
+
+/**
+ * 计算工具调用参数的规范化摘要，用于 capability 令牌的防篡改比对。
+ * 按 key 排序后序列化为 JSON 字符串，再计算 MD5 哈希。
+ *
+ * @param args - 工具调用参数
+ * @returns 规范化参数的 MD5 摘要
+ */
+export function computeArgumentsDigest(args: Record<string, unknown>): string {
+  const normalized = JSON.stringify(
+    Object.keys(args).sort().map(k => [k, args[k]])
+  );
+  return computeStringHash(normalized);
+}
 
 /**
  * 内部会话扩展消息接口契约，继承底层大模型消息，
@@ -113,6 +154,8 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   public readonly approvalService: ApprovalService;
   /** 全局配置对象（用于将配置项注入给具体的工具和插件） */
   public appConfig?: AppConfig;
+  /** call capability 令牌存储 Map，以 toolCallId 为键 */
+  private callCapabilities: Map<string, CallCapability> = new Map();
 
 
   /**
@@ -546,5 +589,80 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
     SecurityService.getInstance().clearTemporaryWhitelists(this.sessionId);
+  }
+
+  /**
+   * 注册一个 call 级授权令牌（registered 状态）。
+   * 由 AgentLoop 在 pendingGrant 条件满足时调用。
+   *
+   * @param cap - 待注册的授权令牌，必须包含 argumentsDigest
+   */
+  public registerCallCapability(cap: CallCapability): void {
+    cap.state = 'registered';
+    cap.createdAt = Date.now();
+    this.callCapabilities.set(cap.toolCallId, cap);
+  }
+
+  /**
+   * 领取（claim）一个 registered 状态的令牌，将其切换为 claimed。
+   * 验证 toolCallId + toolName + argumentsDigest 三重匹配，防止参数篡改。
+   * 由 virtual-mcp 在 execute 边界调用。
+   *
+   * @param toolCallId - 工具调用唯一标识
+   * @param toolName - 工具名称
+   * @param args - 工具调用参数，用于计算摘要与注册时的 digest 比对
+   * @returns 已 claim 的资源列表，若令牌不存在/状态非 registered/摘要不匹配则返回 null
+   */
+  public claimCapability(
+    toolCallId: string,
+    toolName: string,
+    args: Record<string, unknown>
+  ): SafetyResource[] | null {
+    const cap = this.callCapabilities.get(toolCallId);
+    if (!cap || cap.state !== 'registered') {
+      return null;
+    }
+    if (cap.toolName !== toolName) {
+      return null;
+    }
+    const digest = computeArgumentsDigest(args);
+    if (cap.argumentsDigest !== digest) {
+      return null;
+    }
+    cap.state = 'claimed';
+    cap.claimedBy = toolCallId;
+    return cap.resources;
+  }
+
+  /**
+   * 消费（consume）一个 claimed 状态的令牌，将其切换为 removed。
+   * 由 agent-loop 在工具调用完成（成功/失败/abort）的 finally 块中调用。
+   *
+   * @param toolCallId - 工具调用唯一标识
+   */
+  public consumeCapability(toolCallId: string): void {
+    const cap = this.callCapabilities.get(toolCallId);
+    if (cap && cap.state === 'claimed') {
+      cap.state = 'removed';
+    }
+  }
+
+  /**
+   * 检查指定 toolCallId 的 claimed 令牌中是否包含匹配的路径资源。
+   * 同时校验路径和 access（read/write）类型，防止读授权升级为写。
+   *
+   * @param toolCallId - 工具调用唯一标识
+   * @param access - 访问类型（'read' 或 'write'）
+   * @param normalizedPath - 规范化后的物理路径
+   * @returns 存在匹配的 claimed 资源返回 true，否则 false
+   */
+  public hasClaimedResource(toolCallId: string, access: 'read' | 'write', normalizedPath: string): boolean {
+    const cap = this.callCapabilities.get(toolCallId);
+    if (!cap || cap.state !== 'claimed') {
+      return false;
+    }
+    return cap.resources.some(
+      r => r.kind === 'path' && r.access === access && r.normalizedPath === normalizedPath
+    );
   }
 }

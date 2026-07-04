@@ -8,6 +8,7 @@ import { runCommandEngine } from './terminal-engine.js';
 import { getWorkMode, extractSafePrefix, loadAllowedCommands } from './terminal-config.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
+import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { EventNotificationPort } from '../../../../ports/driven/session/EventNotificationPort.js';
 
 /**
@@ -144,7 +145,11 @@ export class ExecuteCommandTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 终端输出摘要结果
    */
-  async execute(args: Record<string, unknown>, sessionContext?: SessionEventPort & EventNotificationPort, signal?: AbortSignal): Promise<string> {
+  async execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort, signal?: AbortSignal): Promise<string> {
+    // 从 ToolExecutionContext 中提取 sessionContext，保持原有持久化白名单逻辑
+    const sessionContext = (_context && typeof _context === 'object' && 'toolCallId' in _context)
+      ? (_context as ToolExecutionContext).sessionContext
+      : _context as (SessionEventPort & EventNotificationPort) | undefined;
     const command = args.command;
     if (typeof command !== 'string') {
       throw new Error("command 必须是字符串");

@@ -10,6 +10,7 @@ import { secureResolveReadPath, secureResolveWritePath, getAuthorizedDir, getPhy
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import { getWorkMode } from '../system/terminal.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
+import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 
 /** 判断给定的文件路径是否属于敏感的环境变量配置文件 */
 function isSensitiveEnvFile(filePath: string): boolean {
@@ -77,7 +78,7 @@ export class ReadFileTool implements NativeTool {
    * @param sessionContext - 可选的会话上下文
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
       return { status: 'deny', message: 'targetPath 必须是字符串' };
@@ -90,11 +91,12 @@ export class ReadFileTool implements NativeTool {
       return {
         status: 'suspend',
         message: `【机密文件审计】智能体试图读取敏感的环境变量机密文件 "${targetPath}"，该操作在任何工作模式下均需人工审批。`,
-        targetPath: resolvedPath
+        targetPath: resolvedPath,
+        resources: [{ kind: 'path', access: 'read' as const, normalizedPath: resolvedPath }]
       };
     }
     try {
-      secureResolveReadPath(targetPath);
+      secureResolveReadPath(targetPath, sessionContext);
       return { status: 'pass' };
     } catch {
       const rootDir = getAuthorizedDir();
@@ -103,7 +105,8 @@ export class ReadFileTool implements NativeTool {
       return {
         status: 'suspend',
         message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
-        targetPath: resolvedPath
+        targetPath: resolvedPath,
+        resources: [{ kind: 'path', access: 'read' as const, normalizedPath: resolvedPath }]
       };
     }
   }
@@ -114,13 +117,13 @@ export class ReadFileTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 读取的文件内容或缓存未修改提示
    */
-  async execute(args: Record<string, unknown>, _sessionContext?: SessionEventPort, signal?: AbortSignal): Promise<string> {
+  async execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort, signal?: AbortSignal): Promise<string> {
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
       throw new Error("targetPath 必须是字符串");
     }
 
-    const safePath = secureResolveReadPath(targetPath);
+    const safePath = _context ? secureResolveReadPath(targetPath, _context) : secureResolveReadPath(targetPath);
 
     if (!existsSync(safePath)) {
       throw new Error(`未找到文件："${targetPath}"`);
@@ -244,7 +247,8 @@ export class WriteFileTool implements NativeTool {
       return {
         status: 'suspend',
         message: `【机密文件修改审计】智能体试图写入/覆盖敏感的机密配置文件 "${targetPath}"，该操作在任何工作模式下均需人工审批。\n待写入的明文内容如下：\n----------------------------------------\n${content}\n----------------------------------------`,
-        targetPath: resolvedPath
+        targetPath: resolvedPath,
+        resources: [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }]
       };
     }
 
@@ -256,7 +260,7 @@ export class WriteFileTool implements NativeTool {
     let isOutOfSandbox = false;
     let resolvedPath = '';
     try {
-      secureResolveWritePath(targetPath);
+      secureResolveWritePath(targetPath, sessionContext);
     } catch {
       isOutOfSandbox = true;
       const rootDir = getAuthorizedDir();
@@ -265,7 +269,8 @@ export class WriteFileTool implements NativeTool {
     return {
       status: 'suspend',
       message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${targetPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined
+      targetPath: isOutOfSandbox ? resolvedPath : undefined,
+      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : []
     };
   }
 
@@ -275,7 +280,7 @@ export class WriteFileTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 写入成功提示信息
    */
-  async execute(args: Record<string, unknown>, _sessionContext?: SessionEventPort, signal?: AbortSignal): Promise<string> {
+  async execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort, signal?: AbortSignal): Promise<string> {
     const targetPath = args.targetPath;
     const content = args.content;
     if (typeof targetPath !== 'string') {
@@ -285,7 +290,7 @@ export class WriteFileTool implements NativeTool {
       throw new Error("content 必须是字符串");
     }
 
-    const safePath = secureResolveWritePath(targetPath);
+    const safePath = _context ? secureResolveWritePath(targetPath, _context) : secureResolveWritePath(targetPath);
 
     if (existsSync(safePath) && !ReadFileTool.readFileState.has(safePath)) {
       throw new Error("拒绝安全风险操作：您正在尝试全量覆盖一个已有文件。为了防止代码误毁，在覆盖前必须先调用 readFile 工具阅读该文件的最新内容。");
@@ -378,7 +383,8 @@ export class EditFileTool implements NativeTool {
       return {
         status: 'suspend',
         message: `【机密文件编辑审计】智能体试图修改敏感的环境变量机密文件 "${targetPath}"，该操作在任何工作模式下均需人工审批。\n修改 Diff 差分细节如下：\n- 替换原文：\n"""\n${oldString}\n"""\n+ 替换新文：\n"""\n${newString}\n"""`,
-        targetPath: resolvedPath
+        targetPath: resolvedPath,
+        resources: [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }]
       };
     }
 
@@ -390,7 +396,7 @@ export class EditFileTool implements NativeTool {
     let isOutOfSandbox = false;
     let resolvedPath = '';
     try {
-      secureResolveWritePath(targetPath);
+      secureResolveWritePath(targetPath, sessionContext);
     } catch {
       isOutOfSandbox = true;
       const rootDir = getAuthorizedDir();
@@ -399,7 +405,8 @@ export class EditFileTool implements NativeTool {
     return {
       status: 'suspend',
       message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${targetPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined
+      targetPath: isOutOfSandbox ? resolvedPath : undefined,
+      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : []
     };
   }
 
@@ -407,9 +414,11 @@ export class EditFileTool implements NativeTool {
    * 执行局部文件编辑操作。
    *
    * @param args - 工具调用参数字典
+   * @param _context - 工具调用执行上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
+   * @param signal - 可选的 AbortSignal
    * @returns 局部修改成功提示信息
    */
-  async execute(args: Record<string, unknown>, _sessionContext?: SessionEventPort, signal?: AbortSignal): Promise<string> {
+  async execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort, signal?: AbortSignal): Promise<string> {
     const targetPath = args.targetPath;
     const oldString = args.old_string;
     const newString = args.new_string;
@@ -432,7 +441,7 @@ export class EditFileTool implements NativeTool {
       throw new Error("old_string 不能为空。如果希望创建或全量覆盖文件，请使用 writeFile 工具。");
     }
 
-    const safePath = secureResolveWritePath(targetPath);
+    const safePath = _context ? secureResolveWritePath(targetPath, _context) : secureResolveWritePath(targetPath);
 
     if (!existsSync(safePath)) {
       throw new Error(`未找到文件："${targetPath}"，编辑失败。`);
@@ -535,10 +544,10 @@ export class ListFilesTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     const targetPath = typeof args.targetPath === 'string' ? args.targetPath : '.';
     try {
-      secureResolveReadPath(targetPath);
+      secureResolveReadPath(targetPath, sessionContext);
       return { status: 'pass' };
     } catch {
       const rootDir = getAuthorizedDir();
@@ -547,7 +556,8 @@ export class ListFilesTool implements NativeTool {
       return {
         status: 'suspend',
         message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
-        targetPath: resolvedPath
+        targetPath: resolvedPath,
+        resources: [{ kind: 'path', access: 'read' as const, normalizedPath: resolvedPath }]
       };
     }
   }
@@ -556,11 +566,12 @@ export class ListFilesTool implements NativeTool {
    * 执行列出目录操作。
    *
    * @param args - 工具调用参数字典
+   * @param _context - 工具调用执行上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
    * @returns 目录子项 JSON 序列化字符串
    */
-  execute(args: Record<string, unknown>): string {
+  execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort): string {
     const targetPath = typeof args.targetPath === 'string' ? args.targetPath : '.';
-    const safePath = secureResolveReadPath(targetPath);
+    const safePath = _context ? secureResolveReadPath(targetPath, _context) : secureResolveReadPath(targetPath);
 
     if (!existsSync(safePath)) {
       throw new Error(`未找到文件夹："${targetPath}"`);

@@ -53,7 +53,8 @@ export interface ToolRegistryPort {
     functionArgs: Record<string, unknown>,
     sessionContext?: SessionEventPort & ApprovalPort,
     interactionPort?: InteractionPort,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    toolCallId?: string
   ): Promise<unknown>;
 
   /**

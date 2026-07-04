@@ -6,6 +6,7 @@
 import { resolve, sep, dirname } from 'path';
 import { realpathSync, existsSync } from 'fs';
 import type { SessionEventPort } from '../../../ports/driven/session/SessionEventPort.js';
+import type { ToolExecutionContext } from '../../../core/usecases/plugins/plugin-types.js';
 
 /**
  * 授权工作区的绝对物理路径。
@@ -125,12 +126,14 @@ export function secureResolvePath(targetPath: string): string {
 
 /**
  * 文件只读操作安全路径校验器。
- * 额外支持匹配 Session 内存中的临时只读白名单放行判定。
- * 
+ * 接受 SessionEventPort（向后兼容）或 ToolExecutionContext。
+ * 优先检查 call capability（access='read'），再检查 session 白名单，最后检查沙箱边界。
+ *
  * @param targetPath - 待读取的目标相对或绝对路径
+ * @param context - 可选的会话上下文（SessionEventPort）或工具调用执行上下文（ToolExecutionContext）
  * @returns 解析规范后的安全物理绝对路径
  */
-export function secureResolveReadPath(targetPath: string, sessionContext?: SessionEventPort): string {
+export function secureResolveReadPath(targetPath: string, context?: SessionEventPort | ToolExecutionContext): string {
   if (authorizedDir === null) {
     throw new Error('工作区尚未初始化。请确保在使用文件工具前调用 initWorkspace()。');
   }
@@ -138,8 +141,20 @@ export function secureResolveReadPath(targetPath: string, sessionContext?: Sessi
   const rawPath = resolve(authorizedDir, targetPath);
   const resolvedPath = getPhysicalRealPath(rawPath);
 
-  // 1. 安全放行：如果目标物理路径已被临时授权加入只读白名单，直接放行
-  if (sessionContext && sessionContext.hasTemporaryReadWhitelist(resolvedPath)) {
+  // 提取 SessionContext（兼容 ToolExecutionContext 包裹层和直接的 SessionEventPort）
+  const sessionCtx = context
+    ? ('toolCallId' in context ? (context as ToolExecutionContext).sessionContext : context as SessionEventPort)
+    : undefined;
+
+  // 0. 优先检查 ToolExecutionContext 的 call capability（access='read'）
+  if (context && 'toolCallId' in context) {
+    if ((context as ToolExecutionContext).sessionContext.hasClaimedResource((context as ToolExecutionContext).toolCallId, 'read', resolvedPath)) {
+      return resolvedPath;
+    }
+  }
+
+  // 1. 安全放行：如果目标物理路径已被临时授权加入只读白名单
+  if (sessionCtx && typeof sessionCtx.hasTemporaryReadWhitelist === 'function' && sessionCtx.hasTemporaryReadWhitelist(resolvedPath)) {
     return resolvedPath;
   }
 
@@ -154,12 +169,14 @@ export function secureResolveReadPath(targetPath: string, sessionContext?: Sessi
 
 /**
  * 文件写入/修改操作安全路径校验器。
- * 额外支持匹配 Session 内存中的临时可写白名单放行判定。
- * 
+ * 接受 SessionEventPort（向后兼容）或 ToolExecutionContext。
+ * 优先检查 call capability（access='write'），再检查 session 白名单，最后检查沙箱边界。
+ *
  * @param targetPath - 待写入的目标相对或绝对路径
+ * @param context - 可选的会话上下文（SessionEventPort）或工具调用执行上下文（ToolExecutionContext）
  * @returns 解析规范后的安全物理绝对路径
  */
-export function secureResolveWritePath(targetPath: string, sessionContext?: SessionEventPort): string {
+export function secureResolveWritePath(targetPath: string, context?: SessionEventPort | ToolExecutionContext): string {
   if (authorizedDir === null) {
     throw new Error('工作区尚未初始化。请确保在使用文件工具前调用 initWorkspace()。');
   }
@@ -167,8 +184,20 @@ export function secureResolveWritePath(targetPath: string, sessionContext?: Sess
   const rawPath = resolve(authorizedDir, targetPath);
   const resolvedPath = getPhysicalRealPath(rawPath);
 
-  // 1. 安全放行：如果目标物理路径已被临时授权加入可写白名单，直接放行
-  if (sessionContext && sessionContext.hasTemporaryWriteWhitelist(resolvedPath)) {
+  // 提取 SessionContext（兼容 ToolExecutionContext 包裹层和直接的 SessionEventPort）
+  const sessionCtx = context
+    ? ('toolCallId' in context ? (context as ToolExecutionContext).sessionContext : context as SessionEventPort)
+    : undefined;
+
+  // 0. 优先检查 ToolExecutionContext 的 call capability（access='write'）
+  if (context && 'toolCallId' in context) {
+    if ((context as ToolExecutionContext).sessionContext.hasClaimedResource((context as ToolExecutionContext).toolCallId, 'write', resolvedPath)) {
+      return resolvedPath;
+    }
+  }
+
+  // 1. 安全放行：如果目标物理路径已被临时授权加入可写白名单
+  if (sessionCtx && typeof sessionCtx.hasTemporaryWriteWhitelist === 'function' && sessionCtx.hasTemporaryWriteWhitelist(resolvedPath)) {
     return resolvedPath;
   }
 

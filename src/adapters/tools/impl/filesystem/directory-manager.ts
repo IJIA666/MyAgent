@@ -5,7 +5,7 @@ import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import { copyRecursiveSync } from './directory-manager-helper.js';
 import { getWorkMode, loadWorkMode } from '../system/terminal.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
-import type { ApprovalPort } from '../../../../ports/driven/session/ApprovalPort.js';
+import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 
 /**
  * 目录创建工具类。
@@ -46,7 +46,7 @@ export class CreateDirectoryTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     loadWorkMode();
     if (getWorkMode() === 'YOLO') {
       return { status: 'pass' };
@@ -58,7 +58,7 @@ export class CreateDirectoryTool implements NativeTool {
     let isOutOfSandbox = false;
     let resolvedPath = '';
     try {
-      secureResolveWritePath(directoryPath);
+      secureResolveWritePath(directoryPath, sessionContext);
     } catch {
       isOutOfSandbox = true;
       const rootDir = getAuthorizedDir();
@@ -67,7 +67,8 @@ export class CreateDirectoryTool implements NativeTool {
     return {
       status: 'suspend',
       message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${directoryPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined
+      targetPath: isOutOfSandbox ? resolvedPath : undefined,
+      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : []
     };
   }
 
@@ -75,16 +76,16 @@ export class CreateDirectoryTool implements NativeTool {
    * 执行递归创建目录。
    *
    * @param args - 工具调用参数字典
-   * @param sessionContext - 可选的会话上下文
+   * @param _context - 工具调用执行上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
    * @returns 成功创建提示信息
    */
-  execute(args: Record<string, unknown>): string {
+  execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort): string {
     const directoryPath = args.directoryPath;
     if (typeof directoryPath !== 'string') {
       throw new Error("directoryPath 必须是字符串");
     }
 
-    const safePath = secureResolveWritePath(directoryPath);
+    const safePath = _context ? secureResolveWritePath(directoryPath, _context) : secureResolveWritePath(directoryPath);
 
     if (existsSync(safePath)) {
       const stats = statSync(safePath);
@@ -138,7 +139,7 @@ export class DeletePathTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     loadWorkMode();
     if (getWorkMode() === 'YOLO') {
       return { status: 'pass' };
@@ -150,7 +151,7 @@ export class DeletePathTool implements NativeTool {
     let isOutOfSandbox = false;
     let resolvedPath = '';
     try {
-      secureResolveWritePath(targetPath);
+      secureResolveWritePath(targetPath, sessionContext);
     } catch {
       isOutOfSandbox = true;
       const rootDir = getAuthorizedDir();
@@ -159,41 +160,29 @@ export class DeletePathTool implements NativeTool {
     return {
       status: 'suspend',
       message: `智能体试图安全删除以下路径: "${targetPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined
+      targetPath: isOutOfSandbox ? resolvedPath : undefined,
+      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : []
     };
   }
 
   /**
    * 异步执行删除路径。
+   * 审批已由 checkSafety + HumanApprovalPlugin 前置处理，此处不再内部调用 waitApproval。
    *
    * @param args - 工具调用参数字典
-   * @param sessionContext - 可选的会话上下文，用于获取 ApprovalService 确权
+   * @param _context - 工具调用执行上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
    * @returns 成功删除的提示信息
    */
-  async execute(args: Record<string, unknown>, sessionContext?: SessionEventPort & ApprovalPort): Promise<string> {
+  async execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort): Promise<string> {
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
       throw new Error("targetPath 必须是字符串");
     }
 
-    const safePath = secureResolveWritePath(targetPath);
+    const safePath = _context ? secureResolveWritePath(targetPath, _context) : secureResolveWritePath(targetPath);
 
     if (!existsSync(safePath)) {
       return `目标路径不存在，无需删除："${targetPath}"。`;
-    }
-
-    if (sessionContext) {
-      const approvalId = `approve_delete_${Math.random().toString(36).substring(2, 9)}`;
-      const decision = await sessionContext.waitApproval(
-        approvalId,
-        { name: this.name, arguments: args },
-        undefined,
-        `智能体试图安全删除以下路径: "${targetPath}"`
-      );
-
-      if (decision.action === 'deny') {
-        throw new Error(`用户拒绝了删除路径的操作: ${targetPath}`);
-      }
     }
 
     rmSync(safePath, { recursive: true, force: true });
@@ -244,7 +233,7 @@ export class MovePathTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     loadWorkMode();
     if (getWorkMode() === 'YOLO') {
       return { status: 'pass' };
@@ -257,22 +246,30 @@ export class MovePathTool implements NativeTool {
     let isOutOfSandbox = false;
     let resolvedPath = '';
     try {
-      secureResolveWritePath(sourcePath);
-      secureResolveWritePath(destinationPath);
+      secureResolveWritePath(sourcePath, sessionContext);
+      secureResolveWritePath(destinationPath, sessionContext);
     } catch {
       isOutOfSandbox = true;
       const rootDir = getAuthorizedDir();
       try {
-        secureResolveWritePath(sourcePath);
+        secureResolveWritePath(sourcePath, sessionContext);
         resolvedPath = getPhysicalRealPath(resolve(rootDir!, destinationPath));
       } catch {
         resolvedPath = getPhysicalRealPath(resolve(rootDir!, sourcePath));
       }
     }
+    // 双 write 资源：移动删除源路径
+    const rootDir = getAuthorizedDir();
+    const srcResolved = getPhysicalRealPath(resolve(rootDir!, sourcePath));
+    const destResolved = getPhysicalRealPath(resolve(rootDir!, destinationPath));
     return {
       status: 'suspend',
       message: `智能体试图将 "${sourcePath}" 移动至 "${destinationPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined
+      targetPath: isOutOfSandbox ? resolvedPath : undefined,
+      resources: [
+        { kind: 'path', access: 'write' as const, normalizedPath: srcResolved },
+        { kind: 'path', access: 'write' as const, normalizedPath: destResolved }
+      ]
     };
   }
 
@@ -280,10 +277,10 @@ export class MovePathTool implements NativeTool {
    * 执行路径移动。
    *
    * @param args - 工具调用参数字典
-   * @param sessionContext - 可选的会话上下文
+   * @param _context - 工具调用执行上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
    * @returns 成功移动的提示信息
    */
-  execute(args: Record<string, unknown>): string {
+  execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort): string {
     const sourcePath = args.sourcePath;
     const destinationPath = args.destinationPath;
 
@@ -294,8 +291,8 @@ export class MovePathTool implements NativeTool {
       throw new Error("destinationPath 必须是字符串");
     }
 
-    const safeSource = secureResolveWritePath(sourcePath);
-    const safeDest = secureResolveWritePath(destinationPath);
+    const safeSource = _context ? secureResolveWritePath(sourcePath, _context) : secureResolveWritePath(sourcePath);
+    const safeDest = _context ? secureResolveWritePath(destinationPath, _context) : secureResolveWritePath(destinationPath);
 
     if (!existsSync(safeSource)) {
       throw new Error(`源路径不存在："${sourcePath}"`);
@@ -365,7 +362,7 @@ export class CopyPathTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     loadWorkMode();
     if (getWorkMode() === 'YOLO') {
       return { status: 'pass' };
@@ -378,22 +375,29 @@ export class CopyPathTool implements NativeTool {
     let isOutOfSandbox = false;
     let resolvedPath = '';
     try {
-      secureResolveReadPath(sourcePath);
-      secureResolveWritePath(destinationPath);
+      secureResolveReadPath(sourcePath, sessionContext);
+      secureResolveWritePath(destinationPath, sessionContext);
     } catch {
       isOutOfSandbox = true;
       const rootDir = getAuthorizedDir();
       try {
-        secureResolveReadPath(sourcePath);
+        secureResolveReadPath(sourcePath, sessionContext);
         resolvedPath = getPhysicalRealPath(resolve(rootDir!, destinationPath));
       } catch {
         resolvedPath = getPhysicalRealPath(resolve(rootDir!, sourcePath));
       }
     }
+    const rootDir = getAuthorizedDir();
+    const srcResolved = getPhysicalRealPath(resolve(rootDir!, sourcePath));
+    const destResolved = getPhysicalRealPath(resolve(rootDir!, destinationPath));
     return {
       status: 'suspend',
       message: `智能体试图将 "${sourcePath}" 复制至 "${destinationPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined
+      targetPath: isOutOfSandbox ? resolvedPath : undefined,
+      resources: [
+        { kind: 'path', access: 'read' as const, normalizedPath: srcResolved },
+        { kind: 'path', access: 'write' as const, normalizedPath: destResolved }
+      ]
     };
   }
 
@@ -401,10 +405,10 @@ export class CopyPathTool implements NativeTool {
    * 执行路径复制。
    *
    * @param args - 工具调用参数字典
-   * @param sessionContext - 可选的会话上下文
+   * @param _context - 工具调用执行上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
    * @returns 成功复制的提示信息
    */
-  execute(args: Record<string, unknown>): string {
+  execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort): string {
     const sourcePath = args.sourcePath;
     const destinationPath = args.destinationPath;
 
@@ -415,8 +419,8 @@ export class CopyPathTool implements NativeTool {
       throw new Error("destinationPath 必须是字符串");
     }
 
-    const safeSource = secureResolveReadPath(sourcePath);
-    const safeDest = secureResolveWritePath(destinationPath);
+    const safeSource = _context ? secureResolveReadPath(sourcePath, _context) : secureResolveReadPath(sourcePath);
+    const safeDest = _context ? secureResolveWritePath(destinationPath, _context) : secureResolveWritePath(destinationPath);
 
     if (!existsSync(safeSource)) {
       throw new Error(`源路径不存在："${sourcePath}"`);

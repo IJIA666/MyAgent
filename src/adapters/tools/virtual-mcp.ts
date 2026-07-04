@@ -3,12 +3,13 @@ import { fileSystemTools } from './impl/filesystem/index.js';
 import { systemTools } from './impl/system/index.js';
 import { getSkillTools } from './impl/skill/index.js';
 import { getInteractionTools } from './impl/interaction/index.js';
-import type { SafetyCheckResult } from '../../core/usecases/plugins/plugin-types.js';
+import type { SafetyCheckResult, ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import { secureResolveWritePath } from './impl/base.js';
 import { existsSync } from 'fs';
+import { computeArgumentsDigest } from '../../core/domain/context.js';
 import {
   BrowserNavigateTool,
   BrowserClickTool,
@@ -51,13 +52,14 @@ export interface NativeTool {
    * 异步或同步执行该工具的逻辑。
    *
    * @param args - 调用工具时传入的参数字典
-   * @param _sessionContext - 可选的智能体会话上下文
+   * @param _context - 可选的智能体会话上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
    * @param signal - 可选的 AbortSignal，用于物理取消工具执行
+   * @param _interactionPort - 可选的交互端口
    * @returns 工具执行完毕后返回的文本结果
    */
   execute(
     args: Record<string, unknown>,
-    _sessionContext?: SessionEventPort,
+    _context?: ToolExecutionContext | SessionEventPort,
     signal?: AbortSignal,
     _interactionPort?: InteractionPort
   ): Promise<string> | string;
@@ -174,13 +176,17 @@ export class LocalFileSystemMcpServer {
    *
    * @param request - 符合 MCP CallToolRequest 结构的请求对象
    * @param sessionContext - 可选的智能体会话上下文
+   * @param interactionPort - 可选的交互端口
+   * @param signal - 可选的 AbortSignal
+   * @param toolCallId - 可选的工具调用唯一标识（用于 call capability 生命周期管理）
    * @returns 符合 MCP CallToolResult 结构的结果对象
    */
   async callTool(
     request: CallToolRequest,
     sessionContext?: SessionEventPort & ApprovalPort,
     interactionPort?: InteractionPort,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    toolCallId?: string
   ): Promise<CallToolResult> {
     try {
       const args = request.arguments || {};
@@ -189,8 +195,32 @@ export class LocalFileSystemMcpServer {
         throw new Error(`虚拟 MCP Server 不支持工具: ${request.name}`);
       }
 
-      // 底层高危操作安全硬拦截逻辑
-      if (sessionContext) {
+      // 构建 ToolExecutionContext（若 toolCallId 存在）
+      const execContext: ToolExecutionContext | undefined = toolCallId && sessionContext
+        ? {
+            sessionContext: sessionContext as unknown as ToolExecutionContext['sessionContext'],
+            toolCallId,
+            toolName: request.name,
+            argumentsDigest: computeArgumentsDigest(args),
+            claimedResources: []
+          }
+        : undefined;
+
+      // 在 execute 前 claim 一次性令牌（匹配 toolCallId + argumentsDigest）
+      if (execContext) {
+        const claimed = execContext.sessionContext.claimCapability(toolCallId!, request.name, args);
+        if (claimed) {
+          execContext.claimedResources = claimed;
+        }
+      }
+
+      // 底层高危操作安全硬拦截仅保留给“未接入新生命周期”的旧调用路径。
+      // 一旦存在 toolCallId / ToolExecutionContext，说明调用已进入新的 Hook 生命周期：
+      // - call grant 走 claimCapability
+      // - session grant 依赖 secureResolve{Read,Write}Path 白名单放行
+      // - execute_command 等工具依赖 BeforeTool.checkSafety 的既有放行结果
+      // 因此这里绝不能再二次覆盖新的授权决策。
+      if (sessionContext && !execContext) {
         let isDangerous = false;
         let warningMsg = '';
 
@@ -246,14 +276,8 @@ export class LocalFileSystemMcpServer {
         }
       }
 
-      // 为了防止在 DeletePathTool 内部再次发起重复审批，在已核准的前提下，我们将 waitApproval 遮蔽掉
-      let contextToPass = sessionContext;
-      if (request.name === 'deletePath' && sessionContext) {
-        contextToPass = Object.assign(Object.create(Object.getPrototypeOf(sessionContext)), sessionContext, {
-          waitApproval: async () => ({ action: 'approve' })
-        });
-      }
-
+      // 传入 ToolExecutionContext（含 claim 后的 claimedResources），无 toolCallId 时传入原始 sessionContext
+      const contextToPass = execContext ?? sessionContext;
       const resultText = await tool.execute(args, contextToPass, signal, interactionPort);
 
       return {

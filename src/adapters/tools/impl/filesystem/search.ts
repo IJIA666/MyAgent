@@ -1,7 +1,9 @@
 import { resolve, basename, relative } from 'path';
 import { existsSync, statSync, openSync, readSync, closeSync, promises as fsPromises } from 'fs';
-import { secureResolvePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import { secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 
 /**
  * 极简零依赖的 Promise 信号量调度器，用于控制最大并发数。
@@ -178,10 +180,10 @@ export class GrepSearchTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     const searchPath = typeof args.searchPath === 'string' ? args.searchPath : '.';
     try {
-      secureResolvePath(searchPath);
+      secureResolveReadPath(searchPath, sessionContext);
       return { status: 'pass' };
     } catch {
       const rootDir = getAuthorizedDir();
@@ -190,7 +192,8 @@ export class GrepSearchTool implements NativeTool {
       return {
         status: 'suspend',
         message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
-        targetPath: resolvedPath
+        targetPath: resolvedPath,
+        resources: [{ kind: 'path', access: 'read' as const, normalizedPath: resolvedPath }]
       };
     }
   }
@@ -202,7 +205,7 @@ export class GrepSearchTool implements NativeTool {
    * @param sessionContext - 可选的会话上下文
    * @returns 匹配到的行内容或数量汇总 JSON 文本
    */
-  async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
+  async execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort): Promise<string> {
     const query = args.query;
     if (typeof query !== 'string') {
       throw new Error("query 必须是字符串");
@@ -213,7 +216,7 @@ export class GrepSearchTool implements NativeTool {
     const includes = typeof args.includes === 'string' ? args.includes : undefined;
     const countOnly = typeof args.countOnly === 'boolean' ? args.countOnly : false;
 
-    const safeSearchDir = secureResolvePath(searchPath);
+    const safeSearchDir = _context ? secureResolveReadPath(searchPath, _context) : secureResolveReadPath(searchPath);
     if (!existsSync(safeSearchDir)) {
       throw new Error(`未找到检索目录："${searchPath}"`);
     }
@@ -221,7 +224,7 @@ export class GrepSearchTool implements NativeTool {
       throw new Error(`路径 "${searchPath}" 是一个文件，不能作为目录进行检索。`);
     }
 
-    const context = sessionContext as { appConfig?: { runtimeLimits?: { searchLimit?: number; excludeDirs?: string[] } } } | undefined;
+    const context = _context as { appConfig?: { runtimeLimits?: { searchLimit?: number; excludeDirs?: string[] } } } | undefined;
     const limit = context?.appConfig?.runtimeLimits?.searchLimit ?? 100;
     const excludeDirs = context?.appConfig?.runtimeLimits?.excludeDirs ?? ['.git', 'node_modules', '.venv', '.myagent'];
 
@@ -382,7 +385,7 @@ export class GlobSearchTool implements NativeTool {
    * @param sessionContext - 可选的会话上下文
    * @returns 匹配的相对文件路径列表 JSON 文本
    */
-  async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
+  async execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort): Promise<string> {
     const pattern = args.pattern;
     if (typeof pattern !== 'string') {
       throw new Error("pattern 必须 be string");
@@ -393,7 +396,7 @@ export class GlobSearchTool implements NativeTool {
       throw new Error('工作区尚未初始化。请确保在使用文件工具前调用 initWorkspace()。');
     }
 
-    const context = sessionContext as { appConfig?: { runtimeLimits?: { searchLimit?: number; excludeDirs?: string[] } } } | undefined;
+    const context = _context as { appConfig?: { runtimeLimits?: { searchLimit?: number; excludeDirs?: string[] } } } | undefined;
     const limit = context?.appConfig?.runtimeLimits?.searchLimit ?? 100;
     const excludeDirs = context?.appConfig?.runtimeLimits?.excludeDirs ?? ['.git', 'node_modules', '.venv', '.myagent'];
 

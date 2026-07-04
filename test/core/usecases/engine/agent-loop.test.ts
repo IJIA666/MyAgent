@@ -10,6 +10,7 @@ import type { ContextRepository } from '../../../../src/core/usecases/brain/Cont
 import type { ToolDispatcher } from '../../../../src/core/usecases/engine/ToolDispatcher.js';
 import type { CompactionService } from '../../../../src/core/usecases/brain/CompactionService.js';
 import { PluginRegistry } from '../../../../src/core/usecases/plugins/plugin-registry.js';
+import { HookEventName, type HookContext } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { AgentTracer } from '../../../../src/core/domain/tracer.js';
 
 describe('AgentLoop 动态安全特性测试', () => {
@@ -69,7 +70,12 @@ describe('AgentLoop 动态安全特性测试', () => {
       saveState: async () => {}
     };
 
-    mockToolDispatcher = {};
+    mockToolDispatcher = {
+      handleLargeToolOutput: vi.fn().mockImplementation((_toolName: string, rawResult: string) => ({
+        content: rawResult,
+        isTruncated: false
+      }))
+    };
     mockCompactionService = {};
     pluginRegistry = new PluginRegistry();
   });
@@ -227,5 +233,116 @@ describe('AgentLoop 动态安全特性测试', () => {
     expect(loop.getSystemPromptHash()).not.toBe('');
     loop.resetTraceState();
     expect(loop.getSystemPromptHash()).toBe('');
+  });
+
+  it('6. tail call 应继续进入 AfterTool 生命周期，允许插件观察并改写尾随结果', async () => {
+    let streamCalledTimes = 0;
+    let tailAfterToolSeen = false;
+    mockLlmDriver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      abort: () => {},
+      streamChat: vi.fn().mockImplementation(async function* () {
+        streamCalledTimes++;
+        if (streamCalledTimes === 1) {
+          yield {
+            type: 'tool_calls',
+            toolCalls: [
+              {
+                id: 'call-primary',
+                type: 'function',
+                function: { name: 'primaryTool', arguments: JSON.stringify({ value: 'x' }) }
+              }
+            ],
+            assistantMessage: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call-primary',
+                  type: 'function',
+                  function: { name: 'primaryTool', arguments: JSON.stringify({ value: 'x' }) }
+                }
+              ]
+            }
+          } as LlmStreamEvent;
+          return;
+        }
+
+        yield {
+          type: 'complete',
+          content: 'done',
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: 'done' }
+        } as LlmStreamEvent;
+      })
+    };
+
+    mockToolRegistry = {
+      getTools: vi.fn().mockResolvedValue([
+        { name: 'primaryTool', securityCategory: 'read' },
+        { name: 'tailTool', securityCategory: 'read' }
+      ]),
+      callTool: vi.fn().mockImplementation(async (name: string) => {
+        if (name === 'primaryTool') {
+          return { content: [{ type: 'text', text: 'primary-result' }] };
+        }
+        if (name === 'tailTool') {
+          return { content: [{ type: 'text', text: 'tail-result' }] };
+        }
+        throw new Error(`unexpected tool: ${name}`);
+      }),
+      getTool: vi.fn().mockImplementation((name: string) => ({
+        name,
+        securityCategory: 'read'
+      }))
+    };
+
+    pluginRegistry.register({
+      name: 'tail-call-lifecycle-test',
+      weight: 1,
+      hooks: {
+        [HookEventName.AfterTool]: async (hookContext: HookContext, next: () => Promise<void>) => {
+          if (hookContext.toolCall?.name === 'primaryTool') {
+            hookContext.tailToolCallRequest = {
+              name: 'tailTool',
+              args: { from: 'primary' }
+            };
+          }
+          if (hookContext.toolCall?.name === 'tailTool') {
+            tailAfterToolSeen = true;
+            if (hookContext.toolResult) {
+              hookContext.toolResult.content = 'tail-aftertool-result';
+            }
+          }
+          await next();
+        }
+      }
+    });
+
+    const loop = new AgentLoop({
+      toolRegistry: mockToolRegistry as unknown as ToolRegistryPort,
+      context,
+      driver: mockLlmDriver as unknown as LlmPort,
+      contextAdapter: mockContextAdapter as unknown as ContextAdapter,
+      ruleManager: mockRuleManager as unknown as RuleManager,
+      contextRepo: mockContextRepo as unknown as ContextRepository,
+      toolDispatcher: mockToolDispatcher as unknown as ToolDispatcher,
+      compactionService: mockCompactionService as unknown as CompactionService,
+      pluginRegistry
+    });
+
+    const tracer = new AgentTracer(process.cwd(), 'test-tail-aftertool');
+    for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as unknown as LlmConfig)) {
+      void event;
+    }
+
+    expect(tailAfterToolSeen).toBe(true);
+    const toolMessages = context.getHistory().filter(message => message.role === 'tool');
+    expect(toolMessages.some(message => message.content === 'tail-aftertool-result')).toBe(true);
+    const registryMock = mockToolRegistry as { callTool: ReturnType<typeof vi.fn> };
+    expect(registryMock.callTool).toHaveBeenCalledTimes(2);
+    expect(registryMock.callTool).toHaveBeenNthCalledWith(1, 'primaryTool', { value: 'x' }, expect.anything(), undefined, expect.anything(), 'call-primary');
+    expect(registryMock.callTool).toHaveBeenNthCalledWith(2, 'tailTool', { from: 'primary' }, expect.anything(), undefined, expect.anything(), expect.any(String));
   });
 });

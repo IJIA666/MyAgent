@@ -1,15 +1,6 @@
-## 新增需求
+## 修改需求
 
-### 需求: 高危操作静默拦截与事件抛出
-系统必须（MUST）对预设的高风险指令（如 `rm -rf`）进行语义层面的嗅探，当命中风险阈值且不在白名单内时，必须主动拦截工具调用，并通过 AgentEvent 体系抛出挂起信号，同时不阻塞底层 Node.js 事件循环。
-
-#### 场景: 拦截首次未授权的毁灭性命令
-- **WHEN** 智能体试图调用 `run_terminal_command` 执行包含 `rm -rf` 等敏感模式的命令，且该命令并未记录在白名单时
-- **THEN** 系统应立刻阻断底层物理执行器，向外层抛出包含 `type: 'suspend'` 的 `AgentEvent`，并利用 `ApprovalService` 将当前中间件上下文原生挂起。
-
-#### 场景: 超时全局生命周期阻断拦截与 AbortController 底层穿透
-- **WHEN** 智能体工具执行的总时长超过了系统所设置的预设超时时阈（如 30 秒）时
-- **THEN** 系统调度必须 (MUST) 触发注入的 `AbortController` 并在底层文件操作（如 `fs.promises.readFile`）、外部脚本子进程（如 `exec`）以及 MCP 通信信道中深度传递 and 物理响应此 Abort 信号以彻底阻断拦截，强杀挂起中的异步进程，释放 Node.js 的事件循环占用，并向智能体回传超时报错。
+<!-- 以下为 openspec/specs/human-approval/spec.md 中"人机交互决策反馈闭环"需求的完整替换版本 -->
 
 ### 需求: 人机交互决策反馈闭环
 系统必须（MUST）提供外部 UI/客户端回复审批决策的入口，并能根据反馈执行放行、单次拒绝、持久化始终放行以及联动级联安全熔断。
@@ -18,13 +9,13 @@
 - **WHEN** 外部接收到挂起事件并在 UI 处理完毕后，调用 `ApprovalService.resolve` 且动作为 `deny` 时
 - **THEN** 系统应唤醒挂起的执行流，自动向大模型注入"调用被插件拦截：User denied"的工具执行报错信息，且终端决不会发生任何物理动作。
 
-#### 场景: 用户选择始终放行
+#### 场景: 用户选择始终放行（MODIFIED）
 - **WHEN** 外部调用 `ApprovalService.resolve` 且动作为 `always` 时
 - **THEN** 对于终端命令操作（`execute_command`），系统应记录并持久化该命令或前缀至磁盘白名单，继续唤醒并执行该工具；下次遇到相同命令或前缀时不需再次弹出。此行为跨会话持久有效。
 - **THEN** 对于文件操作（路径访问），系统必须在 `HumanApprovalPlugin.beforeToolMiddleware` 中将资源按 read/write 分别收集为 `session` 类型的 `PendingGrant`（包含 `toolCallId` 字段，与其他 grant 类型共享统一的防串号条件），在 `agent-loop` 的三个条件（管线正常完成 + control.action === 'continue' + grant.toolCallId 匹配）全部成立时，通过 `flushPendingGrant` 写入当前会话的临时白名单。此授权仅在本会话生命周期内有效。
 - **THEN** 文件操作的 `session` 授权在当前 CLI 中暂不可达（UI 不为文件操作提供 `always` 选项），由后续 `approval-policy-contract` change 接入。
 
-#### 场景: 用户选择单次放行
+#### 场景: 用户选择单次放行（ADDED）
 - **WHEN** 外部调用 `ApprovalService.resolve` 且动作为 `once` 时
 - **THEN** 系统必须在 `HumanApprovalPlugin.beforeToolMiddleware` 中收集 `call` 类型的 `PendingGrant`（绑定 `toolCallId`、工具名和资源列表），在 `agent-loop` 条件满足时通过 `registerCallCapability` 注册一次性令牌。
 - **THEN** 令牌以 `registered` 状态存入 `SessionContext`，由 `virtual-mcp` 在 execute 边界 claim 为 `claimed`，执行完成/失败/abort 后由 `agent-loop` 移除为 `removed`。
@@ -43,6 +34,8 @@
 #### 场景: CI或测试环境强行 Bypass
 - **WHEN** 系统处于自动化测试环境或配置有自动 `mockDecision` 的绕过策略时
 - **THEN** 系统应在遇到审批请求时立即以自动放行态度返回，保障流水线的非交互性顺畅流转。
+
+## 新增需求
 
 ### 需求: checkSafety 与 execute 双端上下文传递
 系统必须（MUST）确保所有文件读写工具在执行 `secureResolve{Read,Write}Path` 时传递 `ToolExecutionContext` 或 `sessionContext`，使会话白名单检查和一次性令牌验证在双端均生效。
@@ -66,7 +59,7 @@
 - **WHEN** 用户已将会话只读白名单授予某外部目录，`GrepSearchTool` 在该目录下执行搜索
 - **THEN** 系统必须（MUST）通过 `secureResolveReadPath` 的白名单检查后允许搜索执行
 
-### 需求: DeletePathTool 审批路径收敛
+### 需求: DeletePathTool 审批路径收敛（ADDED）
 系统必须（MUST）将 `DeletePathTool` 的审批收敛到统一的 `checkSafety → HumanApprovalPlugin` 路径，移除分散在多层的冗余审批逻辑。
 
 #### 场景: DeletePathTool 走统一审批管线
@@ -75,9 +68,9 @@
 - **THEN** `virtual-mcp.ts` 不得再对 `deletePath` 执行特殊的 `waitApproval` 遮蔽逻辑
 - **THEN** `DeletePathTool.execute()` 内部不得再调用 `sessionContext.waitApproval()`，审批决策完全由插件管线驱动
 
-### 需求: Tail call 路径 toolCallId 透传
+### 需求: Tail call 路径 toolCallId 透传（ADDED）
 系统必须（MUST）确保 `agent-loop.ts` 中的 tail call 路径与主调用路径享有同等的 toolCallId 透传与审批生命周期支持。
 
 #### 场景: Tail call 触发审批时走完整管线
-- **WHEN** tail call 触发需要审批的工具调用
-- **THEN** 系统必须生成独立的 `toolCallId`，传入 `toolRegistry.callTool()`，走完整的 beforeTool 管线 → pendingGrant 提交 → 令牌生命周期，与主调用路径行为一致
+- **WHEN** tail call（`agent-loop.ts:693`）触发需要审批的工具调用
+- **THEN** 系统必须生成独立的 `toolCallId`，传入 `toolRegistry.callTool()`，走完整的 beforeTool 管线 → pendingGrant 提交 → 令牌生命周期，与主调用路径（`agent-loop.ts:642`）行为一致

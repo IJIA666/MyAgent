@@ -6,6 +6,7 @@
 import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
 import type { SessionContext, ContextTokenUsage } from '../../domain/context.js';
 import type { AgentPlugin } from '../../../ports/driven/tools/AgentPlugin.js';
+import type { SafetyResource } from '../security/SafetyResource.js';
 
 /**
  * 大模型请求所需的参数载体。
@@ -67,6 +68,8 @@ export interface HookContext {
   llmResponse?: unknown;
   /** 当前准备执行或刚执行完的工具项（ 仅在 BeforeTool / AfterTool 中存在 ） */
   toolCall?: {
+    /** 工具调用的唯一标识符，由 agent-loop 传入 */
+    id: string;
     /** 调用的工具函数名称 */
     name: string;
     /** 大模型传入的工具参数结构 */
@@ -92,6 +95,8 @@ export interface HookContext {
   estimatedUsage?: ContextTokenUsage;
   /** 发送流式事件的回调，由大循环在调用 Pipeline 时传入 */
   emitEvent?: (event: unknown) => void;
+  /** 插件可在此字段返回授权 grant，由 AgentLoop 在安全条件下提交 */
+  pendingGrant?: PendingGrant;
 }
 
 /**
@@ -119,6 +124,33 @@ export interface SafetyCheckResult {
   message?: string;
   /** 终端工具特有，用于安全白名单持久化的匹配前缀 */
   safePrefix?: string;
-  /** 文件工具特有，越界读写的物理目标路径 */
+  /** 文件工具特有，越界读写的物理目标路径（保留向后兼容） */
   targetPath?: string;
+  /** 新增：原子资源列表，按工具类型正确标注 read/write */
+  resources?: SafetyResource[];
+}
+
+/**
+ * 授权许可凭证的联合类型。
+ * 插件返回给 AgentLoop，由 AgentLoop 在安全条件满足时提交。
+ */
+export type PendingGrant =
+  | { type: 'call'; toolCallId: string; toolName: string; resources: SafetyResource[] }
+  | { type: 'session'; toolCallId: string; resources: { access: 'read' | 'write'; normalizedPath: string }[] };
+
+/**
+ * 单次工具调用执行期间的隔离上下文。
+ * 携带 toolCallId、已领取的授权资源等，解决并发工具调用隔离问题。
+ */
+export interface ToolExecutionContext {
+  /** 当前智能体会话上下文 */
+  sessionContext: SessionContext;
+  /** 本次工具调用的唯一标识符 */
+  toolCallId: string;
+  /** 调用的工具名称 */
+  toolName: string;
+  /** 规范化参数摘要，用于 capability 令牌匹配 */
+  argumentsDigest: string;
+  /** 本次调用已领取的授权资源列表 */
+  claimedResources: SafetyResource[];
 }

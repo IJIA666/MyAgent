@@ -78,7 +78,8 @@ export class ToolRegistry implements ToolRegistryPort {
     functionArgs: Record<string, unknown>,
     sessionContext?: SessionEventPort & ApprovalPort,
     interactionPort?: InteractionPort,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    toolCallId?: string
   ): Promise<unknown> {
     // 先行加载本地工具清单以供比对
     const localToolsDef = await this.localMcpServer.getTools();
@@ -92,7 +93,7 @@ export class ToolRegistry implements ToolRegistryPort {
       return await this.localMcpServer.callTool({
         name: functionName,
         arguments: functionArgs
-      }, sessionContext, interactionPort, signal);
+      }, sessionContext, interactionPort, signal, toolCallId);
     } else if (this.mcpManager) {
       // 命中外部工具，跨进程分发至对应的 MCP Client 实例
       return await this.mcpManager.callMcpTool(functionName, functionArgs, signal);

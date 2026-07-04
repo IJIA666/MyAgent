@@ -2,6 +2,8 @@ import { existsSync, statSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { extractFileOutline } from './read-many-files-helper.js';
 
 /**
@@ -43,7 +45,7 @@ export class ReadManyFilesTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     const targetPaths = args.targetPaths;
     if (typeof targetPaths !== 'string') {
       return { status: 'deny', message: 'targetPaths 必须是字符串' };
@@ -61,18 +63,22 @@ export class ReadManyFilesTool implements NativeTool {
     }
 
     const rootDir = getAuthorizedDir();
+    const outOfSandboxResources: Array<{ kind: 'path'; access: 'read'; normalizedPath: string }> = [];
     for (const relPath of paths) {
       try {
-        secureResolveReadPath(relPath);
+        secureResolveReadPath(relPath, sessionContext);
       } catch {
         const rawPath = resolve(rootDir!, relPath);
         const resolvedPath = getPhysicalRealPath(rawPath);
-        return {
-          status: 'suspend',
-          message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
-          targetPath: resolvedPath
-        };
+        outOfSandboxResources.push({ kind: 'path', access: 'read' as const, normalizedPath: resolvedPath });
       }
+    }
+    if (outOfSandboxResources.length > 0) {
+      return {
+        status: 'suspend',
+        message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。包含 ${outOfSandboxResources.length} 个越界路径`,
+        resources: outOfSandboxResources
+      };
     }
     return { status: 'pass' };
   }
@@ -81,10 +87,10 @@ export class ReadManyFilesTool implements NativeTool {
    * 执行批量文件读取操作。
    *
    * @param args - 工具调用参数字典
-   * @param sessionContext - 可选的会话上下文
+   * @param _context - 工具调用执行上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
    * @returns 拼接后的文件内容，或在总体积超限时抛出熔断的结构化大纲详情
    */
-  execute(args: Record<string, unknown>, sessionContext?: unknown): string {
+  execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort): string {
     const targetPaths = args.targetPaths;
     if (typeof targetPaths !== 'string') {
       throw new Error("targetPaths 必须是字符串");
@@ -117,7 +123,7 @@ export class ReadManyFilesTool implements NativeTool {
 
     // 首先校验并预读所有文件
     for (const relativePath of paths) {
-      const safePath = secureResolveReadPath(relativePath);
+      const safePath = _context ? secureResolveReadPath(relativePath, _context) : secureResolveReadPath(relativePath);
       if (!existsSync(safePath)) {
         throw new Error(`未找到文件："${relativePath}"`);
       }
@@ -138,7 +144,7 @@ export class ReadManyFilesTool implements NativeTool {
     }
 
     // 触发体积熔断机制
-    const context = sessionContext as { appConfig?: { runtimeLimits?: { readManyFilesLimit?: number } } } | undefined;
+    const context = _context as { appConfig?: { runtimeLimits?: { readManyFilesLimit?: number } } } | undefined;
     const limit = context?.appConfig?.runtimeLimits?.readManyFilesLimit ?? 50000;
 
     if (totalChars > limit) {

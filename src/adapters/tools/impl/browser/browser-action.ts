@@ -8,6 +8,21 @@ import { resolve } from 'path';
 import { existsSync, rmSync } from 'fs';
 import readline from 'readline';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
+
+/**
+ * 从 ToolExecutionContext 或原始 SessionEventPort 中提取 sessionContext。
+ * 用于 Browser 工具适配新的 NativeTool.execute 联合类型契约。
+ *
+ * @param context - 工具调用执行上下文
+ * @returns 原始的 sessionContext 对象，供 BrowserSession.getTenantIdFromContext() 使用
+ */
+function unwrapSessionContext(context?: unknown): unknown {
+  if (context && typeof context === 'object' && 'toolCallId' in context) {
+    return (context as ToolExecutionContext).sessionContext;
+  }
+  return context;
+}
 
 /**
  * 浏览器会话生命周期管理类。
@@ -416,7 +431,7 @@ export class BrowserNavigateTool implements NativeTool {
     if (typeof url !== 'string') {
       throw new Error("url 必须是字符串");
     }
-    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const tenantId = BrowserSession.getTenantIdFromContext(unwrapSessionContext(sessionContext));
 
     const page = await BrowserSession.getPage(cdpUrl, tenantId);
     await page.goto(url, { waitUntil: 'load', timeout: 30000 });
@@ -467,7 +482,7 @@ export class BrowserClickTool implements NativeTool {
     }
     const cleanId = ref.replace('@', '').trim();
     const selector = `[data-myagent-id="${cleanId}"]`;
-    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const tenantId = BrowserSession.getTenantIdFromContext(unwrapSessionContext(sessionContext));
 
     const page = await BrowserSession.getPage(undefined, tenantId);
     const element = await page.$(selector);
@@ -532,7 +547,7 @@ export class BrowserTypeTool implements NativeTool {
     }
     const cleanId = ref.replace('@', '').trim();
     const selector = `[data-myagent-id="${cleanId}"]`;
-    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const tenantId = BrowserSession.getTenantIdFromContext(unwrapSessionContext(sessionContext));
 
     const page = await BrowserSession.getPage(undefined, tenantId);
     const element = await page.$(selector);
@@ -592,7 +607,7 @@ export class BrowserScrollTool implements NativeTool {
     if (direction !== 'up' && direction !== 'down') {
       throw new Error("direction 必须是 'up' 或 'down'");
     }
-    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const tenantId = BrowserSession.getTenantIdFromContext(unwrapSessionContext(sessionContext));
 
     const page = await BrowserSession.getPage(undefined, tenantId);
     await page.evaluate((dir) => {
@@ -635,7 +650,7 @@ export class BrowserBackTool implements NativeTool {
    * @returns 后退完成后的最新网页快照
    */
   async execute(_args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
-    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const tenantId = BrowserSession.getTenantIdFromContext(unwrapSessionContext(sessionContext));
     const page = await BrowserSession.getPage(undefined, tenantId);
     await page.goBack({ timeout: 10000 });
     await page.waitForTimeout(1000);
@@ -684,7 +699,7 @@ export class BrowserPressTool implements NativeTool {
     if (typeof key !== 'string') {
       throw new Error("key 必须是字符串");
     }
-    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const tenantId = BrowserSession.getTenantIdFromContext(unwrapSessionContext(sessionContext));
 
     const page = await BrowserSession.getPage(undefined, tenantId);
     await page.keyboard.press(key);
@@ -729,7 +744,7 @@ export class BrowserVisionTool implements NativeTool {
    * @returns 截图物理落盘后的存放路径说明
    */
   async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
-    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const tenantId = BrowserSession.getTenantIdFromContext(unwrapSessionContext(sessionContext));
     const page = await BrowserSession.getPage(undefined, tenantId);
     const annotate = typeof args.annotate === 'boolean' ? args.annotate : false;
 
@@ -862,7 +877,7 @@ export class BrowserEnsureLoginTool implements NativeTool {
    */
   async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
     const reason = typeof args.reason === 'string' ? args.reason : '检测到需要人机登录验证';
-    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const tenantId = BrowserSession.getTenantIdFromContext(unwrapSessionContext(sessionContext));
     
     // 备份 process.env.BROWSER_HEADLESS 的原始状态，用于非破坏性还原
     const originalHeadless = process.env.BROWSER_HEADLESS;
@@ -965,7 +980,7 @@ export class BrowserGetTextTool implements NativeTool {
    */
   async execute(args: Record<string, unknown>, sessionContext?: unknown): Promise<string> {
     const selector = typeof args.selector === 'string' ? args.selector : 'body';
-    const tenantId = BrowserSession.getTenantIdFromContext(sessionContext);
+    const tenantId = BrowserSession.getTenantIdFromContext(unwrapSessionContext(sessionContext));
     const page = await BrowserSession.getPage(undefined, tenantId);
 
     // 1. 查找所有匹配选择器的可见元素列表

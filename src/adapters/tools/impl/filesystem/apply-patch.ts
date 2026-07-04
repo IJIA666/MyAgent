@@ -4,6 +4,8 @@ import { resolve } from 'path';
 import { secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import { ReadFileTool } from './file-system.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { applyReplacePatch } from './apply-patch-helper.js';
 import { getWorkMode, loadWorkMode } from '../system/terminal.js';
 
@@ -67,7 +69,7 @@ export class ApplyPatchTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 安全评估结论
    */
-  checkSafety(args: Record<string, unknown>): SafetyCheckResult {
+  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     loadWorkMode();
     if (getWorkMode() === 'YOLO') {
       return { status: 'pass' };
@@ -79,7 +81,7 @@ export class ApplyPatchTool implements NativeTool {
     let isOutOfSandbox = false;
     let resolvedPath = '';
     try {
-      secureResolveWritePath(targetPath);
+      secureResolveWritePath(targetPath, sessionContext);
     } catch {
       isOutOfSandbox = true;
       const rootDir = getAuthorizedDir();
@@ -88,7 +90,8 @@ export class ApplyPatchTool implements NativeTool {
     return {
       status: 'suspend',
       message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${targetPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined
+      targetPath: isOutOfSandbox ? resolvedPath : undefined,
+      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : []
     };
   }
 
@@ -96,10 +99,10 @@ export class ApplyPatchTool implements NativeTool {
    * 执行补丁或块替换修补操作。
    *
    * @param args - 工具调用参数字典
-   * @param sessionContext - 可选的会话上下文
+   * @param _context - 工具调用执行上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
    * @returns 修补成功的提示信息
    */
-  execute(args: Record<string, unknown>): string {
+  execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort): string {
     const targetPath = args.targetPath;
     const patchMode = args.patchMode;
     const patchContent = args.patchContent;
@@ -114,7 +117,7 @@ export class ApplyPatchTool implements NativeTool {
       throw new Error("patchContent 必须是字符串");
     }
 
-    const safePath = secureResolveWritePath(targetPath);
+    const safePath = _context ? secureResolveWritePath(targetPath, _context) : secureResolveWritePath(targetPath);
 
     if (!existsSync(safePath)) {
       throw new Error(`目标文件不存在，无法应用修补："${targetPath}"`);

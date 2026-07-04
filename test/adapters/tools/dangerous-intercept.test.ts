@@ -4,6 +4,7 @@ import { resolve } from 'path';
 import { LocalFileSystemMcpServer } from '../../../src/adapters/tools/virtual-mcp.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
 import { initWorkspace } from '../../../src/adapters/tools/impl/base.js';
+import { ReadFileTool } from '../../../src/adapters/tools/impl/filesystem/file-system.js';
 
 describe('高危操作安全硬拦截单元测试', () => {
   let mcpServer: LocalFileSystemMcpServer;
@@ -21,6 +22,7 @@ describe('高危操作安全硬拦截单元测试', () => {
     initWorkspace(testWorkspace);
     mcpServer = new LocalFileSystemMcpServer();
     sessionContext = new SessionContext('test-session-dangerous');
+    ReadFileTool.readFileState.clear();
     // 强制关闭 bypass 模式以验证拦截挂起机制
     sessionContext.approvalService.setBypassMode(false);
   });
@@ -121,6 +123,29 @@ describe('高危操作安全硬拦截单元测试', () => {
 
     if (existsSync(tempFilePath)) {
       unlinkSync(tempFilePath);
+    }
+  });
+
+  it('5. 已进入新生命周期且命中 session grant 的 writeFile，不应再被旧 waitApproval 兜底重复拦截', async () => {
+    const outsideFilePath = resolve(testWorkspace, '..', 'test_temp_whitelist_write.txt');
+    writeFileSync(outsideFilePath, 'original_content', 'utf-8');
+    sessionContext.addTemporaryWriteWhitelist(outsideFilePath);
+    ReadFileTool.readFileState.set(outsideFilePath, { mtimeMs: Date.now() });
+
+    const handler = vi.fn();
+    sessionContext.approvalService.registerApprovalHandler(handler);
+
+    const callResult = await mcpServer.callTool({
+      name: 'writeFile',
+      arguments: { targetPath: '../test_temp_whitelist_write.txt', content: 'updated_content' }
+    }, sessionContext, undefined, undefined, 'tool-call-whitelist');
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(callResult.isError).toBeUndefined();
+    expect(callResult.content[0].text).toContain('写入执行成功');
+
+    if (existsSync(outsideFilePath)) {
+      unlinkSync(outsideFilePath);
     }
   });
 });

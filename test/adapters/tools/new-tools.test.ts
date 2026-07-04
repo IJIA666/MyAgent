@@ -14,14 +14,10 @@ import { ApplyPatchTool } from '../../../src/adapters/tools/impl/filesystem/appl
 import { GitShowStatusTool } from '../../../src/adapters/tools/impl/git/git-show-status.js';
 import { GitShowDiffTool } from '../../../src/adapters/tools/impl/git/git-show-diff.js';
 import { GitShowLogTool } from '../../../src/adapters/tools/impl/git/git-show-log.js';
-import { ApprovalService } from '../../../src/core/usecases/security/ApprovalService.js';
 import { ReadFileTool } from '../../../src/adapters/tools/impl/filesystem/file-system.js';
-import type { SessionEventPort } from '../../../src/ports/driven/session/SessionEventPort.js';
-import type { ApprovalPort } from '../../../src/ports/driven/session/ApprovalPort.js';
 
 describe('新增原生内置工具单元测试', () => {
   const testDir = resolve('./test_action_new_tools_temp');
-  let approvalService: ApprovalService;
 
   beforeAll(() => {
     if (!existsSync(testDir)) {
@@ -37,7 +33,6 @@ describe('新增原生内置工具单元测试', () => {
   });
 
   beforeEach(() => {
-    approvalService = new ApprovalService(false);
     // 重置 ReadFileState
     ReadFileTool.readFileState.clear();
   });
@@ -69,45 +64,26 @@ describe('新增原生内置工具单元测试', () => {
     const filePath = join(testDir, 'delete_me.txt');
     writeFileSync(filePath, 'delete content');
 
-    // 1. 越权拦截
+    // 1. 越权拦截（execute 内 secureResolveWritePath 拒绝越界路径）
     await expect(tool.execute({ targetPath: '../../outside.txt' })).rejects.toThrow('拒绝访问');
 
-    // 2. 挂起放行 (once)
-    const mockContext = {
-      waitApproval: async (
-        approvalId: string,
-        actionInfo: { name: string; arguments?: Record<string, unknown> },
-        options: unknown,
-        warningMsg?: string
-      ) => {
-        const safeActionInfo = { ...actionInfo, arguments: actionInfo.arguments || {} };
-        return approvalService.wait(approvalId, safeActionInfo, options as string | undefined, warningMsg);
-      }
-    } as unknown as SessionEventPort & ApprovalPort;
-    const waitPromise = tool.execute({ targetPath: 'delete_me.txt' }, mockContext);
-    
-    // 挂起中，文件仍应该存在
+    // 2. checkSafety 识别越界路径并返回 resources（审批已收敛到插件层）
+    const safetyResult = tool.checkSafety({ targetPath: 'delete_me.txt' });
+    // 沙箱内路径在 Auto 模式下应挂起（非 YOLO 模式）
+    expect(safetyResult.status).toBe('suspend');
+    if (safetyResult.resources && safetyResult.resources.length > 0) {
+      const r = safetyResult.resources[0] as { kind: 'path'; access: 'read' | 'write'; normalizedPath: string };
+      expect(r.kind).toBe('path');
+      expect(r.access).toBe('write');
+    }
+
+    // 3. 直接执行（不再内部调用 waitApproval，审批由插件管线前置完成）
     expect(existsSync(filePath)).toBe(true);
-
-    // 模拟用户在控制台按下放行
-    const pendingId = Array.from((approvalService as unknown as { pendingApprovals: Map<string, unknown> }).pendingApprovals.keys())[0];
-    expect(pendingId).toBeDefined();
-    approvalService.resolve(pendingId, { action: 'once' });
-
-    const deleteRes = await waitPromise;
+    const deleteRes = await tool.execute({ targetPath: 'delete_me.txt' });
     expect(deleteRes).toContain('路径删除成功');
     expect(existsSync(filePath)).toBe(false);
 
-    // 3. 挂起拒绝 (deny)
-    const filePath2 = join(testDir, 'delete_me_2.txt');
-    writeFileSync(filePath2, 'delete content 2');
-    const waitPromise2 = tool.execute({ targetPath: 'delete_me_2.txt' }, mockContext);
-
-    const pendingId2 = Array.from((approvalService as unknown as { pendingApprovals: Map<string, unknown> }).pendingApprovals.keys())[0];
-    approvalService.resolve(pendingId2, { action: 'deny' });
-
-    await expect(waitPromise2).rejects.toThrow('用户拒绝了删除路径的操作');
-    expect(existsSync(filePath2)).toBe(true);
+    // 3. 拒绝（deny）已收敛到 HumanApprovalPlugin 前置管线，此处不再内联测试
   });
 
   // ==========================================

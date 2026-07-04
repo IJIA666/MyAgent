@@ -1,6 +1,7 @@
-import type { Plugin, HookContext, SafetyCheckResult } from './plugin-types.js';
+import type { Plugin, HookContext, SafetyCheckResult, PendingGrant } from './plugin-types.js';
 import { HookEventName } from './plugin-types.js';
 import { SecurityService } from '../security/SecurityService.js';
+import type { SafetyResource } from '../security/SafetyResource.js';
 
 /**
  * 通用无状态人机协同审批插件。
@@ -80,6 +81,7 @@ export class HumanApprovalPlugin implements Plugin {
 
     // 处理挂起审批分支 (suspend)
     if (safetyResult.status === 'suspend') {
+      const toolCallId = context.toolCall?.id;
       const approvalId = `approve_${Math.random().toString(36).substring(2, 9)}`;
       const message = safetyResult.message || `智能体试图执行高危操作。工具: "${toolCall.name}"`;
       const safePrefix = safetyResult.safePrefix;
@@ -124,7 +126,7 @@ export class HumanApprovalPlugin implements Plugin {
         throw haltError;
       }
 
-      // 处理始终放行分支，如果是终端指令，持久化写入安全白名单规则
+      // 处理始终放行分支，如果是终端指令，持久化写入安全白名单规则（保持原有逻辑）
       if (decision.action === 'always' && toolCall.name === 'execute_command' && safePrefix) {
         const securityService = SecurityService.getInstance();
         const whitelist = securityService.getSecurityAllowlist();
@@ -134,18 +136,39 @@ export class HumanApprovalPlugin implements Plugin {
         }
       }
 
-      // 若工具执行存在越界路径，在用户确权通过后追加进内存临时白名单以实现底层放行
-      if (safetyResult.targetPath) {
-        let securityCategory: 'read' | 'write' = 'write';
-        if (tool && (tool.securityCategory === 'read' || tool.securityCategory === 'write')) {
-          securityCategory = tool.securityCategory;
-        }
+      // 构建 resources 列表：优先使用新的 resources 字段，否则从 targetPath 降级（按工具的 securityCategory 推断 access 类型）
+      let resources: SafetyResource[];
+      if (safetyResult.resources && safetyResult.resources.length > 0) {
+        resources = safetyResult.resources;
+      } else if (safetyResult.targetPath) {
+        // 降级兼容：仅当 checkSafety 尚未迁移到 resources 字段时触发
+        // 使用工具自身的 securityCategory 推断 access，避免只读工具误生成 write grant
+        const inferredAccess: 'read' | 'write' =
+          (tool && tool.securityCategory === 'read') ? 'read' : 'write';
+        resources = [{ kind: 'path', access: inferredAccess, normalizedPath: safetyResult.targetPath }];
+      } else {
+        resources = [];
+      }
 
-        if (securityCategory === 'read') {
-          sessionContext.addTemporaryReadWhitelist(safetyResult.targetPath);
-        } else {
-          sessionContext.addTemporaryWriteWhitelist(safetyResult.targetPath);
-        }
+      // 根据决策构造 pendingGrant，由 AgentLoop 安全提交
+      if (decision.action === 'once' || decision.action === 'always') {
+        const pendingGrant: PendingGrant = (() => {
+          switch (decision.action) {
+            case 'once':
+              // call 级令牌：不写白名单，走 registered→claimed→removed 生命周期
+              return { type: 'call', toolCallId: toolCallId!, toolName: toolCall.name, resources };
+            case 'always': {
+              // session 级令牌：按 access 分类，AgentLoop 提交时写入会话白名单
+              const sessionResources = resources
+                .filter((r): r is SafetyResource & { kind: 'path' } => r.kind === 'path')
+                .map(r => ({ access: r.access, normalizedPath: r.normalizedPath }));
+              return { type: 'session', toolCallId: toolCallId!, resources: sessionResources };
+            }
+            default:
+              return { type: 'call', toolCallId: toolCallId!, toolName: toolCall.name, resources: [] };
+          }
+        })();
+        context.pendingGrant = pendingGrant;
       }
     }
 

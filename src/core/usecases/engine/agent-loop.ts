@@ -1,8 +1,9 @@
+import { randomUUID } from 'crypto';
 import { resolve } from 'path';
 import { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
 import { LlmConfig } from '../../../config/index.js';
 import { AgentTracer } from '../../domain/tracer.js';
-import { SessionContext, ContextTokenUsage, StoredChatMessage } from '../../domain/context.js';
+import { SessionContext, ContextTokenUsage, StoredChatMessage, computeArgumentsDigest } from '../../domain/context.js';
 import type { ChatMessage, LlmPort, LlmStreamEvent } from '../../../ports/driven/llm/LlmPort.js';
 import type { ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
@@ -575,7 +576,7 @@ export class AgentLoop {
                   this.context,
                   this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeTool),
                   {
-                    toolCall: { name: functionName, arguments: functionArgs },
+                    toolCall: { id: toolCall.id, name: functionName, arguments: functionArgs },
                     emitEvent: taskEmitEvent,
                     toolRegistry: this.toolRegistry
                   }
@@ -599,6 +600,40 @@ export class AgentLoop {
                     finalCallUpdate: taskFinalCallUpdate,
                     aborted: false
                   };
+                }
+
+                // pendingGrant 条件提交：管线正常完成 + action === 'continue' + toolCallId 匹配
+                if (
+                  beforeToolResult.control.action === 'continue' &&
+                  beforeToolResult.pendingGrant &&
+                  beforeToolResult.pendingGrant.toolCallId === toolCall.id
+                ) {
+                  const grant = beforeToolResult.pendingGrant;
+                  switch (grant.type) {
+                    case 'call': {
+                      // 在注册点计算 argumentsDigest，确保 claimCapability 侧有可靠比对源
+                      const digest = computeArgumentsDigest(functionArgs);
+                      this.context.registerCallCapability({
+                        toolCallId: grant.toolCallId,
+                        toolName: grant.toolName,
+                        resources: grant.resources,
+                        argumentsDigest: digest,
+                        state: 'registered',
+                        createdAt: Date.now()
+                      });
+                      break;
+                    }
+                    case 'session':
+                      // 按 access 分别写入会话临时白名单
+                      for (const r of grant.resources) {
+                        if (r.access === 'read') {
+                          this.context.addTemporaryReadWhitelist(r.normalizedPath);
+                        } else {
+                          this.context.addTemporaryWriteWhitelist(r.normalizedPath);
+                        }
+                      }
+                      break;
+                  }
                 }
 
                 const actualArgs = beforeToolResult.toolCall?.arguments ?? functionArgs;
@@ -639,7 +674,7 @@ export class AgentLoop {
                     throw new Error("工具执行已被 Abort 阻断（超时）");
                   }
 
-                  const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs, this.context, this.interactionPort, signal);
+                  const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs, this.context, this.interactionPort, signal, toolCall.id);
                   const rawResult = JSON.stringify(mcpResult);
                   outputResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
                   toolResult = outputResult.content;
@@ -651,6 +686,8 @@ export class AgentLoop {
                   }
                   throw toolError;
                 } finally {
+                  // 消费 call capability 令牌（无论成功/失败/abort），含主调用和 tail call
+                  this.context.consumeCapability(toolCall.id);
                   for (let r = releases.length - 1; r >= 0; r--) {
                     releases[r]();
                   }
@@ -664,7 +701,7 @@ export class AgentLoop {
                   this.context,
                   this.pluginRegistry.getPluginsForEvent(HookEventName.AfterTool),
                   {
-                    toolCall: { name: functionName, arguments: actualArgs },
+                    toolCall: { id: toolCall.id, name: functionName, arguments: actualArgs },
                     toolResult: { content: toolResult },
                     emitEvent: taskEmitEvent
                   }
@@ -690,8 +727,85 @@ export class AgentLoop {
                   if (signal.aborted) {
                     throw new Error("工具执行已被 Abort 阻断（超时）");
                   }
-                  const tailResultRaw = await this.toolRegistry.callTool(tailCall.name, tailCall.args, this.context, this.interactionPort, signal);
-                  taskFinalCallUpdate.result = JSON.stringify(tailResultRaw);
+                  // tail call 生成独立 toolCallId
+                  const tailCallId = randomUUID();
+
+                  // tail call 走完整 beforeTool 管线（含 HumanApprovalPlugin 审批）
+                  const tailBeforeToolResult = await runHookPipeline(
+                    HookEventName.BeforeTool,
+                    this.context,
+                    this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeTool),
+                    {
+                      toolCall: { id: tailCallId, name: tailCall.name, arguments: tailCall.args },
+                      emitEvent: taskEmitEvent,
+                      toolRegistry: this.toolRegistry
+                    }
+                  );
+
+                  if (tailBeforeToolResult.control.action === 'abort') {
+                    taskEvents.push({ type: 'error', message: `[插件拦截] 尾随工具调用被拦截阻断：${tailBeforeToolResult.control.reason ?? '安全策略限制'}` });
+                    throw new Error(`尾随工具调用被插件拦截：${tailBeforeToolResult.control.reason ?? '安全策略限制'}`);
+                  }
+
+                  // pendingGrant 条件提交（与主调用逻辑一致）
+                  if (
+                    tailBeforeToolResult.control.action === 'continue' &&
+                    tailBeforeToolResult.pendingGrant &&
+                    tailBeforeToolResult.pendingGrant.toolCallId === tailCallId
+                  ) {
+                    const grant = tailBeforeToolResult.pendingGrant;
+                    switch (grant.type) {
+                      case 'call': {
+                        const digest = computeArgumentsDigest(tailCall.args);
+                        this.context.registerCallCapability({
+                          toolCallId: grant.toolCallId,
+                          toolName: grant.toolName,
+                          resources: grant.resources,
+                          argumentsDigest: digest,
+                          state: 'registered',
+                          createdAt: Date.now()
+                        });
+                        break;
+                      }
+                      case 'session':
+                        for (const r of grant.resources) {
+                          if (r.access === 'read') {
+                            this.context.addTemporaryReadWhitelist(r.normalizedPath);
+                          } else {
+                            this.context.addTemporaryWriteWhitelist(r.normalizedPath);
+                          }
+                        }
+                        break;
+                    }
+                  }
+
+                  let tailResultRaw: unknown;
+                  try {
+                    tailResultRaw = await this.toolRegistry.callTool(tailCall.name, tailCall.args, this.context, this.interactionPort, signal, tailCallId);
+                  } finally {
+                    // 消费 tail call 的 capability 令牌
+                    this.context.consumeCapability(tailCallId);
+                  }
+
+                  // tail call 同样需要进入 AfterTool 生命周期，确保审计/JIT/结果改写插件可见。
+                  const tailToolResult = JSON.stringify(tailResultRaw);
+                  const tailAfterToolResult = await runHookPipeline(
+                    HookEventName.AfterTool,
+                    this.context,
+                    this.pluginRegistry.getPluginsForEvent(HookEventName.AfterTool),
+                    {
+                      toolCall: { id: tailCallId, name: tailCall.name, arguments: tailCall.args },
+                      toolResult: { content: tailToolResult },
+                      emitEvent: taskEmitEvent
+                    }
+                  );
+
+                  if (tailAfterToolResult.control.action === 'abort') {
+                    taskEvents.push({ type: 'error', message: `[插件拦截] 尾随工具后置处理被阻断：${tailAfterToolResult.control.reason ?? '安全策略限制'}` });
+                    throw new Error(`尾随工具后置处理被插件拦截：${tailAfterToolResult.control.reason ?? '安全策略限制'}`);
+                  }
+
+                  taskFinalCallUpdate.result = tailAfterToolResult.toolResult?.content ?? tailToolResult;
                 }
 
                 taskEvents.push({ type: 'tool_call_result', functionName, result: taskFinalCallUpdate.result ?? '' });
