@@ -104,6 +104,16 @@ export class ToolRegistry implements ToolRegistryPort {
   }
 
   /**
+   * 获取本地内置工具的资源提取器注册表只读副本。
+   * 供 ApprovalPolicy 在装配阶段注入，用于交叉校验工具层报告的 SafetyOperation。
+   *
+   * @returns 工具名 → 资源提取器的 Map
+   */
+  public getResourceExtractors(): Map<string, import('./virtual-mcp.js').ResourceExtractor> {
+    return this.localMcpServer.getResourceExtractors();
+  }
+
+  /**
    * 优雅断开并清理工具注册表内管理的所有物理连接（如 MCP 子进程）。
    */
   public async close(): Promise<void> {

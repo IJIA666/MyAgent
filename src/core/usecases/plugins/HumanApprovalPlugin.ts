@@ -1,7 +1,8 @@
 import type { Plugin, HookContext, SafetyCheckResult, PendingGrant } from './plugin-types.js';
+import type { SafetyOperation } from './plugin-types.js';
 import { HookEventName } from './plugin-types.js';
-import { SecurityService } from '../security/SecurityService.js';
 import type { SafetyResource } from '../security/SafetyResource.js';
+import { ApprovalPolicy } from '../security/ApprovalPolicy.js';
 
 /**
  * 通用无状态人机协同审批插件。
@@ -16,10 +17,19 @@ export class HumanApprovalPlugin implements Plugin {
   public readonly name = 'HumanApprovalPlugin';
   /** 执行优先级权重 */
   public readonly weight = 10;
+  /** 中央审批策略服务实例 */
+  private approvalPolicy: ApprovalPolicy;
   /** 插件注册的生命周期钩子中间件集合 */
   public readonly hooks = {
     [HookEventName.BeforeTool]: this.beforeToolMiddleware.bind(this)
   };
+
+  /**
+   * @param approvalPolicy - 中央审批策略服务实例
+   */
+  constructor(approvalPolicy: ApprovalPolicy) {
+    this.approvalPolicy = approvalPolicy;
+  }
 
   /**
    * BeforeTool 钩子中间件处理逻辑。
@@ -83,10 +93,19 @@ export class HumanApprovalPlugin implements Plugin {
     if (safetyResult.status === 'suspend') {
       const toolCallId = context.toolCall?.id;
       const approvalId = `approve_${Math.random().toString(36).substring(2, 9)}`;
-      const message = safetyResult.message || `智能体试图执行高危操作。工具: "${toolCall.name}"`;
-      const safePrefix = safetyResult.safePrefix;
 
-      // 广播 suspend 事件给外部宿主
+      // 组装 SafetyOperation（含旧格式降级兼容，任务 4.6）
+      const operation: SafetyOperation = this.buildSafetyOperation(safetyResult, tool, toolCall.name);
+
+      // 委托 ApprovalPolicy 生成受信的审批请求（任务 4.2）
+      const approvalRequest = this.approvalPolicy.resolve({
+        toolName: toolCall.name,
+        toolArgs: toolCall.arguments,
+        operation,
+        workMode: sessionContext.getWorkMode(),
+      });
+
+      // 广播 suspend 事件给外部宿主，携带 ApprovalRequest.choices（任务 4.3）
       context.emitEvent?.({
         type: 'suspend',
         id: approvalId,
@@ -94,8 +113,9 @@ export class HumanApprovalPlugin implements Plugin {
           name: toolCall.name,
           arguments: toolCall.arguments
         },
-        allowedPrefix: safePrefix ?? null,
-        message
+        allowedPrefix: safetyResult.safePrefix ?? null,
+        message: approvalRequest.message,
+        choices: approvalRequest.choices
       });
 
       if (!service) {
@@ -104,75 +124,99 @@ export class HumanApprovalPlugin implements Plugin {
         return;
       }
 
-      // 原地挂起并等待外部决策，并强绑定当前会话 ID
+      // 原地挂起并等待外部决策，透传 choices 给 UI（任务 1.8）
       const decision = await service.wait(
         approvalId,
         { name: toolCall.name, arguments: toolCall.arguments },
-        safePrefix,
-        message,
+        safetyResult.safePrefix,
+        approvalRequest.message,
         300000,
-        sessionContext.getSessionId()
+        sessionContext.getSessionId(),
+        approvalRequest.choices
       );
 
-      // 处理审批被拒绝分支
-      if (decision.action === 'deny') {
-        // 创建结构化中断重塑错误
-        const haltError = new Error('HaltedByReject: Operation rejected by user, and all subsequent pending actions have been cancelled.');
-        // 级联熔断同会话下其余 pending 挂起请求
+      // UI 回传的 choiceId 必须属于本次受信的 choices 集，否则按拒绝处理
+      const allowedChoices = new Set(approvalRequest.choices.map(choice => choice.choiceId));
+      if (!allowedChoices.has(decision.action)) {
+        const haltError = new Error(`HaltedByReject: Untrusted approval choice "${decision.action}" is not allowed for this operation.`);
         service.rejectBySessionId(sessionContext.getSessionId(), haltError);
+        context.control.action = 'abort';
+        context.control.reason = `HaltedByReject: Untrusted approval choice "${decision.action}"`;
+        throw haltError;
+      }
 
+      const trustedOperation = approvalRequest.operation ?? operation;
+
+      // 委托 ApprovalPolicy 将 choiceId 映射为授权效果（任务 4.4）
+      const effect = ApprovalPolicy.mapChoiceToEffect(decision.action, trustedOperation, toolCall.name);
+
+      // 处理拒绝分支
+      if (effect.type === 'deny') {
+        const haltError = new Error('HaltedByReject: Operation rejected by user, and all subsequent pending actions have been cancelled.');
+        service.rejectBySessionId(sessionContext.getSessionId(), haltError);
         context.control.action = 'abort';
         context.control.reason = 'HaltedByReject: Operation rejected by user';
         throw haltError;
       }
 
-      // 处理始终放行分支，如果是终端指令，持久化写入安全白名单规则（保持原有逻辑）
-      if (decision.action === 'always' && toolCall.name === 'execute_command' && safePrefix) {
-        const securityService = SecurityService.getInstance();
-        const whitelist = securityService.getSecurityAllowlist();
-        const prefixRule = `${safePrefix}:*`;
-        if (!whitelist.includes(prefixRule)) {
-          securityService.saveSecurityAllowlist([...whitelist, prefixRule]);
-        }
-      }
-
-      // 构建 resources 列表：优先使用新的 resources 字段，否则从 targetPath 降级（按工具的 securityCategory 推断 access 类型）
-      let resources: SafetyResource[];
-      if (safetyResult.resources && safetyResult.resources.length > 0) {
-        resources = safetyResult.resources;
-      } else if (safetyResult.targetPath) {
-        // 降级兼容：仅当 checkSafety 尚未迁移到 resources 字段时触发
-        // 使用工具自身的 securityCategory 推断 access，避免只读工具误生成 write grant
-        const inferredAccess: 'read' | 'write' =
-          (tool && tool.securityCategory === 'read') ? 'read' : 'write';
-        resources = [{ kind: 'path', access: inferredAccess, normalizedPath: safetyResult.targetPath }];
-      } else {
-        resources = [];
-      }
-
-      // 根据决策构造 pendingGrant，由 AgentLoop 安全提交
-      if (decision.action === 'once' || decision.action === 'always') {
-        const pendingGrant: PendingGrant = (() => {
-          switch (decision.action) {
-            case 'once':
-              // call 级令牌：不写白名单，走 registered→claimed→removed 生命周期
-              return { type: 'call', toolCallId: toolCallId!, toolName: toolCall.name, resources };
-            case 'always': {
-              // session 级令牌：按 access 分类，AgentLoop 提交时写入会话白名单
-              const sessionResources = resources
-                .filter((r): r is SafetyResource & { kind: 'path' } => r.kind === 'path')
-                .map(r => ({ access: r.access, normalizedPath: r.normalizedPath }));
-              return { type: 'session', toolCallId: toolCallId!, resources: sessionResources };
-            }
-            default:
-              return { type: 'call', toolCallId: toolCallId!, toolName: toolCall.name, resources: [] };
-          }
-        })();
+      // 根据效果类型构造 pendingGrant 或 persistentRuleEffect（任务 4.5）
+      if (effect.type === 'persistent') {
+        context.persistentRuleEffect = effect.payload as { type: 'persistent'; prefix: string };
+      } else if (effect.type === 'call' || effect.type === 'session') {
+        const grant = effect.payload as PendingGrant;
+        // 注入 toolCallId（mapChoiceToEffect 静态方法无法获取 toolCallId）
+        const pendingGrant: PendingGrant = grant.type === 'call'
+          ? { type: 'call', toolCallId: toolCallId!, toolName: grant.toolName, resources: grant.resources }
+          : { type: 'session', toolCallId: toolCallId!, resources: grant.resources };
         context.pendingGrant = pendingGrant;
       }
     }
 
     // 执行链流转
     await next();
+  }
+
+  /**
+   * 从 SafetyCheckResult 组装 SafetyOperation。
+   * 若 checkSafety 已返回 operation 字段则直接使用，
+   * 否则从旧格式字段（resources、targetPath、message 等）降级组装。
+   */
+  private buildSafetyOperation(
+    safetyResult: SafetyCheckResult,
+    tool: { securityCategory: 'read' | 'write'; name: string } | undefined,
+    toolName: string
+  ): SafetyOperation {
+    // 优先使用工具已返回的标准化 operation
+    if (safetyResult.operation) {
+      return safetyResult.operation;
+    }
+
+    // 降级组装：从旧格式字段推断
+    const resources: SafetyResource[] = safetyResult.resources && safetyResult.resources.length > 0
+      ? safetyResult.resources
+      : safetyResult.targetPath
+        ? [{
+            kind: 'path',
+            access: (tool && tool.securityCategory === 'read') ? 'read' : 'write',
+            normalizedPath: safetyResult.targetPath
+          }]
+        : [];
+
+    // 推断 operationCategory
+    let operationCategory: SafetyOperation['operationCategory'];
+    if (toolName === 'execute_command') {
+      operationCategory = 'command-execute';
+    } else if (tool && tool.securityCategory === 'read') {
+      operationCategory = 'file-read';
+    } else {
+      operationCategory = 'file-write';
+    }
+
+    return {
+      resources,
+      riskReason: safetyResult.message || `工具 "${toolName}" 请求授权`,
+      operationCategory,
+      summary: safetyResult.message || toolName,
+    };
   }
 }

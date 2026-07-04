@@ -4,12 +4,15 @@ import { systemTools } from './impl/system/index.js';
 import { getSkillTools } from './impl/skill/index.js';
 import { getInteractionTools } from './impl/interaction/index.js';
 import type { SafetyCheckResult, ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
+import type { SafetyResource } from '../../core/usecases/security/SafetyResource.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import { secureResolveWritePath } from './impl/base.js';
 import { existsSync } from 'fs';
+import { resolve } from 'path';
 import { computeArgumentsDigest } from '../../core/domain/context.js';
+import { extractSafePrefix } from './impl/system/terminal.js';
 import {
   BrowserNavigateTool,
   BrowserClickTool,
@@ -81,6 +84,13 @@ export interface NativeTool {
 }
 
 /**
+ * 资源提取器类型定义。
+ * 从工具调用的原始参数中重新计算原子资源列表，
+ * 用于 ApprovalPolicy 交叉校验工具层报告的 SafetyOperation.resources。
+ */
+export type ResourceExtractor = (args: Record<string, unknown>) => SafetyResource[];
+
+/**
  * 虚拟 MCP 调用请求接口定义
  * 用于标准化内部工具的调用传参结构
  */
@@ -116,6 +126,12 @@ export class LocalFileSystemMcpServer {
   private toolsMap = new Map<string, NativeTool>();
 
   /**
+   * 资源提取器注册表：工具名 → 提取器函数。
+   * 由 ApprovalPolicy 在构造时注入引用，用于交叉校验工具层报告的 SafetyOperation。
+   */
+  private resourceExtractors = new Map<string, ResourceExtractor>();
+
+  /**
    * 初始化虚拟 MCP 服务器并注册所有内置工具。
    *
    * @param options - 附加配置选项，包含可选的 loadSkill 解析器
@@ -141,6 +157,9 @@ export class LocalFileSystemMcpServer {
 
     // 循环迭代注册到本地虚拟服务器中
     allTools.forEach(tool => this.register(tool));
+
+    // 注册资源提取器（用于 ApprovalPolicy 交叉校验）
+    this.registerExtractorsForBuiltinTools();
   }
 
   /**
@@ -150,6 +169,27 @@ export class LocalFileSystemMcpServer {
    */
   register(tool: NativeTool): void {
     this.toolsMap.set(tool.name, tool);
+  }
+
+  /**
+   * 注册一个资源提取器函数。
+   * 提取器用于从工具原始参数中提取资源列表，供 ApprovalPolicy 交叉校验工具层报告的资源真实性。
+   *
+   * @param toolName - 工具名称
+   * @param extractor - 资源提取器函数
+   */
+  public registerResourceExtractor(toolName: string, extractor: ResourceExtractor): void {
+    this.resourceExtractors.set(toolName, extractor);
+  }
+
+  /**
+   * 获取资源提取器注册表的只读副本。
+   * 供 ApprovalPolicy 在装配阶段注入使用。
+   *
+   * @returns 工具名 → 提取器的 Map 副本
+   */
+  public getResourceExtractors(): Map<string, ResourceExtractor> {
+    return new Map(this.resourceExtractors);
   }
 
   /**
@@ -300,5 +340,103 @@ export class LocalFileSystemMcpServer {
         isError: true
       };
     }
+  }
+
+  /** 为所有内置工具注册资源提取器（用于 ApprovalPolicy 交叉校验） */
+  private registerExtractorsForBuiltinTools(): void {
+    const cwd = process.cwd();
+
+    /** 创建路径提取器辅助函数 */
+    const pathExtractor = (pathKey: string, access: 'read' | 'write'): ResourceExtractor =>
+      (args) => {
+        const rawPath = args[pathKey];
+        if (typeof rawPath === 'string' && rawPath.trim()) {
+          return [{ kind: 'path', access, normalizedPath: resolve(cwd, rawPath.trim()) }];
+        }
+        return [];
+      };
+
+    /** 创建多路径提取器（用于 readManyFiles） */
+    const multiPathExtractor = (pathKey: string, access: 'read' | 'write'): ResourceExtractor =>
+      (args) => {
+        const rawPaths = args[pathKey];
+        if (typeof rawPaths === 'string') {
+          let paths: string[];
+          try {
+            const parsed = JSON.parse(rawPaths);
+            paths = Array.isArray(parsed) ? parsed.map(String) : [rawPaths.trim()];
+          } catch {
+            paths = rawPaths.split(',').map(s => s.trim()).filter(Boolean);
+          }
+          return paths.map(p => ({ kind: 'path' as const, access, normalizedPath: resolve(cwd, p) }));
+        }
+        return [];
+      };
+
+    /** 创建命令前缀提取器 */
+    const commandPrefixExtractor: ResourceExtractor = (args) => {
+      const command = args.command;
+      if (typeof command === 'string' && command.trim()) {
+        const safePrefix = extractSafePrefix(command);
+        if (safePrefix) {
+          return [{ kind: 'command-prefix', prefix: safePrefix }];
+        }
+      }
+      return [];
+    };
+
+    // ── 文件工具：只读 ──
+    this.registerResourceExtractor('readFile', pathExtractor('targetPath', 'read'));
+    this.registerResourceExtractor('readManyFiles', multiPathExtractor('targetPaths', 'read'));
+    this.registerResourceExtractor('listFiles', pathExtractor('targetPath', 'read'));
+    this.registerResourceExtractor('grepSearch', (args) => {
+      const rawPath = args.searchPath;
+      if (typeof rawPath === 'string' && rawPath.trim()) {
+        // grepSearch 的 path 参数可能是逗号分隔的多个路径
+        const paths = rawPath.split(',').map(s => s.trim()).filter(Boolean);
+        return paths.map(p => ({ kind: 'path' as const, access: 'read' as const, normalizedPath: resolve(cwd, p) }));
+      }
+      return [];
+    });
+    this.registerResourceExtractor('globSearch', () => {
+      // globSearch 可能不传具体路径，提取器返回空列表表示无法校验
+      return [];
+    });
+
+    // ── 文件工具：写入 ──
+    this.registerResourceExtractor('writeFile', pathExtractor('targetPath', 'write'));
+    this.registerResourceExtractor('editFile', pathExtractor('targetPath', 'write'));
+    this.registerResourceExtractor('createDirectory', pathExtractor('directoryPath', 'write'));
+    this.registerResourceExtractor('deletePath', pathExtractor('targetPath', 'write'));
+    this.registerResourceExtractor('applyPatch', pathExtractor('targetPath', 'write'));
+
+    // ── 文件工具：双路径 ──
+    this.registerResourceExtractor('movePath', (args) => {
+      const source = args.sourcePath;
+      const dest = args.destinationPath;
+      const resources: SafetyResource[] = [];
+      if (typeof source === 'string' && source.trim()) {
+        resources.push({ kind: 'path', access: 'write', normalizedPath: resolve(cwd, source.trim()) });
+      }
+      if (typeof dest === 'string' && dest.trim()) {
+        resources.push({ kind: 'path', access: 'write', normalizedPath: resolve(cwd, dest.trim()) });
+      }
+      return resources;
+    });
+    this.registerResourceExtractor('copyPath', (args) => {
+      const source = args.sourcePath;
+      const dest = args.destinationPath;
+      const resources: SafetyResource[] = [];
+      if (typeof source === 'string' && source.trim()) {
+        resources.push({ kind: 'path', access: 'read', normalizedPath: resolve(cwd, source.trim()) });
+      }
+      if (typeof dest === 'string' && dest.trim()) {
+        resources.push({ kind: 'path', access: 'write', normalizedPath: resolve(cwd, dest.trim()) });
+      }
+      return resources;
+    });
+
+    // ── 命令工具 ──
+    this.registerResourceExtractor('execute_command', commandPrefixExtractor);
   }
 }

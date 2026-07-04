@@ -530,7 +530,11 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
       warningMsg
     );
     return {
-      action: (decision.action === 'once' || decision.action === 'always') ? 'approve' : 'deny'
+      action: (
+        decision.action === 'call' ||
+        decision.action === 'session' ||
+        decision.action === 'persistent'
+      ) ? 'approve' : 'deny'
     };
   }
 

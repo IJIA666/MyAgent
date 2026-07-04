@@ -1,8 +1,9 @@
 import { logger } from '../../../utils/logger.js';
+import type { ApprovalChoice } from '../plugins/plugin-types.js';
 
 export interface ApprovalDecision {
-  /** 决策动作：once (单次放行), always (始终放行并存入白名单), deny (拒绝执行) */
-  action: 'once' | 'always' | 'deny';
+  /** 决策动作：call (单次放行), session (本次会话始终放行), persistent (持久化白名单), deny (拒绝执行) */
+  action: 'call' | 'session' | 'persistent' | 'deny';
 }
 
 /**
@@ -32,7 +33,8 @@ export class ApprovalService {
     id: string,
     toolCall: { name: string; arguments: Record<string, unknown> },
     allowedPrefix?: string,
-    message?: string
+    message?: string,
+    choices?: ApprovalChoice[]
   ) => void | Promise<void>;
 
   /**
@@ -80,17 +82,18 @@ export class ApprovalService {
     allowedPrefix?: string,
     message?: string,
     timeoutMs = 300000,
-    sessionId?: string
+    sessionId?: string,
+    choices?: ApprovalChoice[]
   ): Promise<ApprovalDecision> {
-    // 若处于 Bypass 模式，立即以 once 单次放行回复，保障 CI/测试顺畅
+    // 若处于 Bypass 模式，立即以 call 单次放行回复，保障 CI/测试顺畅
     if (this.isBypassMode) {
-      return { action: 'once' };
+      return { action: 'call' };
     }
 
     // 同步触发已注册的审批问答界面，传入完整的审批元数据
     if (this.onNeedApprovalHandler) {
       try {
-        const res = this.onNeedApprovalHandler(id, toolCall, allowedPrefix, message);
+        const res = this.onNeedApprovalHandler(id, toolCall, allowedPrefix, message, choices);
         if (res instanceof Promise) {
           res.catch((err) => logger.error('Approval handler async error:', err)); // 替换为统一日志单例输出
         }

@@ -20,8 +20,8 @@ describe('ApprovalService Unit Tests', () => {
       { name: 'execute_command', arguments: { command: 'npm run test' } }
     );
 
-    // 验证：直接放行返回 once
-    expect(decision.action).toBe('once');
+    // 验证：直接放行返回 call
+    expect(decision.action).toBe('call');
     // 验证：回调完全没有触发
     expect(handler).not.toHaveBeenCalled();
   });
@@ -35,21 +35,22 @@ describe('ApprovalService Unit Tests', () => {
     // 启动 wait，由于尚未被 resolve，Promise 原地异步挂起
     const waitPromise = service.wait('task-wait-456', toolCall, 'rm', '警告：敏感指令', 5000);
 
-    // 验证：事件处理器同步且立即被触发，参数正确传递
+    // 验证：事件处理器同步且立即被触发，参数正确传递（含 choices 参数）
     expect(handler).toHaveBeenCalledWith(
       'task-wait-456',
       toolCall,
       'rm',
-      '警告：敏感指令'
+      '警告：敏感指令',
+      undefined  // choices 参数（未传入时默认为 undefined）
     );
 
-    // 手动执行 resolve 传入 always 决策
-    const resolved = service.resolve('task-wait-456', { action: 'always' });
+    // 手动执行 resolve 传入 session 决策
+    const resolved = service.resolve('task-wait-456', { action: 'session' });
     expect(resolved).toBe(true);
 
     // 断言挂起的 waitPromise 成功解挂并带回对应的决策结果
     const result = await waitPromise;
-    expect(result.action).toBe('always');
+    expect(result.action).toBe('session');
   });
 
   it('应该能正常处理超时自动降级拒绝', async () => {
@@ -123,8 +124,8 @@ describe('ApprovalService Unit Tests', () => {
     await expect(waitPromiseA2).rejects.toThrow('HaltedByReject: User rejected session-a');
 
     // 验证：会话 B 的挂起项没有被熔断，仍然能够正常 resolve
-    service.resolve('task-b1', { action: 'once' });
+    service.resolve('task-b1', { action: 'call' });
     const resB1 = await waitPromiseB1;
-    expect(resB1.action).toBe('once');
+    expect(resB1.action).toBe('call');
   });
 });

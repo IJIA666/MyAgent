@@ -96,4 +96,20 @@ describe('SessionContext Token & Hash Tests', () => {
     // 恢复锁状态
     context.isProcessing = false;
   });
+
+  it('应该在 waitApproval 兼容层中将 persistent 决策映射为 approve', async () => {
+    context.approvalService.setBypassMode(false);
+    const approvalId = 'approval-persistent-001';
+    const pending = context.waitApproval(
+      approvalId,
+      { name: 'execute_command', arguments: { command: 'git status' } },
+      'git status',
+      '测试持久化审批'
+    );
+
+    context.approvalService.resolve(approvalId, { action: 'persistent' });
+    const result = await pending;
+
+    expect(result.action).toBe('approve');
+  });
 });

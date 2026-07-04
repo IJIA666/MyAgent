@@ -9,6 +9,7 @@ import { waitUserIntervention } from './cli.js';
 import { InteractionHandler } from './interaction-handler.js';
 import { BrowserSession } from '../../tools/impl/browser/browser-action.js';
 import { logger } from '../../../utils/logger.js';
+import type { ApprovalChoice } from '../../../core/usecases/plugins/plugin-types.js';
 
 /**
  * 终端界面控制门面（Facade）。
@@ -66,11 +67,11 @@ export class CliFacade {
     this.session.setInteractionPort(new InteractionHandler({ listener: this.listener }));
 
     // 注册底座的审批卡关回调，实现实时非阻塞终端交互，防止 Generator 原地挂起造成死锁
-    this.session.approvalService.registerApprovalHandler(async (id: string, toolCall: { name: string; arguments: Record<string, unknown> }, allowedPrefix?: string, message?: string) => {
+    this.session.approvalService.registerApprovalHandler(async (id: string, toolCall: { name: string; arguments: Record<string, unknown> }, allowedPrefix?: string, message?: string, choices?: ApprovalChoice[]) => {
       // 物理注销全局监听器，彻底隔离 Stdin，杜绝回显污染与事件穿透
       this.listener.close();
 
-      const decision = await new Promise<'once' | 'always' | 'deny'>((resolve) => {
+      const decision = await new Promise<'call' | 'session' | 'persistent' | 'deny'>((resolve) => {
         // 创建临时接口前，显式唤醒 stdin 流，防止之前实例关闭导致流处于暂停状态
         if (typeof process.stdin.resume === 'function') {
           process.stdin.resume();
@@ -93,7 +94,33 @@ export class CliFacade {
           console.log(`   👉  \x1b[33m${command}\x1b[0m`);
         }
 
-        if (allowedPrefix) {
+        // 优先使用策略层下发的 choices（任务 5.1、5.2）
+        if (choices && choices.length > 0) {
+          console.log('选择操作:');
+          const choiceMap = new Map<string, ApprovalChoice>();
+          choices.forEach((c, i) => {
+            const num = i + 1;
+            const desc = c.description ? ` — ${c.description}` : '';
+            console.log(`  [${num}] ${c.label}${desc}`);
+            choiceMap.set(String(num), c);
+          });
+
+          const ask = () => {
+            rl.question(`请选择 [1-${choices.length}]: `, (answer) => {
+              const ans = answer.trim();
+              const selected = choiceMap.get(ans);
+              if (selected) {
+                rl.close();
+                resolve(selected.choiceId); // 仅返回 choiceId（任务 5.3）
+              } else {
+                console.log('无效选择，请重新输入。');
+                ask();
+              }
+            });
+          };
+          ask();
+        } else if (allowedPrefix) {
+          // 降级逻辑：choices 缺失时使用 allowedPrefix 推导（任务 5.4）
           console.log('选择操作:');
           console.log('  [1] 单次放行 (Allow Once)');
           console.log(`  [2] 始终放行该前缀命令 (Always Allow "${allowedPrefix}:*")`);
@@ -104,10 +131,10 @@ export class CliFacade {
               const ans = answer.trim();
               if (ans === '1') {
                 rl.close();
-                resolve('once');
+                resolve('call');
               } else if (ans === '2') {
                 rl.close();
-                resolve('always');
+                resolve('persistent');
               } else if (ans === '3') {
                 rl.close();
                 resolve('deny');
@@ -119,6 +146,7 @@ export class CliFacade {
           };
           ask();
         } else {
+          // 降级逻辑：无 choices 也无 allowedPrefix（任务 5.4）
           console.log('选择操作:');
           console.log('  [1] 单次放行 (Allow Once)');
           console.log('  [2] 拒绝执行 (Deny)');
@@ -128,7 +156,7 @@ export class CliFacade {
               const ans = answer.trim();
               if (ans === '1') {
                 rl.close();
-                resolve('once');
+                resolve('call');
               } else if (ans === '2') {
                 rl.close();
                 resolve('deny');

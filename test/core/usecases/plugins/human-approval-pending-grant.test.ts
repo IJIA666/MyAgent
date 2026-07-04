@@ -6,8 +6,24 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { HumanApprovalPlugin } from '../../../../src/core/usecases/plugins/HumanApprovalPlugin.js';
+import { ApprovalPolicy } from '../../../../src/core/usecases/security/ApprovalPolicy.js';
 import { HookEventName, HookContext } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
+
+/** 构造一个受控的 mock ApprovalPolicy */
+function createMockApprovalPolicy(): ApprovalPolicy {
+  const policy = new ApprovalPolicy();
+  vi.spyOn(policy, 'resolve').mockReturnValue({
+    id: 'mock-approval-001',
+    message: '测试审批请求',
+    choices: [
+      { choiceId: 'call', label: '单次放行', description: '仅本次操作放行' },
+      { choiceId: 'session', label: '会话始终放行', description: '本次会话内自动放行' },
+      { choiceId: 'deny', label: '拒绝', description: '拒绝本次操作' },
+    ],
+  });
+  return policy;
+}
 
 /** 构造带 mock ApprovalService 的 beforeTool HookContext */
 function createContext(
@@ -45,12 +61,12 @@ describe('HumanApprovalPlugin — pendingGrant 授权', () => {
     session = new SessionContext('test-pending-grant');
     session.setWorkMode('Safe');
     session.approvalService.setBypassMode(false);
-    plugin = new HumanApprovalPlugin();
+    plugin = new HumanApprovalPlugin(createMockApprovalPolicy());
   });
 
-  it('11.1 once 决策 → pendingGrant 为 call 类型，资源正确，不写白名单', async () => {
-    // mock ApprovalService.wait → 同步返回 once
-    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'once' });
+  it('11.1 call 决策 → pendingGrant 为 call 类型，资源正确，不写白名单', async () => {
+    // mock ApprovalService.wait → 同步返回 call
+    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'call' });
 
     const ctx = createContext(session, {
       id: toolCallId,
@@ -68,8 +84,8 @@ describe('HumanApprovalPlugin — pendingGrant 授权', () => {
     expect((ctx.pendingGrant as { toolName: string }).toolName).toBe('writeFile');
   });
 
-  it('11.4 always 决策 → pendingGrant 为 session 类型，含 toolCallId', async () => {
-    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'always' });
+  it('11.4 session 决策 → pendingGrant 为 session 类型，含 toolCallId', async () => {
+    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'session' });
 
     const ctx = createContext(session, {
       id: 'call-always-002',
@@ -103,8 +119,23 @@ describe('HumanApprovalPlugin — pendingGrant 授权', () => {
     expect(ctx.pendingGrant).toBeUndefined();
   });
 
+  it('11.x 非法 choiceId（不在 ApprovalRequest.choices 中）→ 视为拒绝并终止', async () => {
+    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'persistent' });
+
+    const ctx = createContext(session, {
+      id: 'call-invalid-choice-005',
+      name: 'writeFile',
+      arguments: { targetPath: '/tmp/blocked.txt', content: 'blocked' }
+    });
+
+    const next = vi.fn(async () => {});
+    await expect(plugin.hooks[HookEventName.BeforeTool](ctx, next)).rejects.toThrow('Untrusted approval choice');
+    expect(ctx.control.action).toBe('abort');
+    expect(ctx.pendingGrant).toBeUndefined();
+  });
+
   it('11.11 targetPath 降级时 access 按工具 securityCategory 推断：只读工具 → read', async () => {
-    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'once' });
+    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'call' });
 
     const ctx = createContext(session, {
       id: 'call-read-003',

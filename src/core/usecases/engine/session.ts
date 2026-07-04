@@ -30,6 +30,7 @@ import { ContextRepository } from '../brain/ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import { CompactionService } from '../brain/CompactionService.js';
 import { ApprovalService } from '../security/ApprovalService.js';
+import { ApprovalPolicy } from '../security/ApprovalPolicy.js';
 import { MemoryService } from '../brain/MemoryService.js';
 
 /**
@@ -149,7 +150,18 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       )
     );
     this.pluginRegistry.register(new LoopPreventionPlugin(appConfig));
-    this.pluginRegistry.register(new HumanApprovalPlugin());
+
+    // 装配中央审批策略服务并注入 HumanApprovalPlugin（任务 3.5、4.7）
+    const approvalPolicy = new ApprovalPolicy();
+    // 从工具注册表注入资源提取器（toolRegistry 的实际类型为 ToolRegistry，携带 getResourceExtractors）
+    if (typeof (this.toolRegistry as unknown as Record<string, unknown>).getResourceExtractors === 'function') {
+      const registry = this.toolRegistry as unknown as import('../../../adapters/tools/toolRegistry.js').ToolRegistry;
+      const extractors = registry.getResourceExtractors();
+      for (const [name, extractor] of extractors) {
+        approvalPolicy.registerExtractor(name, extractor);
+      }
+    }
+    this.pluginRegistry.register(new HumanApprovalPlugin(approvalPolicy));
 
     LifecycleManager.register('file-backup-manager', async () => {
       FileBackupManager.cleanup(appConfig.workspace);

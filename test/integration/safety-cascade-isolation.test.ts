@@ -5,6 +5,7 @@ import { initWorkspace } from '../../src/adapters/tools/tools.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 import { ExecuteCommandTool } from '../../src/adapters/tools/impl/system/terminal.js';
 import { HumanApprovalPlugin } from '../../src/core/usecases/plugins/HumanApprovalPlugin.js';
+import { ApprovalPolicy } from '../../src/core/usecases/security/ApprovalPolicy.js';
 import { HookEventName, HookContext } from '../../src/core/usecases/plugins/plugin-types.js';
 
 describe('安全隔离与级联熔断集成测试', () => {
@@ -48,7 +49,8 @@ describe('安全隔离与级联熔断集成测试', () => {
     session.setWorkMode('Safe');
     session.approvalService.setBypassMode(false);
 
-    const plugin = new HumanApprovalPlugin();
+    const approvalPolicy = new ApprovalPolicy();
+    const plugin = new HumanApprovalPlugin(approvalPolicy);
     const service = session.approvalService;
 
     // 模拟工具注册表，把 writeFile 工具注册进去
@@ -74,6 +76,7 @@ describe('安全隔离与级联熔断集成测试', () => {
       sessionContext: session,
       eventName: HookEventName.BeforeTool,
       toolCall: {
+        id: 'call-cascade-1',
         name: 'writeFile',
         arguments: { targetPath: 'file1.txt', content: 'hello' }
       },
@@ -86,6 +89,7 @@ describe('安全隔离与级联熔断集成测试', () => {
       sessionContext: session,
       eventName: HookEventName.BeforeTool,
       toolCall: {
+        id: 'call-cascade-2',
         name: 'writeFile',
         arguments: { targetPath: 'file2.txt', content: 'world' }
       },

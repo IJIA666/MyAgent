@@ -9,7 +9,8 @@ import type { ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { runHookPipeline } from '../plugins/plugin-runner.js';
-import { HookEventName, type LlmRequest } from '../plugins/plugin-types.js';
+import { HookEventName, type LlmRequest, type ApprovalChoice } from '../plugins/plugin-types.js';
+import { SecurityService } from '../security/SecurityService.js';
 import { QualityCheckPort } from '../../../ports/driven/security/QualityCheckPort.js';
 import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 
@@ -37,7 +38,7 @@ export type AgentEvent =
   | { type: 'tool_call_start'; functionName: string; functionArgs: Record<string, unknown> }
   | { type: 'tool_call_result'; functionName: string; result: string }
   | { type: 'error'; message: string; cause?: unknown }
-  | { type: 'suspend'; id: string; toolCall: { name: string; arguments: Record<string, unknown> }; allowedPrefix: string | null }
+  | { type: 'suspend'; id: string; toolCall: { name: string; arguments: Record<string, unknown> }; allowedPrefix: string | null; message?: string; choices?: ApprovalChoice[] }
   | { type: 'complete' };
 
 /**
@@ -636,6 +637,20 @@ export class AgentLoop {
                   }
                 }
 
+                // persistentRuleEffect 条件提交：管线正常完成 + action === 'continue' + 存在持久化规则
+                if (
+                  beforeToolResult.control.action === 'continue' &&
+                  beforeToolResult.persistentRuleEffect
+                ) {
+                  const rule = beforeToolResult.persistentRuleEffect;
+                  const securityService = SecurityService.getInstance();
+                  const whitelist = securityService.getSecurityAllowlist();
+                  const prefixRule = `${rule.prefix}:*`;
+                  if (!whitelist.includes(prefixRule)) {
+                    securityService.saveSecurityAllowlist([...whitelist, prefixRule]);
+                  }
+                }
+
                 const actualArgs = beforeToolResult.toolCall?.arguments ?? functionArgs;
                 taskEvents.push({ type: 'tool_call_start', functionName, functionArgs: actualArgs });
 
@@ -776,6 +791,20 @@ export class AgentLoop {
                           }
                         }
                         break;
+                    }
+                  }
+
+                  // tail call persistentRuleEffect 条件提交（与主调用逻辑一致）
+                  if (
+                    tailBeforeToolResult.control.action === 'continue' &&
+                    tailBeforeToolResult.persistentRuleEffect
+                  ) {
+                    const rule = tailBeforeToolResult.persistentRuleEffect;
+                    const securityService = SecurityService.getInstance();
+                    const whitelist = securityService.getSecurityAllowlist();
+                    const prefixRule = `${rule.prefix}:*`;
+                    if (!whitelist.includes(prefixRule)) {
+                      securityService.saveSecurityAllowlist([...whitelist, prefixRule]);
                     }
                   }
 

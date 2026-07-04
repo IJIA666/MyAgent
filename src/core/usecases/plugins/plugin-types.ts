@@ -97,6 +97,8 @@ export interface HookContext {
   emitEvent?: (event: unknown) => void;
   /** 插件可在此字段返回授权 grant，由 AgentLoop 在安全条件下提交 */
   pendingGrant?: PendingGrant;
+  /** 插件可在此字段返回持久化规则效果，由 AgentLoop 在安全条件下提交至 SecurityService */
+  persistentRuleEffect?: PersistentRuleEffect;
 }
 
 /**
@@ -128,7 +130,76 @@ export interface SafetyCheckResult {
   targetPath?: string;
   /** 新增：原子资源列表，按工具类型正确标注 read/write */
   resources?: SafetyResource[];
+  /** 标准化安全操作描述，由工具 checkSafety() 向策略层报告操作细节的统一接口 */
+  operation?: SafetyOperation;
 }
+
+/**
+ * 标准化安全操作描述契约。
+ * 工具 checkSafety() 向策略层报告操作细节的统一接口。
+ */
+export interface SafetyOperation {
+  /** 原子资源列表 */
+  resources: SafetyResource[];
+  /** 触发审批的风险原因 */
+  riskReason: string;
+  /** 操作类别 */
+  operationCategory:
+    | 'file-read' | 'file-write' | 'file-edit' | 'file-delete'
+    | 'file-move' | 'file-copy'
+    | 'command-execute';
+  /** 人类可读的操作摘要（用于审批 UI 展示） */
+  summary: string;
+}
+
+/**
+ * 审批选择项标识联合类型。
+ * 由 ApprovalPolicy 根据操作类型、WorkMode 和资源类型动态生成。
+ */
+export type ApprovalChoiceId = 'call' | 'session' | 'persistent' | 'deny';
+
+/**
+ * 审批选择项接口。
+ * 每个 choice 包含标识符、展示标签和可选描述。
+ */
+export interface ApprovalChoice {
+  /** 选择项标识 */
+  choiceId: ApprovalChoiceId;
+  /** 展示标签（如"单次放行"、"本次会话始终放行"） */
+  label: string;
+  /** 可选的详细描述 */
+  description?: string;
+}
+
+/**
+ * 审批请求载体接口。
+ * 由 ApprovalPolicy 生成，包含审批消息和可信的 choice 列表。
+ */
+export interface ApprovalRequest {
+  /** 审批请求唯一标识 */
+  id: string;
+  /** 向用户展示的审批消息 */
+  message: string;
+  /** 可信的选择项列表 */
+  choices: ApprovalChoice[];
+  /** 策略层归一化后的受信操作描述，供授权映射阶段复用 */
+  operation?: SafetyOperation;
+}
+
+/**
+ * 持久化规则授权效果类型。
+ * 用于将命令前缀规则持久化写入磁盘白名单，与 PendingGrant（call/session）平级。
+ */
+export interface PersistentRuleEffect {
+  type: 'persistent';
+  prefix: string;
+}
+
+/**
+ * 授权效果联合类型。
+ * 包含一次性令牌（call）、会话白名单（session）和持久化规则（persistent）。
+ */
+export type ApprovalEffect = PendingGrant | PersistentRuleEffect;
 
 /**
  * 授权许可凭证的联合类型。

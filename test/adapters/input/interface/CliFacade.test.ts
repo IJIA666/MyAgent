@@ -351,7 +351,7 @@ describe('CliFacade', () => {
 
       expect(closeSpy).toHaveBeenCalled();
       expect(resumeStdinSpy).toHaveBeenCalled();
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-1', { action: 'once' });
+      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-1', { action: 'call' });
       expect(startSpy).toHaveBeenCalledWith(true);
       
       const output = getCleanedOutput();
@@ -359,14 +359,14 @@ describe('CliFacade', () => {
       expect(output).toContain('dir');
     });
 
-    it('当有 allowedPrefix 且用户输入 2 时，应当批准 always', async () => {
+    it('当有 allowedPrefix 且用户输入 2 时，应当批准 persistent', async () => {
       mockRlInterface.question = vi.fn().mockImplementation((_query: string, callback: (ans: string) => void) => {
         callback('2');
       });
 
       await handler('req-2', { name: 'run_cmd', arguments: { command: 'dir' } }, 'dir');
 
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-2', { action: 'always' });
+      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-2', { action: 'persistent' });
       const output = getCleanedOutput();
       expect(output).toContain('Agent 企图执行以下终端命令');
     });
@@ -394,7 +394,7 @@ describe('CliFacade', () => {
 
       await handler('req-4', { name: 'run_cmd', arguments: { command: 'dir' } }, 'dir');
 
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-4', { action: 'once' });
+      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-4', { action: 'call' });
       expect(callCount).toBe(2);
       expect(getCleanedOutput()).toContain('无效选择，请重新输入');
     });
@@ -406,7 +406,7 @@ describe('CliFacade', () => {
 
       await handler('req-5', { name: 'run_cmd', arguments: {} });
 
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-5', { action: 'once' });
+      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-5', { action: 'call' });
     });
 
     it('当无 allowedPrefix 且用户输入 2 时，应当拒绝 deny', async () => {
