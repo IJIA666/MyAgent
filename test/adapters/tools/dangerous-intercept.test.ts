@@ -57,7 +57,7 @@ describe('高危操作安全硬拦截单元测试', () => {
     const handler = vi.fn((id) => {
       // 使用 setTimeout 延迟 resolve
       setTimeout(() => {
-        sessionContext.approvalService.resolve(id, { action: 'once' });
+        sessionContext.approvalService.resolve(id, { action: 'call' });
       }, 0);
     });
     sessionContext.approvalService.registerApprovalHandler(handler);

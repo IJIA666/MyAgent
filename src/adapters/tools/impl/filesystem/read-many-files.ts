@@ -25,7 +25,7 @@ export class ReadManyFilesTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'readManyFiles',
-      description: "批量读取授权工作区内的多个文件。支持前置体积熔断与拒签大纲概要自适应返回，保障大模型获取上下文的高效与安全。",
+      description: "批量读取多个文件。默认在工作区内读取；外部路径由工具层依据安全策略处理。支持前置体积熔断与拒签大纲概要自适应返回，保障大模型获取上下文的高效与安全。",
       parameters: {
         type: "object",
         properties: {

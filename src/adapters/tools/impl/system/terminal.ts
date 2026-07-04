@@ -8,7 +8,7 @@ import { runCommandEngine } from './terminal-engine.js';
 import { getWorkMode, extractSafePrefix, loadAllowedCommands } from './terminal-config.js';
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
-import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SafetyOperation, ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { EventNotificationPort } from '../../../../ports/driven/session/EventNotificationPort.js';
 
 /**
@@ -31,7 +31,7 @@ export class ExecuteCommandTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'execute_command',
-      description: "在受限的工作区沙箱内执行一条原子终端命令（如 npm run build、vitest 等）。禁止使用 &、|、; 等复合拼接符，禁止读写工作区外部路径。若命令执行时间较长，会自动切入后台托管并返回任务ID。",
+      description: "在工作区沙箱内执行一条原子终端命令（如 npm run build、vitest 等）。禁止使用 &、|、; 等复合拼接符；外部路径由安全策略管控。若命令执行时间较长，会自动切入后台托管并返回任务ID。",
       parameters: {
         type: "object",
         properties: {
@@ -129,10 +129,18 @@ export class ExecuteCommandTool implements NativeTool {
         ? `智能体试图在终端执行未授权命令。外壳包装: '${command.trim()}'，实际执行的核心命令为: '${unboxedCmd}'`
         : `智能体试图在终端执行写倾向或未识别命令: '${command}'`;
 
+      const operation: SafetyOperation = {
+        resources: safePrefix ? [{ kind: 'command-prefix', prefix: safePrefix }] : [],
+        riskReason: message,
+        operationCategory: 'command-execute',
+        summary: message
+      };
+
       return {
         status: 'suspend',
         message,
-        safePrefix
+        safePrefix,
+        operation
       };
     }
 

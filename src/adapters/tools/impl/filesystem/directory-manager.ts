@@ -26,7 +26,7 @@ export class CreateDirectoryTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'createDirectory',
-      description: "递归创建多级目录。可磨平不同操作系统的命令行选项差异并自动校验工作区安全边界。",
+      description: "递归创建多级目录。默认在工作区内创建；外部路径由工具层依据安全策略处理。可磨平不同操作系统的命令行选项差异。",
       parameters: {
         type: "object",
         properties: {
@@ -119,7 +119,7 @@ export class DeletePathTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'deletePath',
-      description: "删除工作区内指定的文件或目录（高危操作，会触发控制台审批卡关确权拦截）。",
+      description: "删除指定的文件或目录。默认在工作区内删除路径；外部路径由工具层依据安全策略处理。（高危操作，会触发控制台审批卡关确权拦截。）",
       parameters: {
         type: "object",
         properties: {

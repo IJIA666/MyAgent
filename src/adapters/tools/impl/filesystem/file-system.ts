@@ -49,7 +49,7 @@ export class ReadFileTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'readFile',
-      description: "读取授权工作区根目录下的文本文件的内容。支持可选的行范围分页读取，用以精确精读局部代码片段。",
+      description: "读取文本文件的内容。默认在工作区内读取；外部路径由工具层依据安全策略处理。支持可选的行范围分页读取，用以精确精读局部代码片段。",
       parameters: {
         type: "object",
         properties: {
@@ -202,7 +202,7 @@ export class WriteFileTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'writeFile',
-      description: "向授权工作区内的指定文件全量写入或覆盖文本内容。会自动创建缺失的父级目录。【警告：此操作会彻底覆盖原文件！仅在创建新文件或必须进行全文件重写时使用。对已有文件的局部修改请必须优先使用 editFile 工具】",
+      description: "向指定文件全量写入或覆盖文本内容。默认在工作区内写入；外部路径由工具层依据安全策略处理。会自动创建缺失的父级目录。【警告：此操作会彻底覆盖原文件！仅在创建新文件或必须进行全文件重写时使用。对已有文件的局部修改请必须优先使用 editFile 工具】",
       parameters: {
         type: "object",
         properties: {
@@ -329,7 +329,7 @@ export class EditFileTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'editFile',
-      description: "基于纯文本特征精确匹配的局部文件增量修改工具。用于在不覆盖整个文件的情况下修改指定的代码段，这是修改已有文件的首选和最佳途径。为确保唯一性和准确命中，old_string 必须保持与原文件精确一致并包含足够的前后上下文。",
+      description: "基于纯文本特征精确匹配的局部文件增量修改工具。默认在工作区内修改文件；外部路径由工具层依据安全策略处理。用于在不覆盖整个文件的情况下修改指定的代码段，这是修改已有文件的首选和最佳途径。为确保唯一性和准确命中，old_string 必须保持与原文件精确一致并包含足够的前后上下文。",
       parameters: {
         type: "object",
         properties: {
@@ -525,7 +525,7 @@ export class ListFilesTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'listFiles',
-      description: "列出工作区根目录下目标文件夹内的所有直接子文件和文件夹名称。",
+      description: "列出目标文件夹内的所有直接子文件和文件夹名称。默认在工作区内列出目标路径；外部路径由工具层依据安全策略处理。",
       parameters: {
         type: "object",
         properties: {

@@ -144,7 +144,7 @@ export class GrepSearchTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'grepSearch',
-      description: "在授权工作区内执行基于正则表达式或纯文本的全文检索（自动过滤二进制文件与隐藏的版本控制目录）。",
+      description: "执行基于正则表达式或纯文本的全文检索。默认在工作区内检索；外部路径由工具层依据安全策略处理。会自动过滤二进制文件与隐藏的版本控制目录。",
       parameters: {
         type: "object",
         properties: {
@@ -355,7 +355,7 @@ export class GlobSearchTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'globSearch',
-      description: "使用通配符匹配规则快速定位并过滤工作区中符合条件的文件路径列表（最大硬性展示条数限制为 100 条）。",
+      description: "使用通配符匹配规则快速定位并过滤符合条件的文件路径列表。默认在工作区内定位；外部路径由工具层依据安全策略处理。（最大硬性展示条数限制为 100 条。）",
       parameters: {
         type: "object",
         properties: {

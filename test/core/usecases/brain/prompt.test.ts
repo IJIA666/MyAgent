@@ -139,4 +139,11 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     // 3. 校验装配数组中的规则数量，确保没有漏装
     expect(SYSTEM_RULES.length).toBe(9);
   });
+
+  test('8. 文件沙箱规则应保留默认边界，但不得预判工具层拒绝', () => {
+    // 锁定中性委托语义，防止回退到模型先自我拒绝的旧文案。
+    expect(RULE_FILE_SANDBOX).toContain('默认在授权的工作区目录下执行');
+    expect(RULE_FILE_SANDBOX).toContain('应正常调用工具，由工具层依据安全策略执行、请求审批或拒绝');
+    expect(RULE_FILE_SANDBOX).not.toContain('工具将返回拒绝访问');
+  });
 });
