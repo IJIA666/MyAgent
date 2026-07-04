@@ -38,6 +38,8 @@ class MockSessionManager extends EventEmitter {
   getSystemPromptHash = vi.fn().mockReturnValue('dummypromptmd5hash');
   close = vi.fn().mockResolvedValue(undefined);
   handleUserInput = vi.fn();
+  resumePendingInteraction = vi.fn().mockResolvedValue(undefined);
+  getPendingInteraction = vi.fn().mockReturnValue(null);
   setInteractionPort = vi.fn();
   approvalService = {
     registerApprovalHandler: vi.fn(),
@@ -49,6 +51,8 @@ describe('CliFacade', () => {
   let mockSession: SessionManager & {
     close: ReturnType<typeof vi.fn>;
     handleUserInput: ReturnType<typeof vi.fn>;
+    resumePendingInteraction: ReturnType<typeof vi.fn>;
+    getPendingInteraction: ReturnType<typeof vi.fn>;
     setInteractionPort: ReturnType<typeof vi.fn>;
     rollback: ReturnType<typeof vi.fn>;
     abort: ReturnType<typeof vi.fn>;
@@ -321,6 +325,31 @@ describe('CliFacade', () => {
 
       const output = getCleanedOutput();
       expect(output).toBe('');
+    });
+
+    it('收到 interaction_request 时，应当拉起提问并在回答后恢复挂起交互', async () => {
+      mockRlInterface.question = vi.fn().mockImplementation((_query: string, callback: (ans: string) => void) => {
+        callback('1');
+      });
+
+      mockSession.emit('agent_event', {
+        type: 'interaction_request',
+        interaction: {
+          id: 'interaction_tool-1',
+          toolName: 'ask_user_question',
+          toolCallId: 'tool-1',
+          createdAt: Date.now(),
+          state: 'pending',
+          payload: {
+            title: '请选择方案',
+            options: ['方案A', '方案B']
+          }
+        }
+      });
+
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(mockSession.resumePendingInteraction).toHaveBeenCalledWith('interaction_tool-1', '方案A');
     });
   });
 

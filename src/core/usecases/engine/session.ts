@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { AppConfig, LlmConfig } from '../../../config/index.js';
 import { logger } from '../../../utils/logger.js'; // 导入统一日志单例 logger
 import { AgentTracer } from '../../domain/tracer.js';
-import { SessionContext, ContextTokenUsage } from '../../domain/context.js';
+import { SessionContext, ContextTokenUsage, type PendingInteraction } from '../../domain/context.js';
 import type { ChatMessage, LlmPort } from '../../../ports/driven/llm/LlmPort.js';
 import type { TokenEstimatorPort, ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
@@ -248,6 +248,15 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   }
 
   /**
+   * 获取当前会话中挂起的人机中断交互。
+   *
+   * @returns 当前挂起的交互，若无则返回 null
+   */
+  public getPendingInteraction(): PendingInteraction | null {
+    return this.context.pendingInteraction;
+  }
+
+  /**
    * 获取当前会话唯一标识。
    *
    * @returns 会话 ID 字符串
@@ -316,6 +325,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
    */
   public abort(): void {
     this.driver.abort();
+    this.context.cancelPendingInteraction();
     if (this.taskAborter) {
       this.taskAborter(this.context.getSessionId()).catch((err: unknown) => {
         logger.error('Failed to abort session tasks on session abort:', err);
@@ -331,6 +341,10 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   public async close(): Promise<void> {
     this.abort();
     this.approvalService.rejectAll('Session is closing');
+
+    // 清理待回答的人机中断交互
+    this.context.cancelPendingInteraction();
+
     if (this.taskAborter) {
       await this.taskAborter(this.context.getSessionId());
     }
@@ -402,6 +416,57 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   }
 
   /**
+   * 提交当前挂起提问的用户回答，并从原 run 的工具调用点继续推理。
+   *
+   * @param interactionId - 待恢复的交互 ID
+   * @param answer - 用户回答内容
+   * @returns 无返回值的 Promise
+   */
+  public async resumePendingInteraction(interactionId: string, answer: string): Promise<void> {
+    if (this.isGenerating) {
+      throw new Error('Session is currently busy generating a response.');
+    }
+
+    const current = this.context.pendingInteraction;
+    if (!current || current.state !== 'pending') {
+      throw new Error('当前不存在可恢复的人机中断交互。');
+    }
+    if (current.id !== interactionId) {
+      throw new Error(`待恢复交互不匹配：期望 ${current.id}，实际收到 ${interactionId}。`);
+    }
+
+    const answered = this.context.answerPendingInteraction(answer);
+    if (!answered) {
+      throw new Error('记录用户回答失败，挂起交互已失效。');
+    }
+
+    this.context.addMessage({
+      role: 'tool',
+      tool_call_id: answered.toolCallId,
+      content: answered.answer ?? ''
+    });
+    this.context.clearPendingInteraction();
+    await this.contextRepo.saveState();
+
+    const previousWakeupCount = this.autoWakeupCount;
+    this.isGenerating = true;
+    this.autoWakeupCount = 0;
+    logger.debug('[SessionManager] interaction_resume_requested', {
+      component: 'session',
+      event: 'interaction_resume_requested',
+      sessionId: this.context.getSessionId(),
+      interactionId,
+      oldValue: previousWakeupCount,
+      newValue: this.autoWakeupCount,
+      reason: 'human_interruption_answer'
+    });
+
+    this.runInternalGeneration().catch((err: unknown) => {
+      logger.error('[SessionManager] resumePendingInteraction 推理执行失败:', err);
+    });
+  }
+
+  /**
    * 内部推理循环调度，并进行事件的流式广播分发。
    *
    * @param transientSkillContent - 可选。当前请求专享的临时技能规范内容
@@ -439,25 +504,27 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
       this.emit('agent_event', { type: 'complete' });
     } finally {
       this.isGenerating = false;
+      const waitingForInteraction = this.context.pendingInteraction?.state === 'pending';
       logger.debug('[SessionManager] generation_cycle_finished', {
         component: 'session',
         event: 'generation_cycle_finished',
         sessionId: this.context.getSessionId(),
         wakeupCount: this.autoWakeupCount,
         hasPendingAsyncNotification: this.hasPendingAsyncNotification,
-        hasError
+        hasError,
+        waitingForInteraction
       });
 
       // 对称契约：complete 是唯一的生命周期终点。
       // catch 块已在灾难性异常时补发 complete，此处仅处理正常路径。
       const willWakeup = !hasError && this.hasPendingAsyncNotification && this.autoWakeupCount < 3;
-      if (!hasError && !willWakeup) {
+      if (!hasError && !willWakeup && !waitingForInteraction) {
         this.emit('agent_event', { type: 'complete' });
       }
 
       // 检测本轮推理生成期间是否积压了新的后台通知事件，延迟到下一 Tick 处理，防止爆栈
       process.nextTick(() => {
-        if (!hasError && !this.isGenerating && this.hasPendingAsyncNotification) {
+        if (!hasError && !waitingForInteraction && !this.isGenerating && this.hasPendingAsyncNotification) {
           const previousPendingState = this.hasPendingAsyncNotification;
           this.hasPendingAsyncNotification = false;
           logger.info('[SessionManager] async_notification_wakeup_scheduled', {

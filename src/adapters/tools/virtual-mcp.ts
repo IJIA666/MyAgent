@@ -7,7 +7,7 @@ import type { SafetyCheckResult, ToolExecutionContext } from '../../core/usecase
 import type { SafetyResource } from '../../core/usecases/security/SafetyResource.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
-import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
+import { InteractionRequestError, type InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import { secureResolveWritePath } from './impl/base.js';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
@@ -27,6 +27,13 @@ import {
 export type { SafetyCheckResult };
 
 /**
+ * 工具执行模式。
+ * - `immediate`：普通即时工具，可在同步/异步流程中独立完成，沿用现有超时模型。
+ * - `human_interruption`：需要人类主动参与才能完成，不在普通工具 Promise 中阻塞等待用户回答。
+ */
+export type ExecutionMode = 'immediate' | 'human_interruption';
+
+/**
  * 本地内置工具的契约接口。
  * 所有系统内置的本地工具实例都必须实现该接口。
  */
@@ -40,6 +47,13 @@ export interface NativeTool {
    * 工具的名称，作为检索和分发的唯一标识。
    */
   readonly name: string;
+
+  /**
+   * 工具的执行模式。缺省为 'immediate'。
+   * - 'immediate': 普通即时工具，沿用现有 toolTimeoutMs 超时模型。
+   * - 'human_interruption': 需要人类主动交互，不在普通工具 Promise 中阻塞等待。
+   */
+  readonly executionMode?: ExecutionMode;
 
   /**
    * 可选的文件路径参数字段键名。
@@ -329,6 +343,9 @@ export class LocalFileSystemMcpServer {
         ]
       };
     } catch (error: unknown) {
+      if (error instanceof InteractionRequestError) {
+        throw error;
+      }
       const errorMsg = error instanceof Error ? error.message : String(error);
       return {
         content: [

@@ -16,6 +16,8 @@ export interface ToolMetadata {
   readonly name: string;
   /** 工具的安全级别类别 */
   readonly securityCategory: 'read' | 'write';
+  /** 工具的执行模式。缺省视为 'immediate' */
+  readonly executionMode?: 'immediate' | 'human_interruption';
   /** 可选的文件路径参数字段键名 */
   readonly filePathParamKey?: string;
   /** 可选的去中心化最大行数配额，超限触发折叠 */

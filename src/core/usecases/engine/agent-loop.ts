@@ -12,7 +12,8 @@ import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { HookEventName, type LlmRequest, type ApprovalChoice } from '../plugins/plugin-types.js';
 import { SecurityService } from '../security/SecurityService.js';
 import { QualityCheckPort } from '../../../ports/driven/security/QualityCheckPort.js';
-import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
+import { InteractionRequestError, type InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
+import type { PendingInteraction } from '../../domain/context.js';
 
 // 导入领域服务
 import { RuleManager } from '../brain/RuleManager.js';
@@ -37,6 +38,7 @@ export type AgentEvent =
   | { type: 'content'; content: string }
   | { type: 'tool_call_start'; functionName: string; functionArgs: Record<string, unknown> }
   | { type: 'tool_call_result'; functionName: string; result: string }
+  | { type: 'interaction_request'; interaction: PendingInteraction }
   | { type: 'error'; message: string; cause?: unknown }
   | { type: 'suspend'; id: string; toolCall: { name: string; arguments: Record<string, unknown> }; allowedPrefix: string | null; message?: string; choices?: ApprovalChoice[] }
   | { type: 'complete' };
@@ -527,6 +529,7 @@ export class AgentLoop {
                 error?: string;
                 result?: string;
               };
+              interrupted: boolean;
               aborted: boolean;
               abortReason?: string;
             }
@@ -564,9 +567,13 @@ export class AgentLoop {
                   events: taskEvents,
                   hasWrite,
                   finalCallUpdate: taskFinalCallUpdate,
+                  interrupted: false,
                   aborted: false
                 };
               }
+
+              const toolMeta = this.toolRegistry.getTool(functionName);
+              const isHumanInterruption = toolMeta?.executionMode === 'human_interruption';
 
               try {
                 if (signal.aborted) {
@@ -599,6 +606,7 @@ export class AgentLoop {
                     toolMessage,
                     hasWrite,
                     finalCallUpdate: taskFinalCallUpdate,
+                    interrupted: false,
                     aborted: false
                   };
                 }
@@ -728,6 +736,7 @@ export class AgentLoop {
                     events: taskEvents,
                     hasWrite,
                     finalCallUpdate: taskFinalCallUpdate,
+                    interrupted: false,
                     aborted: true,
                     abortReason: afterToolResult.control.reason ?? '无原因'
                   };
@@ -847,6 +856,24 @@ export class AgentLoop {
                   isTruncated: (outputResult && outputResult.isTruncated) ? true : false
                 };
               } catch (toolError: unknown) {
+                if (toolError instanceof InteractionRequestError && isHumanInterruption) {
+                  const interaction = this.context.setPendingInteraction({
+                    id: `interaction_${toolCall.id}`,
+                    toolName: functionName,
+                    payload: toolError.payload,
+                    toolCallId: toolCall.id
+                  });
+                  taskEvents.push({ type: 'interaction_request', interaction });
+                  return {
+                    index,
+                    events: taskEvents,
+                    hasWrite,
+                    finalCallUpdate: taskFinalCallUpdate,
+                    interrupted: true,
+                    aborted: false
+                  };
+                }
+
                 const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
                 const isAbortError = toolError instanceof Error && (toolError.name === 'AbortError' || errorMsg.includes('Abort') || errorMsg.includes('abort'));
                 const finalErrorMsg = isAbortError ? `工具执行超时熔断阻断: ${errorMsg}` : `错误：${errorMsg}`;
@@ -866,6 +893,7 @@ export class AgentLoop {
                 toolMessage,
                 hasWrite,
                 finalCallUpdate: taskFinalCallUpdate,
+                interrupted: false,
                 aborted: false
               };
             };
@@ -896,12 +924,17 @@ export class AgentLoop {
             clearTimeout(timeoutId);
 
             // 按原本的工具调用顺序，依次结算并触发 UI 事件流和数据链追加
+            let pausedForInteraction = false;
             for (let i = 0; i < settledResults.length; i++) {
               const res = settledResults[i];
               if (res.status === 'fulfilled') {
                 const taskRes = res.value;
                 for (const evt of taskRes.events) {
                   yield evt;
+                }
+
+                if (taskRes.interrupted) {
+                  pausedForInteraction = true;
                 }
 
                 if (taskRes.finalCallUpdate.error) {
@@ -935,6 +968,11 @@ export class AgentLoop {
                   content: `错误：${errorMsg}`
                 });
               }
+            }
+
+            if (pausedForInteraction) {
+              await this.contextRepo.saveState();
+              return;
             }
 
             // 触发审计落盘切面

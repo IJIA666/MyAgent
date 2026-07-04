@@ -9,7 +9,7 @@ import type { InputListener } from './io/input-listener.js';
 interface InteractionHandlerOptions {
   /** 全局输入监听器引用，用于暂停/恢复 stdin */
   listener: InputListener;
-  /** 提问等待超时时间（毫秒），默认 300000（5 分钟） */
+  /** 可选的自定义超时（毫秒）。缺省时不设自动超时，仅依赖外部取消 */
   timeoutMs?: number;
 }
 
@@ -17,14 +17,15 @@ interface InteractionHandlerOptions {
  * 终端环境下的人机对话交互处理器。
  * 实现了 InteractionPort 端口契约，负责在 agent 提问时渲染交互界面并等待用户回答。
  * 与审批卡关（ApprovalPort）共享底层 stdin 抢占机制，但使用独立的渲染样式。
+ * 默认不设自动超时——等待仅在用户回答、用户明确取消、会话关闭或进程退出时结束。
  */
 export class InteractionHandler implements InteractionPort {
   private listener: InputListener;
-  private timeoutMs: number;
+  private timeoutMs?: number;
 
   constructor(options: InteractionHandlerOptions) {
     this.listener = options.listener;
-    this.timeoutMs = options.timeoutMs ?? 300_000; // 默认 5 分钟超时
+    this.timeoutMs = options.timeoutMs; // 缺省无自动超时
   }
 
   /**
@@ -32,7 +33,7 @@ export class InteractionHandler implements InteractionPort {
    *
    * @param payload - 提问的结构化数据
    * @param signal - 可选的 AbortSignal，用于外部取消等待
-   * @returns 用户回答的字符串，超时或取消时返回空字符串
+   * @returns 用户回答的字符串，取消时返回空字符串
    */
   async askUser(payload: AskUserPayload, signal?: AbortSignal): Promise<string> {
     // 暂停全局输入监听，释放 stdin
@@ -50,20 +51,24 @@ export class InteractionHandler implements InteractionPort {
   /**
    * 渲染交互界面并等待用户输入。
    * 根据 payload 的类型（单选/多选/自由输入/混合）选择不同的渲染模式。
+   * 默认无自动超时，仅依赖用户操作或外部 AbortSignal 结束等待。
    */
   private renderAndWait(payload: AskUserPayload, signal?: AbortSignal): Promise<string> {
     return new Promise((resolve) => {
       let settled = false;
 
-      // 超时定时器
-      const timeout = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          console.log(theme.dim('\n⏰ 提问等待超时，自动跳过。'));
-          rl.close();
-          resolve('');
-        }
-      }, this.timeoutMs);
+      // 超时定时器（仅在显式配置了 timeoutMs 时启用）
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      if (this.timeoutMs !== undefined) {
+        timeout = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            console.log(theme.dim('\n⏰ 提问等待超时，自动跳过。'));
+            rl.close();
+            resolve('');
+          }
+        }, this.timeoutMs);
+      }
 
       // AbortSignal 监听
       const onAbort = () => {

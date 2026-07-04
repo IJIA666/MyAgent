@@ -18,6 +18,26 @@ export interface AskUserPayload {
 }
 
 /**
+ * 工具请求进入人机中断状态时抛出的专用异常。
+ * 调用方捕获该异常后，应将其转换为 pending interaction，而不是当作普通工具失败处理。
+ */
+export class InteractionRequestError extends Error {
+  /** 待展示给用户的问题载荷 */
+  public readonly payload: AskUserPayload;
+
+  /**
+   * 创建一个人机中断请求异常。
+   *
+   * @param payload - 待展示给用户的问题载荷
+   */
+  constructor(payload: AskUserPayload) {
+    super('工具请求进入人机中断等待状态');
+    this.name = 'InteractionRequestError';
+    this.payload = payload;
+  }
+}
+
+/**
  * 人机对话交互输出端口接口。
  * 提供 agent 推理过程中向用户发起结构化提问并同步等待回答的抽象能力。
  */

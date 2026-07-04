@@ -6,21 +6,7 @@
 
 import { describe, test, expect } from 'vitest';
 import { AskUserQuestionTool } from '../../../src/adapters/tools/impl/interaction/ask-user-question.js';
-import type { InteractionPort } from '../../../src/ports/driven/session/InteractionPort.js';
-
-/** 用于测试的 mock InteractionPort，模拟用户回答指定内容 */
-function mockInteractionPort(answer: string): InteractionPort {
-  return {
-    askUser: async (): Promise<string> => answer
-  };
-}
-
-/** 用于测试的 mock InteractionPort，模拟超时（返回空字符串） */
-function mockTimeoutInteractionPort(): InteractionPort {
-  return {
-    askUser: async (): Promise<string> => ''
-  };
-}
+import { InteractionRequestError } from '../../../src/ports/driven/session/InteractionPort.js';
 
 describe('AskUserQuestionTool 单元测试', () => {
   // ==========================================
@@ -28,100 +14,76 @@ describe('AskUserQuestionTool 单元测试', () => {
   // ==========================================
   test('缺少 title 应抛出异常', async () => {
     const tool = new AskUserQuestionTool();
-    const port = mockInteractionPort('忽略');
 
-    await expect(tool.execute({}, undefined, undefined, port))
+    await expect(tool.execute({}))
       .rejects.toThrow('title');
   });
 
   test('title 为空字符串应抛出异常', async () => {
     const tool = new AskUserQuestionTool();
-    const port = mockInteractionPort('忽略');
 
-    await expect(tool.execute({ title: '' }, undefined, undefined, port))
+    await expect(tool.execute({ title: '' }))
       .rejects.toThrow('title');
   });
 
   test('options 为空且 allowFreeInput 为 false 应抛出异常', async () => {
     const tool = new AskUserQuestionTool();
-    const port = mockInteractionPort('忽略');
 
-    await expect(tool.execute({ title: '测试问题' }, undefined, undefined, port))
+    await expect(tool.execute({ title: '测试问题' }))
       .rejects.toThrow('options');
   });
 
-  test('无 options 但 allowFreeInput 为 true 时应合法调用', async () => {
+  test('无 options 但 allowFreeInput 为 true 时应抛出中断请求', async () => {
     const tool = new AskUserQuestionTool();
-    const port = mockInteractionPort('用户自定义输入');
-
-    const result = await tool.execute(
-      { title: '有什么想法？', allowFreeInput: true },
-      undefined, undefined, port
-    );
-    expect(result).toBe('用户自定义输入');
-  });
-
-  test('options 存在且 allowFreeInput 为 true 时应合法调用', async () => {
-    const tool = new AskUserQuestionTool();
-    const port = mockInteractionPort('选项A');
-
-    const result = await tool.execute(
-      { title: '选择方案', options: ['选项A', '选项B'], allowFreeInput: true },
-      undefined, undefined, port
-    );
-    expect(result).toBe('选项A');
-  });
-
-  test('未配置 InteractionPort 时应抛出异常', async () => {
-    const tool = new AskUserQuestionTool();
-
     await expect(tool.execute(
-      { title: '测试', options: ['A'] },
-      undefined, undefined, undefined
-    )).rejects.toThrow('InteractionPort');
+      { title: '有什么想法？', allowFreeInput: true }
+    )).rejects.toBeInstanceOf(InteractionRequestError);
+  });
+
+  test('options 存在且 allowFreeInput 为 true 时应抛出带载荷的中断请求', async () => {
+    const tool = new AskUserQuestionTool();
+    try {
+      await tool.execute({ title: '选择方案', options: ['选项A', '选项B'], allowFreeInput: true });
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(InteractionRequestError);
+      const interaction = error as InteractionRequestError;
+      expect(interaction.payload).toEqual({
+        title: '选择方案',
+        options: ['选项A', '选项B'],
+        multiSelect: false,
+        allowFreeInput: true
+      });
+      return;
+    }
+    throw new Error('预期抛出 InteractionRequestError，但执行成功返回了结果。');
   });
 
   // ==========================================
   // 2. 合法调用与返回值
   // ==========================================
-  test('固定选项单选模式返回用户选择的选项文本', async () => {
+  test('固定选项单选模式抛出中断请求', async () => {
     const tool = new AskUserQuestionTool();
-    const port = mockInteractionPort('保守清理');
-
-    const result = await tool.execute(
-      { title: '选择清理策略', options: ['保守清理', '激进清理'] },
-      undefined, undefined, port
-    );
-    expect(result).toBe('保守清理');
+    await expect(tool.execute(
+      { title: '选择清理策略', options: ['保守清理', '激进清理'] }
+    )).rejects.toBeInstanceOf(InteractionRequestError);
   });
 
-  test('多选模式返回用户选择的结果', async () => {
+  test('多选模式保留 multiSelect 语义', async () => {
     const tool = new AskUserQuestionTool();
-    const port = mockInteractionPort('选项1, 选项3');
-
-    const result = await tool.execute(
-      { title: '选择目录', options: ['选项1', '选项2', '选项3'], multiSelect: true },
-      undefined, undefined, port
-    );
-    expect(result).toBe('选项1, 选项3');
-  });
-
-  // ==========================================
-  // 3. 超时处理
-  // ==========================================
-  test('用户超时时返回空字符串', async () => {
-    const tool = new AskUserQuestionTool();
-    const port = mockTimeoutInteractionPort();
-
-    const result = await tool.execute(
-      { title: '有什么想法？', allowFreeInput: true },
-      undefined, undefined, port
-    );
-    expect(result).toBe('');
+    try {
+      await tool.execute(
+        { title: '选择目录', options: ['选项1', '选项2', '选项3'], multiSelect: true }
+      );
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(InteractionRequestError);
+      expect((error as InteractionRequestError).payload.multiSelect).toBe(true);
+      return;
+    }
+    throw new Error('预期抛出 InteractionRequestError，但执行成功返回了结果。');
   });
 
   // ==========================================
-  // 4. checkSafety
+  // 3. checkSafety
   // ==========================================
   test('checkSafety 始终返回 pass', () => {
     const tool = new AskUserQuestionTool();
@@ -130,7 +92,7 @@ describe('AskUserQuestionTool 单元测试', () => {
   });
 
   // ==========================================
-  // 5. 工具元数据
+  // 4. 工具元数据
   // ==========================================
   test('securityCategory 为 read', () => {
     const tool = new AskUserQuestionTool();

@@ -12,6 +12,46 @@ import { createSessionId } from './trace-format.js';
 import type { SafetyResource } from '../usecases/security/SafetyResource.js';
 
 /**
+ * 人机中断交互的状态。
+ * - `pending`：已发起提问，正在等待用户回答
+ * - `answered`：用户已回答，等待恢复 run
+ * - `canceled`：用户取消或会话关闭，交互已终止
+ */
+export type PendingInteractionState = 'pending' | 'answered' | 'canceled';
+
+/**
+ * 工具载荷的结构化数据，对应 ask_user_question 的参数 schema。
+ */
+export interface QuestionPayload {
+  title: string;
+  options?: string[];
+  multiSelect?: boolean;
+  allowFreeInput?: boolean;
+}
+
+/**
+ * 待回答的人机中断交互记录。
+ * 当工具声明 executionMode 为 'human_interruption' 时，系统创建此记录
+ * 以跟踪等待用户输入的状态，并支持后续从同一 run 恢复执行。
+ */
+export interface PendingInteraction {
+  /** 交互唯一标识符 */
+  id: string;
+  /** 工具名称（如 'ask_user_question'） */
+  toolName: string;
+  /** 工具调用的完整参数载荷 */
+  payload: QuestionPayload;
+  /** 对应的工具调用 ID，用于 capability 生命周期管理 */
+  toolCallId: string;
+  /** 创建时间戳 */
+  createdAt: number;
+  /** 当前交互状态 */
+  state: PendingInteractionState;
+  /** 用户回答内容（answered 状态下有效） */
+  answer?: string;
+}
+
+/**
  * 单次工具调用的授权令牌生命周期状态。
  */
 export type CallCapabilityState = 'registered' | 'claimed' | 'removed';
@@ -156,6 +196,78 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   public appConfig?: AppConfig;
   /** call capability 令牌存储 Map，以 toolCallId 为键 */
   private callCapabilities: Map<string, CallCapability> = new Map();
+  /** 当前会话中活跃的人机中断交互（仅允许同时存在一个） */
+  private _pendingInteraction: PendingInteraction | null = null;
+
+  /**
+   * 获取当前活跃的人机中断交互记录。
+   *
+   * @returns 当前挂起的中断交互，若无则返回 null
+   */
+  public get pendingInteraction(): PendingInteraction | null {
+    return this._pendingInteraction;
+  }
+
+  /**
+   * 创建一个新的人机中断交互记录。
+   * 若已存在活跃交互，则抛出错误，防止输入路由歧义。
+   *
+   * @param interaction - 待创建的中断交互数据（不含 state 与 createdAt，由方法自动填充）
+   * @throws 当已存在活跃交互时抛出错误
+   */
+  public setPendingInteraction(interaction: Omit<PendingInteraction, 'state' | 'createdAt'>): PendingInteraction {
+    if (this._pendingInteraction && this._pendingInteraction.state === 'pending') {
+      throw new Error(`已存在活跃的人机交互 (id=${this._pendingInteraction.id})，不允许并发创建。`);
+    }
+    this._pendingInteraction = {
+      ...interaction,
+      state: 'pending',
+      createdAt: Date.now()
+    };
+    return this._pendingInteraction;
+  }
+
+  /**
+   * 从持久化快照恢复待回答的人机中断交互。
+   *
+   * @param interaction - 已校验合法的待恢复交互记录
+   */
+  public restorePendingInteraction(interaction: PendingInteraction): void {
+    this._pendingInteraction = interaction;
+  }
+
+  /**
+   * 回答当前活跃的人机中断交互，记录回答内容并将状态切换为 answered。
+   *
+   * @param answer - 用户回答的内容
+   * @returns 更新后的交互记录，若无活跃交互则返回 null
+   */
+  public answerPendingInteraction(answer: string): PendingInteraction | null {
+    if (!this._pendingInteraction || this._pendingInteraction.state !== 'pending') {
+      return null;
+    }
+    this._pendingInteraction.state = 'answered';
+    this._pendingInteraction.answer = answer;
+    return this._pendingInteraction;
+  }
+
+  /**
+   * 取消当前活跃的人机中断交互，将状态切换为 canceled。
+   * 用于用户主动取消、会话关闭或恢复失败等场景。
+   */
+  public cancelPendingInteraction(): void {
+    if (this._pendingInteraction && this._pendingInteraction.state === 'pending') {
+      this._pendingInteraction.state = 'canceled';
+    }
+  }
+
+  /**
+   * 清除当前活跃的人机中断交互记录。
+   * 用于回答后恢复完成或取消后清理。
+   */
+  public clearPendingInteraction(): void {
+    this._pendingInteraction = null;
+  }
 
 
   /**

@@ -1,9 +1,11 @@
 import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
-import type { InteractionPort } from '../../../../ports/driven/session/InteractionPort.js';
+import { InteractionRequestError } from '../../../../ports/driven/session/InteractionPort.js';
 
 /**
- * agent 向用户发起结构化提问并等待回答的交互工具类。
+ * agent 向用户发起结构化提问的交互工具类。
  * 实现了 NativeTool 契约，支持固定选项选择、自由文本输入及混合模式。
+ * 执行模式为 human_interruption：参数校验通过后抛出中断请求，由 agent-loop
+ * 将其转为 pending interaction，并在用户回答后恢复同一 run。
  */
 export class AskUserQuestionTool implements NativeTool {
   /** 工具的安全类别——只读交互，不产生文件副作用，Plan 模式下不被裁剪 */
@@ -11,6 +13,9 @@ export class AskUserQuestionTool implements NativeTool {
 
   /** 工具的唯一标识名称 */
   readonly name = 'ask_user_question';
+
+  /** 执行模式——人机中断式交互，不走通用工具超时路径 */
+  readonly executionMode = 'human_interruption' as const;
 
   /** 不操作文件，无需声明文件路径参数 */
   readonly filePathParamKey = undefined;
@@ -53,19 +58,16 @@ export class AskUserQuestionTool implements NativeTool {
   };
 
   /**
-   * 执行用户提问逻辑——挂起当前工具执行，展示交互界面，等待用户回答。
+   * 执行用户提问逻辑——校验参数并请求进入人机中断状态。
    *
    * @param args - 工具调用参数（title、options、multiSelect、allowFreeInput）
    * @param _sessionContext - 会话上下文（本工具不使用）
-   * @param signal - 可选的 AbortSignal，用于外部取消等待
-   * @param _interactionPort - 人机对话交互端口
-   * @returns 用户回答的字符串
+   * @param _signal - 可选的 AbortSignal（本工具不直接等待用户输入）
+   * @param _interactionPort - 人机对话交互端口（保留签名兼容；本工具不直接使用）
+   * @returns 永不直接返回用户回答；成功路径会抛出 InteractionRequestError 进入挂起
    */
   async execute(
-    args: Record<string, unknown>,
-    _sessionContext?: unknown,
-    signal?: AbortSignal,
-    _interactionPort?: InteractionPort
+    args: Record<string, unknown>
   ): Promise<string> {
     const title = args.title;
     if (typeof title !== 'string' || title.trim().length === 0) {
@@ -81,16 +83,12 @@ export class AskUserQuestionTool implements NativeTool {
       throw new Error("options 为空且 allowFreeInput 为 false 时，工具调用无效：需要至少提供选项或开放自由输入");
     }
 
-    if (!_interactionPort) {
-      throw new Error("当前系统未配置 InteractionPort，无法执行 ask_user_question。");
-    }
-
-    const answer = await _interactionPort.askUser(
-      { title: title.trim(), options, multiSelect, allowFreeInput },
-      signal
-    );
-
-    return answer;
+    throw new InteractionRequestError({
+      title: title.trim(),
+      options,
+      multiSelect,
+      allowFreeInput
+    });
   }
 
   /**

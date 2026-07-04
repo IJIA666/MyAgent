@@ -10,6 +10,7 @@ import { InteractionHandler } from './interaction-handler.js';
 import { BrowserSession } from '../../tools/impl/browser/browser-action.js';
 import { logger } from '../../../utils/logger.js';
 import type { ApprovalChoice } from '../../../core/usecases/plugins/plugin-types.js';
+import type { PendingInteraction } from '../../../core/domain/context.js';
 
 /**
  * 终端界面控制门面（Facade）。
@@ -20,6 +21,8 @@ export class CliFacade {
   private session: SessionManager;
   /** 控制台键盘与行输入监听器 */
   private listener: InputListener;
+  /** ask_user_question 的 CLI 交互处理器 */
+  private interactionHandler: InteractionHandler;
   /** 渲染侧忙碌状态，用于过滤非本 Tick 触发的多次交互重置 */
   private isRendering = false;
   /** 标识当前轮次是否已打印过思考过程标题 */
@@ -63,8 +66,9 @@ export class CliFacade {
     });
 
     // 创建人机对话交互处理器并通过 SessionManager 回注到 AgentLoop，
-    // 使 agent 推理过程中可以调用 ask_user_question 工具并同步等待用户回答
-    this.session.setInteractionPort(new InteractionHandler({ listener: this.listener }));
+    // 供 CLI 侧在收到 interaction_request 事件后渲染提问界面。
+    this.interactionHandler = new InteractionHandler({ listener: this.listener });
+    this.session.setInteractionPort(this.interactionHandler);
 
     // 注册底座的审批卡关回调，实现实时非阻塞终端交互，防止 Generator 原地挂起造成死锁
     this.session.approvalService.registerApprovalHandler(async (id: string, toolCall: { name: string; arguments: Record<string, unknown> }, allowedPrefix?: string, message?: string, choices?: ApprovalChoice[]) => {
@@ -289,6 +293,13 @@ export class CliFacade {
           this.listener.resume();
         }
       }
+
+      if (input.toLowerCase().startsWith('/resume')) {
+        const pendingInteraction = this.session.getPendingInteraction();
+        if (pendingInteraction?.state === 'pending') {
+          void this.handlePendingInteraction(pendingInteraction);
+        }
+      }
       return;
     }
 
@@ -340,6 +351,11 @@ export class CliFacade {
         console.log(theme.dim(`[反馈] 工具 "${event.functionName}" 执行完毕，返回了 ${event.result.length} 字节的数据。`));
         break;
 
+      case 'interaction_request':
+        this.isRendering = false;
+        void this.handlePendingInteraction(event.interaction);
+        break;
+
       case 'suspend':
         // 挂起事件，不需要处理（ApprovalHandler 会处理）
         break;
@@ -360,6 +376,28 @@ export class CliFacade {
         this.isRendering = false;
         this.listener.resume(); // 本轮推理完全结束，恢复 Stdin 监听
         break;
+    }
+  }
+
+  /**
+   * 处理挂起的人机中断提问：拉起 CLI 提问界面，并在回答后恢复原 run。
+   *
+   * @param interaction - 当前挂起的交互记录
+   */
+  private async handlePendingInteraction(interaction: PendingInteraction): Promise<void> {
+    try {
+      const answer = await this.interactionHandler.askUser(interaction.payload);
+      while (this.session.getIsGenerating()) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      await this.session.resumePendingInteraction(interaction.id, answer);
+    } catch (error: unknown) {
+      const msg = `恢复挂起提问失败: ${error instanceof Error ? error.message : String(error)}`;
+      logger.error('[CliFacade] handlePendingInteraction 异常', { error: msg, interactionId: interaction.id });
+      console.log(theme.error(`\n[异常] ${msg}\n`));
+      if (!this.session.getIsGenerating()) {
+        this.listener.resume();
+      }
     }
   }
 }

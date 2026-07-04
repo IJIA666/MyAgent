@@ -29,10 +29,9 @@ describe('InteractionHandler 单元测试', () => {
     expect(typeof handler.askUser).toBe('function');
   });
 
-  test('默认超时时间为 5 分钟（300000ms）', () => {
+  test('默认构造不启用自动超时', () => {
     const listener = mockListener();
     const handler = new InteractionHandler({ listener });
-    // 通过间接方式验证：timeoutMs 是内部属性，这里仅验证构造不抛错
     expect(handler).toBeDefined();
   });
 
@@ -44,7 +43,7 @@ describe('InteractionHandler 单元测试', () => {
 
   test('askUser 方法接受合法 payload', async () => {
     const listener = mockListener();
-    const handler = new InteractionHandler({ listener, timeoutMs: 100 }); // 短超时
+    const handler = new InteractionHandler({ listener, timeoutMs: 100 }); // 显式短超时
 
     // 由于没有真实 stdin，askUser 会超时返回空字符串
     const payload: AskUserPayload = {

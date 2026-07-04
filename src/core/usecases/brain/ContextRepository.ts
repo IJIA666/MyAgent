@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
-import { SessionContext } from '../../domain/context.js';
+import { SessionContext, type PendingInteraction, type QuestionPayload } from '../../domain/context.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
@@ -120,11 +120,12 @@ export class ContextRepository {
     const file = path.join(dir, `session_${sessionId}.json`);
     const tempFile = path.join(dir, `.session_${sessionId}.${process.pid}.${Date.now()}.tmp`);
     const stateToSave = {
-      version: 2,
+      version: 3,
       sessionId: this.context.getSessionId(),
       messages: this.context.getHistory(),
       checkpointSummary: this.context.getCheckpointSummary(),
-      recentFiles: this.context.getRecentFiles()
+      recentFiles: this.context.getRecentFiles(),
+      pendingInteraction: this.context.pendingInteraction
     };
 
     try {
@@ -230,7 +231,62 @@ export class ContextRepository {
     this.context.setSessionId(sessionId);
     this.context.setCheckpointSummary(typeof state.checkpointSummary === 'string' ? state.checkpointSummary : null);
     this.context.setRecentFiles(this.normalizeRecentFiles(state.recentFiles));
+
+    // 恢复待回答的人机中断交互（仅当快照结构合法且处于 pending 状态时）
+    const pending = this.normalizePendingInteraction((parsed as Record<string, unknown>).pendingInteraction);
+    if (pending) {
+      this.context.restorePendingInteraction(pending);
+    } else {
+      this.context.clearPendingInteraction();
+    }
+
     return true;
+  }
+
+  /**
+   * 规范化并校验待回答的人机中断交互快照。
+   *
+   * @param value - 原始快照字段值
+   * @returns 合法的 PendingInteraction；非法或非 pending 状态则返回 null
+   */
+  private normalizePendingInteraction(value: unknown): PendingInteraction | null {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+
+    const raw = value as Record<string, unknown>;
+    const payload = raw.payload;
+    const title = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).title : undefined;
+    const options = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).options : undefined;
+    const multiSelect = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).multiSelect : undefined;
+    const allowFreeInput = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).allowFreeInput : undefined;
+
+    if (
+      typeof raw.id !== 'string' ||
+      typeof raw.toolName !== 'string' ||
+      typeof raw.toolCallId !== 'string' ||
+      typeof raw.createdAt !== 'number' ||
+      raw.state !== 'pending' ||
+      typeof title !== 'string'
+    ) {
+      return null;
+    }
+
+    const normalizedPayload: QuestionPayload = {
+      title,
+      options: Array.isArray(options) ? options.filter((item): item is string => typeof item === 'string') : undefined,
+      multiSelect: typeof multiSelect === 'boolean' ? multiSelect : undefined,
+      allowFreeInput: typeof allowFreeInput === 'boolean' ? allowFreeInput : undefined
+    };
+
+    return {
+      id: raw.id,
+      toolName: raw.toolName,
+      toolCallId: raw.toolCallId,
+      createdAt: raw.createdAt,
+      state: 'pending',
+      payload: normalizedPayload
+    };
   }
 
   /**
