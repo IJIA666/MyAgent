@@ -29,6 +29,8 @@ export class CliFacade {
   private hasPrintedReasoning = false;
   /** 标识当前轮次是否已打印过内容换行 */
   private hasPrintedContent = false;
+  /** 当前处于活跃提问 UI 的 interactionId 集合，用于防重 */
+  private activeInteractionIds = new Set<string>();
 
   /**
    * 构造函数，建立与 SessionManager 的绑定，并实例化键盘输入监听器。
@@ -381,10 +383,17 @@ export class CliFacade {
 
   /**
    * 处理挂起的人机中断提问：拉起 CLI 提问界面，并在回答后恢复原 run。
+   * 同一 interactionId 仅允许一个活跃 UI，重复调用被幂等丢弃。
    *
    * @param interaction - 当前挂起的交互记录
    */
   private async handlePendingInteraction(interaction: PendingInteraction): Promise<void> {
+    // 幂等去重：同一 interactionId 已在处理时直接返回
+    if (this.activeInteractionIds.has(interaction.id)) {
+      logger.debug('[CliFacade] handlePendingInteraction 防重跳过', { interactionId: interaction.id });
+      return;
+    }
+    this.activeInteractionIds.add(interaction.id);
     try {
       const answer = await this.interactionHandler.askUser(interaction.payload);
       while (this.session.getIsGenerating()) {
@@ -398,6 +407,8 @@ export class CliFacade {
       if (!this.session.getIsGenerating()) {
         this.listener.resume();
       }
+    } finally {
+      this.activeInteractionIds.delete(interaction.id);
     }
   }
 }

@@ -328,9 +328,9 @@ describe('CliFacade', () => {
     });
 
     it('收到 interaction_request 时，应当拉起提问并在回答后恢复挂起交互', async () => {
-      mockRlInterface.question = vi.fn().mockImplementation((_query: string, callback: (ans: string) => void) => {
-        callback('1');
-      });
+      // 拦截 InteractionHandler.askUser，避免触发真实的 @clack/prompts 交互
+      const askUserSpy = vi.spyOn(facade['interactionHandler'], 'askUser')
+        .mockResolvedValue({ q1: '方案A' });
 
       mockSession.emit('agent_event', {
         type: 'interaction_request',
@@ -341,15 +341,64 @@ describe('CliFacade', () => {
           createdAt: Date.now(),
           state: 'pending',
           payload: {
-            title: '请选择方案',
-            options: ['方案A', '方案B']
+            questions: [{
+              id: 'q1',
+              header: '方案',
+              question: '请选择方案',
+              mode: 'single-select',
+              options: [{ label: '方案A', description: '保守方案' }, { label: '方案B', description: '激进方案' }]
+            }]
           }
         }
       });
 
       await new Promise(resolve => setImmediate(resolve));
 
-      expect(mockSession.resumePendingInteraction).toHaveBeenCalledWith('interaction_tool-1', '方案A');
+      expect(mockSession.resumePendingInteraction).toHaveBeenCalledWith('interaction_tool-1', { q1: '方案A' });
+      askUserSpy.mockRestore();
+    });
+
+    it('同一个 interactionId 收到多次 interaction_request 时，只拉起一次 UI', async () => {
+      // 使用未 resolve 的 deferred promise 模拟慢速交互，确保第二次到达时第一次尚未完成
+      let resolveDeferred: (value: { q1: string }) => void;
+      const deferredPromise = new Promise<{ q1: string }>((resolve) => {
+        resolveDeferred = resolve;
+      });
+      const askUserSpy = vi.spyOn(facade['interactionHandler'], 'askUser')
+        .mockReturnValue(deferredPromise);
+
+      const interaction = {
+        id: 'interaction_tool-dedup',
+        toolName: 'ask_user_question',
+        toolCallId: 'tool-dedup',
+        createdAt: Date.now(),
+        state: 'pending',
+        payload: {
+          questions: [{
+            id: 'q1',
+            header: '方案',
+            question: '请选择方案',
+            mode: 'single-select',
+            options: [{ label: '方案A', description: '保守' }, { label: '方案B', description: '激进' }]
+          }]
+        }
+      };
+
+      // 第一次触发
+      mockSession.emit('agent_event', { type: 'interaction_request', interaction });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(askUserSpy).toHaveBeenCalledTimes(1);
+
+      // 第二次重复触发（此时第一次尚未完成，应被幂等丢弃）
+      mockSession.emit('agent_event', { type: 'interaction_request', interaction });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(askUserSpy).toHaveBeenCalledTimes(1);
+
+      // 释放 deferred，让第一次完成
+      resolveDeferred!({ q1: '方案A' });
+      await new Promise(resolve => setImmediate(resolve));
+
+      askUserSpy.mockRestore();
     });
   });
 

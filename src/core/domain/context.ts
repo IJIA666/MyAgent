@@ -11,6 +11,10 @@ import { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js
 import { SecurityService } from '../usecases/security/SecurityService.js';
 import { createSessionId } from './trace-format.js';
 import type { SafetyResource } from '../usecases/security/SafetyResource.js';
+import type {
+  AskUserAnswer,
+  AskUserPayload
+} from '../../ports/driven/session/InteractionPort.js';
 
 /**
  * 人机中断交互的状态。
@@ -22,13 +26,9 @@ export type PendingInteractionState = 'pending' | 'answered' | 'canceled';
 
 /**
  * 工具载荷的结构化数据，对应 ask_user_question 的参数 schema。
+ * 升级后直接复用 InteractionPort 中的结构化提问模型。
  */
-export interface QuestionPayload {
-  title: string;
-  options?: string[];
-  multiSelect?: boolean;
-  allowFreeInput?: boolean;
-}
+export type QuestionPayload = AskUserPayload;
 
 /**
  * 待回答的人机中断交互记录。
@@ -48,8 +48,8 @@ export interface PendingInteraction {
   createdAt: number;
   /** 当前交互状态 */
   state: PendingInteractionState;
-  /** 用户回答内容（answered 状态下有效） */
-  answer?: string;
+  /** 用户回答内容（answered 状态下有效），按问题 id 索引的结构化映射 */
+  answer?: AskUserAnswer;
 }
 
 /**
@@ -240,10 +240,10 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   /**
    * 回答当前活跃的人机中断交互，记录回答内容并将状态切换为 answered。
    *
-   * @param answer - 用户回答的内容
+   * @param answer - 用户回答的结构化映射（按问题 id 索引）
    * @returns 更新后的交互记录，若无活跃交互则返回 null
    */
-  public answerPendingInteraction(answer: string): PendingInteraction | null {
+  public answerPendingInteraction(answer: AskUserAnswer): PendingInteraction | null {
     if (!this._pendingInteraction || this._pendingInteraction.state !== 'pending') {
       return null;
     }

@@ -1,89 +1,195 @@
 /**
  * @file ask-user-question.test.ts
  * @description AskUserQuestionTool 的单元测试套件。
- * 覆盖参数校验、合法调用、超时返回及端到端工具注册验证。
+ * 覆盖参数校验、多种提问模式的结构化选项校验及工具元数据验证。
  */
 
 import { describe, test, expect } from 'vitest';
 import { AskUserQuestionTool } from '../../../src/adapters/tools/impl/interaction/ask-user-question.js';
 import { InteractionRequestError } from '../../../src/ports/driven/session/InteractionPort.js';
 
+const validQuestion = {
+  id: 'q1',
+  header: '方案',
+  question: '请选择方案',
+  mode: 'single-select',
+  options: [
+    { label: '方案A', description: '保守方案' },
+    { label: '方案B', description: '激进方案' }
+  ]
+};
+
 describe('AskUserQuestionTool 单元测试', () => {
   // ==========================================
-  // 1. 参数校验
+  // 1. questions 参数校验
   // ==========================================
-  test('缺少 title 应抛出异常', async () => {
+  test('缺少 questions 应抛出异常', async () => {
     const tool = new AskUserQuestionTool();
-
     await expect(tool.execute({}))
-      .rejects.toThrow('title');
+      .rejects.toThrow('至少需要提供 1 个问题');
   });
 
-  test('title 为空字符串应抛出异常', async () => {
+  test('questions 为空数组应抛出异常', async () => {
     const tool = new AskUserQuestionTool();
-
-    await expect(tool.execute({ title: '' }))
-      .rejects.toThrow('title');
+    await expect(tool.execute({ questions: [] }))
+      .rejects.toThrow('至少需要提供 1 个问题');
   });
 
-  test('options 为空且 allowFreeInput 为 false 应抛出异常', async () => {
+  test('questions 超过 4 个应抛出异常', async () => {
     const tool = new AskUserQuestionTool();
-
-    await expect(tool.execute({ title: '测试问题' }))
-      .rejects.toThrow('options');
+    const questions = Array.from({ length: 5 }, (_, i) => ({
+      ...validQuestion,
+      id: `q${i}`,
+      header: `Q${i}`,
+      question: `问题${i}`
+    }));
+    await expect(tool.execute({ questions }))
+      .rejects.toThrow('单次最多提交 4 个问题');
   });
 
-  test('无 options 但 allowFreeInput 为 true 时应抛出中断请求', async () => {
+  // ==========================================
+  // 2. mode 校验
+  // ==========================================
+  test('无效 mode 应抛出异常', async () => {
     const tool = new AskUserQuestionTool();
-    await expect(tool.execute(
-      { title: '有什么想法？', allowFreeInput: true }
-    )).rejects.toBeInstanceOf(InteractionRequestError);
+    await expect(tool.execute({
+      questions: [{ ...validQuestion, mode: 'invalid-mode' }]
+    })).rejects.toThrow('mode 无效');
   });
 
-  test('options 存在且 allowFreeInput 为 true 时应抛出带载荷的中断请求', async () => {
+  test('single-select 缺少 options 应抛出异常', async () => {
+    const tool = new AskUserQuestionTool();
+    await expect(tool.execute({
+      questions: [{
+        id: 'q1',
+        header: '测试',
+        question: '请选择',
+        mode: 'single-select'
+      }]
+    })).rejects.toThrow('必须提供 2-4 个选项');
+  });
+
+  test('single-select 只有 1 个选项应抛出异常', async () => {
+    const tool = new AskUserQuestionTool();
+    await expect(tool.execute({
+      questions: [{
+        ...validQuestion,
+        options: [{ label: '仅一个选项' }]
+      }]
+    })).rejects.toThrow('必须提供 2-4 个选项');
+  });
+
+  test('multi-select 缺少 options 应抛出异常', async () => {
+    const tool = new AskUserQuestionTool();
+    await expect(tool.execute({
+      questions: [{
+        id: 'q1',
+        header: '测试',
+        question: '请多选',
+        mode: 'multi-select'
+      }]
+    })).rejects.toThrow('必须提供 2-4 个选项');
+  });
+
+  test('free-text 提供 options 应抛出异常', async () => {
+    const tool = new AskUserQuestionTool();
+    await expect(tool.execute({
+      questions: [{
+        id: 'q1',
+        header: '测试',
+        question: '请输入',
+        mode: 'free-text',
+        options: [{ label: '不应出现' }]
+      }]
+    })).rejects.toThrow('不应提供 options');
+  });
+
+  test('question 为空字符串应抛出异常', async () => {
+    const tool = new AskUserQuestionTool();
+    await expect(tool.execute({
+      questions: [{
+        ...validQuestion,
+        question: '   '
+      }]
+    })).rejects.toThrow('缺少有效的 question 字段');
+  });
+
+  // ==========================================
+  // 3. 合法调用
+  // ==========================================
+  test('有效的 single-select 应抛出 InteractionRequestError', async () => {
+    const tool = new AskUserQuestionTool();
+    await expect(tool.execute({
+      questions: [validQuestion]
+    })).rejects.toBeInstanceOf(InteractionRequestError);
+  });
+
+  test('有效的 multi-select 应抛出 InteractionRequestError', async () => {
+    const tool = new AskUserQuestionTool();
+    await expect(tool.execute({
+      questions: [{
+        ...validQuestion,
+        mode: 'multi-select'
+      }]
+    })).rejects.toBeInstanceOf(InteractionRequestError);
+  });
+
+  test('有效的 free-text 应抛出 InteractionRequestError', async () => {
+    const tool = new AskUserQuestionTool();
+    await expect(tool.execute({
+      questions: [{
+        id: 'q1',
+        header: '输入',
+        question: '请输入您的想法',
+        mode: 'free-text'
+      }]
+    })).rejects.toBeInstanceOf(InteractionRequestError);
+  });
+
+  test('有效的 single-select-or-text 应抛出 InteractionRequestError', async () => {
+    const tool = new AskUserQuestionTool();
+    await expect(tool.execute({
+      questions: [{
+        ...validQuestion,
+        mode: 'single-select-or-text'
+      }]
+    })).rejects.toBeInstanceOf(InteractionRequestError);
+  });
+
+  test('多问题调用应抛出 InteractionRequestError', async () => {
+    const tool = new AskUserQuestionTool();
+    await expect(tool.execute({
+      questions: [
+        validQuestion,
+        {
+          id: 'q2',
+          header: '输入',
+          question: '请补充说明',
+          mode: 'free-text'
+        }
+      ]
+    })).rejects.toBeInstanceOf(InteractionRequestError);
+  });
+
+  test('抛出错误时 payload 应包含正确的 questions', async () => {
     const tool = new AskUserQuestionTool();
     try {
-      await tool.execute({ title: '选择方案', options: ['选项A', '选项B'], allowFreeInput: true });
+      await tool.execute({ questions: [validQuestion] });
     } catch (error: unknown) {
       expect(error).toBeInstanceOf(InteractionRequestError);
-      const interaction = error as InteractionRequestError;
-      expect(interaction.payload).toEqual({
-        title: '选择方案',
-        options: ['选项A', '选项B'],
-        multiSelect: false,
-        allowFreeInput: true
-      });
+      const err = error as InteractionRequestError;
+      expect(err.payload.questions).toHaveLength(1);
+      expect(err.payload.questions[0].id).toBe('q1');
+      expect(err.payload.questions[0].header).toBe('方案');
+      expect(err.payload.questions[0].options).toHaveLength(2);
+      expect(err.payload.questions[0].options![0].label).toBe('方案A');
       return;
     }
     throw new Error('预期抛出 InteractionRequestError，但执行成功返回了结果。');
   });
 
   // ==========================================
-  // 2. 合法调用与返回值
-  // ==========================================
-  test('固定选项单选模式抛出中断请求', async () => {
-    const tool = new AskUserQuestionTool();
-    await expect(tool.execute(
-      { title: '选择清理策略', options: ['保守清理', '激进清理'] }
-    )).rejects.toBeInstanceOf(InteractionRequestError);
-  });
-
-  test('多选模式保留 multiSelect 语义', async () => {
-    const tool = new AskUserQuestionTool();
-    try {
-      await tool.execute(
-        { title: '选择目录', options: ['选项1', '选项2', '选项3'], multiSelect: true }
-      );
-    } catch (error: unknown) {
-      expect(error).toBeInstanceOf(InteractionRequestError);
-      expect((error as InteractionRequestError).payload.multiSelect).toBe(true);
-      return;
-    }
-    throw new Error('预期抛出 InteractionRequestError，但执行成功返回了结果。');
-  });
-
-  // ==========================================
-  // 3. checkSafety
+  // 4. checkSafety
   // ==========================================
   test('checkSafety 始终返回 pass', () => {
     const tool = new AskUserQuestionTool();
@@ -92,7 +198,7 @@ describe('AskUserQuestionTool 单元测试', () => {
   });
 
   // ==========================================
-  // 4. 工具元数据
+  // 5. 工具元数据
   // ==========================================
   test('securityCategory 为 read', () => {
     const tool = new AskUserQuestionTool();
@@ -106,13 +212,10 @@ describe('AskUserQuestionTool 单元测试', () => {
 
   test('definition 包含正确的 function calling schema', () => {
     const tool = new AskUserQuestionTool();
-    const def = tool.definition as { function?: { name: string, parameters: { properties: Record<string, unknown>, required: string[] } } };
+    const def = tool.definition as { function?: { name: string; parameters: { properties: Record<string, unknown>; required: string[] } } };
     expect(def.function?.name).toBe('ask_user_question');
-    expect(def.function?.parameters.properties).toHaveProperty('title');
-    expect(def.function?.parameters.properties).toHaveProperty('options');
-    expect(def.function?.parameters.properties).toHaveProperty('multiSelect');
-    expect(def.function?.parameters.properties).toHaveProperty('allowFreeInput');
-    expect(def.function?.parameters.required).toContain('title');
+    expect(def.function?.parameters.properties).toHaveProperty('questions');
+    expect(def.function?.parameters.required).toContain('questions');
   });
 });
 

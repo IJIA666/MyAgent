@@ -1,7 +1,7 @@
-import readline from 'readline';
-import type { InteractionPort, AskUserPayload } from '../../../ports/driven/session/InteractionPort.js';
-import { theme } from './views/theme.js';
+import * as clack from '@clack/prompts';
+import type { InteractionPort, AskUserPayload, AskUserAnswer, QuestionMode } from '../../../ports/driven/session/InteractionPort.js';
 import type { InputListener } from './io/input-listener.js';
+import { selectWithCleanCancel } from './select.js';
 
 /**
  * CLI 层人机对话交互处理器的配置选项。
@@ -9,164 +9,174 @@ import type { InputListener } from './io/input-listener.js';
 interface InteractionHandlerOptions {
   /** 全局输入监听器引用，用于暂停/恢复 stdin */
   listener: InputListener;
-  /** 可选的自定义超时（毫秒）。缺省时不设自动超时，仅依赖外部取消 */
-  timeoutMs?: number;
 }
 
 /**
  * 终端环境下的人机对话交互处理器。
  * 实现了 InteractionPort 端口契约，负责在 agent 提问时渲染交互界面并等待用户回答。
- * 与审批卡关（ApprovalPort）共享底层 stdin 抢占机制，但使用独立的渲染样式。
- * 默认不设自动超时——等待仅在用户回答、用户明确取消、会话关闭或进程退出时结束。
+ * 基于 @clack/prompts 实现单选/多选/文本输入，与仓库主交互栈保持一致。
  */
 export class InteractionHandler implements InteractionPort {
   private listener: InputListener;
-  private timeoutMs?: number;
+  /** ask 交互的内部取消哨兵，避免把用户取消误当成空答案继续追问后续问题。 */
+  private static readonly CANCELLED = Symbol('ask_user_question.cancelled');
 
   constructor(options: InteractionHandlerOptions) {
     this.listener = options.listener;
-    this.timeoutMs = options.timeoutMs; // 缺省无自动超时
   }
 
   /**
-   * 挂起 agent 推理，向用户展示提问并等待回答。
+   * 挂起 agent 推理，向用户展示一个或多个问题并等待回答。
    *
-   * @param payload - 提问的结构化数据
+   * @param payload - 提问的结构化数据（支持 1-4 个独立问题）
    * @param signal - 可选的 AbortSignal，用于外部取消等待
-   * @returns 用户回答的字符串，取消时返回空字符串
+   * @returns 按问题 id 索引的结构化答案映射，取消时返回空对象
    */
-  async askUser(payload: AskUserPayload, signal?: AbortSignal): Promise<string> {
-    // 暂停全局输入监听，释放 stdin
+  async askUser(payload: AskUserPayload, signal?: AbortSignal): Promise<AskUserAnswer> {
     this.listener.close();
 
     try {
-      const answer = await this.renderAndWait(payload, signal);
+      const answer = await this.renderAll(payload, signal);
       return answer;
     } finally {
-      // 恢复全局输入监听
       this.listener.start(true);
     }
   }
 
   /**
-   * 渲染交互界面并等待用户输入。
-   * 根据 payload 的类型（单选/多选/自由输入/混合）选择不同的渲染模式。
-   * 默认无自动超时，仅依赖用户操作或外部 AbortSignal 结束等待。
+   * 依次渲染所有问题并收集答案。
+   * 若用户取消或外部 abort 中断，返回空对象。
    */
-  private renderAndWait(payload: AskUserPayload, signal?: AbortSignal): Promise<string> {
-    return new Promise((resolve) => {
-      let settled = false;
+  private async renderAll(payload: AskUserPayload, signal?: AbortSignal): Promise<AskUserAnswer> {
+    const result: AskUserAnswer = {};
 
-      // 超时定时器（仅在显式配置了 timeoutMs 时启用）
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      if (this.timeoutMs !== undefined) {
-        timeout = setTimeout(() => {
-          if (!settled) {
-            settled = true;
-            console.log(theme.dim('\n⏰ 提问等待超时，自动跳过。'));
-            rl.close();
-            resolve('');
-          }
-        }, this.timeoutMs);
+    for (const q of payload.questions) {
+      if (signal?.aborted) return {};
+
+      const answer = await this.renderOne(q, signal);
+      if (answer === InteractionHandler.CANCELLED || signal?.aborted) {
+        return {};
       }
 
-      // AbortSignal 监听
-      const onAbort = () => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timeout);
-          console.log(theme.dim('\n⏹ 提问已被取消。'));
-          rl.close();
-          resolve('');
-        }
-      };
-      signal?.addEventListener('abort', onAbort, { once: true });
+      result[q.id] = answer;
+    }
 
-      // 唤醒 stdin 流
-      if (typeof process.stdin.resume === 'function') {
-        process.stdin.resume();
-      }
+    return result;
+  }
 
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
+  /**
+   * 渲染单个问题，根据 mode 选择对应的 @clack/prompts 组件。
+   */
+  private async renderOne(
+    question: { id: string; header: string; question: string; mode: QuestionMode; options?: { label: string; description?: string }[] },
+    signal?: AbortSignal
+  ): Promise<string | string[] | typeof InteractionHandler.CANCELLED> {
+    const mode = question.mode;
+    const message = this.formatQuestionMessage(question.header, question.question);
+
+    // 纯文本输入
+    if (mode === 'free-text') {
+      const answer = await clack.text({
+        message,
+        signal,
       });
-
-      const hasOptions = payload.options && payload.options.length > 0;
-      const showFreeInput = payload.allowFreeInput;
-
-      // 打印问题标题 —— 与审批弹框明确区分（使用 💬 而非 ⚠️）
-      console.log(`\n💬 ${theme.highlight('[agent 提问]')} ${payload.title}`);
-
-      if (hasOptions) {
-        // 选项列表渲染
-        payload.options!.forEach((opt, i) => {
-          console.log(`  [${i + 1}] ${opt}`);
-        });
-
-        // 自由输入附加项
-        if (showFreeInput) {
-          const otherIndex = payload.options!.length + 1;
-          console.log(`  [${otherIndex}] Other（自定义输入）`);
-        }
-
-        console.log('');
-
-        const askOption = () => {
-          rl.question('请选择序号: ', (answer) => {
-            const trimmed = answer.trim();
-            const index = parseInt(trimmed, 10);
-
-            if (showFreeInput && index === payload.options!.length + 1) {
-              // 用户选择了 Other —— 切换为自由文本输入
-              askFreeText();
-              return;
-            }
-
-            if (isNaN(index) || index < 1 || index > payload.options!.length) {
-              console.log('无效选择，请重新输入。');
-              askOption();
-              return;
-            }
-
-            if (!settled) {
-              settled = true;
-              clearTimeout(timeout);
-              signal?.removeEventListener('abort', onAbort);
-              rl.close();
-              resolve(payload.options![index - 1]);
-            }
-          });
-        };
-
-        const askFreeText = () => {
-          rl.question('请输入自定义内容: ', (text) => {
-            if (!settled) {
-              settled = true;
-              clearTimeout(timeout);
-              signal?.removeEventListener('abort', onAbort);
-              rl.close();
-              resolve(text.trim());
-            }
-          });
-        };
-
-        askOption();
-      } else {
-        // 纯自由文本输入模式（无预设选项）
-        const askFreeText = () => {
-          rl.question('请输入: ', (text) => {
-            if (!settled) {
-              settled = true;
-              clearTimeout(timeout);
-              signal?.removeEventListener('abort', onAbort);
-              rl.close();
-              resolve(text.trim());
-            }
-          });
-        };
-        askFreeText();
+      if (signal?.aborted || clack.isCancel(answer)) {
+        clack.cancel('提问已取消。');
+        return InteractionHandler.CANCELLED;
       }
-    });
+      clack.log.info('');
+      return answer.trim();
+    }
+
+    // 单选复用现有适配层，保持取消态与主交互栈一致。
+    if (mode === 'single-select') {
+      const opts = question.options?.map((o): { label: string; value: string; hint?: string } => ({
+        label: o.label,
+        value: o.label,
+        ...(o.description ? { hint: o.description } : {}),
+      })) ?? [];
+      const answer = await selectWithCleanCancel({
+        message,
+        options: opts,
+        signal,
+      });
+      if (signal?.aborted || clack.isCancel(answer)) {
+        clack.cancel('提问已取消。');
+        return InteractionHandler.CANCELLED;
+      }
+      clack.log.info('');
+      return answer;
+    }
+
+    // 多选用 @clack/multiselect
+    if (mode === 'multi-select') {
+      const opts = question.options?.map((o) => ({
+        label: o.label,
+        value: o.label,
+        ...(o.description ? { hint: o.description } : {}),
+      })) ?? [];
+      const answer = await clack.multiselect({
+        message,
+        options: opts,
+        required: false,
+        signal,
+      });
+      if (signal?.aborted || clack.isCancel(answer)) {
+        clack.cancel('提问已取消。');
+        return InteractionHandler.CANCELLED;
+      }
+      clack.log.info('');
+      return answer.filter((a): a is string => typeof a === 'string');
+    }
+
+    // 单选 + Other 自由输入：先展示 select，选中 Other 后切换到 text
+    if (mode === 'single-select-or-text') {
+      const opts = question.options?.map((o) => ({
+        label: o.label,
+        value: o.label,
+        ...(o.description ? { hint: o.description } : {}),
+      })) ?? [];
+      const otherValue = '__other__';
+      opts.push({ label: 'Other（自定义输入）', value: otherValue });
+
+      const first = await selectWithCleanCancel({
+        message,
+        options: opts,
+        signal,
+      });
+      if (signal?.aborted || clack.isCancel(first)) {
+        clack.cancel('提问已取消。');
+        return InteractionHandler.CANCELLED;
+      }
+      clack.log.info('');
+
+      const selected = first;
+      if (selected === otherValue) {
+        const text = await clack.text({
+          message: '请输入自定义内容:',
+          signal,
+        });
+        if (signal?.aborted || clack.isCancel(text)) {
+          clack.cancel('提问已取消。');
+          return InteractionHandler.CANCELLED;
+        }
+        clack.log.info('');
+        return text.trim();
+      }
+      return selected;
+    }
+
+    return InteractionHandler.CANCELLED;
+  }
+
+  /**
+   * 将短标签合并进问题提示，避免多问题场景丢失语义上下文。
+   */
+  private formatQuestionMessage(header: string, question: string): string {
+    const normalizedHeader = header.trim();
+    if (!normalizedHeader) {
+      return question;
+    }
+    return `[${normalizedHeader}] ${question}`;
   }
 }

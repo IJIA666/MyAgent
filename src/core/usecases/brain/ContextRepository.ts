@@ -1,7 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
-import { SessionContext, type PendingInteraction, type QuestionPayload } from '../../domain/context.js';
+import { SessionContext, type PendingInteraction } from '../../domain/context.js';
+import type { UserQuestion } from '../../../ports/driven/session/InteractionPort.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
@@ -245,6 +246,7 @@ export class ContextRepository {
 
   /**
    * 规范化并校验待回答的人机中断交互快照。
+   * 仅支持新版 questions[] 载荷格式；旧版 title/options 载荷被安全丢弃。
    *
    * @param value - 原始快照字段值
    * @returns 合法的 PendingInteraction；非法或非 pending 状态则返回 null
@@ -256,28 +258,21 @@ export class ContextRepository {
 
     const raw = value as Record<string, unknown>;
     const payload = raw.payload;
-    const title = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).title : undefined;
-    const options = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).options : undefined;
-    const multiSelect = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).multiSelect : undefined;
-    const allowFreeInput = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).allowFreeInput : undefined;
 
-    if (
-      typeof raw.id !== 'string' ||
+    if (typeof raw.id !== 'string' ||
       typeof raw.toolName !== 'string' ||
       typeof raw.toolCallId !== 'string' ||
       typeof raw.createdAt !== 'number' ||
-      raw.state !== 'pending' ||
-      typeof title !== 'string'
+      raw.state !== 'pending'
     ) {
       return null;
     }
 
-    const normalizedPayload: QuestionPayload = {
-      title,
-      options: Array.isArray(options) ? options.filter((item): item is string => typeof item === 'string') : undefined,
-      multiSelect: typeof multiSelect === 'boolean' ? multiSelect : undefined,
-      allowFreeInput: typeof allowFreeInput === 'boolean' ? allowFreeInput : undefined
-    };
+    // 仅识别新格式（payload.questions 数组）；旧版 title/options 载荷安全丢弃
+    const questions = this.normalizeQuestions(payload);
+    if (!questions) {
+      return null;
+    }
 
     return {
       id: raw.id,
@@ -285,8 +280,47 @@ export class ContextRepository {
       toolCallId: raw.toolCallId,
       createdAt: raw.createdAt,
       state: 'pending',
-      payload: normalizedPayload
+      answer: undefined,
+      payload: { questions }
     };
+  }
+
+  /**
+   * 规范化 questions 载荷结构。
+   * 若 payload 不包含合法 questions，返回 null 表示应丢弃。
+   */
+  private normalizeQuestions(payload: unknown): UserQuestion[] | null {
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    const raw = payload as Record<string, unknown>;
+    const rawQuestions = raw.questions;
+    if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
+      return null;
+    }
+    const questions: UserQuestion[] = rawQuestions.map((item: unknown) => {
+      const q = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
+      const options = Array.isArray(q.options) ? q.options.map((opt: unknown) => {
+        const o = (opt && typeof opt === 'object' ? opt : {}) as Record<string, unknown>;
+        return {
+          label: typeof o.label === 'string' ? o.label : '',
+          description: typeof o.description === 'string' ? o.description : undefined
+        };
+      }).filter(o => o.label.length > 0) : undefined;
+
+      const mode = typeof q.mode === 'string' ? q.mode : 'single-select';
+      const allowedModes = ['single-select', 'multi-select', 'free-text', 'single-select-or-text'];
+
+      return {
+        id: typeof q.id === 'string' ? q.id : '',
+        header: typeof q.header === 'string' ? q.header : '',
+        question: typeof q.question === 'string' ? q.question : '',
+        mode: (allowedModes.includes(mode) ? mode : 'single-select') as UserQuestion['mode'],
+        options: options && options.length > 0 ? options : undefined
+      };
+    }).filter(q => q.id.length > 0 && q.question.length > 0);
+
+    return questions.length > 0 ? questions : null;
   }
 
   /**

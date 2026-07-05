@@ -4,6 +4,7 @@ import { logger } from '../../../utils/logger.js'; // 导入统一日志单例 l
 import { AgentTracer } from '../../domain/tracer.js';
 import { SessionContext, ContextTokenUsage, type PendingInteraction } from '../../domain/context.js';
 import type { ChatMessage, LlmPort } from '../../../ports/driven/llm/LlmPort.js';
+import type { AskUserAnswer } from '../../../ports/driven/session/InteractionPort.js';
 import type { TokenEstimatorPort, ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
@@ -419,10 +420,10 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
    * 提交当前挂起提问的用户回答，并从原 run 的工具调用点继续推理。
    *
    * @param interactionId - 待恢复的交互 ID
-   * @param answer - 用户回答内容
+   * @param answer - 用户回答的结构化映射（按问题 id 索引）
    * @returns 无返回值的 Promise
    */
-  public async resumePendingInteraction(interactionId: string, answer: string): Promise<void> {
+  public async resumePendingInteraction(interactionId: string, answer: AskUserAnswer): Promise<void> {
     if (this.isGenerating) {
       throw new Error('Session is currently busy generating a response.');
     }
@@ -443,7 +444,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     this.context.addMessage({
       role: 'tool',
       tool_call_id: answered.toolCallId,
-      content: answered.answer ?? ''
+      content: JSON.stringify(answered.answer ?? {})
     });
     this.context.clearPendingInteraction();
     await this.contextRepo.saveState();
