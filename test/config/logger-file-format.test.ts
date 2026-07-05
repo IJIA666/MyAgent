@@ -26,10 +26,9 @@ describe('Logger file format', () => {
     }
   });
 
-  it('should write structured properties into run.log as JSON lines', async () => {
+  it('should recreate .myagent and write structured properties into run.log as JSON lines', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'logger-format-test-'));
     process.chdir(tempDir);
-    fs.mkdirSync(path.join(tempDir, '.myagent'), { recursive: true });
     process.env.VITEST = 'true';
     process.env.MYAGENT_TEST_LOG = '1';
 

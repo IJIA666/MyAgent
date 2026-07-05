@@ -4,4 +4,5 @@
  */
 export type SafetyResource =
   | { kind: 'path'; access: 'read' | 'write'; normalizedPath: string }
+  | { kind: 'directory-scope'; access: 'read'; normalizedPath: string }
   | { kind: 'command-prefix'; prefix: string };

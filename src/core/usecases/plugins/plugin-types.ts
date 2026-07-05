@@ -207,7 +207,7 @@ export type ApprovalEffect = PendingGrant | PersistentRuleEffect;
  */
 export type PendingGrant =
   | { type: 'call'; toolCallId: string; toolName: string; resources: SafetyResource[] }
-  | { type: 'session'; toolCallId: string; resources: { access: 'read' | 'write'; normalizedPath: string }[] };
+  | { type: 'session'; toolCallId: string; resources: SafetyResource[] };
 
 /**
  * 单次工具调用执行期间的隔离上下文。

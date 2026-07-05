@@ -12,6 +12,11 @@ function pathResource(access: 'read' | 'write', normalizedPath: string): SafetyR
   return { kind: 'path', access, normalizedPath };
 }
 
+/** 构造测试用的目录范围只读资源 */
+function directoryScopeResource(normalizedPath: string): SafetyResource {
+  return { kind: 'directory-scope', access: 'read', normalizedPath };
+}
+
 describe('computeArgumentsDigest', () => {
   it('11.x 相同参数产生相同摘要', () => {
     const a = computeArgumentsDigest({ targetPath: '/foo/bar', content: 'hello' });
@@ -159,6 +164,45 @@ describe('hasClaimedResource — access-aware 读写隔离', () => {
     // write 令牌只能过 write 检查
     expect(ctx2.hasClaimedResource('call-write', 'write', '/shared/path')).toBe(true);
     expect(ctx2.hasClaimedResource('call-write', 'read', '/shared/path')).toBe(false);
+  });
+
+  it('11.x directory-scope 的单次读授权应覆盖其子目录和子文件', () => {
+    const ctx2 = new SessionContext('test-session-directory-scope');
+    const resources: SafetyResource[] = [directoryScopeResource('/workspace/outside-root')];
+    const digest = computeArgumentsDigest({ targetPath: '/workspace/outside-root' });
+
+    ctx2.registerCallCapability({
+      toolCallId: 'call-dir-scope',
+      toolName: 'listFiles',
+      resources,
+      argumentsDigest: digest,
+      state: 'registered',
+      createdAt: Date.now()
+    });
+    ctx2.claimCapability('call-dir-scope', 'listFiles', { targetPath: '/workspace/outside-root' });
+
+    expect(ctx2.hasClaimedResource('call-dir-scope', 'read', '/workspace/outside-root')).toBe(true);
+    expect(ctx2.hasClaimedResource('call-dir-scope', 'read', '/workspace/outside-root/sub')).toBe(true);
+    expect(ctx2.hasClaimedResource('call-dir-scope', 'read', '/workspace/outside-root/sub/file.txt')).toBe(true);
+  });
+
+  it('11.x directory-scope 的单次读授权不应覆盖兄弟目录或写权限', () => {
+    const ctx2 = new SessionContext('test-session-directory-scope-isolation');
+    const resources: SafetyResource[] = [directoryScopeResource('/workspace/outside-root')];
+    const digest = computeArgumentsDigest({ targetPath: '/workspace/outside-root' });
+
+    ctx2.registerCallCapability({
+      toolCallId: 'call-dir-scope',
+      toolName: 'listFiles',
+      resources,
+      argumentsDigest: digest,
+      state: 'registered',
+      createdAt: Date.now()
+    });
+    ctx2.claimCapability('call-dir-scope', 'listFiles', { targetPath: '/workspace/outside-root' });
+
+    expect(ctx2.hasClaimedResource('call-dir-scope', 'read', '/workspace/outside-root-sibling')).toBe(false);
+    expect(ctx2.hasClaimedResource('call-dir-scope', 'write', '/workspace/outside-root/sub/file.txt')).toBe(false);
   });
 });
 

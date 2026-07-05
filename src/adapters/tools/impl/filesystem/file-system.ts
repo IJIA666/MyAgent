@@ -557,7 +557,7 @@ export class ListFilesTool implements NativeTool {
         status: 'suspend',
         message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
         targetPath: resolvedPath,
-        resources: [{ kind: 'path', access: 'read' as const, normalizedPath: resolvedPath }]
+        resources: [{ kind: 'directory-scope', access: 'read' as const, normalizedPath: resolvedPath }]
       };
     }
   }

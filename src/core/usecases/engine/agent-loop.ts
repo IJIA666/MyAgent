@@ -633,9 +633,13 @@ export class AgentLoop {
                       break;
                     }
                     case 'session':
-                      // 按 access 分别写入会话临时白名单
+                      // 根据资源 kind 分流写入：directory-scope 写入目录范围白名单，
+                      // path 按 access 写入精确读/写白名单（command-prefix 不会出现在会话授权中）
                       for (const r of grant.resources) {
-                        if (r.access === 'read') {
+                        if (r.kind === 'command-prefix') continue;
+                        if (r.kind === 'directory-scope') {
+                          this.context.addTemporaryDirectoryScopeReadWhitelist(r.normalizedPath);
+                        } else if (r.access === 'read') {
                           this.context.addTemporaryReadWhitelist(r.normalizedPath);
                         } else {
                           this.context.addTemporaryWriteWhitelist(r.normalizedPath);
@@ -793,7 +797,10 @@ export class AgentLoop {
                       }
                       case 'session':
                         for (const r of grant.resources) {
-                          if (r.access === 'read') {
+                          if (r.kind === 'command-prefix') continue;
+                          if (r.kind === 'directory-scope') {
+                            this.context.addTemporaryDirectoryScopeReadWhitelist(r.normalizedPath);
+                          } else if (r.access === 'read') {
                             this.context.addTemporaryReadWhitelist(r.normalizedPath);
                           } else {
                             this.context.addTemporaryWriteWhitelist(r.normalizedPath);

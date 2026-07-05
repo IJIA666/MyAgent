@@ -7,6 +7,8 @@
 import { configure, getConsoleSink, getJsonLinesFormatter, getLogger, dispose, withFilter } from "@logtape/logtape";
 import type { LogLevel } from "@logtape/logtape";
 import { getRotatingFileSink } from "@logtape/file";
+import { existsSync, mkdirSync } from "fs";
+import { resolve } from "path";
 
 const rawLogger = getLogger([]);
 
@@ -49,6 +51,17 @@ export const logger = {
 let isInitialized = false;
 
 /**
+ * 确保运行时日志根目录 `.myagent` 存在。
+ * 这是启动链路最早访问 `.myagent` 的位置，必须先自愈目录，再配置文件 Sink。
+ */
+function ensureLoggerRuntimeDir(): void {
+  const runtimeDir = resolve(".myagent");
+  if (!existsSync(runtimeDir)) {
+    mkdirSync(runtimeDir, { recursive: true });
+  }
+}
+
+/**
  * 初始化全局日志系统配置。
  * 根据环境变量配置 Console 终端彩色输出和文件落盘轮转写入，并自动处理测试静音。
  * 
@@ -59,6 +72,8 @@ export async function initLogger(): Promise<void> {
     return;
   }
   isInitialized = true;
+  // 日志文件 Sink 会写入 `.myagent/run.log`。若用户删掉整个 `.myagent`，这里必须先重建根目录。
+  ensureLoggerRuntimeDir();
   const isTest = process.env.VITEST === "true";
   const hasTestLogEnv = process.env.MYAGENT_TEST_LOG === "1";
 

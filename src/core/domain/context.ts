@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { EventEmitter } from 'node:events';
+import { relative, isAbsolute } from 'path';
 import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
 import { buildSystemPrompt } from '../usecases/brain/prompts.js';
 import type { SkillMetadata } from '../usecases/brain/contextLoader.js';
@@ -697,6 +698,19 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   }
 
   /**
+   * 将指定目录根路径加入当前会话的目录范围只读白名单。
+   * 受到 busy 状态锁防护。
+   *
+   * @param dirRoot - 经物理路径归一化的目录根路径
+   */
+  public addTemporaryDirectoryScopeReadWhitelist(dirRoot: string): void {
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
+    SecurityService.getInstance().addTemporaryDirectoryScopeReadWhitelist(this.sessionId, dirRoot);
+  }
+
+  /**
    * 清空当前会话在内存中暂存的所有临时读写白名单。
    * 受到 busy 状态锁防护。
    */
@@ -778,7 +792,21 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
       return false;
     }
     return cap.resources.some(
-      r => r.kind === 'path' && r.access === access && r.normalizedPath === normalizedPath
+      (r) => {
+        if (r.kind === 'path') {
+          return r.access === access && r.normalizedPath === normalizedPath;
+        }
+        if (r.kind === 'directory-scope') {
+          return access === 'read' && this.isPathWithinDirectoryScope(r.normalizedPath, normalizedPath);
+        }
+        return false;
+      }
     );
+  }
+
+  /** 判断目标路径是否位于某个目录范围资源所覆盖的子树内。 */
+  private isPathWithinDirectoryScope(scopeRoot: string, targetPath: string): boolean {
+    const rel = relative(scopeRoot, targetPath);
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
   }
 }

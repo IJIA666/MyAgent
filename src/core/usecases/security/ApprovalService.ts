@@ -37,6 +37,12 @@ export class ApprovalService {
     choices?: ApprovalChoice[]
   ) => void | Promise<void>;
 
+  /** 当前是否有一个审批 UI 正在独占 stdin。用于防止多个审批提示并发渲染。 */
+  private isDispatchingApproval = false;
+
+  /** 等待串行展示的审批请求队列。仅在已有审批 UI 占用 stdin 时入队。 */
+  private queuedApprovalDispatchers: Array<() => Promise<void>> = [];
+
   /**
    * 注册审批提问事件处理器。
    * 用于终端 UI 层直接绑定其交互问答渲染接口，实现非阻塞同步通知。
@@ -90,19 +96,7 @@ export class ApprovalService {
       return { action: 'call' };
     }
 
-    // 同步触发已注册的审批问答界面，传入完整的审批元数据
-    if (this.onNeedApprovalHandler) {
-      try {
-        const res = this.onNeedApprovalHandler(id, toolCall, allowedPrefix, message, choices);
-        if (res instanceof Promise) {
-          res.catch((err) => logger.error('Approval handler async error:', err)); // 替换为统一日志单例输出
-        }
-      } catch (err) {
-        logger.error('Approval handler sync error:', err); // 替换为统一日志单例输出
-      }
-    }
-
-    return new Promise<ApprovalDecision>((resolve, reject) => {
+    const waitPromise = new Promise<ApprovalDecision>((resolve, reject) => {
       // 开启超时定时器，超时默认返回 deny 拒绝决策，保障系统不挂死
       const timeoutId = setTimeout(() => {
         this.pendingApprovals.delete(id);
@@ -112,6 +106,11 @@ export class ApprovalService {
       // 将控制权 resolve/reject 以及定时器指针存入内存映射表中，并强绑定 sessionId
       this.pendingApprovals.set(id, { resolve, reject, timeoutId, sessionId });
     });
+
+    // 先登记 pending，再串行分发 UI，避免“先提问后登记”导致的竞态与双提示问题。
+    this.dispatchApprovalRequest(id, toolCall, allowedPrefix, message, choices);
+
+    return waitPromise;
   }
 
   /**
@@ -183,5 +182,66 @@ export class ApprovalService {
       pending.reject(error);
     }
     this.pendingApprovals.clear();
+  }
+
+  /**
+   * 串行分发审批 UI 请求，确保同一时刻最多只有一个审批提示占用 stdin。
+   *
+   * @param id - 审批任务 ID
+   * @param toolCall - 工具调用信息
+   * @param allowedPrefix - 可选的安全前缀
+   * @param message - 可选的提示信息
+   * @param choices - 可选的受信审批选项
+   */
+  private dispatchApprovalRequest(
+    id: string,
+    toolCall: { name: string; arguments: Record<string, unknown> },
+    allowedPrefix?: string,
+    message?: string,
+    choices?: ApprovalChoice[]
+  ): void {
+    if (!this.onNeedApprovalHandler) {
+      return;
+    }
+
+    const runDispatch = async (): Promise<void> => {
+      // 若该审批在真正展示前已被 resolve/reject/timeout，则直接跳过，避免展示幽灵提示。
+      if (!this.pendingApprovals.has(id)) {
+        return;
+      }
+
+      try {
+        await this.onNeedApprovalHandler?.(id, toolCall, allowedPrefix, message, choices);
+      } catch (err) {
+        logger.error('Approval handler sync error:', err);
+      }
+    };
+
+    if (this.isDispatchingApproval) {
+      this.queuedApprovalDispatchers.push(runDispatch);
+      return;
+    }
+
+    this.isDispatchingApproval = true;
+    void runDispatch().finally(() => {
+      this.drainApprovalQueue();
+    });
+  }
+
+  /**
+   * 拉起下一个排队中的审批 UI 请求。
+   * 使用串行 drain 而非并发 Promise 链，确保 stdin 只会被一个审批交互占用。
+   */
+  private drainApprovalQueue(): void {
+    const next = this.queuedApprovalDispatchers.shift();
+    if (!next) {
+      this.isDispatchingApproval = false;
+      return;
+    }
+
+    this.isDispatchingApproval = true;
+    void next().finally(() => {
+      this.drainApprovalQueue();
+    });
   }
 }

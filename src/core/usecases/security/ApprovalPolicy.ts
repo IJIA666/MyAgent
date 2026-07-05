@@ -10,12 +10,13 @@ import type { SafetyOperation, ApprovalChoiceId, ApprovalChoice, ApprovalRequest
 import type { ResourceExtractor } from '../../../adapters/tools/virtual-mcp.js';
 
 /** 资源分类规则键 */
-type RuleKey = 'path+read' | 'path+write' | 'command-prefix' | 'hardline' | 'sensitive-file' | 'untrusted';
+type RuleKey = 'path+read' | 'path+write' | 'directory-scope' | 'command-prefix' | 'hardline' | 'sensitive-file' | 'untrusted';
 
 /** choice 生成规则矩阵：资源类型 → 可用 choice 列表 */
 const CHOICE_RULES: Record<RuleKey, ApprovalChoiceId[]> = {
   'path+read':      ['call', 'session', 'deny'],
   'path+write':     ['call', 'session', 'deny'],
+  'directory-scope': ['call', 'session', 'deny'],
   'command-prefix': ['call', 'persistent', 'deny'],
   'hardline':       ['deny'],
   'sensitive-file': ['call', 'deny'],
@@ -140,11 +141,22 @@ export class ApprovalPolicy {
     // 4. 根据资源类型聚合 choice 规则
     const ruleKeys = this.classifyResources(effectiveResources);
     const mergedChoices = this.mergeChoiceRules(ruleKeys);
-    const choices: ApprovalChoice[] = mergedChoices.map((choiceId) => ({
-      choiceId,
-      label: CHOICE_LABELS[choiceId].label,
-      description: CHOICE_LABELS[choiceId].description,
-    }));
+    const hasDirectoryScope = effectiveResources.some(r => r.kind === 'directory-scope');
+    const choices: ApprovalChoice[] = mergedChoices.map((choiceId) => {
+      // 目录范围资源的 session 选项描述应明确告知子树授权范围
+      if (choiceId === 'session' && hasDirectoryScope) {
+        return {
+          choiceId,
+          label: '会话始终放行',
+          description: '本次会话内允许读取该目录及其所有子目录，不再逐一确认',
+        };
+      }
+      return {
+        choiceId,
+        label: CHOICE_LABELS[choiceId].label,
+        description: CHOICE_LABELS[choiceId].description,
+      };
+    });
 
     return {
       id: `approval_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`,
@@ -175,12 +187,14 @@ export class ApprovalPolicy {
           payload: { type: 'call', toolCallId: '', toolName, resources: operation.resources } as PendingGrant,
         };
       case 'session': {
-        const pathResources = operation.resources
-          .filter((r): r is SafetyResource & { kind: 'path' } => r.kind === 'path')
-          .map((r) => ({ access: r.access, normalizedPath: r.normalizedPath }));
+        // 保留 path 和 directory-scope 资源，command-prefix 不进入会话授权
+        const retained = operation.resources.filter(
+          (r): r is SafetyResource & ({ kind: 'path' } | { kind: 'directory-scope' }) =>
+            r.kind === 'path' || r.kind === 'directory-scope'
+        );
         return {
           type: 'session',
-          payload: { type: 'session', toolCallId: '', resources: pathResources } as PendingGrant,
+          payload: { type: 'session', toolCallId: '', resources: retained } as PendingGrant,
         };
       }
       case 'persistent': {
@@ -248,6 +262,7 @@ export class ApprovalPolicy {
     // 将两个集合序列化为可比较的形式
     const serialize = (r: SafetyResource): string => {
       if (r.kind === 'path') return `path:${r.access}:${r.normalizedPath}`;
+      if (r.kind === 'directory-scope') return `directory-scope:read:${r.normalizedPath}`;
       return `command-prefix:${r.prefix}`;
     };
 
@@ -302,6 +317,8 @@ export class ApprovalPolicy {
     for (const r of resources) {
       if (r.kind === 'path') {
         keys.add(r.access === 'read' ? 'path+read' : 'path+write');
+      } else if (r.kind === 'directory-scope') {
+        keys.add('directory-scope');
       } else if (r.kind === 'command-prefix') {
         keys.add('command-prefix');
       }

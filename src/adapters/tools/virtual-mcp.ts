@@ -405,7 +405,14 @@ export class LocalFileSystemMcpServer {
     // ── 文件工具：只读 ──
     this.registerResourceExtractor('readFile', pathExtractor('targetPath', 'read'));
     this.registerResourceExtractor('readManyFiles', multiPathExtractor('targetPaths', 'read'));
-    this.registerResourceExtractor('listFiles', pathExtractor('targetPath', 'read'));
+    this.registerResourceExtractor('listFiles', (args) => {
+      const rawPath = args.targetPath;
+      if (typeof rawPath === 'string' && rawPath.trim()) {
+        return [{ kind: 'directory-scope', access: 'read', normalizedPath: resolve(cwd, rawPath.trim()) }];
+      }
+      // targetPath 未指定时默认使用当前工作目录
+      return [{ kind: 'directory-scope', access: 'read', normalizedPath: resolve(cwd, '.') }];
+    });
     this.registerResourceExtractor('grepSearch', (args) => {
       const rawPath = args.searchPath;
       if (typeof rawPath === 'string' && rawPath.trim()) {
