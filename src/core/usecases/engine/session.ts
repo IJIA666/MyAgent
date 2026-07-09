@@ -8,6 +8,7 @@ import type { AskUserAnswer } from '../../../ports/driven/session/InteractionPor
 import type { TokenEstimatorPort, ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
+import type { ToolAccessMetadataPort } from '../../../ports/driven/tools/ToolAccessMetadataPort.js';
 import { AgentLoop } from './agent-loop.js';
 import { ChatUseCase } from '../../../ports/driving/ChatUseCase.js';
 import { TaskAborterPort } from '../../../ports/driven/tools/TaskAborterPort.js';
@@ -97,6 +98,7 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
    * @param embedding - 文本嵌入生成契约
    * @param appConfig - 应用程序系统配置项
    * @param taskAborter - 任务中止服务端口
+   * @param toolAccessMetadata - 工具访问元数据查询端口契约
    */
   constructor(
     llmConfig: LlmConfig,
@@ -108,7 +110,12 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
     embedding: EmbeddingPort,
     appConfig: AppConfig,
     qualityCheckPort?: QualityCheckPort,
-    taskAborter?: TaskAborterPort
+    taskAborter?: TaskAborterPort,
+    toolAccessMetadata: ToolAccessMetadataPort = {
+      getResourceExtractor: () => undefined,
+      getAccessMetadata: () => undefined,
+      getResourceExtractors: () => new Map()
+    }
   ) {
     super();
     this.llmConfig = llmConfig;
@@ -158,13 +165,10 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
 
     // 装配中央审批策略服务并注入 HumanApprovalPlugin（任务 3.5、4.7）
     const approvalPolicy = new ApprovalPolicy();
-    // 从工具注册表注入资源提取器（toolRegistry 的实际类型为 ToolRegistry，携带 getResourceExtractors）
-    if (typeof (this.toolRegistry as unknown as Record<string, unknown>).getResourceExtractors === 'function') {
-      const registry = this.toolRegistry as unknown as import('../../../adapters/tools/toolRegistry.js').ToolRegistry;
-      const extractors = registry.getResourceExtractors();
-      for (const [name, extractor] of extractors) {
-        approvalPolicy.registerExtractor(name, extractor);
-      }
+    // 从独立元数据端口注入资源提取器，避免核心层依赖适配器具体实现
+    const extractors = toolAccessMetadata.getResourceExtractors();
+    for (const [name, extractor] of extractors) {
+      approvalPolicy.registerExtractor(name, extractor);
     }
     this.pluginRegistry.register(new HumanApprovalPlugin(approvalPolicy));
 

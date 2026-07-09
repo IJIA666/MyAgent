@@ -94,7 +94,8 @@ async function main() {
       embeddingAdapter,
       appConfig,
       qualityCheckAdapter,
-      abortSessionTasks
+      abortSessionTasks,
+      toolRegistry
     );
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);

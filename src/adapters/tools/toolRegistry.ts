@@ -1,21 +1,31 @@
 import { LocalFileSystemMcpServer } from './virtual-mcp.js';
 import { McpToolManager } from './mcp-client.js';
+import { ToolCatalog } from './ToolCatalog.js';
+import { ToolExecutor } from './ToolExecutor.js';
+import { ToolAccessMetadataProvider } from './ToolAccessMetadataProvider.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
+import type { ToolAccessMetadataPort, ResourceExtractor, ToolAccessMetadata } from '../../ports/driven/tools/ToolAccessMetadataPort.js';
 import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
 
 /**
  * 工具注册表管理类。
  * 核心职责：
- * 1. 统管本地虚拟 MCP 服务器（LocalFileSystemMcpServer）提供的文件级操作工具；
+ * 1. 统管本地虚拟 MCP 服务器（LocalFileSystemMcpServer）提供的全部内建工具；
  * 2. 集成外部真实 MCP 服务器（McpToolManager）提供的外部工具；
  * 3. 对外提供统一的工具获取（getTools）与工具调用（callTool）接口。
  */
-export class ToolRegistry implements ToolRegistryPort {
-  // 本地文件系统工具对应的虚拟 MCP 服务器实例
+export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
+  // 本地内建工具对应的虚拟 MCP 服务器实例
   private localMcpServer: LocalFileSystemMcpServer;
+  // 工具目录管理器（委托 getTools / getTool）
+  private catalog: ToolCatalog;
+  // 工具执行调度器（委托 callTool）
+  private executor: ToolExecutor;
+  // 工具访问元数据聚合器（委托资源提取器查询）
+  private metadataProvider: ToolAccessMetadataProvider;
   // 可选的外部 MCP 工具管理器实例
   public readonly mcpManager?: McpManagerPort;
 
@@ -30,42 +40,37 @@ export class ToolRegistry implements ToolRegistryPort {
     this.mcpManager = mcpManager;
     // 实例化本地文件系统的虚拟 MCP 服务
     this.localMcpServer = new LocalFileSystemMcpServer(options);
+    const allTools = this.localMcpServer.getAllTools();
+    // 构建工具目录（从 localMcpServer 提取已注册工具列表）
+    this.catalog = new ToolCatalog(allTools, mcpManager);
+    // 构建工具执行调度器
+    this.executor = new ToolExecutor(this.catalog);
+    // 构建元数据聚合器（从工具自带 resourceExtractor 聚合）
+    this.metadataProvider = new ToolAccessMetadataProvider(allTools);
   }
 
   /**
-   * 根据工具名称获取本地内置的 NativeTool 实例元数据。
+   * 根据工具名称获取本地内置的 NativeTool 实例元数据（委托给 ToolCatalog）。
    *
    * @param name - 工具名称
    * @returns 工具实例元数据，若未找到则返回 undefined
    */
   public getTool(name: string): ToolMetadata | undefined {
-    return this.localMcpServer.getTool(name);
+    return this.catalog.getToolMetadata(name);
   }
 
   /**
-   * 聚合获取当前系统中所有可用的工具列表。
+   * 聚合获取当前系统中所有可用的工具列表（委托给 ToolCatalog）。
    * 包括本地文件系统工具与（如果配置了的）外部 MCP 节点工具。
    *
    * @returns 包含所有工具定义的数组，供大语言模型消费
    */
   public async getTools(): Promise<unknown[]> {
-    // 获取本地定义的工具集
-    const localTools = await this.localMcpServer.getTools();
-    // 初始化返回数组，默认包含所有本地工具
-    let allTools = [...localTools];
-    // 若注册了外部 MCP 管理器，则拉取外部工具并进行合并
-    if (this.mcpManager) {
-      // 获取通过 MCP 客户端接入的远端工具
-      const mcpTools = await this.mcpManager.getMcpTools();
-      // 合并两部分工具列表
-      allTools = allTools.concat(mcpTools);
-    }
-    // 返回全量的工具数组
-    return allTools;
+    return this.catalog.getTools();
   }
 
   /**
-   * 统一路由并执行指定的工具调用请求。
+   * 统一路由并执行指定的工具调用请求（委托给 ToolExecutor）。
    * 优先匹配本地工具，若未命中则下发至外部 MCP 管理器执行。
    *
    * @param functionName - 要调用的目标工具名称
@@ -81,19 +86,19 @@ export class ToolRegistry implements ToolRegistryPort {
     signal?: AbortSignal,
     toolCallId?: string
   ): Promise<unknown> {
-    // 先行加载本地工具清单以供比对
-    const localToolsDef = await this.localMcpServer.getTools();
     // 检查目标工具是否隶属于本地内置集合
-    const isLocalTool = localToolsDef.some(
-      (t) => (t as { function?: { name: string } }).function?.name === functionName
-    );
+    const isLocalTool = this.catalog.getTool(functionName) !== undefined;
 
     if (isLocalTool) {
-      // 命中本地工具，交由本地虚拟服务器解析与执行
-      return await this.localMcpServer.callTool({
-        name: functionName,
-        arguments: functionArgs
-      }, sessionContext, interactionPort, signal, toolCallId);
+      // 命中本地工具，委托给 ToolExecutor 执行
+      return await this.executor.execute(
+        functionName,
+        functionArgs,
+        sessionContext,
+        interactionPort,
+        signal,
+        toolCallId
+      );
     } else if (this.mcpManager) {
       // 命中外部工具，跨进程分发至对应的 MCP Client 实例
       return await this.mcpManager.callMcpTool(functionName, functionArgs, signal);
@@ -104,13 +109,33 @@ export class ToolRegistry implements ToolRegistryPort {
   }
 
   /**
-   * 获取本地内置工具的资源提取器注册表只读副本。
+   * 获取本地内置工具的资源提取器注册表只读副本（委托给 ToolAccessMetadataProvider）。
    * 供 ApprovalPolicy 在装配阶段注入，用于交叉校验工具层报告的 SafetyOperation。
    *
    * @returns 工具名 → 资源提取器的 Map
    */
-  public getResourceExtractors(): Map<string, import('./virtual-mcp.js').ResourceExtractor> {
-    return this.localMcpServer.getResourceExtractors();
+  public getResourceExtractors(): Map<string, ResourceExtractor> {
+    return this.metadataProvider.getResourceExtractors();
+  }
+
+  /**
+   * 根据工具名称获取对应的资源提取器。
+   *
+   * @param toolName - 工具名称
+   * @returns 对应的资源提取器，若未注册则返回 undefined
+   */
+  public getResourceExtractor(toolName: string): ResourceExtractor | undefined {
+    return this.metadataProvider.getResourceExtractor(toolName);
+  }
+
+  /**
+   * 根据工具名称获取访问元数据声明。
+   *
+   * @param toolName - 工具名称
+   * @returns 对应的访问元数据，若未注册则返回 undefined
+   */
+  public getAccessMetadata(toolName: string): ToolAccessMetadata | undefined {
+    return this.metadataProvider.getAccessMetadata(toolName);
   }
 
   /**

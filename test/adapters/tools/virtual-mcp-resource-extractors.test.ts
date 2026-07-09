@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { LocalFileSystemMcpServer } from '../../../src/adapters/tools/virtual-mcp.js';
+import { ToolAccessMetadataProvider } from '../../../src/adapters/tools/ToolAccessMetadataProvider.js';
 
-describe('LocalFileSystemMcpServer 资源提取器', () => {
-  it('应为 createDirectory 使用 directoryPath 提取写资源', () => {
+describe('ToolAccessMetadataProvider 资源提取器（原 LocalFileSystemMcpServer 提取器测试迁移）', () => {
+  /** 创建 provider 的辅助函数——从 LocalFileSystemMcpServer 取工具列表后构建 */
+  function createProvider(): ToolAccessMetadataProvider {
     const server = new LocalFileSystemMcpServer();
-    const extractor = server.getResourceExtractors().get('createDirectory');
+    return new ToolAccessMetadataProvider(server.getAllTools());
+  }
+
+  it('应为 createDirectory 使用 directoryPath 提取写资源', () => {
+    const provider = createProvider();
+    const extractor = provider.getResourceExtractor('createDirectory');
 
     expect(extractor).toBeDefined();
     const resources = extractor!({ directoryPath: 'tmp/output' });
@@ -18,8 +25,8 @@ describe('LocalFileSystemMcpServer 资源提取器', () => {
   });
 
   it('应为 grepSearch 使用 searchPath 提取只读资源', () => {
-    const server = new LocalFileSystemMcpServer();
-    const extractor = server.getResourceExtractors().get('grepSearch');
+    const provider = createProvider();
+    const extractor = provider.getResourceExtractor('grepSearch');
 
     expect(extractor).toBeDefined();
     const resources = extractor!({ searchPath: 'src, test' });
@@ -30,8 +37,8 @@ describe('LocalFileSystemMcpServer 资源提取器', () => {
   });
 
   it('应为 execute_command 使用 extractSafePrefix 语义提取命令前缀', () => {
-    const server = new LocalFileSystemMcpServer();
-    const extractor = server.getResourceExtractors().get('execute_command');
+    const provider = createProvider();
+    const extractor = provider.getResourceExtractor('execute_command');
 
     expect(extractor).toBeDefined();
     const resources = extractor!({ command: 'git status' });
@@ -40,8 +47,8 @@ describe('LocalFileSystemMcpServer 资源提取器', () => {
   });
 
   it('包装命令无法提取安全前缀时，应返回空资源列表', () => {
-    const server = new LocalFileSystemMcpServer();
-    const extractor = server.getResourceExtractors().get('execute_command');
+    const provider = createProvider();
+    const extractor = provider.getResourceExtractor('execute_command');
 
     expect(extractor).toBeDefined();
     const resources = extractor!({ command: 'bash -lc "git status"' });

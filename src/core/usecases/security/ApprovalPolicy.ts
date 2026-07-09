@@ -7,7 +7,7 @@
 
 import type { SafetyResource } from './SafetyResource.js';
 import type { SafetyOperation, ApprovalChoiceId, ApprovalChoice, ApprovalRequest, PendingGrant, PersistentRuleEffect } from '../plugins/plugin-types.js';
-import type { ResourceExtractor } from '../../../adapters/tools/virtual-mcp.js';
+import type { ResourceExtractor } from '../../../ports/driven/tools/ToolAccessMetadataPort.js';
 
 /** 资源分类规则键 */
 type RuleKey = 'path+read' | 'path+write' | 'directory-scope' | 'command-prefix' | 'hardline' | 'sensitive-file' | 'untrusted';
