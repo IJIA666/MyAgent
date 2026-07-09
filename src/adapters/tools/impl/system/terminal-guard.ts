@@ -330,6 +330,47 @@ export function isHardlineDangerous(command: string, shellKind?: ResolvedShellKi
 }
 
 /**
+ * Plan 模式下的统一安全判定函数。
+ * 确保前置安全评级与执行期结构校验（{@link validateCommand}）在允许集合上严格同构。
+ *
+ * **同构约束（复用 validateCommand 的结构校验）**：
+ * Plan 模式的前置通过集合必须与执行期 {@link validateCommand} 的实际允许集合保持一致，
+ * 否则会出现"审批通过但执行失败"的假阳性，或"执行期可通过但前置被误杀"的假阴性。
+ *
+ * 判定条件（全部满足才返回 true）：
+ * 1. 在当前已决议 shell family 下命中只读白名单前缀（{@link checkCommandSafetyLevel} 返回 'allow'）
+ * 2. 未命中绝对黑名单（{@link isHardlineDangerous} 返回 false）
+ * 3. 能通过 {@link validateCommand} 的结构安全校验（含引号感知与原子命令约束）
+ *
+ * @param command - 待判定的原始命令行文本
+ * @param shellKind - 可选的已决议 shell family；未提供时默认按 PowerShell 语义判定
+ * @returns 若命令可静态证明为安全的只读查询则返回 true，否则返回 false
+ */
+export function isPlanSafeCommand(command: string, shellKind?: ResolvedShellKind): boolean {
+  const effectiveShellKind = shellKind ?? 'powershell';
+  const commandForSafetyCheck = command.trim();
+
+  // 1. 只允许当前已决议 shell family 下真实可执行的只读命令进入审批
+  if (checkCommandSafetyLevel(commandForSafetyCheck, effectiveShellKind) !== 'allow') {
+    return false;
+  }
+
+  // 2. 排除毁灭级命令（isHardlineDangerous 内部已跨所有 shell family 检查）
+  if (isHardlineDangerous(command, effectiveShellKind)) {
+    return false;
+  }
+
+  // 3. 复用执行期结构校验，确保引号感知与原子命令约束完全同构
+  try {
+    validateCommand(commandForSafetyCheck, effectiveShellKind);
+  } catch {
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * 剔除命令前导的环境变量赋值。
  * 
  * @param command - 原始命令文本

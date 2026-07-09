@@ -15,7 +15,7 @@ import {
   saveWorkMode,
   loadWorkMode
 } from '../../../src/adapters/tools/impl/system/terminal.js';
-import { validateCommand, validateCwd, unboxNestedCommand } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
+import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
 
 describe('Terminal Tool 单元测试', () => {
@@ -272,5 +272,139 @@ describe('Terminal Tool 单元测试', () => {
     mockSession.setWorkMode('YOLO');
     const safetyLogYolo = executeCommandToolInstance.checkSafety({ command: 'git log' }, mockSession);
     expect(safetyLogYolo.status).toBe('pass'); // YOLO 下只读 git 命令直接通过
+  });
+
+  test('14. isPlanSafeCommand 统一安全判定函数测试', () => {
+    // A. 只读白名单命令无复合字符 → 返回 true
+    expect(isPlanSafeCommand('dir C:\\Windows\\Temp', 'cmd')).toBe(true);
+    expect(isPlanSafeCommand('type package.json', 'cmd')).toBe(true);
+    expect(isPlanSafeCommand('git status', 'powershell')).toBe(true);
+    expect(isPlanSafeCommand('git diff', 'powershell')).toBe(true);
+    expect(isPlanSafeCommand('git log', 'powershell')).toBe(true);
+    expect(isPlanSafeCommand('ls', 'powershell')).toBe(true);
+    expect(isPlanSafeCommand('cat file.txt', 'posix')).toBe(true);
+    expect(isPlanSafeCommand('git log --grep="feat;fix"', 'powershell')).toBe(true);
+
+    // B. 只读白名单命令含复合字符 → 返回 false
+    expect(isPlanSafeCommand('dir /-C | find "txt"', 'cmd')).toBe(false); // 管道符 |
+    expect(isPlanSafeCommand('type a.txt > b.txt', 'cmd')).toBe(false); // 重定向 >
+    expect(isPlanSafeCommand('git log; whoami', 'powershell')).toBe(false);    // 分号 ;
+    expect(isPlanSafeCommand('cat file & echo done', 'posix')).toBe(false); // 拼接符 &
+
+    // C. 非白名单命令 → 返回 false
+    expect(isPlanSafeCommand('wmic logicaldisk', 'cmd')).toBe(false);
+    expect(isPlanSafeCommand('netstat -an', 'powershell')).toBe(false);
+    expect(isPlanSafeCommand('rm -rf /', 'posix')).toBe(false);           // 硬红线
+
+    // D. 危险写命令 → 返回 false
+    expect(isPlanSafeCommand('del file.txt', 'cmd')).toBe(false);
+    expect(isPlanSafeCommand('rm file.txt', 'posix')).toBe(false);
+
+    // E. shell family 约束：只在当前已决议 shell 下真实可执行的只读命令才允许进入审批
+    expect(isPlanSafeCommand('dir', 'cmd')).toBe(true);
+    expect(isPlanSafeCommand('dir', 'powershell')).toBe(true);
+    expect(isPlanSafeCommand('dir', 'posix')).toBe(false);
+    expect(isPlanSafeCommand('cat file.txt', 'cmd')).toBe(false);
+  });
+
+  test('15. Plan 模式 checkSafety 行为测试（isPlanSafeCommand 驱动）', () => {
+    const mockSession = new SessionContext();
+    mockSession.setWorkMode('Plan');
+
+    // A. Plan 模式 + 安全只读命令 → suspend（进入统一审批流程）
+    const safetyDir = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
+    expect(safetyDir.status).toBe('suspend');
+
+    const safetyType = executeCommandToolInstance.checkSafety({ command: 'type package.json', shellKind: 'cmd' }, mockSession);
+    expect(safetyType.status).toBe('suspend');
+
+    const safetyGitStatus = executeCommandToolInstance.checkSafety({ command: 'git status' }, mockSession);
+    expect(safetyGitStatus.status).toBe('suspend');
+
+    // B. Plan 模式 + 含复合字符命令 → deny（与执行期同构）
+    const safetyComposite = executeCommandToolInstance.checkSafety({ command: 'dir /-C | find "txt"' }, mockSession);
+    expect(safetyComposite.status).toBe('deny');
+    expect(safetyComposite.message).toContain('BLOCKED (Plan Mode Only)');
+
+    const safetyRedirect = executeCommandToolInstance.checkSafety({ command: 'type a.txt > b.txt', shellKind: 'cmd' }, mockSession);
+    expect(safetyRedirect.status).toBe('deny');
+    expect(safetyRedirect.message).toContain('BLOCKED (Plan Mode Only)');
+
+    // C. Plan 模式 + 非白名单命令 → deny 并含自愈引导
+    const safetyWmic = executeCommandToolInstance.checkSafety({ command: 'wmic logicaldisk' }, mockSession);
+    expect(safetyWmic.status).toBe('deny');
+    expect(safetyWmic.message).toContain('BLOCKED (Plan Mode Only)');
+    expect(safetyWmic.message).toContain('list_dir');
+
+    // D. Plan 模式 + 危险写命令 → deny
+    const safetyDel = executeCommandToolInstance.checkSafety({ command: 'del file.txt' }, mockSession);
+    expect(safetyDel.status).toBe('deny');
+    expect(safetyDel.message).toContain('BLOCKED (Plan Mode Only)');
+
+    // E. Auto/Safe 模式回归：不受本次变更影响
+    mockSession.setWorkMode('Auto');
+    saveAllowedCommands([]); // 无白名单
+    const safetyAuto = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
+    expect(safetyAuto.status).toBe('suspend'); // Auto 下未授权命令进入审批
+
+    mockSession.setWorkMode('Safe');
+    const safetySafe = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
+    expect(safetySafe.status).toBe('suspend'); // Safe 下始终审批
+
+    // YOLO 模式回归
+    mockSession.setWorkMode('YOLO');
+    const safetyYolo = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
+    expect(safetyYolo.status).toBe('pass'); // YOLO 下直接放行
+  });
+
+  test('16. Plan 模式前置判定与执行期校验同构回归测试', () => {
+    const mockSession = new SessionContext();
+    mockSession.setWorkMode('Plan');
+
+    // A. 任何包含复合字符的命令（无论是否命中白名单），checkSafety 在 Plan 下必须直接 deny
+    const compositeCases = [
+      'dir C:\\ | find "txt"',    // 白名单命中但有管道
+      'type a.txt > b.txt',       // 白名单命中但有重定向
+      'git status; whoami',       // 白名单命中但有分号
+      'cat file | grep text',     // 白名单命中但有管道
+      'echo hello & echo world',  // 非白名单且有拼接
+    ];
+    for (const cmd of compositeCases) {
+      const safety = executeCommandToolInstance.checkSafety({ command: cmd }, mockSession);
+      expect(safety.status).toBe('deny');
+      expect(safety.message).toContain('BLOCKED (Plan Mode Only)');
+    }
+
+    // B. Plan 下进入审批的命令（suspend），在审批放行后 execute 阶段的 validateCommand 不能因复合字符拒绝
+    // 验证：isPlanSafeCommand 返回 true 的命令同时传递 validateCommand
+    const safeCases: Array<{ command: string; shellKind: 'powershell' | 'cmd' | 'posix' }> = [
+      { command: 'dir C:\\Windows\\Temp', shellKind: 'powershell' }, // PowerShell 只读白名单 + 无复合字符
+      { command: 'type package.json', shellKind: 'cmd' },            // CMD 只读白名单 + 无复合字符
+      { command: 'git status', shellKind: 'powershell' },            // 通用只读白名单 + 无复合字符
+      { command: 'git diff', shellKind: 'powershell' },              // 通用只读白名单 + 无复合字符
+      { command: 'git log', shellKind: 'powershell' },               // 通用只读白名单 + 无复合字符
+      { command: 'git log --grep="feat;fix"', shellKind: 'powershell' }, // 引号内分号合法
+    ];
+    for (const { command, shellKind } of safeCases) {
+      // isPlanSafeCommand 断言为 true
+      expect(isPlanSafeCommand(command, shellKind)).toBe(true);
+      // validateCommand 断言不抛错（同构保证）
+      expect(() => validateCommand(command, shellKind)).not.toThrow();
+    }
+
+    // C. Plan 下被 deny 的命令，validateCommand 也必须拒绝（反之亦然）
+    const denyCases = [
+      'dir /-C | find "txt"',    // 有 |
+      'type a.txt > b.txt',       // 有 >
+      'git log; whoami',         // 有 ;
+    ];
+    for (const cmd of denyCases) {
+      expect(isPlanSafeCommand(cmd, 'powershell')).toBe(false);
+      expect(() => validateCommand(cmd, 'powershell')).toThrow('拒绝执行');
+    }
+
+    // D. shell family 错配不得进入审批，否则会重新制造"可批但不可执行"
+    expect(isPlanSafeCommand('cat file.txt', 'cmd')).toBe(false);
+    expect(isPlanSafeCommand('dir C:\\Windows\\Temp', 'posix')).toBe(false);
   });
 });

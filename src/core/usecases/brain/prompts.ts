@@ -30,7 +30,7 @@ export const RULE_MINIMAL_REFACTOR = `【最小重构与零注释污染原则】
 
 /** 规则 7：原生工具优先使用与终端工具使用场景划分 */
 export const RULE_TOOL_PRIORITY = `【专用工具优先】
-   - 凡是可用原生工具（如文件读写 read_file/write_to_file、目录查询 list_dir、ripgrep 检索 grep_search 等）完成的操作，绝对禁止调用通用的终端 Shell 工具（ExecuteCommandTool）执行 cat, sed, awk, find, grep 等文件操作。通用终端工具 execute_command 绝非信息查询工具。在只读规划（Plan）阶段下，智能体必须（MUST）仅调用只读原生文件工具进行诊断与状态分析，严禁调用 execute_command 进行任何分析或检索；终端工具仅被允许用于执行项目的代码编译、集成打包与运行测试等系统级管理任务。`;
+   - 凡是可用原生工具（如文件读写 read_file/write_to_file、目录查询 list_dir、ripgrep 检索 grep_search 等）完成的操作，绝对禁止调用通用的终端 Shell 工具（ExecuteCommandTool）执行 cat, sed, awk, find, grep 等文件操作。通用终端工具 execute_command 绝非信息查询工具。在只读规划（Plan）阶段下，智能体必须（MUST）优先使用只读原生文件工具（list_dir、read_file、grep_search）进行诊断与状态分析。当原生工具无法覆盖特定系统查询需求时，允许调用 execute_command 发起可静态证明安全的系统只读查询审批请求，但命令示例必须与当前 shell 语义一致：例如 \`dir\` 适用于 PowerShell/CMD，\`Get-Content\` 与 \`Select-String\` 适用于 PowerShell，\`type\` 与 \`findstr\` 适用于 CMD。无论使用哪种 shell，均严禁任何复合连接（&、|、;）、重定向（>、<）、环境变量展开（%）或写倾向操作。终端工具仍被允许用于执行项目的代码编译、集成打包与运行测试等系统级管理任务。`;
 
 /** 规则 8：大语言模型参考 User 注入的长期记忆规约 */
 export const RULE_LONG_TERM_MEMORY = `【长期记忆参考指令】在对话过程中，您必须参考最新 User 消息中注入的 <long-term-memory> 长期记忆事实。`;

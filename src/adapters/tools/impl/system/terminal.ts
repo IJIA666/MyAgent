@@ -3,7 +3,7 @@
  * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
  */
 
-import { validateCommand, validateCwd, checkCommandSafetyLevel, isHardlineDangerous, unboxNestedCommand, DANGEROUS_WRITE_PATTERNS } from './terminal-guard.js';
+import { validateCommand, validateCwd, isHardlineDangerous, isPlanSafeCommand, unboxNestedCommand, DANGEROUS_WRITE_PATTERNS } from './terminal-guard.js';
 import { runCommandEngine } from './terminal-engine.js';
 import { getWorkMode, extractSafePrefix, loadAllowedCommands, loadDefaultShellFamily } from './terminal-config.js';
 import { createShellExecutionPlan } from './terminal-plan.js';
@@ -118,18 +118,19 @@ export class ExecuteCommandTool implements NativeTool {
     // 优先从 Session 取得工作模式，否则回退到全局备用缺省值（用以向下兼容测试流）
     const workMode = sessionContext ? sessionContext.getWorkMode() : getWorkMode();
 
-    // 2. Plan 模式拦截：禁止任何有写倾向/修改副作用的终端指令
+    // 2. Plan 模式拦截：对终端命令实施与执行期结构校验同构的安全审查
     const unboxedCmd = unboxNestedCommand(command, unboxShellKind).trim();
-    const safetyLevel = checkCommandSafetyLevel(unboxedCmd, resolvedShellKind);
 
     if (workMode === 'Plan') {
-      if (safetyLevel !== 'allow') {
-        // 在 Plan 模式下实施终端硬拦截，并返回针对大模型的自愈引导报错，促使其转向专属只读工具或任务规划
+      if (!isPlanSafeCommand(command, resolvedShellKind)) {
+        // 在 Plan 模式下实施终端硬拦截，并返回针对大模型的自愈引导报错
+        // 不满足安全条件的命令（非白名单、含复合字符、毁灭级命令）直接拒绝，确保不产生"审批通过但执行失败"的假阳性
         return {
           status: 'deny',
-          message: 'BLOCKED (Plan Mode Only): 只读规划模式下禁止执行任何非白名单终端命令。由于您当前处于只读的 Plan 模式下，请优先改用专属的只读文件 API 工具（如 list_dir、readFile 或 grep_search ）来诊断和了解系统状态；若该命令为必要的写入/修改步骤，请将其记录在任务清单或计划中供后续阶段在 Auto 或 YOLO 模式下执行。'
+          message: 'BLOCKED (Plan Mode Only): 只读规划模式下仅允许可静态证明安全的系统只读查询。该命令因未命中只读白名单、包含复合连接/重定向符或属于危险操作而被拒绝。由于您当前处于只读的 Plan 模式下，请优先改用专属的只读文件 API 工具（如 list_dir、readFile 或 grep_search）来诊断和了解系统状态；若该命令为必要的写入/修改步骤，请将其记录在任务清单或计划中供后续阶段在 Auto 或 YOLO 模式下执行。'
         };
       }
+      // 通过 isPlanSafeCommand 审查后，继续走统一审批路径（suspend），不再静默放行
     }
 
     // 3. YOLO 模式直接放行（由于绝对黑名单在最外层卡关，这里放行是安全的）
