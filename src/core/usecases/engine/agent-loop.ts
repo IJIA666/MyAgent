@@ -7,10 +7,9 @@ import type { ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { runHookPipeline } from '../plugins/plugin-runner.js';
-import { HookEventName, type ApprovalChoice } from '../plugins/plugin-types.js';
+import { HookEventName } from '../plugins/plugin-types.js';
 import { QualityCheckPort } from '../../../ports/driven/security/QualityCheckPort.js';
 import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
-import type { PendingInteraction } from '../../domain/context.js';
 
 // 导入领域服务
 import { RuleManager } from '../brain/RuleManager.js';
@@ -29,17 +28,13 @@ import {
 } from '../../domain/trace-format.js';
 
 /**
- * 智能体产生的事件类型定义，外部消费者（如 UI 终端）据此渲染流式反馈过程。
+ * 智能体产生的事件类型定义。
+ * 类型定义已迁移至 ports/shared/agent-events.ts，此处保留 re-export 以确保向后兼容。
  */
-export type AgentEvent =
-  | { type: 'thinking'; content: string }
-  | { type: 'content'; content: string }
-  | { type: 'tool_call_start'; functionName: string; functionArgs: Record<string, unknown> }
-  | { type: 'tool_call_result'; functionName: string; result: string }
-  | { type: 'interaction_request'; interaction: PendingInteraction }
-  | { type: 'error'; message: string; cause?: unknown }
-  | { type: 'suspend'; id: string; toolCall: { name: string; arguments: Record<string, unknown> }; allowedPrefix: string | null; message?: string; choices?: ApprovalChoice[] }
-  | { type: 'complete' };
+import type { AgentEvent } from '../../../ports/shared/agent-events.js';
+
+// 向后兼容 re-export
+export type { AgentEvent };
 
 /**
  * 实例化 AgentLoop 所需的依赖配置项。

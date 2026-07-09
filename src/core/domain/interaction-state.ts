@@ -1,44 +1,9 @@
 import type { StoredChatMessage } from './conversation-state.js';
-import type {
-  AskUserAnswer,
-  AskUserPayload
-} from '../../ports/driven/session/InteractionPort.js';
+import type { AskUserAnswer } from '../../ports/driven/session/InteractionPort.js';
+import type { PendingInteraction, PendingInteractionState, QuestionPayload } from '../../ports/shared/pending-interaction.js';
 
-/**
- * 人机中断交互的状态。
- * - `pending`：已发起提问，正在等待用户回答
- * - `answered`：用户已回答，等待恢复 run
- * - `canceled`：用户取消或会话关闭，交互已终止
- */
-export type PendingInteractionState = 'pending' | 'answered' | 'canceled';
-
-/**
- * 工具载荷的结构化数据，对应 ask_user_question 的参数 schema。
- * 升级后直接复用 InteractionPort 中的结构化提问模型。
- */
-export type QuestionPayload = AskUserPayload;
-
-/**
- * 待回答的人机中断交互记录。
- * 当工具声明 executionMode 为 'human_interruption' 时，系统创建此记录
- * 以跟踪等待用户输入的状态，并支持后续从同一 run 恢复执行。
- */
-export interface PendingInteraction {
-  /** 交互唯一标识符 */
-  id: string;
-  /** 工具名称（如 'ask_user_question'） */
-  toolName: string;
-  /** 工具调用的完整参数载荷 */
-  payload: QuestionPayload;
-  /** 对应的工具调用 ID，用于 capability 生命周期管理 */
-  toolCallId: string;
-  /** 创建时间戳 */
-  createdAt: number;
-  /** 当前交互状态 */
-  state: PendingInteractionState;
-  /** 用户回答内容（answered 状态下有效），按问题 id 索引的结构化映射 */
-  answer?: AskUserAnswer;
-}
+// 向后兼容 re-export：类型已迁移至 ports/shared，此处保留导出链
+export type { PendingInteraction, PendingInteractionState, QuestionPayload };
 
 /**
  * Turn 内交互状态管理。

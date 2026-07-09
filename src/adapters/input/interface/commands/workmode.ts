@@ -12,14 +12,12 @@ export class WorkModeCommand implements ICommand {
   description = '查看或修改当前的安全执行工作模式 (Safe | Auto | YOLO | Plan)';
 
   async execute(args: string[], context: CommandContext): Promise<void> {
-    const sessionContext = context.session.getContext();
-
     // 1. 无参状态：自动拉起 Clack 二级单选交互向导
     if (args.length === 0) {
       console.log();
       p.intro(theme.highlight('安全模式管理'));
 
-      const currentMode = sessionContext.getWorkMode();
+      const currentMode = context.session.getWorkMode();
       console.log(theme.info(`当前安全工作模式为: ${theme.highlight(currentMode)}`));
 
       const modeSelect = await selectWithCleanCancel({
@@ -40,8 +38,8 @@ export class WorkModeCommand implements ICommand {
 
       const targetMode = modeSelect as WorkMode;
       try {
-        // 同步修改 Session 绑定的 Context 状态，供智能体气泡和工具过滤读取
-        sessionContext.setWorkMode(targetMode);
+        // 同步修改 Session 状态，供智能体气泡和工具过滤读取
+        context.session.setWorkMode(targetMode);
         // 同步修改底层全局配置状态，并进行物理 JSON 持久化，支持跨生命周期记忆
         saveTerminalWorkMode(targetMode);
         p.outro(theme.success(`配置已生效！安全模式已切换为：${targetMode}`));
@@ -65,7 +63,7 @@ export class WorkModeCommand implements ICommand {
     }
 
     try {
-      sessionContext.setWorkMode(finalMode);
+      context.session.setWorkMode(finalMode);
       saveTerminalWorkMode(finalMode);
       console.log(theme.success(`[系统] 安全执行工作模式已成功切换为: ${theme.highlight(finalMode)}。`));
     } catch (e: unknown) {

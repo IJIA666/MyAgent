@@ -1,10 +1,6 @@
 import { logger } from '../../../utils/logger.js';
-import type { ApprovalChoice } from '../plugins/plugin-types.js';
-
-export interface ApprovalDecision {
-  /** 决策动作：call (单次放行), session (本次会话始终放行), persistent (持久化白名单), deny (拒绝执行) */
-  action: 'call' | 'session' | 'persistent' | 'deny';
-}
+import type { ApprovalChoice } from '../../../ports/shared/approval-types.js';
+import type { ApprovalPort, ApprovalDecision } from '../../../ports/driving/ApprovalPort.js';
 
 /**
  * 人机协同审批协调服务。
@@ -12,8 +8,10 @@ export interface ApprovalDecision {
  * 1. 负责在内存中管理所有挂起待审批的 Promise 凭证 (Deferred Promises)；
  * 2. 调度执行超时自动拒绝机制，防止因表现层断开连接而导致工作流长期挂死；
  * 3. 集中控制批量拒绝 (rejectAll)，支持在会话销毁或异常断开时释放全部挂起任务。
+ *
+ * 实现端口层 ApprovalPort 契约，输入适配器通过该契约驱动审批交互。
  */
-export class ApprovalService {
+export class ApprovalService implements ApprovalPort {
   /** 挂起的审批项映射表，Key 为审批 ID */
   private pendingApprovals = new Map<
     string,

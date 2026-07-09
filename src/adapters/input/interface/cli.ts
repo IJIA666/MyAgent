@@ -4,7 +4,7 @@
  * 1. 保持对外的 startCli 与 redrawHistory 签名契约向前兼容；
  * 2. 将控制台按行输入和回回绘视图的行为委托给 CliFacade 和 WidgetRenderer 执行。
  */
-import { SessionManager } from '../../../core/usecases/engine/session.js';
+import type { CliSessionUseCase } from '../../../ports/driving/CliSessionUseCase.js';
 import { CliFacade } from './facade.js';
 import { 
   renderContentWithWidgets, 
@@ -15,6 +15,9 @@ import readline from 'readline';
 import { theme } from './views/theme.js';
 
 export { renderContentWithWidgets };
+
+/** 可被终端历史重绘消费的最小会话视图契约。 */
+type HistoryRenderableSession = Pick<CliSessionUseCase, 'getHistory' | 'getModelName'>;
 
 /**
  * 阻塞当前异步逻辑，在控制台打印高亮提示信息，等待用户完成手动浏览器操作并在命令行按下回车键后释放。
@@ -50,11 +53,11 @@ export function waitUserIntervention(message: string): Promise<void> {
 }
 
 /**
- * 兼容原有的 redrawHistory 接口，接受 SessionManager 并将其内部数据转发给无状态渲染工具。
+ * 兼容原有的 redrawHistory 接口，接受最小会话视图并将其内部数据转发给无状态渲染工具。
  *
- * @param session - 会话管理器实例
+ * @param session - 可提供历史记录与模型名的会话视图
  */
-export function redrawHistory(session: SessionManager): void {
+export function redrawHistory(session: HistoryRenderableSession): void {
   redrawHistoryImpl(session.getHistory(), session.getModelName());
 }
 
@@ -62,9 +65,9 @@ export function redrawHistory(session: SessionManager): void {
  * 初始化并启动基于 readline 的 REPL 交互式解释器。
  * 委托给 CliFacade 执行。
  *
- * @param session - 已在系统启动层装配完毕的会话管理器实例
+ * @param session - 已在系统启动层装配完毕的 CLI 会话用例实例
  */
-export function startCli(session: SessionManager): void {
+export function startCli(session: CliSessionUseCase): void {
   const facade = new CliFacade(session);
   facade.start();
 }

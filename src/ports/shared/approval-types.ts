@@ -1,0 +1,17 @@
+/**
+ * @file 端口层共享的审批相关基础类型。
+ * 使审批契约不再依赖 core 中的安全与插件类型定义。
+ */
+
+/** 审批选择项标识联合类型。 */
+export type ApprovalChoiceId = 'call' | 'session' | 'persistent' | 'deny';
+
+/** 审批选择项接口。 */
+export interface ApprovalChoice {
+  /** 选择项标识 */
+  choiceId: ApprovalChoiceId;
+  /** 展示标签（如"单次放行"、"本次会话始终放行"） */
+  label: string;
+  /** 可选的详细描述 */
+  description?: string;
+}

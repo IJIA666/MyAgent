@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { AppConfig, LlmConfig } from '../../../config/index.js';
+import { AppConfig, LlmConfig, WorkMode } from '../../../config/index.js';
 import { logger } from '../../../utils/logger.js'; // 导入统一日志单例 logger
 import { AgentTracer } from '../../domain/tracer.js';
 import { SessionContext, ContextTokenUsage, type PendingInteraction } from '../../domain/context.js';
@@ -10,10 +10,10 @@ import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js'
 import { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
 import type { ToolAccessMetadataPort } from '../../../ports/driven/tools/ToolAccessMetadataPort.js';
 import { AgentLoop } from './agent-loop.js';
-import { ChatUseCase } from '../../../ports/driving/ChatUseCase.js';
+import type { CliSessionUseCase, CliSkillSummary } from '../../../ports/driving/CliSessionUseCase.js';
 import { TaskAborterPort } from '../../../ports/driven/tools/TaskAborterPort.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
-import { HookEventName, type HookContext } from '../plugins/plugin-types.js';
+import { HookEventName, type HookContext, type ApprovalChoice } from '../plugins/plugin-types.js';
 import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { TokenWatermarkPlugin } from '../plugins/TokenWatermarkPlugin.js';
 import { JitRulesPlugin } from '../plugins/JitRulesPlugin.js';
@@ -41,7 +41,7 @@ import { MemoryService } from '../brain/MemoryService.js';
  * 会话管理与模型交互调度中心。
  * 重构后退化为纯正的 ReAct 循环执行引擎，相关周边逻辑被下沉至各自领域服务。
  */
-export class SessionManager extends EventEmitter implements ChatUseCase {
+export class SessionManager extends EventEmitter implements CliSessionUseCase {
   /** 当前系统的工具注册管理台端口契约 */
   private toolRegistry: ToolRegistryPort;
   /** 会话的跟踪记录仪，负责日志落盘 */
@@ -454,6 +454,28 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   }
 
   /**
+   * 获取当前可用技能摘要列表，供 CLI 菜单与斜杠命令消费。
+   *
+   * @returns 技能摘要数组
+   */
+  public getAvailableSkills(): CliSkillSummary[] {
+    return this.ruleManager.getSkills().map((skill) => ({
+      name: skill.name,
+      description: skill.description
+    }));
+  }
+
+  /**
+   * 获取指定技能的完整内容。
+   *
+   * @param name - 技能名称
+   * @returns 技能正文，若不存在则返回 null
+   */
+  public getSkillContent(name: string): string | null {
+    return this.ruleManager.getSkillContent(name);
+  }
+
+  /**
    * 手动触发当前活跃会话的上下文压缩与物理会话轮换。
    *
    * @returns 是否压缩成功
@@ -775,5 +797,40 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
    */
   public getContext(): SessionContext {
     return this.context;
+  }
+
+  /**
+   * 获取当前智能体的工作模式。
+   *
+   * @returns 工作模式标识
+   */
+  public getWorkMode(): WorkMode {
+    return this.context.getWorkMode();
+  }
+
+  /**
+   * 设置当前智能体的工作模式。
+   *
+   * @param mode - 目标工作模式
+   */
+  public setWorkMode(mode: WorkMode): void {
+    this.context.setWorkMode(mode);
+  }
+
+  /**
+   * 注册审批处理器回调，委托给内部的 ApprovalService。
+   *
+   * @param handler - 审批处理器函数
+   */
+  public registerApprovalHandler(
+    handler: (
+      id: string,
+      toolCall: { name: string; arguments: Record<string, unknown> },
+      allowedPrefix?: string,
+      message?: string,
+      choices?: ApprovalChoice[]
+    ) => void | Promise<void>
+  ): void {
+    this.approvalService.registerApprovalHandler(handler);
   }
 }

@@ -8,10 +8,9 @@ export class SkillCommand implements ICommand {
 
   async execute(args: string[], context: CommandContext): Promise<CommandResult | void> {
     const skillName = args[0]?.toLowerCase();
-    const ruleManager = context.session.ruleManager;
 
     if (!skillName || skillName === 'list') {
-      const allSkills = ruleManager.getSkills();
+      const allSkills = context.session.getAvailableSkills();
       console.log();
       if (allSkills.length === 0) {
         console.log(theme.info('当前系统未发现任何可用技能。'));
@@ -25,7 +24,7 @@ export class SkillCommand implements ICommand {
       return;
     }
 
-    const skillContent = ruleManager.getSkillContent(skillName);
+    const skillContent = context.session.getSkillContent(skillName);
     if (!skillContent) {
       console.log(theme.error(`[错误] 未找到名为 "${skillName}" 的技能文件。`));
       return;

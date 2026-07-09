@@ -5,16 +5,21 @@
 
 import type { ChatMessage } from '../driven/llm/LlmPort.js';
 import type { ApiUsage, ContextTokenUsage } from '../driven/llm/TokenEstimatorPort.js';
-import type { ApprovalService } from '../../core/usecases/security/ApprovalService.js';
-import type { AgentEvent } from '../../core/usecases/engine/agent-loop.js';
+import type { ApprovalPort } from './ApprovalPort.js';
+import type { AgentEvent } from '../shared/agent-events.js';
+import type { PendingInteraction } from '../shared/pending-interaction.js';
+import type { ApprovalChoice } from '../shared/approval-types.js';
+import type { InteractionPort } from '../driven/session/InteractionPort.js';
+import type { AskUserAnswer } from '../driven/session/InteractionPort.js';
+import type { WorkMode } from '../../config/index.js';
 
 /**
  * 驱动核心进行会话与对话交互的用例契约接口。
  * CLI 门面或其它输入适配器通过该用例驱动智能体系统的状态变化与推理周期。
  */
 export interface ChatUseCase {
-  /** 协同审批服务实例 */
-  readonly approvalService: ApprovalService;
+  /** 协同审批服务实例（端口层契约） */
+  readonly approvalService: ApprovalPort;
 
   /**
    * 获取当前激活的语言模型名称。
@@ -96,6 +101,50 @@ export interface ChatUseCase {
    * @returns 哈希字符串
    */
   getSystemPromptHash(): string;
+
+  /**
+   * 获取当前智能体的工作模式。
+   *
+   * @returns 工作模式标识
+   */
+  getWorkMode(): WorkMode;
+
+  /**
+   * 注册人机中断交互端口，供 ask_user_question 等待用户回答时使用。
+   *
+   * @param port - 交互端口实现
+   */
+  setInteractionPort(port: InteractionPort): void;
+
+  /**
+   * 注册审批处理器回调，当工具调用触发安全审批时由 ApprovalService 调用。
+   *
+   * @param handler - 审批处理器函数
+   */
+  registerApprovalHandler(
+    handler: (
+      id: string,
+      toolCall: { name: string; arguments: Record<string, unknown> },
+      allowedPrefix?: string,
+      message?: string,
+      choices?: ApprovalChoice[]
+    ) => void | Promise<void>
+  ): void;
+
+  /**
+   * 获取当前挂起的人机中断交互记录。
+   *
+   * @returns 挂起的交互记录，若无则返回 null
+   */
+  getPendingInteraction(): PendingInteraction | null;
+
+  /**
+   * 恢复挂起的人机中断交互，将用户回答提交给 core 处理。
+   *
+   * @param id - 交互 ID
+   * @param answer - 用户回答的结构化映射
+   */
+  resumePendingInteraction(id: string, answer: AskUserAnswer): Promise<void>;
 
   /**
    * 关闭会话管理器， 释放文件监控等后台资源。

@@ -1,10 +1,16 @@
-import { SessionManager } from '../../../../core/usecases/engine/session.js';
+/**
+ * @file 定义 CLI 斜杠命令的上下文与执行契约。
+ * 命令层只依赖 driving port，不再直接依赖 SessionManager 实现类。
+ */
+
+import type { CliSessionUseCase } from '../../../../ports/driving/CliSessionUseCase.js';
 
 /**
  * 命令执行上下文接口，包含当前会话状态。
  */
 export interface CommandContext {
-  session: SessionManager; // 当前活跃的会话管理器实例
+  /** 当前活跃的 CLI 会话用例实例 */
+  session: CliSessionUseCase;
 }
 
 export interface CommandResult {

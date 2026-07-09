@@ -1,4 +1,4 @@
-import type { HookEventName, HookMiddleware } from './plugin-types.js';
+import type { HookContext, HookEventName, HookMiddleware } from './plugin-types.js';
 import type { AgentPlugin } from '../../../ports/driven/tools/AgentPlugin.js';
 
 /**
@@ -10,7 +10,7 @@ import type { AgentPlugin } from '../../../ports/driven/tools/AgentPlugin.js';
  */
 export class PluginRegistry {
   /** 维护当前系统中已注册的插件列表 */
-  private plugins: AgentPlugin[] = [];
+  private plugins: AgentPlugin<HookContext>[] = [];
 
   /**
    * 注册一个新的智能体插件。
@@ -18,7 +18,7 @@ export class PluginRegistry {
    *
    * @param plugin - 待注册的插件对象
    */
-  public register(plugin: AgentPlugin): void {
+  public register(plugin: AgentPlugin<HookContext>): void {
     // 检查是否已经存在同名插件，防止重复注册
     const index = this.plugins.findIndex(p => p.name === plugin.name);
     if (index !== -1) {
@@ -44,7 +44,7 @@ export class PluginRegistry {
    *
    * @returns 已注册插件的只读数组副本
    */
-  public getPlugins(): readonly AgentPlugin[] {
+  public getPlugins(): readonly AgentPlugin<HookContext>[] {
     return this.plugins;
   }
 

@@ -1,6 +1,8 @@
 import readline from 'readline';
-import { SessionManager } from '../../../core/usecases/engine/session.js';
-import { AgentEvent } from '../../../core/usecases/engine/agent-loop.js';
+import type { CliSessionUseCase } from '../../../ports/driving/CliSessionUseCase.js';
+import type { AgentEvent } from '../../../ports/shared/agent-events.js';
+import type { ApprovalChoice } from '../../../ports/shared/approval-types.js';
+import type { PendingInteraction } from '../../../ports/shared/pending-interaction.js';
 import { InputListener } from './io/input-listener.js';
 import { redrawHistory, renderTokenPanel } from './views/widget-renderer.js';
 import { dispatchCommand, showInteractiveMenu } from './command.js';
@@ -9,16 +11,14 @@ import { waitUserIntervention } from './cli.js';
 import { InteractionHandler } from './interaction-handler.js';
 import { BrowserSession } from '../../tools/impl/browser/browser-action.js';
 import { logger } from '../../../utils/logger.js';
-import type { ApprovalChoice } from '../../../core/usecases/plugins/plugin-types.js';
-import type { PendingInteraction } from '../../../core/domain/context.js';
 
 /**
  * 终端界面控制门面（Facade）。
  * 组合输入捕获、命令解析分发与视图无状态渲染，作为用户界面层的主协调调度中心。
  */
 export class CliFacade {
-  /** 当前大脑层的会话管理器实例 */
-  private session: SessionManager;
+  /** 当前大脑层的会话管理器实例（通过驱动端口契约访问） */
+  private session: CliSessionUseCase;
   /** 控制台键盘与行输入监听器 */
   private listener: InputListener;
   /** ask_user_question 的 CLI 交互处理器 */
@@ -33,18 +33,18 @@ export class CliFacade {
   private activeInteractionIds = new Set<string>();
 
   /**
-   * 构造函数，建立与 SessionManager 的绑定，并实例化键盘输入监听器。
+   * 构造函数，建立与 ChatUseCase 的绑定，并实例化键盘输入监听器。
    *
-   * @param session - 大脑层会话管理器实例
+   * @param session - 驱动端口会话用例实例
    */
-  constructor(session: SessionManager) {
+  constructor(session: CliSessionUseCase) {
     this.session = session;
 
     // 实例化 InputListener，以单向事件流驱动 Facade 做出业务控制决策
     this.listener = new InputListener({
       getIsGenerating: () => this.session.getIsGenerating(),
       getModelName: () => this.session.getModelName(),
-      getWorkMode: () => this.session.getContext().getWorkMode(),
+      getWorkMode: () => this.session.getWorkMode(),
       onAbort: () => {
         this.session.abort();
       },
@@ -67,13 +67,13 @@ export class CliFacade {
       }
     });
 
-    // 创建人机对话交互处理器并通过 SessionManager 回注到 AgentLoop，
+    // 创建人机对话交互处理器并通过会话用例回注到 AgentLoop，
     // 供 CLI 侧在收到 interaction_request 事件后渲染提问界面。
     this.interactionHandler = new InteractionHandler({ listener: this.listener });
     this.session.setInteractionPort(this.interactionHandler);
 
     // 注册底座的审批卡关回调，实现实时非阻塞终端交互，防止 Generator 原地挂起造成死锁
-    this.session.approvalService.registerApprovalHandler(async (id: string, toolCall: { name: string; arguments: Record<string, unknown> }, allowedPrefix?: string, message?: string, choices?: ApprovalChoice[]) => {
+    this.session.registerApprovalHandler(async (id: string, toolCall: { name: string; arguments: Record<string, unknown> }, allowedPrefix?: string, message?: string, choices?: ApprovalChoice[]) => {
       // 物理注销全局监听器，彻底隔离 Stdin，杜绝回显污染与事件穿透
       this.listener.close();
 
@@ -262,7 +262,7 @@ export class CliFacade {
           input = menuResult; // 覆盖原始输入，落入下面的斜杠命令处理
         }
 
-        // 分发斜杠命令
+        // 分发斜杠命令，通过 CLI 专用 driving port 访问所需能力
         const cmdResult = await dispatchCommand(input, {
           session: this.session
         });

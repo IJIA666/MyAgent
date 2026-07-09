@@ -23,7 +23,7 @@ vi.mock('../../../../../src/adapters/input/interface/select.js', () => {
 
 describe('WorkModeCommand', () => {
   let mockContext: unknown;
-  let mockSessionContext: {
+  let mockSession: {
     getWorkMode: ReturnType<typeof vi.fn>;
     setWorkMode: ReturnType<typeof vi.fn>;
   };
@@ -45,15 +45,13 @@ describe('WorkModeCommand', () => {
       terminalConfig.setWorkMode(mode);
     });
 
-    mockSessionContext = {
+    mockSession = {
       getWorkMode: vi.fn().mockReturnValue('Auto'),
       setWorkMode: vi.fn()
     };
 
     mockContext = {
-      session: {
-        getContext: vi.fn().mockReturnValue(mockSessionContext)
-      },
+      session: mockSession,
       rl: {}
     };
 
@@ -70,7 +68,7 @@ describe('WorkModeCommand', () => {
     const cmd = new WorkModeCommand();
     await cmd.execute(['YOLO'], mockContext as unknown as CommandContext);
 
-    expect(mockSessionContext.setWorkMode).toHaveBeenCalledWith('YOLO');
+    expect(mockSession.setWorkMode).toHaveBeenCalledWith('YOLO');
     expect(getTerminalWorkMode()).toBe('YOLO');
     expect(outputBuffer.join('')).toContain('安全执行工作模式已成功切换为');
   });
@@ -79,7 +77,7 @@ describe('WorkModeCommand', () => {
     const cmd = new WorkModeCommand();
     await cmd.execute(['invalid_mode'], mockContext as unknown as CommandContext);
 
-    expect(mockSessionContext.setWorkMode).not.toHaveBeenCalled();
+    expect(mockSession.setWorkMode).not.toHaveBeenCalled();
     expect(getTerminalWorkMode()).toBe('Auto');
     expect(outputBuffer.join('')).toContain('不支持的工作模式');
   });
@@ -91,7 +89,7 @@ describe('WorkModeCommand', () => {
     await cmd.execute([], mockContext as unknown as CommandContext);
 
     expect(selectMenu.selectWithCleanCancel).toHaveBeenCalled();
-    expect(mockSessionContext.setWorkMode).toHaveBeenCalledWith('Plan');
+    expect(mockSession.setWorkMode).toHaveBeenCalledWith('Plan');
     expect(getTerminalWorkMode()).toBe('Plan');
   });
 
@@ -103,7 +101,7 @@ describe('WorkModeCommand', () => {
 
     expect(selectMenu.selectWithCleanCancel).toHaveBeenCalled();
     expect(p.cancel).toHaveBeenCalled();
-    expect(mockSessionContext.setWorkMode).not.toHaveBeenCalled();
+    expect(mockSession.setWorkMode).not.toHaveBeenCalled();
     expect(getTerminalWorkMode()).toBe('Auto');
   });
 });

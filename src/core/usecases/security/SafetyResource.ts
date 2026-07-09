@@ -1,8 +1,5 @@
 /**
  * 安全审批中涉及的原子资源类型定义。
- * 每个不安全操作最终归结为对一个或多个原子资源的访问请求。
+ * 类型定义已迁移至 ports/shared/safety-resource.ts，此处保留 re-export 以确保向后兼容。
  */
-export type SafetyResource =
-  | { kind: 'path'; access: 'read' | 'write'; normalizedPath: string }
-  | { kind: 'directory-scope'; access: 'read'; normalizedPath: string }
-  | { kind: 'command-prefix'; prefix: string };
+export type { SafetyResource } from '../../../ports/shared/safety-resource.js';

@@ -3,7 +3,7 @@
  * 定义资源提取器与访问模式查询契约，使核心层无需依赖适配器具体实现即可获取工具安全元数据。
  */
 
-import type { SafetyResource } from '../../../core/usecases/security/SafetyResource.js';
+import type { SafetyResource } from '../../shared/safety-resource.js';
 
 /**
  * 工具访问元数据。

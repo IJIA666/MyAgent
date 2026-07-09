@@ -1,12 +1,16 @@
 /**
  * @fileoverview 智能体插件与生命周期 Hook 强类型契约定义。
  * 本模块定义了挂载在智能体各执行节点的拦截插件规格与管道执行上下文。
+ * 部分基础类型已迁移至 ports/shared/，此处通过导入与扩展保持向后兼容。
  */
 
 import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
 import type { SessionContext, ContextTokenUsage } from '../../domain/context.js';
 import type { AgentPlugin } from '../../../ports/driven/tools/AgentPlugin.js';
-import type { SafetyResource } from '../security/SafetyResource.js';
+import type { SafetyResource } from '../../../ports/shared/safety-resource.js';
+import type { PortHookContext } from '../../../ports/shared/plugin-types.js';
+import type { ApprovalChoice, ApprovalChoiceId } from '../../../ports/shared/approval-types.js';
+export type { ApprovalChoice, ApprovalChoiceId };
 
 /**
  * 大模型请求所需的参数载体。
@@ -20,33 +24,9 @@ export interface LlmRequest {
 
 /**
  * 智能体 Hook 生命周期的事件枚举。
+ * 定义已迁移至 ports/shared/plugin-types.ts，此处 re-export 以保持向后兼容。
  */
-export enum HookEventName {
-  /** 单次 run 启动前初始化拦截 */
-  RunStart = 'RunStart',
-  /** 单次 run 结束时的清理拦截 */
-  RunEnd = 'RunEnd',
-  /** 会话显式打开时的初始化拦截 */
-  SessionOpened = 'SessionOpened',
-  /** 会话关闭前的可拦截通知 */
-  SessionClosing = 'SessionClosing',
-  /** 会话关闭后的不可逆终结通知 */
-  SessionClosed = 'SessionClosed',
-  /** 大模型发起请求前的参数干预拦截 */
-  BeforeModel = 'BeforeModel',
-  /** 收到大模型响应后的出参干预拦截 */
-  AfterModel = 'AfterModel',
-  /** 工具执行前的安全校验与参数改写拦截 */
-  BeforeTool = 'BeforeTool',
-  /** 工具调用完成后的结果覆盖与尾随工具注入拦截 */
-  AfterTool = 'AfterTool',
-  /** 决策工具集前的工具白名单精修与干预拦截 */
-  BeforeToolSelection = 'BeforeToolSelection',
-  /** 上下文提炼与防爆压缩启动前的决策拦截 */
-  PreCompact = 'PreCompact',
-  /** 上下文防爆压缩完成后的收尾决策拦截 */
-  PostCompact = 'PostCompact'
-}
+export { HookEventName } from '../../../ports/shared/plugin-types.js';
 
 /**
  * 控制流决策指令，用于指引大循环的中断与重置。
@@ -60,47 +40,17 @@ export interface HookControl {
 
 /**
  * Hook 执行阶段的上下文对象，统管输入参数、返回数据及控制流状态。
+ * 扩展自端口层 PortHookContext，补充 SessionContext 等 core 特有字段。
  */
-export interface HookContext {
+export interface HookContext extends PortHookContext {
   /** 当前智能体会话的 SessionContext */
   sessionContext: SessionContext;
-  /** 当前系统的工具注册管理台 */
-  toolRegistry?: unknown;
-  /** 当前触发的生命周期 Hook 事件名 */
-  eventName: HookEventName;
   /** 大模型的请求配置项（ 仅在 BeforeModel / BeforeToolSelection 中存在，允许被就地修改 ） */
   llmRequest?: LlmRequest;
-  /** 大模型的响应回包（ 仅在 AfterModel 中存在，允许被就地修改 ） */
-  llmResponse?: unknown;
-  /** 当前准备执行或刚执行完的工具项（ 仅在 BeforeTool / AfterTool 中存在 ） */
-  toolCall?: {
-    /** 工具调用的唯一标识符，由 agent-loop 传入 */
-    id: string;
-    /** 调用的工具函数名称 */
-    name: string;
-    /** 大模型传入的工具参数结构 */
-    arguments: Record<string, unknown>;
-  };
-  /** 工具调用返回的结果载体（ 仅在 AfterTool 中存在，允许被就地修改 ） */
-  toolResult?: {
-    /** 工具返回给大模型的文本内容 */
-    content: string;
-    /** 该工具调用是否执行出错 */
-    isError?: boolean;
-  };
-  /** 尾随工具调用请求（ 仅在 AfterTool 中允许写入，指示大循环后续立即追加调用此工具 ） */
-  tailToolCallRequest?: {
-    /** 尾随调用的工具名称 */
-    name: string;
-    /** 尾随工具调用的输入参数 */
-    args: Record<string, unknown>;
-  };
   /** 管道的控制信号，控制大循环的后续行为，默认初始化为 continue */
   control: HookControl;
   /** 预测 of Token 详情，主要由 TokenWatermark 插件进行估算并填写 */
   estimatedUsage?: ContextTokenUsage;
-  /** 发送流式事件的回调，由大循环在调用 Pipeline 时传入 */
-  emitEvent?: (event: unknown) => void;
   /** 插件可在此字段返回授权 grant，由 AgentLoop 在安全条件下提交 */
   pendingGrant?: PendingGrant;
   /** 插件可在此字段返回持久化规则效果，由 AgentLoop 在安全条件下提交至 SecurityService */
@@ -119,8 +69,9 @@ export type HookMiddleware = (context: HookContext, next: HookNext) => Promise<v
 
 /**
  * 智能体可挂载的独立拦截插件契约。
+ * 参数化为 HookContext 以与 core 层的插件实现类型兼容。
  */
-export type Plugin = AgentPlugin;
+export type Plugin = AgentPlugin<HookContext>;
 
 /**
  * 工具安全校验结果契约接口。
@@ -156,25 +107,6 @@ export interface SafetyOperation {
     | 'command-execute';
   /** 人类可读的操作摘要（用于审批 UI 展示） */
   summary: string;
-}
-
-/**
- * 审批选择项标识联合类型。
- * 由 ApprovalPolicy 根据操作类型、WorkMode 和资源类型动态生成。
- */
-export type ApprovalChoiceId = 'call' | 'session' | 'persistent' | 'deny';
-
-/**
- * 审批选择项接口。
- * 每个 choice 包含标识符、展示标签和可选描述。
- */
-export interface ApprovalChoice {
-  /** 选择项标识 */
-  choiceId: ApprovalChoiceId;
-  /** 展示标签（如"单次放行"、"本次会话始终放行"） */
-  label: string;
-  /** 可选的详细描述 */
-  description?: string;
 }
 
 /**

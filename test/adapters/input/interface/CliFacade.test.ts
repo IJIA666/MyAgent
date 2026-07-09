@@ -6,7 +6,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import readline from 'readline';
 import { EventEmitter } from 'events';
 import { CliFacade } from '../../../../src/adapters/input/interface/facade.js';
-import { SessionManager } from '../../../../src/core/usecases/engine/session.js';
 import { dispatchCommand, showInteractiveMenu } from '../../../../src/adapters/input/interface/command.js';
 import { BrowserSession } from '../../../../src/adapters/tools/impl/browser/browser-action.js';
 import { waitUserIntervention } from '../../../../src/adapters/input/interface/cli.js';
@@ -24,49 +23,52 @@ vi.mock('../../../../src/adapters/input/interface/cli.js', () => {
   };
 });
 
-class MockSessionManager extends EventEmitter {
+class MockChatUseCase extends EventEmitter {
   getIsGenerating = vi.fn().mockReturnValue(false);
   getModelName = vi.fn().mockReturnValue('mock-llama-3');
-  getContext = vi.fn().mockReturnValue({
-    getWorkMode: vi.fn().mockReturnValue('Auto')
-  });
+  getWorkMode = vi.fn().mockReturnValue('Auto');
+  setWorkMode = vi.fn();
   abort = vi.fn();
   rollback = vi.fn();
+  compact = vi.fn().mockResolvedValue(true);
+  getSessionId = vi.fn().mockReturnValue('session-1');
   getHistory = vi.fn().mockReturnValue([]);
   getLastEstimatedUsage = vi.fn().mockReturnValue(null);
   getLastApiUsage = vi.fn().mockReturnValue(null);
   getSystemPromptHash = vi.fn().mockReturnValue('dummypromptmd5hash');
   close = vi.fn().mockResolvedValue(undefined);
+  loadState = vi.fn().mockResolvedValue(true);
+  reloadRules = vi.fn();
+  switchModel = vi.fn();
   handleUserInput = vi.fn();
   resumePendingInteraction = vi.fn().mockResolvedValue(undefined);
   getPendingInteraction = vi.fn().mockReturnValue(null);
+  getAvailableSkills = vi.fn().mockReturnValue([]);
+  getSkillContent = vi.fn().mockReturnValue(null);
   setInteractionPort = vi.fn();
+  registerApprovalHandler = vi.fn();
+  toolRegistryInstance = {
+    mcpManager: undefined,
+    getTools: vi.fn(),
+    callTool: vi.fn(),
+    getTool: vi.fn(),
+    close: vi.fn().mockResolvedValue(undefined)
+  };
   approvalService = {
-    registerApprovalHandler: vi.fn(),
+    wait: vi.fn(),
     resolve: vi.fn(),
   };
 }
 
 describe('CliFacade', () => {
-  let mockSession: SessionManager & {
-    close: ReturnType<typeof vi.fn>;
-    handleUserInput: ReturnType<typeof vi.fn>;
-    resumePendingInteraction: ReturnType<typeof vi.fn>;
-    getPendingInteraction: ReturnType<typeof vi.fn>;
-    setInteractionPort: ReturnType<typeof vi.fn>;
-    rollback: ReturnType<typeof vi.fn>;
-    abort: ReturnType<typeof vi.fn>;
-    getLastEstimatedUsage: ReturnType<typeof vi.fn>;
-    getLastApiUsage: ReturnType<typeof vi.fn>;
-    getSystemPromptHash: ReturnType<typeof vi.fn>;
-  };
+  let mockSession: MockChatUseCase;
   let facade: CliFacade;
   let stdoutWriteSpy: ReturnType<typeof vi.spyOn> & { outputBuffer: string[] };
   let exitSpy: ReturnType<typeof vi.spyOn>;
   let mockRlInterface: Record<string, unknown>;
 
   beforeEach(() => {
-    mockSession = new MockSessionManager() as unknown as typeof mockSession;
+    mockSession = new MockChatUseCase() as unknown as MockChatUseCase;
 
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
       return undefined as never;
@@ -411,7 +413,7 @@ describe('CliFacade', () => {
     ) => Promise<void>;
 
     beforeEach(() => {
-      handler = vi.mocked(mockSession.approvalService.registerApprovalHandler).mock.calls[0][0] as unknown as typeof handler;
+      handler = vi.mocked(mockSession.registerApprovalHandler).mock.calls[0][0] as unknown as typeof handler;
     });
 
     it('当有 allowedPrefix 且用户输入 1 时，应当批准 once 并重新激活键盘监听', async () => {
