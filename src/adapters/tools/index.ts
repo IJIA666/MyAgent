@@ -5,4 +5,3 @@
 export * from './tools.js';
 export * from './toolRegistry.js';
 export * from './mcp-client.js';
-export * from './virtual-mcp.js';

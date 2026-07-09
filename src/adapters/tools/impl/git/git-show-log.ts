@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import { getAuthorizedDir } from '../base.js';
-import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import type { NativeTool } from '../../tool-types.js';
+import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 
 /**
  * Git 提交日志查看工具类。

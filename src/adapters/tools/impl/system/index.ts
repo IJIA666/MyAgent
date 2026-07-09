@@ -5,7 +5,7 @@
  * 并为每个工具注入 resourceExtractor 以替代集中式 registerExtractorsForBuiltinTools()。
  */
 
-import type { NativeTool } from '../../virtual-mcp.js';
+import type { NativeTool } from '../../tool-types.js';
 import { ExecuteCommandTool } from './terminal.js';
 import { GetCurrentTimeTool } from './time.js';
 import { commandPrefixExtractor, emptyExtractor } from '../resource-extractors.js';

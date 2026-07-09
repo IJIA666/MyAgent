@@ -1,7 +1,8 @@
 import { mkdirSync, existsSync, statSync, rmSync, renameSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { secureResolveWritePath, secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
-import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import type { NativeTool } from '../../tool-types.js';
+import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import { copyRecursiveSync } from './directory-manager-helper.js';
 import { getWorkMode, loadWorkMode } from '../system/terminal.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';

@@ -5,7 +5,7 @@
  * 并为每个工具注入 resourceExtractor 以替代集中式 registerExtractorsForBuiltinTools()。
  */
 
-import type { NativeTool } from '../../virtual-mcp.js';
+import type { NativeTool } from '../../tool-types.js';
 import { ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool } from './file-system.js';
 import { CreateDirectoryTool, DeletePathTool, MovePathTool, CopyPathTool } from './directory-manager.js';
 import { ReadManyFilesTool } from './read-many-files.js';

@@ -1,4 +1,5 @@
-import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import type { NativeTool } from '../../tool-types.js';
+import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import { InteractionRequestError } from '../../../../ports/driven/session/InteractionPort.js';
 import type { AskUserPayload, UserQuestion } from '../../../../ports/driven/session/InteractionPort.js';
 

@@ -1,7 +1,8 @@
 import { existsSync, statSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
-import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import type { NativeTool } from '../../tool-types.js';
+import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { extractFileOutline } from './read-many-files-helper.js';

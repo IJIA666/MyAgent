@@ -1,4 +1,4 @@
-import type { NativeTool } from './virtual-mcp.js';
+import type { NativeTool } from './tool-types.js';
 import type { ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
 import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
 

@@ -7,7 +7,8 @@ import { deleteRuntimeEnvVariable, getRuntimeEnv, setRuntimeEnvVariable } from '
 import { resolve } from 'path';
 import { existsSync, rmSync } from 'fs';
 import readline from 'readline';
-import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import type { NativeTool } from '../../tool-types.js';
+import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 
 /**

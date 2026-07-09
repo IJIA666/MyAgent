@@ -1,5 +1,5 @@
 import type { ToolAccessMetadataPort, ResourceExtractor, ToolAccessMetadata } from '../../ports/driven/tools/ToolAccessMetadataPort.js';
-import type { NativeTool } from './virtual-mcp.js';
+import type { NativeTool } from './tool-types.js';
 
 /**
  * 工具访问元数据聚合器。

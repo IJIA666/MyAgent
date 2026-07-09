@@ -1,4 +1,5 @@
-import { LocalFileSystemMcpServer } from './virtual-mcp.js';
+import { buildNativeTools } from './tool-factory.js';
+import type { BuildNativeToolsOptions } from './tool-factory.js';
 import { McpToolManager } from './mcp-client.js';
 import { ToolCatalog } from './ToolCatalog.js';
 import { ToolExecutor } from './ToolExecutor.js';
@@ -13,13 +14,11 @@ import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js'
 /**
  * 工具注册表管理类。
  * 核心职责：
- * 1. 统管本地虚拟 MCP 服务器（LocalFileSystemMcpServer）提供的全部内建工具；
+ * 1. 统管本地内建工具的唯一装配源，通过 buildNativeTools 构造全部本地工具；
  * 2. 集成外部真实 MCP 服务器（McpToolManager）提供的外部工具；
  * 3. 对外提供统一的工具获取（getTools）与工具调用（callTool）接口。
  */
 export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
-  // 本地内建工具对应的虚拟 MCP 服务器实例
-  private localMcpServer: LocalFileSystemMcpServer;
   // 工具目录管理器（委托 getTools / getTool）
   private catalog: ToolCatalog;
   // 工具执行调度器（委托 callTool）
@@ -33,15 +32,14 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
    * 初始化工具注册表。
    *
    * @param mcpManager - 外部的 MCP 工具管理器（可选）
-   * @param options - 本地虚拟服务器的附加配置（可选）
+   * @param options - 本地工具装配选项（可选）
    */
-  constructor(mcpManager?: McpToolManager, options?: { loadSkill?: (name: string) => string | null }) {
+  constructor(mcpManager?: McpToolManager, options?: BuildNativeToolsOptions) {
     // 注入可选的外部 MCP 工具管理器
     this.mcpManager = mcpManager;
-    // 实例化本地文件系统的虚拟 MCP 服务
-    this.localMcpServer = new LocalFileSystemMcpServer(options);
-    const allTools = this.localMcpServer.getAllTools();
-    // 构建工具目录（从 localMcpServer 提取已注册工具列表）
+    // 通过唯一装配源构建本地工具列表
+    const allTools = buildNativeTools(options);
+    // 构建工具目录
     this.catalog = new ToolCatalog(allTools, mcpManager);
     // 构建工具执行调度器
     this.executor = new ToolExecutor(this.catalog);

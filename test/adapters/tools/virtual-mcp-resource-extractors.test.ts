@@ -1,12 +1,16 @@
+/**
+ * @file virtual-mcp-resource-extractors.test.ts
+ * @description 验证统一本地工具运行时中的资源提取器聚合行为。
+ */
+
 import { describe, expect, it } from 'vitest';
-import { LocalFileSystemMcpServer } from '../../../src/adapters/tools/virtual-mcp.js';
+import { buildNativeTools } from '../../../src/adapters/tools/tool-factory.js';
 import { ToolAccessMetadataProvider } from '../../../src/adapters/tools/ToolAccessMetadataProvider.js';
 
-describe('ToolAccessMetadataProvider 资源提取器（原 LocalFileSystemMcpServer 提取器测试迁移）', () => {
-  /** 创建 provider 的辅助函数——从 LocalFileSystemMcpServer 取工具列表后构建 */
+describe('ToolAccessMetadataProvider 资源提取器（统一运行时版本）', () => {
+  /** 创建 provider 的辅助函数——直接基于统一工具装配源构建。 */
   function createProvider(): ToolAccessMetadataProvider {
-    const server = new LocalFileSystemMcpServer();
-    return new ToolAccessMetadataProvider(server.getAllTools());
+    return new ToolAccessMetadataProvider(buildNativeTools());
   }
 
   it('应为 createDirectory 使用 directoryPath 提取写资源', () => {

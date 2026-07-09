@@ -1,17 +1,30 @@
+/**
+ * @file dangerous-intercept.test.ts
+ * @description 验证统一本地工具运行时中的高危写操作审批拦截行为。
+ */
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { resolve } from 'path';
-import { LocalFileSystemMcpServer } from '../../../src/adapters/tools/virtual-mcp.js';
+import { buildNativeTools } from '../../../src/adapters/tools/tool-factory.js';
+import { ToolCatalog } from '../../../src/adapters/tools/ToolCatalog.js';
+import { ToolExecutor } from '../../../src/adapters/tools/ToolExecutor.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
 import { initWorkspace } from '../../../src/adapters/tools/impl/base.js';
 import { ReadFileTool } from '../../../src/adapters/tools/impl/filesystem/file-system.js';
 
 describe('高危操作安全硬拦截单元测试', () => {
-  let mcpServer: LocalFileSystemMcpServer;
+  let toolExecutor: ToolExecutor;
   let sessionContext: SessionContext;
   const testWorkspace = process.platform === 'win32'
     ? resolve('d:\\Projects\\MyAgent')
     : resolve('/tmp/Projects/MyAgent');
+
+  /** 构建统一本地工具运行时，避免测试继续依赖 virtual-mcp 适配层。 */
+  function createToolExecutor(): ToolExecutor {
+    const catalog = new ToolCatalog(buildNativeTools());
+    return new ToolExecutor(catalog);
+  }
 
   beforeEach(() => {
     // 确保测试物理工作区目录在磁盘上真实存在
@@ -20,7 +33,7 @@ describe('高危操作安全硬拦截单元测试', () => {
     }
     // 确保工作区正确初始化
     initWorkspace(testWorkspace);
-    mcpServer = new LocalFileSystemMcpServer();
+    toolExecutor = createToolExecutor();
     sessionContext = new SessionContext('test-session-dangerous');
     ReadFileTool.readFileState.clear();
     // 强制关闭 bypass 模式以验证拦截挂起机制
@@ -37,10 +50,11 @@ describe('高危操作安全硬拦截单元测试', () => {
     });
     sessionContext.approvalService.registerApprovalHandler(handler);
 
-    const callResult = await mcpServer.callTool({
-      name: 'deletePath',
-      arguments: { targetPath: 'test_temp_delete_file.txt' }
-    }, sessionContext);
+    const callResult = await toolExecutor.execute(
+      'deletePath',
+      { targetPath: 'test_temp_delete_file.txt' },
+      sessionContext
+    );
 
     // 验证审批提问回调被触发
     expect(handler).toHaveBeenCalled();
@@ -62,10 +76,11 @@ describe('高危操作安全硬拦截单元测试', () => {
     });
     sessionContext.approvalService.registerApprovalHandler(handler);
 
-    const callResult = await mcpServer.callTool({
-      name: 'deletePath',
-      arguments: { targetPath: 'test_temp_delete_success.txt' }
-    }, sessionContext);
+    const callResult = await toolExecutor.execute(
+      'deletePath',
+      { targetPath: 'test_temp_delete_success.txt' },
+      sessionContext
+    );
 
     // 验证审批通过后，文件被成功删除，返回成功
     expect(handler).toHaveBeenCalled();
@@ -85,10 +100,11 @@ describe('高危操作安全硬拦截单元测试', () => {
     });
     sessionContext.approvalService.registerApprovalHandler(handler);
 
-    const callResult = await mcpServer.callTool({
-      name: 'writeFile',
-      arguments: { targetPath: 'test_temp_overwrite.txt', content: 'new_content' }
-    }, sessionContext);
+    const callResult = await toolExecutor.execute(
+      'writeFile',
+      { targetPath: 'test_temp_overwrite.txt', content: 'new_content' },
+      sessionContext
+    );
 
     expect(handler).toHaveBeenCalled();
     expect(callResult.isError).toBe(true);
@@ -111,10 +127,11 @@ describe('高危操作安全硬拦截单元测试', () => {
     const handler = vi.fn();
     sessionContext.approvalService.registerApprovalHandler(handler);
 
-    const callResult = await mcpServer.callTool({
-      name: 'writeFile',
-      arguments: { targetPath: 'test_temp_new_write.txt', content: 'fresh_content' }
-    }, sessionContext);
+    const callResult = await toolExecutor.execute(
+      'writeFile',
+      { targetPath: 'test_temp_new_write.txt', content: 'fresh_content' },
+      sessionContext
+    );
 
     // 验证未触发审批提问
     expect(handler).not.toHaveBeenCalled();
@@ -135,10 +152,14 @@ describe('高危操作安全硬拦截单元测试', () => {
     const handler = vi.fn();
     sessionContext.approvalService.registerApprovalHandler(handler);
 
-    const callResult = await mcpServer.callTool({
-      name: 'writeFile',
-      arguments: { targetPath: '../test_temp_whitelist_write.txt', content: 'updated_content' }
-    }, sessionContext, undefined, undefined, 'tool-call-whitelist');
+    const callResult = await toolExecutor.execute(
+      'writeFile',
+      { targetPath: '../test_temp_whitelist_write.txt', content: 'updated_content' },
+      sessionContext,
+      undefined,
+      undefined,
+      'tool-call-whitelist'
+    );
 
     expect(handler).not.toHaveBeenCalled();
     expect(callResult.isError).toBeUndefined();

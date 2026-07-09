@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { computeArgumentsDigest } from '../../core/domain/context.js';
 import { secureResolveWritePath } from './impl/base.js';
-import type { NativeTool, CallToolResult } from './virtual-mcp.js';
+import type { NativeTool, CallToolResult } from './tool-types.js';
 import type { ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';

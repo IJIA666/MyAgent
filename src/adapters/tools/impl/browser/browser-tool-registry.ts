@@ -15,7 +15,7 @@ import {
   BrowserEnsureLoginTool,
   BrowserGetTextTool
 } from './browser-action.js';
-import type { NativeTool } from '../../virtual-mcp.js';
+import type { NativeTool } from '../../tool-types.js';
 import { emptyExtractor } from '../resource-extractors.js';
 
 /**

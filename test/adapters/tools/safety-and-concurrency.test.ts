@@ -1,7 +1,15 @@
+/**
+ * @file safety-and-concurrency.test.ts
+ * @description 验证统一本地工具运行时的审批拦截、文件锁与终端中断行为。
+ */
+
 import { describe, it, expect, vi } from 'vitest';
 import { resolve } from 'path';
 import { FileLockManager } from '../../../src/core/usecases/security/FileLockManager.js';
-import { LocalFileSystemMcpServer, NativeTool } from '../../../src/adapters/tools/virtual-mcp.js';
+import { buildNativeTools } from '../../../src/adapters/tools/tool-factory.js';
+import { ToolCatalog } from '../../../src/adapters/tools/ToolCatalog.js';
+import { ToolExecutor } from '../../../src/adapters/tools/ToolExecutor.js';
+import type { NativeTool } from '../../../src/adapters/tools/tool-types.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
 import { CompactionService } from '../../../src/core/usecases/brain/CompactionService.js';
 import { runCommandEngine } from '../../../src/adapters/tools/impl/system/terminal-engine.js';
@@ -13,6 +21,15 @@ import type { AppConfig } from '../../../src/config/index.js';
 
 describe('安全与并发增强特性测试', () => {
   const testWorkspace = process.cwd();
+
+  /** 构建可注册测试工具的统一本地工具运行时。 */
+  function createToolRuntime(): { catalog: ToolCatalog; executor: ToolExecutor } {
+    const catalog = new ToolCatalog(buildNativeTools());
+    return {
+      catalog,
+      executor: new ToolExecutor(catalog)
+    };
+  }
 
   describe('1. 元数据追踪收集 ( collectRecentFileOperations )', () => {
     it('应根据工具声明的 filePathParamKey 提取物理相对路径，并支持启发式提取', () => {
@@ -64,9 +81,9 @@ describe('安全与并发增强特性测试', () => {
     });
   });
 
-  describe('2. 高危写操作硬拦截 ( LocalFileSystemMcpServer.callTool )', () => {
+  describe('2. 高危写操作硬拦截 ( ToolExecutor.execute )', () => {
     it('对未定义元数据且非 read 的工具以降级防御态度执行 waitApproval 拦截', async () => {
-      const mcpServer = new LocalFileSystemMcpServer();
+      const runtime = createToolRuntime();
       const sessionContext = new SessionContext('test-safety-intercept');
       sessionContext.approvalService.setBypassMode(false);
 
@@ -79,6 +96,7 @@ describe('安全与并发增强特性测试', () => {
 
       const mockTool = {
         name: 'dangerous_custom_tool',
+        securityCategory: 'write',
         definition: {
           name: 'dangerous_custom_tool',
           description: 'A tool without metadata'
@@ -86,12 +104,13 @@ describe('安全与并发增强特性测试', () => {
         execute: vi.fn().mockResolvedValue('success'),
         checkSafety: vi.fn().mockReturnValue({ status: 'pass' })
       } as unknown as NativeTool;
-      mcpServer.register(mockTool);
+      runtime.catalog.register(mockTool);
 
-      const callResult = await mcpServer.callTool({
-        name: 'dangerous_custom_tool',
-        arguments: {}
-      }, sessionContext);
+      const callResult = await runtime.executor.execute(
+        'dangerous_custom_tool',
+        {},
+        sessionContext
+      );
 
       expect(handler).toHaveBeenCalled();
       expect(callResult.isError).toBe(true);

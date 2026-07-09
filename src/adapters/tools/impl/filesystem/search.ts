@@ -1,7 +1,8 @@
 import { resolve, basename, relative } from 'path';
 import { existsSync, statSync, openSync, readSync, closeSync, promises as fsPromises } from 'fs';
 import { secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
-import type { NativeTool, SafetyCheckResult } from '../../virtual-mcp.js';
+import type { NativeTool } from '../../tool-types.js';
+import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 
