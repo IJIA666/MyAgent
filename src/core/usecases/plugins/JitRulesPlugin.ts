@@ -4,7 +4,7 @@ import type { ToolDispatcher } from '../engine/ToolDispatcher.js';
 
 /**
  * JIT 规则注入插件。
- * 挂载在 SessionStart 与 AfterTool，捕获文件读取 (readFile) 后的 JIT 伴生规则，
+ * 挂载在 RunStart 与 AfterTool，捕获文件读取 (readFile) 后的 JIT 伴生规则，
  * 并将其追加到最近一条 user 消息尾部，从而利用并保护大模型的 Prompt Cache。
  */
 export class JitRulesPlugin implements Plugin {
@@ -24,7 +24,7 @@ export class JitRulesPlugin implements Plugin {
   }
 
   public readonly hooks = {
-    [HookEventName.SessionStart]: async (context: HookContext, next: () => Promise<void>) => {
+    [HookEventName.RunStart]: async (context: HookContext, next: () => Promise<void>) => {
       this.injectedJitPaths.clear();
       await next();
     },

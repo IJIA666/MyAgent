@@ -12,6 +12,8 @@ import { AgentLoop } from './agent-loop.js';
 import { ChatUseCase } from '../../../ports/driving/ChatUseCase.js';
 import { TaskAborterPort } from '../../../ports/driven/tools/TaskAborterPort.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
+import { HookEventName, type HookContext } from '../plugins/plugin-types.js';
+import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { TokenWatermarkPlugin } from '../plugins/TokenWatermarkPlugin.js';
 import { JitRulesPlugin } from '../plugins/JitRulesPlugin.js';
 import { HumanApprovalPlugin } from '../plugins/HumanApprovalPlugin.js';
@@ -53,6 +55,8 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   private autoWakeupCount = 0;
   /** 标识当前推理期间是否到达了积压的异步系统通知 */
   private hasPendingAsyncNotification = false;
+  /** 会话是否已关闭（幂等保护） */
+  private isClosed = false;
   /** 大语言模型的核心驱动模块 */
   private driver: LlmPort;
   /** 上下文管理与组装适配器 */
@@ -335,11 +339,48 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
   }
 
   /**
-   * 关闭会话，终止推理流、清理挂起审批、强制终止所有后台子进程并关闭 MCP 连接。
+   * 显式打开会话，派发 SessionOpened 生命周期事件。
+   * 由组合根在构造完成后调用，插件可在此阶段执行初始化逻辑。
+   *
+   * @returns 无返回值的 Promise
+   * @throws 若任一插件返回 abort，则抛出异常阻止会话进入可用状态
+   */
+  public async open(): Promise<void> {
+    const result = await runHookPipeline(
+      HookEventName.SessionOpened,
+      this.context,
+      this.pluginRegistry.getPluginsForEvent(HookEventName.SessionOpened),
+      {}
+    );
+
+    if (result.control.action === 'abort') {
+      throw new Error(`[SessionManager] 会话打开被拦截：${result.control.reason ?? '无原因'}`);
+    }
+  }
+
+  /**
+   * 关闭会话，派发 SessionClosing / SessionClosed 生命周期事件，
+   * 终止推理流、清理挂起审批、清除临时白名单、强制终止所有后台子进程并关闭 MCP 连接。
    *
    * @returns 无返回值的 Promise
    */
   public async close(): Promise<void> {
+    if (this.isClosed) {
+      return;
+    }
+
+    // 派发 SessionClosing 可拦截事件
+    const closingResult = await runHookPipeline(
+      HookEventName.SessionClosing,
+      this.context,
+      this.pluginRegistry.getPluginsForEvent(HookEventName.SessionClosing),
+      {}
+    );
+
+    if (closingResult.control.action === 'abort') {
+      throw new Error(`[SessionManager] 会话关闭被拦截：${closingResult.control.reason ?? '无原因'}`);
+    }
+
     this.abort();
     this.approvalService.rejectAll('Session is closing');
 
@@ -352,6 +393,42 @@ export class SessionManager extends EventEmitter implements ChatUseCase {
 
     // 代理给 ToolRegistryPort close，物理断开并清理所有物理连接（含 MCP）
     await this.toolRegistry.close();
+
+    // 清除会话级临时白名单（原在 AgentLoop finally 中执行，现已迁移至此）
+    this.context.clearTemporaryWhitelists();
+
+    // 关闭一旦走到此处已不可逆，先设置幂等标记，避免 SessionClosed 收尾异常导致重复清理
+    this.isClosed = true;
+
+    // 派发 SessionClosed 不可逆终结通知（忽略插件控制流）
+    await this.runSessionClosedPipeline();
+  }
+
+  /**
+   * 派发 SessionClosed 不可逆通知事件。
+   * 逐个插件顺序派发，忽略其 control 信号，并吞掉单个插件异常，
+   * 确保某个插件即便返回 abort/restart、未调用 next() 或执行失败，
+   * 也不会阻断后续订阅者收到真实的会话终结通知。
+   */
+  private async runSessionClosedPipeline(): Promise<void> {
+    const middlewares = this.pluginRegistry.getPluginsForEvent(HookEventName.SessionClosed);
+    if (middlewares.length === 0) {
+      return;
+    }
+
+    for (const middleware of middlewares) {
+      const hookContext: HookContext = {
+        sessionContext: this.context,
+        eventName: HookEventName.SessionClosed,
+        control: { action: 'continue' }
+      };
+
+      try {
+        await middleware(hookContext, async () => { });
+      } catch (error: unknown) {
+        logger.error('[SessionManager] SessionClosed hook failed:', error);
+      }
+    }
   }
 
   /**

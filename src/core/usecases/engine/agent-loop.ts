@@ -201,24 +201,25 @@ export class AgentLoop {
       eventQueue.push(event as AgentEvent);
     };
 
-    // 触发 SessionStart 钩子
-    const sessionStartResult = await runHookPipeline(
-      HookEventName.SessionStart,
+    // 触发 RunStart 钩子
+    const runStartResult = await runHookPipeline(
+      HookEventName.RunStart,
       this.context,
-      this.pluginRegistry.getPluginsForEvent(HookEventName.SessionStart),
+      this.pluginRegistry.getPluginsForEvent(HookEventName.RunStart),
       { emitEvent }
     );
     while (eventQueue.length > 0) {
       yield eventQueue.shift()!;
     }
 
-    if (sessionStartResult.control.action === 'abort') {
-      yield { type: 'error', message: `[插件终止] 会话启动被拦截：${sessionStartResult.control.reason ?? '无原因'}` };
-      return;
-    }
+    try {
+      if (runStartResult.control.action === 'abort') {
+        yield { type: 'error', message: `[插件终止] Run 启动被拦截：${runStartResult.control.reason ?? '无原因'}` };
+        return;
+      }
 
-    // 构建带有硬上限的安全推理大循环
-    while (iteration < this.maxIterations) {
+      // 构建带有硬上限的安全推理大循环
+      while (iteration < this.maxIterations) {
       iteration++;
 
       try {
@@ -1090,25 +1091,28 @@ export class AgentLoop {
         yield { type: 'error', message: fullErrorMsg, cause: apiError };
         throw new Error(fullErrorMsg, { cause: apiError });
       } finally {
-        // 触发 SessionEnd 钩子以作清理和最后的 patches 审计
-        await runHookPipeline(
-          HookEventName.SessionEnd,
-          this.context,
-          this.pluginRegistry.getPluginsForEvent(HookEventName.SessionEnd),
-          { emitEvent }
-        );
-        while (eventQueue.length > 0) {
-          yield eventQueue.shift()!;
-        }
         // 无论正常结束还是抛错中断，强制性确保当前上下文得到文件落盘保存
         this.context.flushPendingNotifications();
         await this.contextRepo.saveState();
-        this.context.clearTemporaryWhitelists();
       }
     }
 
-    // 达到最大允许轮数依然没有完结退出，抛出死循环超载保护异常
-    throw new Error(`超出了工具调用的最大迭代轮数限制（${this.maxIterations} 轮）。`);
+      // 达到最大允许轮数依然没有完结退出，抛出死循环超载保护异常
+      throw new Error(`超出了工具调用的最大迭代轮数限制（${this.maxIterations} 轮）。`);
+    } finally {
+      // 触发 RunEnd 钩子以作最终清理和 patches 审计，整个 run 生命周期仅触发一次
+      await runHookPipeline(
+        HookEventName.RunEnd,
+        this.context,
+        this.pluginRegistry.getPluginsForEvent(HookEventName.RunEnd),
+        { emitEvent }
+      );
+      while (eventQueue.length > 0) {
+        yield eventQueue.shift()!;
+      }
+      this.context.flushPendingNotifications();
+      await this.contextRepo.saveState();
+    }
   }
 
 

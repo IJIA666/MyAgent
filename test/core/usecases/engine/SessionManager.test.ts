@@ -12,6 +12,7 @@ import { TokenEstimatorPort } from '../../../../src/ports/driven/llm/TokenEstima
 import { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
 import { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdapter.js';
 import { AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
+import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import type { VectorDbPort } from '../../../../src/ports/driven/db/VectorDbPort.js';
 import type { EmbeddingPort } from '../../../../src/ports/driven/llm/EmbeddingPort.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
@@ -371,5 +372,105 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     expect(failResult.success).toBe(false);
     expect(failResult.output).toContain('ESLint 检查失败');
     expect(failResult.output).toContain('stdout error snippet');
+  });
+
+  it('open() 应该派发 SessionOpened 事件并允许插件执行初始化', async () => {
+    const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+    const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
+    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}), close: vi.fn().mockResolvedValue(undefined) } as unknown as ToolRegistryPort;
+    const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+
+    const session = new SessionManager(
+      mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+    );
+
+    // SessionOpened 应正常完成（无插件 abort）
+    await expect(session.open()).resolves.toBeUndefined();
+  });
+
+  it('close() 应该派发 SessionClosing，清理资源，清除白名单，并派发 SessionClosed', async () => {
+    const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+    const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
+    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}), close: vi.fn().mockResolvedValue(undefined) } as unknown as ToolRegistryPort;
+    const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+
+    const session = new SessionManager(
+      mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+    );
+
+    await session.close();
+    expect(mockToolRegistry.close).toHaveBeenCalled();
+
+    // 幂等：重复 close 应直接返回
+    await session.close();
+    expect(mockToolRegistry.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('close() 幂等保护应防止重复清理和重复派发 SessionClosed', async () => {
+    const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+    const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
+    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const closeSpy = vi.fn().mockResolvedValue(undefined);
+    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}), close: closeSpy } as unknown as ToolRegistryPort;
+    const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+
+    const session = new SessionManager(
+      mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+    );
+
+    await session.close();
+    await session.close();
+    await session.close();
+
+    // toolRegistry.close 仅调用一次
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('SessionClosed 阶段单个插件失败或不调用 next，不应阻断后续订阅者和 close() 完成', async () => {
+    const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+    const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
+    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const closeSpy = vi.fn().mockResolvedValue(undefined);
+    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}), close: closeSpy } as unknown as ToolRegistryPort;
+    const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+
+    const session = new SessionManager(
+      mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+    );
+
+    const firstClosedSpy = vi.fn();
+    const secondClosedSpy = vi.fn();
+
+    session['pluginRegistry'].register({
+      name: 'BrokenSessionClosedPlugin',
+      weight: 1,
+      hooks: {
+        [HookEventName.SessionClosed]: async () => {
+          firstClosedSpy();
+          throw new Error('session closed boom');
+        }
+      }
+    });
+
+    session['pluginRegistry'].register({
+      name: 'FollowingSessionClosedPlugin',
+      weight: 2,
+      hooks: {
+        [HookEventName.SessionClosed]: async () => {
+          secondClosedSpy();
+        }
+      }
+    });
+
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(firstClosedSpy).toHaveBeenCalledTimes(1);
+    expect(secondClosedSpy).toHaveBeenCalledTimes(1);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 });

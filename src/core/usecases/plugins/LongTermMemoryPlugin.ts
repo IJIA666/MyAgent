@@ -11,7 +11,7 @@ import { AppConfig } from '../../../config/index.js';
 
 /**
  * 长期记忆自省与提炼插件。
- * 挂载于所有的核心生命周期节点，在会话结束时异步提炼有价值的知识和事实，并在模型推理前就地注入。
+ * 挂载于所有的核心生命周期节点，在会话关闭时异步提炼有价值的知识和事实，并在模型推理前就地注入。
  */
 export class LongTermMemoryPlugin implements Plugin {
   public readonly name = 'LongTermMemoryPlugin';
@@ -52,7 +52,7 @@ export class LongTermMemoryPlugin implements Plugin {
       await this.handleBeforeModel(context);
       await next();
     },
-    [HookEventName.SessionEnd]: async (context: HookContext, next: () => Promise<void>) => {
+    [HookEventName.SessionClosed]: async (context: HookContext, next: () => Promise<void>) => {
       this.handleSessionEndAsync(context);
       await next();
     }

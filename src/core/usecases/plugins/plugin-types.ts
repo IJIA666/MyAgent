@@ -22,10 +22,16 @@ export interface LlmRequest {
  * 智能体 Hook 生命周期的事件枚举。
  */
 export enum HookEventName {
-  /** 会话启动时的初始化拦截 */
-  SessionStart = 'SessionStart',
-  /** 会话结束前的清理拦截 */
-  SessionEnd = 'SessionEnd',
+  /** 单次 run 启动前初始化拦截 */
+  RunStart = 'RunStart',
+  /** 单次 run 结束时的清理拦截 */
+  RunEnd = 'RunEnd',
+  /** 会话显式打开时的初始化拦截 */
+  SessionOpened = 'SessionOpened',
+  /** 会话关闭前的可拦截通知 */
+  SessionClosing = 'SessionClosing',
+  /** 会话关闭后的不可逆终结通知 */
+  SessionClosed = 'SessionClosed',
   /** 大模型发起请求前的参数干预拦截 */
   BeforeModel = 'BeforeModel',
   /** 收到大模型响应后的出参干预拦截 */

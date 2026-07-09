@@ -96,6 +96,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         sessionContext,
         eventName: HookEventName.AfterTool,
         toolCall: {
+          id: 'call-jit-test',
           name: 'readFile',
           arguments: { targetPath: 'src/index.ts' }
         },
@@ -124,6 +125,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         sessionContext,
         eventName: HookEventName.BeforeTool,
         toolCall: {
+          id: 'call-loop-test',
           name: 'writeFile',
           arguments: { path: 'out.txt', content: 'data' }
         },
@@ -196,7 +198,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
       };
 
       await runHookPipeline(
-        HookEventName.SessionStart,
+        HookEventName.RunStart,
         sessionContext,
         [asyncMiddleware]
       );
@@ -222,7 +224,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
       };
 
       await runHookPipeline(
-        HookEventName.SessionStart,
+        HookEventName.RunStart,
         sessionContext,
         [lockVerificationMiddleware]
       );
@@ -244,7 +246,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
       // 运行管道并断言抛出错误
       await expect(
-        runHookPipeline(HookEventName.SessionStart, sessionContext, [errorMiddleware])
+        runHookPipeline(HookEventName.RunStart, sessionContext, [errorMiddleware])
       ).rejects.toThrow('Simulation of pipeline failure');
 
       // 验证宿主忙状态锁已被释放
@@ -340,7 +342,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
       expect(llmRequest.messages?.[0].content).toContain('<long-term-memory>');
     });
 
-    it('should skip session end refinement if history is less than 2 messages', async () => {
+    it('should skip session close refinement if history is less than 2 messages', async () => {
       const mockDriver = {
         streamChat: vi.fn()
       } as unknown as LlmPort;
@@ -352,12 +354,12 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
       const context: HookContext = {
         sessionContext,
-        eventName: HookEventName.SessionEnd,
+        eventName: HookEventName.SessionClosed,
         control: { action: 'continue' }
       };
 
       const next = vi.fn().mockResolvedValue(undefined);
-      await plugin.hooks[HookEventName.SessionEnd](context, next);
+      await plugin.hooks[HookEventName.SessionClosed](context, next);
 
       await (plugin as unknown as { refinePromise: Promise<void> }).refinePromise;
 
@@ -366,7 +368,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
       expect(next).toHaveBeenCalled();
     });
 
-    it('should trigger onSessionEndCallback in SessionEnd hook when history is sufficient', async () => {
+    it('should trigger callback in SessionClosed hook when session closes', async () => {
       const mockVectorDb = {} as unknown as VectorDbPort;
       const mockEmbedding = {} as unknown as EmbeddingPort;
       const callback = vi.fn();
@@ -377,12 +379,12 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
       const context: HookContext = {
         sessionContext,
-        eventName: HookEventName.SessionEnd,
+        eventName: HookEventName.SessionClosed,
         control: { action: 'continue' }
       };
 
       const next = vi.fn().mockResolvedValue(undefined);
-      await plugin.hooks[HookEventName.SessionEnd](context, next);
+      await plugin.hooks[HookEventName.SessionClosed](context, next);
 
       await (plugin as unknown as { refinePromise: Promise<void> }).refinePromise;
 
@@ -475,10 +477,10 @@ describe('Plugins Lifecycle & Action Tests', () => {
       session['context'].addMessage({ role: 'user', content: 'hello refine' });
       session['context'].addMessage({ role: 'assistant', content: 'hello subagent' });
 
-      // 手动执行 SessionEnd 钩子触发流程，由于我们注册了 LongTermMemoryPlugin 并带回调，这会异步拉起自省子智能体
+      // 手动执行 SessionClosed 钩子触发流程，由于我们注册了 LongTermMemoryPlugin 并带回调，这会异步拉起自省子智能体
       const context: HookContext = {
         sessionContext: session['context'],
-        eventName: HookEventName.SessionEnd,
+        eventName: HookEventName.SessionClosed,
         control: { action: 'continue' }
       };
 
@@ -486,7 +488,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
       const memoryPlugin = session['pluginRegistry'].getPlugins().find(p => p.name === 'LongTermMemoryPlugin') as LongTermMemoryPlugin;
       expect(memoryPlugin).toBeDefined();
 
-      await memoryPlugin.hooks[HookEventName.SessionEnd](context, next);
+      await memoryPlugin.hooks[HookEventName.SessionClosed](context, next);
 
       // 等待自省异步任务和写队列执行完毕
       await (memoryPlugin as unknown as { refinePromise: Promise<void> }).refinePromise;
@@ -860,7 +862,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
       expect(next).toHaveBeenCalled();
     });
 
-    it('should skip session end refinement if ragEnabled is configured to false in AppConfig', async () => {
+    it('should skip session close refinement if ragEnabled is configured to false in AppConfig', async () => {
       const mockVectorDb = {} as unknown as VectorDbPort;
       const mockEmbedding = {} as unknown as EmbeddingPort;
       const mockConfig = createMockAppConfig();
@@ -875,12 +877,12 @@ describe('Plugins Lifecycle & Action Tests', () => {
 
       const context: HookContext = {
         sessionContext,
-        eventName: HookEventName.SessionEnd,
+        eventName: HookEventName.SessionClosed,
         control: { action: 'continue' }
       };
 
       const next = vi.fn().mockResolvedValue(undefined);
-      await plugin.hooks[HookEventName.SessionEnd](context, next);
+      await plugin.hooks[HookEventName.SessionClosed](context, next);
 
       // 验证在 RAG 关闭时，没有触发自省提炼的回调逻辑
       expect(mockCallback).not.toHaveBeenCalled();

@@ -23,12 +23,12 @@ export class TracerLogPlugin implements Plugin {
   }
 
   public readonly hooks = {
-    [HookEventName.SessionStart]: async (context: HookContext, next: () => Promise<void>) => {
+    [HookEventName.RunStart]: async (context: HookContext, next: () => Promise<void>) => {
       this.auditCurrentPatches(context);
       this.tracerProvider().logPluginAudit({
         timestamp: new Date().toISOString(),
         type: 'lifecycle',
-        eventName: HookEventName.SessionStart
+        eventName: HookEventName.RunStart
       });
       await next();
       this.auditCurrentPatches(context);
@@ -79,12 +79,12 @@ export class TracerLogPlugin implements Plugin {
       await next();
       this.auditCurrentPatches(context);
     },
-    [HookEventName.SessionEnd]: async (context: HookContext, next: () => Promise<void>) => {
+    [HookEventName.RunEnd]: async (context: HookContext, next: () => Promise<void>) => {
       this.auditCurrentPatches(context);
       this.tracerProvider().logPluginAudit({
         timestamp: new Date().toISOString(),
         type: 'lifecycle',
-        eventName: HookEventName.SessionEnd
+        eventName: HookEventName.RunEnd
       });
       await next();
       this.auditCurrentPatches(context);

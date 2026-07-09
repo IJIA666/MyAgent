@@ -102,6 +102,15 @@ async function main() {
     process.exit(1);
   }
 
+  // 显式打开会话，派发 SessionOpened 生命周期事件
+  try {
+    await session.open();
+  } catch (openError: unknown) {
+    const errorMsg = openError instanceof Error ? openError.message : String(openError);
+    console.log(theme.error(`[错误] 会话打开被拦截：${errorMsg}`));
+    process.exit(1);
+  }
+
   // 5. 将会话实例注入 Interface 层，启动终端应用
   startCli(session);
 }
