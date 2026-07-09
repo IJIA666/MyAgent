@@ -1,18 +1,15 @@
-import { randomUUID } from 'crypto';
-import { resolve } from 'path';
 import { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
 import { LlmConfig } from '../../../config/index.js';
 import { AgentTracer } from '../../domain/tracer.js';
-import { SessionContext, ContextTokenUsage, StoredChatMessage, computeArgumentsDigest } from '../../domain/context.js';
+import { SessionContext, ContextTokenUsage } from '../../domain/context.js';
 import type { ChatMessage, LlmPort, LlmStreamEvent } from '../../../ports/driven/llm/LlmPort.js';
 import type { ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { runHookPipeline } from '../plugins/plugin-runner.js';
-import { HookEventName, type LlmRequest, type ApprovalChoice } from '../plugins/plugin-types.js';
-import { SecurityService } from '../security/SecurityService.js';
+import { HookEventName, type ApprovalChoice } from '../plugins/plugin-types.js';
 import { QualityCheckPort } from '../../../ports/driven/security/QualityCheckPort.js';
-import { InteractionRequestError, type InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
+import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 import type { PendingInteraction } from '../../domain/context.js';
 
 // 导入领域服务
@@ -20,8 +17,9 @@ import { RuleManager } from '../brain/RuleManager.js';
 import { ContextRepository } from '../brain/ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import { CompactionService } from '../brain/CompactionService.js';
-import { FileLockManager } from '../security/FileLockManager.js';
-import { FileBackupManager } from '../security/FileBackupManager.js';
+import { ApprovalEffectApplier } from './approval-effect-applier.js';
+import { ModelRequestAssembler } from './model-request-assembler.js';
+import { ToolCallOrchestrator } from './tool-call-orchestrator.js';
 import {
   buildCanonicalSystemMessages,
   buildTraceContextEntries,
@@ -102,10 +100,16 @@ export class AgentLoop {
   private compactionService: CompactionService;
   /** 插件注册管理器 */
   private pluginRegistry: PluginRegistry;
+  /** 审批效果提交协作者 */
+  private approvalEffectApplier: ApprovalEffectApplier;
+  /** 模型请求组装协作者 */
+  private modelRequestAssembler: ModelRequestAssembler;
+  /** 工具调用编排协作者 */
+  private toolCallOrchestrator: ToolCallOrchestrator;
   /** 后置质量校验端口 */
   private qualityCheckPort?: QualityCheckPort;
   /** 人机对话交互端口（延迟注入，通过 setInteractionPort 设置） */
-  interactionPort?: InteractionPort;
+  private _interactionPort?: InteractionPort;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
   private maxIterations: number;
 
@@ -140,6 +144,17 @@ export class AgentLoop {
     this.toolDispatcher = options.toolDispatcher;
     this.compactionService = options.compactionService;
     this.pluginRegistry = options.pluginRegistry;
+    this.approvalEffectApplier = new ApprovalEffectApplier();
+    this.modelRequestAssembler = new ModelRequestAssembler(
+      this.toolRegistry, this.contextAdapter, this.ruleManager,
+      this.pluginRegistry, this.context
+    );
+    this.toolCallOrchestrator = new ToolCallOrchestrator(
+      this.toolRegistry, this.toolDispatcher, this.pluginRegistry,
+      this.context, this.approvalEffectApplier, this._interactionPort
+    );
+    // 若构造期已提供交互端口，则通过访问器统一写入并同步给协作者。
+    this.interactionPort = options.interactionPort;
     this.qualityCheckPort = options.qualityCheckPort;
     this.maxIterations = options.maxIterations ?? 20;
   }
@@ -173,6 +188,25 @@ export class AgentLoop {
    */
   public getLastEstimatedUsage(): ContextTokenUsage | null {
     return this.lastEstimatedUsage;
+  }
+
+  /**
+   * 获取当前注入的人机交互端口。
+   *
+   * @returns 当前交互端口，若尚未回注则返回 undefined
+   */
+  public get interactionPort(): InteractionPort | undefined {
+    return this._interactionPort;
+  }
+
+  /**
+   * 更新当前注入的人机交互端口，并同步给工具调用编排协作者。
+   *
+   * @param interactionPort - 最新的人机交互端口
+   */
+  public set interactionPort(interactionPort: InteractionPort | undefined) {
+    this._interactionPort = interactionPort;
+    this.toolCallOrchestrator.setInteractionPort(interactionPort);
   }
 
   /**
@@ -223,112 +257,29 @@ export class AgentLoop {
       iteration++;
 
       try {
-        // 获取所有激活状态的工具集合
-        const allTools = await this.toolRegistry.getTools();
-
-        // 触发 BeforeToolSelection 过滤并挑选工具
-        const selectionResult = await runHookPipeline(
-          HookEventName.BeforeToolSelection,
-          this.context,
-          this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeToolSelection),
-          { llmRequest: { tools: allTools } as LlmRequest, emitEvent }
+        // 委托 ModelRequestAssembler 执行模型请求组装（getTools → BeforeToolSelection → assemble → BeforeModel → system-reminder → Plan 裁剪）
+        const assembly = await this.modelRequestAssembler.assemble(
+          transientSkillContent, llmConfig.model, emitEvent
         );
         while (eventQueue.length > 0) {
           yield eventQueue.shift()!;
         }
 
-        if (selectionResult.control.action === 'abort') {
-          yield { type: 'error', message: `[插件终止] 触发终止信号：${selectionResult.control.reason ?? '无原因'}` };
+        if (assembly.control.action === 'abort') {
+          yield { type: 'error', message: `[插件终止] 触发终止信号：${assembly.control.reason ?? '无原因'}` };
           return;
         }
-        if (selectionResult.control.action === 'restart') {
+        if (assembly.control.action === 'restart') {
           iteration = Math.max(0, iteration - 1);
           continue;
         }
 
-        const filteredTools = selectionResult.llmRequest?.tools ?? allTools;
-
-        // 委托上下文适配器进行历史记录的组装和临时技能的挂载
-        const snapshotContext = this.contextAdapter.assemble(
-          this.context.getHistory(),
-          transientSkillContent,
-          this.ruleManager.getLocalRules() || undefined,
-          this.context.getCheckpointSummary(),
-          this.context.getRecentFiles()
-        );
-
-        // 触发 BeforeModel 拦截并重写大模型入参
-        const beforeModelResult = await runHookPipeline(
-          HookEventName.BeforeModel,
-          this.context,
-          this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeModel),
-          { llmRequest: { model: llmConfig.model, messages: snapshotContext, tools: filteredTools } as LlmRequest, emitEvent }
-        );
-        while (eventQueue.length > 0) {
-          yield eventQueue.shift()!;
+        if (assembly.estimatedUsage) {
+          this.lastEstimatedUsage = assembly.estimatedUsage;
         }
 
-        if (beforeModelResult.estimatedUsage) {
-          this.lastEstimatedUsage = beforeModelResult.estimatedUsage;
-        }
-
-        if (beforeModelResult.control.action === 'abort') {
-          yield { type: 'error', message: `[插件终止] 触发终止信号：${beforeModelResult.control.reason ?? '无原因'}` };
-          return;
-        }
-        if (beforeModelResult.control.action === 'restart') {
-          iteration = Math.max(0, iteration - 1);
-          continue;
-        }
-
-        const actualRequest = beforeModelResult.llmRequest ?? {
-          model: llmConfig.model,
-          messages: snapshotContext,
-          tools: filteredTools as Record<string, unknown>[]
-        };
-
-        // 1. 克隆待发送的消息数组，避免副作用直接污染外部物理上下文 messageHistory
-        const finalRequestMessages = [...(actualRequest.messages || [])];
-        const currentMode = this.context.getWorkMode();
-        
-        // 2. 向前追溯定位到当前请求消息数组中最新的一条 user 角色消息，防范非 user 消息在末尾导致的交替报错
-        let latestUserMessageIdx = -1;
-        for (let i = finalRequestMessages.length - 1; i >= 0; i--) {
-          if (finalRequestMessages[i].role === 'user') {
-            latestUserMessageIdx = i;
-            break;
-          }
-        }
-        
-        if (latestUserMessageIdx !== -1) {
-          const userMsg = finalRequestMessages[latestUserMessageIdx];
-          const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
-          const cwdStr = process.cwd();
-          const reminderBubble = `\n\n<system-reminder>\n[System Notification]\nDate: ${dateStr}\nCwd: ${cwdStr}\nSecurityMode: ${currentMode}\n</system-reminder>`;
-          
-          finalRequestMessages[latestUserMessageIdx] = {
-            ...userMsg,
-            content: (userMsg.content || '') + reminderBubble
-          };
-
-          // 动态挂载 systemReminder 属性到物理历史消息中，供落盘审计与调试可见
-          const history = this.context.getHistory();
-          for (let i = history.length - 1; i >= 0; i--) {
-            if (history[i].role === 'user') {
-              (history[i] as ChatMessage & { systemReminder?: string }).systemReminder = reminderBubble;
-              break;
-            }
-          }
-        }
-
-        // 3. 动态物理裁剪：若开启 enablePlanToolStripping 且处于 Plan 模式，剔除所有写倾向（securityCategory === 'write'）的工具定义
-        const enablePlanToolStripping = this.context.appConfig?.enablePlanToolStripping ?? false;
-        let finalRequestTools = actualRequest.tools || [];
-        if (enablePlanToolStripping && currentMode === 'Plan') {
-          finalRequestTools = finalRequestTools.filter((t: unknown) => {
-            return (t as { securityCategory?: string }).securityCategory !== 'write';
-          });
-        }
+        const finalRequestMessages = assembly.messages;
+        const finalRequestTools = assembly.tools;
 
         const traceSessionId = this.context.getSessionId();
         const traceSystemMessages = buildCanonicalSystemMessages(finalRequestMessages as ChatMessage[]);
@@ -350,7 +301,7 @@ export class AgentLoop {
               type: 'meta',
               sessionId: traceSessionId,
               startTime: new Date().toISOString(),
-              model: actualRequest.model || llmConfig.model,
+              model: llmConfig.model,
               initialSystemPromptHash: traceSystemPromptHash
             };
             metaWritten = tracer.logMeta(metaRecord);
@@ -367,9 +318,9 @@ export class AgentLoop {
         try {
           // 获取底层的 Stream 响应
           let stream: AsyncGenerator<LlmStreamEvent, void, unknown>;
-          if (beforeModelResult.llmResponse) {
+          if (assembly.mockResponse) {
             // 如果插件直接 Mock 了响应，利用生成器做模拟回包
-            const mockResponse = beforeModelResult.llmResponse;
+            const mockResponse = assembly.mockResponse;
             stream = (async function* () {
               yield mockResponse as LlmStreamEvent;
             })() as unknown as AsyncGenerator<LlmStreamEvent, void, unknown>;
@@ -451,59 +402,6 @@ export class AgentLoop {
               arguments: tc.function.arguments
             }));
 
-            // 解析物理路径并排序，防范死锁的纯函数
-            const resolveFilePaths = (args: Record<string, unknown>, pathKey?: string, workspaceDir?: string): string[] => {
-              const rootDir = workspaceDir || process.cwd();
-              const paths: string[] = [];
-
-              const addPath = (p: string) => {
-                const trimmed = p.trim();
-                if (!trimmed) return;
-                if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-                  try {
-                    const parsed = JSON.parse(trimmed);
-                    if (Array.isArray(parsed)) {
-                      for (const item of parsed) {
-                        if (typeof item === 'string' && item.trim()) {
-                          paths.push(resolve(rootDir, item.trim()));
-                        }
-                      }
-                      return;
-                    }
-                  } catch {
-                    // 降级为普通字符串处理
-                  }
-                }
-                const parts = trimmed.split(',').map(item => item.trim()).filter(Boolean);
-                for (const item of parts) {
-                  paths.push(resolve(rootDir, item));
-                }
-              };
-
-              if (pathKey && typeof args[pathKey] === 'string') {
-                addPath(args[pathKey] as string);
-              } else {
-                const heuristicKeys = new Set([
-                  'targetPath',
-                  'targetPaths',
-                  'target',
-                  'file',
-                  'filePath',
-                  'directoryPath',
-                  'destinationPath',
-                  'sourcePath',
-                  'path'
-                ]);
-                for (const key of Object.keys(args)) {
-                  if (heuristicKeys.has(key) && typeof args[key] === 'string') {
-                    addPath(args[key] as string);
-                  }
-                }
-              }
-
-              return Array.from(new Set(paths)).sort();
-            };
-
             // 构造并发控制超时 Abort 信号（超时限制从 runtimeLimits 提取，默认 30 秒）
             const timeoutMs = this.context.appConfig?.runtimeLimits?.toolTimeoutMs ?? 30000;
             const controller = new AbortController();
@@ -521,392 +419,10 @@ export class AgentLoop {
               }
             };
 
-            interface ToolExecutionResult {
-              index: number;
-              events: AgentEvent[];
-              toolMessage?: StoredChatMessage;
-              hasWrite: boolean;
-              finalCallUpdate: {
-                error?: string;
-                result?: string;
-              };
-              interrupted: boolean;
-              aborted: boolean;
-              abortReason?: string;
-            }
-
-            const executeToolTask = async (
-              index: number,
-              toolCall: { id: string; function: { name: string; arguments: string } },
-              signal: AbortSignal
-            ): Promise<ToolExecutionResult> => {
-              const functionName = toolCall.function.name;
-              const taskEvents: AgentEvent[] = [];
-              const taskFinalCallUpdate: { error?: string; result?: string } = {};
-              let hasWrite = false;
-              let toolMessage: StoredChatMessage | undefined;
-
-              // 区分对待事件类型：suspend 挂起审批事件实时通过 global queue 广播给外层 UI 确权以防死锁；其它事件暂存做顺序渲染
-              const taskEmitEvent = (evt: unknown) => {
-                const agentEvt = evt as AgentEvent;
-                if (agentEvt.type === 'suspend') {
-                  pushSuspendEvent(agentEvt);
-                } else {
-                  taskEvents.push(agentEvt);
-                }
-              };
-
-              let functionArgs: Record<string, unknown>;
-              try {
-                functionArgs = JSON.parse(toolCall.function.arguments);
-              } catch (parseError: unknown) {
-                const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
-                taskFinalCallUpdate.error = `解析参数失败：${errorMsg}`;
-                taskEvents.push({ type: 'error', message: `解析工具参数失败：${errorMsg}`, cause: parseError });
-                return {
-                  index,
-                  events: taskEvents,
-                  hasWrite,
-                  finalCallUpdate: taskFinalCallUpdate,
-                  interrupted: false,
-                  aborted: false
-                };
-              }
-
-              const toolMeta = this.toolRegistry.getTool(functionName);
-              const isHumanInterruption = toolMeta?.executionMode === 'human_interruption';
-
-              try {
-                if (signal.aborted) {
-                  throw new Error("工具执行已被 Abort 阻断（超时）");
-                }
-                const beforeToolResult = await runHookPipeline(
-                  HookEventName.BeforeTool,
-                  this.context,
-                  this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeTool),
-                  {
-                    toolCall: { id: toolCall.id, name: functionName, arguments: functionArgs },
-                    emitEvent: taskEmitEvent,
-                    toolRegistry: this.toolRegistry
-                  }
-                );
-
-                if (beforeToolResult.control.action === 'abort') {
-                  const toolResult = `错误：工具调用被插件拦截拦截：${beforeToolResult.control.reason ?? '安全策略限制'}`;
-                  taskFinalCallUpdate.error = beforeToolResult.control.reason ?? '安全策略限制';
-                  taskEvents.push({ type: 'error', message: `[插件拦截] 工具调用被拦截阻断：${beforeToolResult.control.reason ?? '策略安全限制'}` });
-                  taskEvents.push({ type: 'tool_call_result', functionName, result: toolResult });
-                  toolMessage = {
-                    role: 'tool',
-                    tool_call_id: toolCall.id,
-                    content: toolResult
-                  };
-                  return {
-                    index,
-                    events: taskEvents,
-                    toolMessage,
-                    hasWrite,
-                    finalCallUpdate: taskFinalCallUpdate,
-                    interrupted: false,
-                    aborted: false
-                  };
-                }
-
-                // pendingGrant 条件提交：管线正常完成 + action === 'continue' + toolCallId 匹配
-                if (
-                  beforeToolResult.control.action === 'continue' &&
-                  beforeToolResult.pendingGrant &&
-                  beforeToolResult.pendingGrant.toolCallId === toolCall.id
-                ) {
-                  const grant = beforeToolResult.pendingGrant;
-                  switch (grant.type) {
-                    case 'call': {
-                      // 在注册点计算 argumentsDigest，确保 claimCapability 侧有可靠比对源
-                      const digest = computeArgumentsDigest(functionArgs);
-                      this.context.registerCallCapability({
-                        toolCallId: grant.toolCallId,
-                        toolName: grant.toolName,
-                        resources: grant.resources,
-                        argumentsDigest: digest,
-                        state: 'registered',
-                        createdAt: Date.now()
-                      });
-                      break;
-                    }
-                    case 'session':
-                      // 根据资源 kind 分流写入：directory-scope 写入目录范围白名单，
-                      // path 按 access 写入精确读/写白名单（command-prefix 不会出现在会话授权中）
-                      for (const r of grant.resources) {
-                        if (r.kind === 'command-prefix') continue;
-                        if (r.kind === 'directory-scope') {
-                          this.context.addTemporaryDirectoryScopeReadWhitelist(r.normalizedPath);
-                        } else if (r.access === 'read') {
-                          this.context.addTemporaryReadWhitelist(r.normalizedPath);
-                        } else {
-                          this.context.addTemporaryWriteWhitelist(r.normalizedPath);
-                        }
-                      }
-                      break;
-                  }
-                }
-
-                // persistentRuleEffect 条件提交：管线正常完成 + action === 'continue' + 存在持久化规则
-                if (
-                  beforeToolResult.control.action === 'continue' &&
-                  beforeToolResult.persistentRuleEffect
-                ) {
-                  const rule = beforeToolResult.persistentRuleEffect;
-                  const securityService = SecurityService.getInstance();
-                  const whitelist = securityService.getSecurityAllowlist();
-                  const prefixRule = `${rule.prefix}:*`;
-                  if (!whitelist.includes(prefixRule)) {
-                    securityService.saveSecurityAllowlist([...whitelist, prefixRule]);
-                  }
-                }
-
-                const actualArgs = beforeToolResult.toolCall?.arguments ?? functionArgs;
-                taskEvents.push({ type: 'tool_call_start', functionName, functionArgs: actualArgs });
-
-                const toolInstance = this.toolRegistry.getTool(functionName);
-                if (toolInstance && toolInstance.securityCategory === 'write') {
-                  hasWrite = true;
-                }
-
-                if (signal.aborted) {
-                  throw new Error("工具执行已被 Abort 阻断（超时）");
-                }
-
-                // 并发锁物理路径冲突排队编排
-                const pathsToLock = resolveFilePaths(actualArgs, toolInstance?.filePathParamKey, this.context.appConfig?.workspace);
-                const lockType = (toolInstance?.securityCategory === 'read') ? 'read' : 'write';
-                const releases: Array<() => void> = [];
-
-                if (toolInstance && toolInstance.securityCategory === 'write') {
-                  const snapshotId = `snap_${this.context.getSessionId()}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-                  const workspace = this.context.appConfig?.workspace || process.cwd();
-                  const historyLength = this.context.getHistory().length;
-                  for (const p of pathsToLock) {
-                    FileBackupManager.captureSnapshot(snapshotId, p, historyLength, workspace);
-                  }
-                }
-
-                let toolResult = '';
-                let outputResult: { content: string; originalPath?: string; isTruncated: boolean; } | null = null;
-                try {
-                  for (const p of pathsToLock) {
-                    const release = await FileLockManager.getInstance().acquireLock(p, lockType);
-                    releases.push(release);
-                  }
-
-                  if (signal.aborted) {
-                    throw new Error("工具执行已被 Abort 阻断（超时）");
-                  }
-
-                  const mcpResult = await this.toolRegistry.callTool(functionName, actualArgs, this.context, this.interactionPort, signal, toolCall.id);
-                  const rawResult = JSON.stringify(mcpResult);
-                  outputResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
-                  toolResult = outputResult.content;
-                } catch (toolError: unknown) {
-                  const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
-                  const isAbortError = toolError instanceof Error && (toolError.name === 'AbortError' || errorMsg.includes('Abort') || errorMsg.includes('abort'));
-                  if (isAbortError) {
-                    throw new Error(`工具执行超时熔断阻断: ${errorMsg}`, { cause: toolError });
-                  }
-                  throw toolError;
-                } finally {
-                  // 消费 call capability 令牌（无论成功/失败/abort），含主调用和 tail call
-                  this.context.consumeCapability(toolCall.id);
-                  for (let r = releases.length - 1; r >= 0; r--) {
-                    releases[r]();
-                  }
-                }
-
-                if (signal.aborted) {
-                  throw new Error("工具执行已被 Abort 阻断（超时）");
-                }
-                const afterToolResult = await runHookPipeline(
-                  HookEventName.AfterTool,
-                  this.context,
-                  this.pluginRegistry.getPluginsForEvent(HookEventName.AfterTool),
-                  {
-                    toolCall: { id: toolCall.id, name: functionName, arguments: actualArgs },
-                    toolResult: { content: toolResult },
-                    emitEvent: taskEmitEvent
-                  }
-                );
-
-                if (afterToolResult.control.action === 'abort') {
-                  return {
-                    index,
-                    events: taskEvents,
-                    hasWrite,
-                    finalCallUpdate: taskFinalCallUpdate,
-                    interrupted: false,
-                    aborted: true,
-                    abortReason: afterToolResult.control.reason ?? '无原因'
-                  };
-                }
-
-                const finalToolResultContent = afterToolResult.toolResult?.content ?? toolResult;
-                taskFinalCallUpdate.result = finalToolResultContent;
-
-                if (afterToolResult.tailToolCallRequest) {
-                  const tailCall = afterToolResult.tailToolCallRequest;
-                  taskEvents.push({ type: 'thinking', content: `[尾随调用] 插件触发尾随工具链调用: ${tailCall.name}` });
-                  if (signal.aborted) {
-                    throw new Error("工具执行已被 Abort 阻断（超时）");
-                  }
-                  // tail call 生成独立 toolCallId
-                  const tailCallId = randomUUID();
-
-                  // tail call 走完整 beforeTool 管线（含 HumanApprovalPlugin 审批）
-                  const tailBeforeToolResult = await runHookPipeline(
-                    HookEventName.BeforeTool,
-                    this.context,
-                    this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeTool),
-                    {
-                      toolCall: { id: tailCallId, name: tailCall.name, arguments: tailCall.args },
-                      emitEvent: taskEmitEvent,
-                      toolRegistry: this.toolRegistry
-                    }
-                  );
-
-                  if (tailBeforeToolResult.control.action === 'abort') {
-                    taskEvents.push({ type: 'error', message: `[插件拦截] 尾随工具调用被拦截阻断：${tailBeforeToolResult.control.reason ?? '安全策略限制'}` });
-                    throw new Error(`尾随工具调用被插件拦截：${tailBeforeToolResult.control.reason ?? '安全策略限制'}`);
-                  }
-
-                  // pendingGrant 条件提交（与主调用逻辑一致）
-                  if (
-                    tailBeforeToolResult.control.action === 'continue' &&
-                    tailBeforeToolResult.pendingGrant &&
-                    tailBeforeToolResult.pendingGrant.toolCallId === tailCallId
-                  ) {
-                    const grant = tailBeforeToolResult.pendingGrant;
-                    switch (grant.type) {
-                      case 'call': {
-                        const digest = computeArgumentsDigest(tailCall.args);
-                        this.context.registerCallCapability({
-                          toolCallId: grant.toolCallId,
-                          toolName: grant.toolName,
-                          resources: grant.resources,
-                          argumentsDigest: digest,
-                          state: 'registered',
-                          createdAt: Date.now()
-                        });
-                        break;
-                      }
-                      case 'session':
-                        for (const r of grant.resources) {
-                          if (r.kind === 'command-prefix') continue;
-                          if (r.kind === 'directory-scope') {
-                            this.context.addTemporaryDirectoryScopeReadWhitelist(r.normalizedPath);
-                          } else if (r.access === 'read') {
-                            this.context.addTemporaryReadWhitelist(r.normalizedPath);
-                          } else {
-                            this.context.addTemporaryWriteWhitelist(r.normalizedPath);
-                          }
-                        }
-                        break;
-                    }
-                  }
-
-                  // tail call persistentRuleEffect 条件提交（与主调用逻辑一致）
-                  if (
-                    tailBeforeToolResult.control.action === 'continue' &&
-                    tailBeforeToolResult.persistentRuleEffect
-                  ) {
-                    const rule = tailBeforeToolResult.persistentRuleEffect;
-                    const securityService = SecurityService.getInstance();
-                    const whitelist = securityService.getSecurityAllowlist();
-                    const prefixRule = `${rule.prefix}:*`;
-                    if (!whitelist.includes(prefixRule)) {
-                      securityService.saveSecurityAllowlist([...whitelist, prefixRule]);
-                    }
-                  }
-
-                  let tailResultRaw: unknown;
-                  try {
-                    tailResultRaw = await this.toolRegistry.callTool(tailCall.name, tailCall.args, this.context, this.interactionPort, signal, tailCallId);
-                  } finally {
-                    // 消费 tail call 的 capability 令牌
-                    this.context.consumeCapability(tailCallId);
-                  }
-
-                  // tail call 同样需要进入 AfterTool 生命周期，确保审计/JIT/结果改写插件可见。
-                  const tailToolResult = JSON.stringify(tailResultRaw);
-                  const tailAfterToolResult = await runHookPipeline(
-                    HookEventName.AfterTool,
-                    this.context,
-                    this.pluginRegistry.getPluginsForEvent(HookEventName.AfterTool),
-                    {
-                      toolCall: { id: tailCallId, name: tailCall.name, arguments: tailCall.args },
-                      toolResult: { content: tailToolResult },
-                      emitEvent: taskEmitEvent
-                    }
-                  );
-
-                  if (tailAfterToolResult.control.action === 'abort') {
-                    taskEvents.push({ type: 'error', message: `[插件拦截] 尾随工具后置处理被阻断：${tailAfterToolResult.control.reason ?? '安全策略限制'}` });
-                    throw new Error(`尾随工具后置处理被插件拦截：${tailAfterToolResult.control.reason ?? '安全策略限制'}`);
-                  }
-
-                  taskFinalCallUpdate.result = tailAfterToolResult.toolResult?.content ?? tailToolResult;
-                }
-
-                taskEvents.push({ type: 'tool_call_result', functionName, result: taskFinalCallUpdate.result ?? '' });
-
-                toolMessage = {
-                  role: 'tool',
-                  tool_call_id: toolCall.id,
-                  content: taskFinalCallUpdate.result ?? '',
-                  originalPath: (outputResult && outputResult.isTruncated) ? outputResult.originalPath : undefined,
-                  isTruncated: (outputResult && outputResult.isTruncated) ? true : false
-                };
-              } catch (toolError: unknown) {
-                if (toolError instanceof InteractionRequestError && isHumanInterruption) {
-                  const interaction = this.context.setPendingInteraction({
-                    id: `interaction_${toolCall.id}`,
-                    toolName: functionName,
-                    payload: toolError.payload,
-                    toolCallId: toolCall.id
-                  });
-                  taskEvents.push({ type: 'interaction_request', interaction });
-                  return {
-                    index,
-                    events: taskEvents,
-                    hasWrite,
-                    finalCallUpdate: taskFinalCallUpdate,
-                    interrupted: true,
-                    aborted: false
-                  };
-                }
-
-                const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
-                const isAbortError = toolError instanceof Error && (toolError.name === 'AbortError' || errorMsg.includes('Abort') || errorMsg.includes('abort'));
-                const finalErrorMsg = isAbortError ? `工具执行超时熔断阻断: ${errorMsg}` : `错误：${errorMsg}`;
-                taskFinalCallUpdate.error = finalErrorMsg;
-                taskEvents.push({ type: 'error', message: isAbortError ? `工具执行超时阻断` : `工具执行失败：${errorMsg}`, cause: toolError });
-                taskEvents.push({ type: 'tool_call_result', functionName, result: finalErrorMsg });
-                toolMessage = {
-                  role: 'tool',
-                  tool_call_id: toolCall.id,
-                  content: finalErrorMsg
-                };
-              }
-
-              return {
-                index,
-                events: taskEvents,
-                toolMessage,
-                hasWrite,
-                finalCallUpdate: taskFinalCallUpdate,
-                interrupted: false,
-                aborted: false
-              };
-            };
-
-            const toolTasks = event.toolCalls.map((tc, idx) => executeToolTask(idx, tc, controller.signal));
+            // 委托 ToolCallOrchestrator 执行每个工具调用的完整生命周期
+            const toolTasks = event.toolCalls.map((tc, idx) =>
+              this.toolCallOrchestrator.execute(idx, tc, controller.signal, pushSuspendEvent)
+            );
 
             // 实时消费并 yield 并行工具执行流中抛出的 suspend 事件
             let tasksCompleted = false;
