@@ -5,6 +5,7 @@
 
 import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
 import type { SkillMetadata } from './contextLoader.js';
+import type { DiagnosticTurnState } from '../../domain/diagnostic-guardrails.js';
 
 // 预设的人设和最底层的不可撼动之规则
 /** 规则 1：文件操作的沙箱与工作区边界约束 */
@@ -40,6 +41,15 @@ export const RULE_ERROR_ATTRIBUTION = `【异常归因与防参数幻觉重试�
    (1) 面对包含 'timed out' 或 'Network error' 等网络与基础设施层超时报错字样时，你必须（MUST）将其归因为瞬时环境异常，在下一轮重试时必须（MUST）保持原有入参（如 input, targetPath 等字段名）重新执行调用，或者优雅告知用户系统繁忙，绝对禁止（MUST NOT）变动原有 Schema 的入参名称或擅自捏造参数；
    (2) 面对明确指明 'Arguments validation failed' 或 'Parameter missing' 的 Schema 语法校验报错时，你必须直接向用户汇报，并在用户确认后再决定是否重新对齐参数调用，严禁自行盲目猜测或修改字段；
    (3) 面对其他未知重大报错（如文件锁、权限不足、未预期的业务执行异常等，即既非网络超时也非 Schema 校验错配的未知错误）时，你必须立即停止一切修改参数并重复调用的重试行为。你必须在回复中如实向用户陈述看见的错误原文、坦承无法判断其根本原因，并请求用户协同确认为止。`;
+
+/** 诊断任务失败后的降级规则。 */
+export const RULE_DIAGNOSTIC_DOWNGRADE = `【诊断降级规则】若系统查询失败、被拦截或未提升证据等级，后续必须优先降级到内置只读工具、总结未知项或请求用户缩小范围，禁止升级为更复杂的 shell 复合命令。`;
+
+/** 诊断任务证据分级规则。 */
+export const RULE_DIAGNOSTIC_EVIDENCE = `【诊断证据分级】presence=仅确认存在，enumeration=仅有目录枚举或候选列表，measured=已有真实大小/容量数据，error=查询失败或证据不足。只有 measured 允许支撑“已确认主要占用项”或释放空间估算。`;
+
+/** 诊断任务高风险清理规则。 */
+export const RULE_DIAGNOSTIC_CLEANUP_SAFETY = `【清理建议安全分层】安装缓存、修复介质、共享组件缓存等高风险目录默认属于谨慎项或禁止项。证据不足时，严禁输出“整目录删除且无副作用”的绝对化结论。`;
 
 /** 系统核心工程红线指令数组，按装配顺序排列 */
 export const SYSTEM_RULES = [
@@ -207,6 +217,33 @@ export const HANDOFF_INSTRUCTION = `【最高指挥官（LEADER）交接声明�
 你正在接手一份从历史截断恢复的新会话。
 你是整个系统的最高指挥官（LEADER），之前的具体执行工作是由你的子单元（SUBORDINATE）完成的。
 请根据当前的上下文状态继续指挥，切勿重复子单元已经完成的底层体力代码编写工作，你只需给出战略级指令。`;
+
+/**
+ * 构造诊断类回合附加到 `<system-reminder>` 内的动态护栏文本。
+ *
+ * @param state - 当前轮次的诊断状态快照
+ * @returns 适合直接拼入提醒气泡的文本，非诊断任务返回空字符串
+ */
+export function buildDiagnosticGuardrailReminder(state?: DiagnosticTurnState): string {
+  if (!state?.active) {
+    return '';
+  }
+
+  const highRiskLine = state.highRiskTargets.length > 0
+    ? `HighRiskCleanupTargets: ${state.highRiskTargets.join(', ')} (默认谨慎或禁止项，禁止给出整目录删除且无副作用的结论)`
+    : 'HighRiskCleanupTargets: none-detected';
+
+  return [
+    RULE_DIAGNOSTIC_DOWNGRADE,
+    RULE_DIAGNOSTIC_EVIDENCE,
+    RULE_DIAGNOSTIC_CLEANUP_SAFETY,
+    `DiagnosticEvidenceLevel: ${state.evidenceLevel}`,
+    `DiagnosticListFilesBudget: ${state.listFilesUsed}/4`,
+    `DiagnosticSystemQueryAttempts: ${state.systemQueryAttempts}`,
+    `DiagnosticLastSystemQueryFailed: ${state.lastSystemQueryFailed ? 'yes' : 'no'}`,
+    highRiskLine
+  ].join('\n');
+}
 
 /**
  * 本地原生函数生成的确定性兜底摘要（防死锁变砖）。

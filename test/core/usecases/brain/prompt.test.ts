@@ -17,7 +17,11 @@ import {
   RULE_MINIMAL_REFACTOR,
   RULE_TOOL_PRIORITY,
   RULE_LONG_TERM_MEMORY,
-  RULE_ERROR_ATTRIBUTION
+  RULE_ERROR_ATTRIBUTION,
+  RULE_DIAGNOSTIC_DOWNGRADE,
+  RULE_DIAGNOSTIC_EVIDENCE,
+  RULE_DIAGNOSTIC_CLEANUP_SAFETY,
+  buildDiagnosticGuardrailReminder
 } from '../../../../src/core/usecases/brain/prompts.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 
@@ -145,5 +149,39 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     expect(RULE_FILE_SANDBOX).toContain('默认在授权的工作区目录下执行');
     expect(RULE_FILE_SANDBOX).toContain('应正常调用工具，由工具层依据安全策略执行、请求审批或拒绝');
     expect(RULE_FILE_SANDBOX).not.toContain('工具将返回拒绝访问');
+  });
+
+  test('9. 诊断护栏提醒应包含降级、证据分级与高风险清理约束', () => {
+    const reminder = buildDiagnosticGuardrailReminder({
+      active: true,
+      evidenceLevel: 'enumeration',
+      systemQueryAttempts: 1,
+      lastSystemQueryFailed: true,
+      listFilesUsed: 2,
+      stagnantListFilesCount: 0,
+      highRiskTargets: ['Package Cache'],
+      scannedTargets: ['C:\\Package Cache']
+    });
+
+    expect(reminder).toContain(RULE_DIAGNOSTIC_DOWNGRADE);
+    expect(reminder).toContain(RULE_DIAGNOSTIC_EVIDENCE);
+    expect(reminder).toContain(RULE_DIAGNOSTIC_CLEANUP_SAFETY);
+    expect(reminder).toContain('DiagnosticEvidenceLevel: enumeration');
+    expect(reminder).toContain('Package Cache');
+  });
+
+  test('10. 非诊断状态不应生成额外护栏提醒', () => {
+    const reminder = buildDiagnosticGuardrailReminder({
+      active: false,
+      evidenceLevel: 'presence',
+      systemQueryAttempts: 0,
+      lastSystemQueryFailed: false,
+      listFilesUsed: 0,
+      stagnantListFilesCount: 0,
+      highRiskTargets: [],
+      scannedTargets: []
+    });
+
+    expect(reminder).toBe('');
   });
 });

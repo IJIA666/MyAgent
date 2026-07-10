@@ -125,6 +125,37 @@ describe('ModelRequestAssembler', () => {
       expect(result.control.action).toBe('continue');
       expect(emitted).toContainEqual({ type: 'thinking', content: 'before-model-event' });
     });
+
+    it('应在诊断类用户消息中注入动态护栏提醒', async () => {
+      mockContextAdapter = {
+        assemble: () => [
+          { role: 'system', content: 'You are a helpful assistant.' },
+          { role: 'user', content: '请帮我诊断磁盘空间占用，并判断哪些缓存目录能清理。' }
+        ]
+      } as unknown as ContextAdapter;
+
+      assembler = new ModelRequestAssembler(
+        mockToolRegistry, mockContextAdapter, { getLocalRules: () => null },
+        mockPluginRegistry, context
+      );
+
+      const result = await assembler.assemble(undefined, 'gpt-4');
+      const lastUserMsg = [...result.messages].reverse().find(m => m.role === 'user');
+
+      expect(lastUserMsg).toBeDefined();
+      expect(lastUserMsg!.content).toContain('【诊断降级规则】');
+      expect(lastUserMsg!.content).toContain('DiagnosticEvidenceLevel: presence');
+      expect(lastUserMsg!.content).toContain('HighRiskCleanupTargets');
+    });
+
+    it('非诊断类消息不应注入额外护栏提醒', async () => {
+      const result = await assembler.assemble(undefined, 'gpt-4');
+      const lastUserMsg = [...result.messages].reverse().find(m => m.role === 'user');
+
+      expect(lastUserMsg).toBeDefined();
+      expect(lastUserMsg!.content).not.toContain('【诊断降级规则】');
+      expect(lastUserMsg!.content).not.toContain('DiagnosticEvidenceLevel:');
+    });
   });
 
   describe('assemble - Plan 模式工具裁剪', () => {

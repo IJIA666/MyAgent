@@ -19,6 +19,7 @@ import { CompactionService } from '../brain/CompactionService.js';
 import { ApprovalEffectApplier } from './approval-effect-applier.js';
 import { ModelRequestAssembler } from './model-request-assembler.js';
 import { ToolCallOrchestrator } from './tool-call-orchestrator.js';
+import type { ToolExecutionResult } from './tool-call-orchestrator.js';
 import {
   buildCanonicalSystemMessages,
   buildTraceContextEntries,
@@ -27,6 +28,12 @@ import {
   type TraceMetaRecord,
   type TracePromptDefinitionRecord
 } from '../../domain/trace-format.js';
+import {
+  createDiagnosticTurnState,
+  reserveDiagnosticToolCall,
+  recordDiagnosticToolOutcome,
+  syncDiagnosticTurnStateWithMessages
+} from '../../domain/diagnostic-guardrails.js';
 
 /**
  * 智能体产生的事件类型定义。
@@ -224,6 +231,8 @@ export class AgentLoop {
     let iteration = 0;
     // 追踪本次 chat 中是否执行过写操作工具
     let hasWriteOperation = false;
+    // 诊断护栏状态在本轮 chat 生命周期内持续累积，不写入长期上下文。
+    let diagnosticState = createDiagnosticTurnState(getLatestUserContent(this.context.getHistory() as ChatMessage[]));
 
     // 事件中转队列及推送回调，供插件安全发射流式交互事件
     const eventQueue: AgentEvent[] = [];
@@ -255,7 +264,7 @@ export class AgentLoop {
       try {
         // 委托 ModelRequestAssembler 执行模型请求组装（getTools → BeforeToolSelection → assemble → BeforeModel → system-reminder → Plan 裁剪）
         const assembly = await this.modelRequestAssembler.assemble(
-          transientSkillContent, llmConfig.model, emitEvent
+          transientSkillContent, llmConfig.model, emitEvent, diagnosticState
         );
         while (eventQueue.length > 0) {
           yield eventQueue.shift()!;
@@ -276,6 +285,10 @@ export class AgentLoop {
 
         const finalRequestMessages = assembly.messages;
         const finalRequestTools = assembly.tools;
+        diagnosticState = syncDiagnosticTurnStateWithMessages(
+          diagnosticState,
+          finalRequestMessages as ChatMessage[]
+        );
 
         const traceSessionId = this.context.getSessionId();
         const traceSystemMessages = buildCanonicalSystemMessages(finalRequestMessages as ChatMessage[]);
@@ -423,9 +436,21 @@ export class AgentLoop {
             };
 
             // 委托 ToolCallOrchestrator 执行每个工具调用的完整生命周期
-            const toolTasks = event.toolCalls.map((tc, idx) =>
-              this.toolCallOrchestrator.execute(idx, tc, controller.signal, pushSuspendEvent)
-            );
+            const toolTasks = event.toolCalls.map((tc, idx) => {
+              const parsedArgs = tryParseToolArguments(tc.function.arguments);
+              if (parsedArgs) {
+                const reservation = reserveDiagnosticToolCall(
+                  diagnosticState,
+                  tc.function.name,
+                  parsedArgs
+                );
+                diagnosticState = reservation.state;
+                if (reservation.blockedReason) {
+                  return Promise.resolve(createDiagnosticBlockedResult(idx, tc.id, tc.function.name, reservation.blockedReason));
+                }
+              }
+              return this.toolCallOrchestrator.execute(idx, tc, controller.signal, pushSuspendEvent);
+            });
 
             // 实时消费并 yield 并行工具执行流中抛出的 suspend 事件
             let tasksCompleted = false;
@@ -470,6 +495,12 @@ export class AgentLoop {
                 if (taskRes.finalCallUpdate.result) {
                   finalToolCalls[i].result = taskRes.finalCallUpdate.result;
                 }
+                diagnosticState = recordDiagnosticToolOutcome(
+                  diagnosticState,
+                  event.toolCalls[i].function.name,
+                  tryParseToolArguments(event.toolCalls[i].function.arguments) ?? {},
+                  taskRes.finalCallUpdate
+                );
 
                 if (taskRes.toolMessage) {
                   this.context.addMessage(taskRes.toolMessage);
@@ -496,6 +527,12 @@ export class AgentLoop {
                 const toolCall = event.toolCalls[i];
                 const errorMsg = res.reason instanceof Error ? res.reason.message : String(res.reason);
                 finalToolCalls[i].error = errorMsg;
+                diagnosticState = recordDiagnosticToolOutcome(
+                  diagnosticState,
+                  toolCall.function.name,
+                  tryParseToolArguments(toolCall.function.arguments) ?? {},
+                  { error: errorMsg }
+                );
                 yield { type: 'error', message: `工具运行发生灾难性内部异常：${errorMsg}`, cause: res.reason };
                 yield { type: 'tool_call_result', functionName: toolCall.function.name, result: `错误：${errorMsg}` };
                 this.context.addMessage({
@@ -695,4 +732,68 @@ export class AgentLoop {
     // 校准本地 Token 预算数据库
     this.context.updateLastApiUsage(usage, this.context.getHistory().length);
   }
+}
+
+/**
+ * 从当前历史中提取最后一条用户消息文本，供首轮诊断意图识别使用。
+ *
+ * @param history - 当前会话消息历史
+ * @returns 最后一条用户消息文本
+ */
+function getLatestUserContent(history: ChatMessage[]): string | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    if (message?.role === 'user' && typeof message.content === 'string') {
+      return message.content;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 尝试解析工具参数，失败时返回 null，避免在预执行护栏里抢占主错误路径。
+ *
+ * @param rawArguments - LLM 返回的原始 arguments JSON
+ * @returns 成功解析后的对象，失败返回 null
+ */
+function tryParseToolArguments(rawArguments: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(rawArguments) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 为被诊断护栏拦截的工具调用构造统一的伪执行结果。
+ *
+ * @param index - 工具调用在当前批次中的索引
+ * @param toolCallId - 原始 tool_call_id
+ * @param functionName - 工具名称
+ * @param reason - 阻断原因
+ * @returns 与 ToolCallOrchestrator.execute 兼容的结果对象
+ */
+function createDiagnosticBlockedResult(
+  index: number,
+  toolCallId: string,
+  functionName: string,
+  reason: string
+): ToolExecutionResult {
+  const errorText = `错误：诊断护栏已阻断当前工具调用。${reason}`;
+  return {
+    index,
+    events: [
+      { type: 'error', message: `[诊断护栏] ${reason}` },
+      { type: 'tool_call_result', functionName, result: errorText }
+    ],
+    toolMessage: {
+      role: 'tool',
+      tool_call_id: toolCallId,
+      content: errorText
+    },
+    hasWrite: false,
+    finalCallUpdate: { error: errorText },
+    interrupted: false,
+    aborted: false
+  };
 }

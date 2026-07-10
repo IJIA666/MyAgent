@@ -491,4 +491,186 @@ describe('AgentLoop 动态安全特性测试', () => {
     const registryMock = mockToolRegistry as { callTool: ReturnType<typeof vi.fn> };
     expect(registryMock.callTool).not.toHaveBeenCalled();
   });
+
+  it('10. 诊断类回合在系统查询失败后，应阻断升级为复杂 shell 命令', async () => {
+    let streamCalledTimes = 0;
+    mockContextAdapter = {
+      assemble: vi.fn().mockReturnValue([
+        { role: 'user', content: '请帮我诊断磁盘空间占用，必要时给出清理建议。' }
+      ])
+    };
+    mockLlmDriver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      abort: () => {},
+      streamChat: vi.fn().mockImplementation(async function* () {
+        streamCalledTimes++;
+        if (streamCalledTimes === 1) {
+          yield {
+            type: 'tool_calls',
+            toolCalls: [
+              {
+                id: 'call-query-1',
+                type: 'function',
+                function: { name: 'execute_command', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace' }) }
+              }
+            ],
+            assistantMessage: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call-query-1',
+                  type: 'function',
+                  function: { name: 'execute_command', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace' }) }
+                }
+              ]
+            }
+          } as LlmStreamEvent;
+          return;
+        }
+
+        if (streamCalledTimes === 2) {
+          yield {
+            type: 'tool_calls',
+            toolCalls: [
+              {
+                id: 'call-query-2',
+                type: 'function',
+                function: { name: 'execute_command', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace | findstr C:' }) }
+              }
+            ],
+            assistantMessage: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call-query-2',
+                  type: 'function',
+                  function: { name: 'execute_command', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace | findstr C:' }) }
+                }
+              ]
+            }
+          } as LlmStreamEvent;
+          return;
+        }
+
+        yield {
+          type: 'complete',
+          content: 'diagnostic done',
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: 'diagnostic done' }
+        } as LlmStreamEvent;
+      })
+    };
+
+    mockToolRegistry = {
+      getTools: vi.fn().mockResolvedValue([
+        { name: 'execute_command', securityCategory: 'read' }
+      ]),
+      getTool: vi.fn().mockImplementation((name: string) => ({
+        name,
+        securityCategory: 'read'
+      })),
+      callTool: vi.fn().mockRejectedValue(new Error('query blocked'))
+    };
+
+    const loop = new AgentLoop({
+      toolRegistry: mockToolRegistry as ToolRegistryPort,
+      context,
+      driver: mockLlmDriver as LlmPort,
+      contextAdapter: mockContextAdapter as ContextAdapter,
+      ruleManager: mockRuleManager as RuleManager,
+      contextRepo: mockContextRepo as ContextRepository,
+      toolDispatcher: mockToolDispatcher as ToolDispatcher,
+      compactionService: mockCompactionService as CompactionService,
+      pluginRegistry
+    });
+
+    const tracer = new AgentTracer(process.cwd(), 'test-diagnostic-complex-command-block');
+    for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
+      void event;
+    }
+
+    const toolMessages = context.getHistory().filter(message => message.role === 'tool');
+    expect(toolMessages.some(message => String(message.content).includes('诊断护栏已阻断当前工具调用'))).toBe(true);
+
+    const registryMock = mockToolRegistry as { callTool: ReturnType<typeof vi.fn> };
+    expect(registryMock.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('11. 诊断类回合达到 listFiles 枚举预算后，应阻断继续扩散扫描', async () => {
+    mockContextAdapter = {
+      assemble: vi.fn().mockReturnValue([
+        { role: 'user', content: '请帮我扫描磁盘空间占用，先找出最大的几个目录。' }
+      ])
+    };
+    mockLlmDriver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      abort: () => {},
+      streamChat: vi.fn().mockImplementation(async function* (_messages: ChatMessage[], _tools: Record<string, unknown>[]) {
+        yield {
+          type: 'tool_calls',
+          toolCalls: [
+            { id: 'call-list-1', type: 'function', function: { name: 'listFiles', arguments: JSON.stringify({ targetPath: 'C:\\A' }) } },
+            { id: 'call-list-2', type: 'function', function: { name: 'listFiles', arguments: JSON.stringify({ targetPath: 'C:\\B' }) } },
+            { id: 'call-list-3', type: 'function', function: { name: 'listFiles', arguments: JSON.stringify({ targetPath: 'C:\\C' }) } },
+            { id: 'call-list-4', type: 'function', function: { name: 'listFiles', arguments: JSON.stringify({ targetPath: 'C:\\D' }) } },
+            { id: 'call-list-5', type: 'function', function: { name: 'listFiles', arguments: JSON.stringify({ targetPath: 'C:\\E' }) } }
+          ],
+          assistantMessage: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              { id: 'call-list-1', type: 'function', function: { name: 'listFiles', arguments: JSON.stringify({ targetPath: 'C:\\A' }) } },
+              { id: 'call-list-2', type: 'function', function: { name: 'listFiles', arguments: JSON.stringify({ targetPath: 'C:\\B' }) } },
+              { id: 'call-list-3', type: 'function', function: { name: 'listFiles', arguments: JSON.stringify({ targetPath: 'C:\\C' }) } },
+              { id: 'call-list-4', type: 'function', function: { name: 'listFiles', arguments: JSON.stringify({ targetPath: 'C:\\D' }) } },
+              { id: 'call-list-5', type: 'function', function: { name: 'listFiles', arguments: JSON.stringify({ targetPath: 'C:\\E' }) } }
+            ]
+          }
+        } as LlmStreamEvent;
+        yield {
+          type: 'complete',
+          content: 'scan done',
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: 'scan done' }
+        } as LlmStreamEvent;
+      })
+    };
+
+    mockToolRegistry = {
+      getTools: vi.fn().mockResolvedValue([
+        { name: 'listFiles', securityCategory: 'read' }
+      ]),
+      getTool: vi.fn().mockImplementation((name: string) => ({
+        name,
+        securityCategory: 'read'
+      })),
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: '[]' }] })
+    };
+
+    const loop = new AgentLoop({
+      toolRegistry: mockToolRegistry as ToolRegistryPort,
+      context,
+      driver: mockLlmDriver as LlmPort,
+      contextAdapter: mockContextAdapter as ContextAdapter,
+      ruleManager: mockRuleManager as RuleManager,
+      contextRepo: mockContextRepo as ContextRepository,
+      toolDispatcher: mockToolDispatcher as ToolDispatcher,
+      compactionService: mockCompactionService as CompactionService,
+      pluginRegistry
+    });
+
+    const tracer = new AgentTracer(process.cwd(), 'test-diagnostic-listfiles-budget');
+    for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
+      void event;
+    }
+
+    const registryMock = mockToolRegistry as { callTool: ReturnType<typeof vi.fn> };
+    expect(registryMock.callTool).toHaveBeenCalledTimes(4);
+    const toolMessages = context.getHistory().filter(message => message.role === 'tool');
+    expect(toolMessages.some(message => String(message.content).includes('达到本轮枚举预算'))).toBe(true);
+  });
 });
