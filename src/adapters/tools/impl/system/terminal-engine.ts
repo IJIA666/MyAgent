@@ -450,7 +450,7 @@ export async function runCommandEngine(
     shell: false
   });
 
-  const advisoryWarnings = detectAdvisoryWarnings(command);
+  const advisoryWarnings = detectAdvisoryWarnings(command, plan?.shellKind);
 
   const taskInfo: TaskInfo & { child?: ChildProcess; logStream?: WriteStream } = {
     id: taskId,
@@ -619,6 +619,7 @@ export async function runCommandEngine(
 
   // 挂载清理退出动作
   let resolved = false;
+  let shouldNotifyCompletion = false;
   let resolvePromise: (value: string) => void;
 
   const promise = new Promise<string>((res) => {
@@ -651,7 +652,7 @@ export async function runCommandEngine(
       transitionTaskState(taskId, finalState);
     }
 
-    if (taskInfo.status === 'COMPLETED' || taskInfo.status === 'FAILED') {
+    if (shouldNotifyCompletion && (taskInfo.status === 'COMPLETED' || taskInfo.status === 'FAILED')) {
       if (options?.onNotification) {
         options.onNotification({
           type: 'completed',
@@ -740,6 +741,7 @@ export async function runCommandEngine(
       return promise;
     } else {
       resolved = true;
+      shouldNotifyCompletion = true;
       // 在后台继续允许超时及自动杀逻辑，但不阻断同步返回
       return `[系统提示] 任务已在后台成功启动并存活超过 200ms，Task ID: ${taskId}。完整日志将流式写入 ${tempLogPath}。`;
     }
@@ -750,6 +752,7 @@ export async function runCommandEngine(
   const bgTimer = setTimeout(() => {
     if (!resolved) {
       resolved = true;
+      shouldNotifyCompletion = true;
       resolvePromise(`[系统提示] 命令已运行超过 15 秒尚未结束，已被自动转入后台托管，Task ID 为 ${taskId}。完整日志路径: ${tempLogPath}`);
     }
   }, AUTO_BACKGROUND_MS);

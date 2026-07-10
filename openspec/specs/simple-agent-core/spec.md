@@ -16,6 +16,11 @@
 - **WHEN** 模型在一轮响应中同时给出了 `reasoning_content` 和一个 `tool_call`，并且工具执行完毕将结果发回给模型进行第二轮响应时
 - **THEN** 系统必须将上一轮的完整 `reasoning_content` 和拼接好的 `tool_calls` 作为上下文严格按原样压入消息历史栈中，确保二次调用不报错且思考链不丢失。
 
+#### Scenario: 工具参数解析失败仍保留 tool 响应闭环
+
+- **WHEN** 模型发起了一条 `tool_calls`，但该调用在真正执行前就因 arguments JSON 非法而失败，导致调度链路仅产出最终错误而未生成 `toolMessage`
+- **THEN** 系统必须补写一条与原 `tool_call_id` 绑定的 `role: "tool"` 错误消息进入会话历史，明确该失败属于参数解析阶段，避免 assistant tool call 与 tool response 之间出现静默断裂。
+
 ### Requirement: 授权路径绝对安全沙箱
 系统在执行文件读取（readFile）、写入（writeFile）、列出（listFiles）等本地操作时，必须（MUST）对输入的路径进行绝对路径解析（`path.resolve`），并严格验证其是否处于授权工作区根目录下。验证时必须（MUST）包含系统路径分隔符（`path.sep`）或进行完全相等匹配，防止以同前缀的目录名进行逃逸。若发现路径试图越界，必须立即予以拦截，禁止调用底层文件系统，并向大模型返回明确的越权阻断错误。
 

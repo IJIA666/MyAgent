@@ -13,6 +13,11 @@
 - **WHEN** 外部工具的异步后台进程产生退出或特征行匹配通知时
 - **THEN** 工具应当（SHALL）仅通过 EventNotificationPort 接口向会话推送 notification，由核心执行自唤醒，保持依赖清洁。
 
+#### Scenario: Synchronous Tool Result Does Not Dispatch Notification
+
+- **WHEN** 外部工具以同步模式完成并已经通过当前 tool result 返回执行结果
+- **THEN** 工具不得额外通过 `EventNotificationPort` 注入完成通知，以避免同一个工具调用同时产生 tool response 和异步 user notification。
+
 ### Requirement: Dependency Inversion for Adapters
 核心逻辑层（`SessionManager` 与 `AgentLoop`）绝对不允许（MUST NOT）对外围的具体适配器产生物理 import 引用与手动 new 实例化操作；外部依赖必须（MUST）定义为 Ports 契约，并通过构造注入由外层装配注入。
 

@@ -26,12 +26,17 @@
 - **WHEN** 智能体在 `Plan` 模式下试图在终端执行只读白名单内且无复合符号的系统查询命令 `dir /-C /w C:\Windows\Temp`
 - **THEN** 拦截器判定该命令同时满足白名单匹配和无复合字符两个条件，识别为可静态证明安全的只读查询，并将其送入统一审批流程。
 
+#### 场景: Plan 模式下受限磁盘容量查询进入审批
+
+- **WHEN** 智能体在 `Plan` 模式下以 `shellKind: "cmd"` 执行 `wmic logicaldisk where "DeviceID='C:'" get Size,FreeSpace /format:value`
+- **THEN** 拦截器必须将其识别为受限的只读磁盘容量查询，且在通过结构安全校验后进入统一审批流程。
+
 #### 场景: Plan 模式下含复合符号的命令被直接拒绝
 - **WHEN** 智能体在 `Plan` 模式下试图在终端执行 `dir /-C /w C:\Windows\Temp 2>nul | find " 个文件"`
 - **THEN** 拦截器判定该命令虽命中只读白名单但因包含复合连接符 `|` 和重定向符 `>`，与执行期结构校验同构判定为不安全，直接返回 `BLOCKED (Plan Mode Only)` 并附带自愈引导提示。
 
 #### 场景: Plan 模式下非白名单命令被拦截并返回自愈提示
-- **WHEN** 智能体在 `Plan` 模式下试图在终端执行非白名单的只读或写命令 `wmic logicaldisk`
+- **WHEN** 智能体在 `Plan` 模式下以 `shellKind: "cmd"` 执行 `wmic process list` 或其他非 `wmic logicaldisk` 前缀的命令
 - **THEN** 拦截器实施硬性拦截并报错 `BLOCKED (Plan Mode Only)`；且在返回信息中显式拼接提示语，引导智能体使用 `list_dir` 或 `read_file` 等只读 `API` 代替，阻止盲目重试。
 
 #### 场景: Plan 模式下前置判定与执行期校验同构

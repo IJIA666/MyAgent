@@ -27,9 +27,7 @@ export const COMPOSITE_CHARS = [';', '&', '|', '<', '>', '^', '%', '\r', '\n'];
  * @param shellKind - 可选的已决议 shell family，传入后按对应 shell 语义校验
  */
 export function validateCommand(command: string, shellKind?: ResolvedShellKind): void {
-  const unboxedCmd = shellKind
-    ? command.trim()
-    : unboxNestedCommand(command).trim();
+  const unboxedCmd = unboxNestedCommand(command, shellKind).trim();
   
   // 0. Git 变更写操作绝对阻断检验
   if (isDangerousGitCommand(unboxedCmd)) {
@@ -165,6 +163,8 @@ const POSH_READONLY_WHITELIST: string[] = [
   'git status', 'git diff', 'git log',
   'vitest', 'npm run test', 'npm test',
   'dir', 'ls',
+  'wmic logicaldisk',
+  'Get-PSDrive',
   'Get-ChildItem', 'Get-Content', 'Select-String',
 ];
 
@@ -181,6 +181,7 @@ const POSIX_READONLY_WHITELIST: string[] = [
 const CMD_READONLY_WHITELIST: string[] = [
   'git status', 'git diff', 'git log',
   'vitest', 'npm run test', 'npm test',
+  'wmic logicaldisk',
   'dir', 'type', 'findstr',
   'echo', 'cd', 'where',
 ];
@@ -223,13 +224,12 @@ export const DANGEROUS_WRITE_COMMAND_REGEX = POSH_DANGEROUS_WRITE_REGEX;
  * @returns 判定结果：'allow' 表示允许进入白名单规则校验，'ask' 表示强制安全降级到人工确认，不允许进入白名单匹配
  */
 export function checkCommandSafetyLevel(command: string, shellKind?: ResolvedShellKind): 'allow' | 'ask' {
-  const trimmed = command.trim();
   const kind = shellKind ?? 'powershell';
-  const dangerousPattern = DANGEROUS_WRITE_PATTERNS[kind];
+  const trimmed = unboxNestedCommand(command, kind).trim();
   const whitelist = READONLY_COMMAND_WHITELISTS[kind];
 
   // 1. 特征判定：如果包含任何危险写动作的指令或别名，强制降级为 ask，严禁静默放行
-  if (dangerousPattern.test(trimmed)) {
+  if (containsDangerousWriteToken(trimmed, kind)) {
     return 'ask';
   }
 
@@ -425,9 +425,8 @@ function getMatchingQuoteIndex(str: string): number {
  * @returns 剥离嵌套后的核心指令内容
  */
 export function unboxNestedCommand(command: string, shellKind?: ResolvedShellKind): string {
-  // 上层显式指定 shell 时，不再由 Guard 自行做壳推断
   if (shellKind) {
-    return command.trim();
+    return stripRedundantShellWrapper(command.trim(), shellKind);
   }
 
   let current = command.trim();
@@ -478,16 +477,50 @@ export function unboxNestedCommand(command: string, shellKind?: ResolvedShellKin
   return current;
 }
 
+/** 剥离与已决议 shell family 相同的冗余 wrapper，避免显式 shell 输入误伤白名单。 */
+function stripRedundantShellWrapper(command: string, shellKind: ResolvedShellKind): string {
+  const current = command.trim();
+
+  if (shellKind === 'powershell') {
+    const commandWrapper = current.match(/^(powershell|pwsh)(?:\.exe)?(?:\s+-[a-zA-Z0-9]+(?:\s+[^\s'"`-]+)?)*\s+(?:-c|-Command)\s+([\s\S]+)$/i);
+    if (commandWrapper) {
+      return unboxNestedCommand(commandWrapper[2].trim());
+    }
+
+    const directWrapper = current.match(/^(powershell|pwsh)(?:\.exe)?\s+([\s\S]+)$/i);
+    if (directWrapper) {
+      return directWrapper[2].trim();
+    }
+  }
+
+  if (shellKind === 'cmd') {
+    const cmdWrapper = current.match(/^cmd(?:\.exe)?(?:\s+\/[a-zA-Z])*\s+\/[ck]\s+([\s\S]+)$/i);
+    if (cmdWrapper) {
+      return unboxNestedCommand(cmdWrapper[1].trim());
+    }
+  }
+
+  if (shellKind === 'posix') {
+    const posixWrapper = current.match(/^(sh|bash)(?:\s+-[a-zA-Z0-9]+(?:\s+[^\s'"`-]+)?)*\s+-c\s+([\s\S]+)$/i);
+    if (posixWrapper) {
+      return unboxNestedCommand(posixWrapper[2].trim());
+    }
+  }
+
+  return current;
+}
+
 /**
  * 分析命令行，检测敏感词和潜在的安全跨盘逃逸，生成 Advisory Warnings。
  * 
  * @param command - 原始命令行
  * @returns 警告信息数组，若无则返回空数组
  */
-export function detectAdvisoryWarnings(command: string): string[] {
+export function detectAdvisoryWarnings(command: string, shellKind?: ResolvedShellKind): string[] {
   const warnings: string[] = [];
   
-  const unboxed = unboxNestedCommand(command);
+  const effectiveShellKind = shellKind ?? 'powershell';
+  const unboxed = unboxNestedCommand(command, shellKind);
   const parts = unboxed.split(/\s+/);
   if (parts.length === 0) return [];
   
@@ -505,6 +538,9 @@ export function detectAdvisoryWarnings(command: string): string[] {
   if (rootDir) {
     for (const part of parts.slice(1)) {
       const cleanPart = part.replace(/^['"`]|['"`]$/g, '');
+      if (isShellOptionToken(cleanPart, effectiveShellKind)) {
+        continue;
+      }
       
       // 判断是否是绝对路径或者含有盘符特征
       if (isAbsolute(cleanPart) || /^[a-zA-Z]:\\/.test(cleanPart)) {
@@ -529,5 +565,29 @@ export function detectAdvisoryWarnings(command: string): string[] {
   }
 
   return warnings;
+}
+
+/** 仅按首个真实命令 token 判定写操作，避免把只读参数误伤为危险命令。 */
+export function containsDangerousWriteToken(command: string, shellKind: ResolvedShellKind): boolean {
+  const unboxed = unboxNestedCommand(command, shellKind).trim();
+  const parts = unboxed.split(/\s+/).map(part => part.replace(/^['"`]|['"`]$/g, ''));
+  const executable = parts.find(part => part.length > 0 && !isShellOptionToken(part, shellKind));
+  if (!executable) {
+    return false;
+  }
+
+  const normalized = executable.replace(/\\|\//g, sep).split(sep).pop() || executable;
+  return DANGEROUS_WRITE_PATTERNS[shellKind].test(normalized);
+}
+
+/** 识别当前 shell family 下的命令开关，避免把参数误判为文件路径。 */
+function isShellOptionToken(part: string, shellKind: ResolvedShellKind): boolean {
+  if (part.length <= 1) {
+    return false;
+  }
+  if (shellKind === 'cmd') {
+    return part.startsWith('/');
+  }
+  return part.startsWith('-');
 }
 

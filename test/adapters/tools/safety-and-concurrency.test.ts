@@ -173,6 +173,42 @@ describe('安全与并发增强特性测试', () => {
   });
 
   describe('4. 工具执行超时 Abort 物理强杀', () => {
+    it('同步快速命令完成时不应注入 completed notification', async () => {
+      const notifications: Array<{ type: string }> = [];
+
+      const result = await runCommandEngine(
+        `"${process.execPath}" -e "console.log('sync-ok')"`,
+        testWorkspace,
+        false,
+        {
+          timeoutMs: 5000,
+          onNotification: (event) => notifications.push(event)
+        }
+      );
+
+      expect(result).toContain('sync-ok');
+      expect(notifications.filter(event => event.type === 'completed')).toHaveLength(0);
+    });
+
+    it('后台托管命令完成时应发送 completed notification', async () => {
+      const notifications: Array<{ type: string }> = [];
+
+      const result = await runCommandEngine(
+        `"${process.execPath}" -e "setTimeout(() => console.log('bg-ok'), 350)"`,
+        testWorkspace,
+        true,
+        {
+          timeoutMs: 5000,
+          noOutputTimeoutMs: 3000,
+          onNotification: (event) => notifications.push(event)
+        }
+      );
+
+      expect(result).toContain('Task ID');
+      await new Promise(resolve => setTimeout(resolve, 900));
+      expect(notifications.some(event => event.type === 'completed')).toBe(true);
+    });
+
     it('调用 runCommandEngine 时，如果 signal 被 abort 应当能迅速强杀进程释放', async () => {
       const controller = new AbortController();
 

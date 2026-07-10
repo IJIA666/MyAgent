@@ -10,7 +10,7 @@ import { digestDiagnosticValue } from '../../../utils/diagnostic-sanitizer.js';
  */
 export class TracerLogPlugin implements Plugin {
   public readonly name = 'TracerLogPlugin';
-  public readonly weight = 100; // 审计插件一般较晚运行，以便观察其他插件的修改结果
+  public readonly weight = 0; // 审计插件先进入管线，才能包裹并记录前置 abort 的最终状态。
 
   private tracerProvider: () => AgentTracer;
 
@@ -44,9 +44,12 @@ export class TracerLogPlugin implements Plugin {
     },
     [HookEventName.BeforeTool]: async (context: HookContext, next: () => Promise<void>) => {
       this.auditCurrentPatches(context);
-      this.logLifecycleAudit(context, HookEventName.BeforeTool);
-      await next();
-      this.auditCurrentPatches(context);
+      try {
+        await next();
+      } finally {
+        this.auditCurrentPatches(context);
+        this.logLifecycleAudit(context, HookEventName.BeforeTool);
+      }
     },
     [HookEventName.AfterTool]: async (context: HookContext, next: () => Promise<void>) => {
       this.auditCurrentPatches(context);

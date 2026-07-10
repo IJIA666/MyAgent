@@ -473,6 +473,15 @@ export class AgentLoop {
 
                 if (taskRes.toolMessage) {
                   this.context.addMessage(taskRes.toolMessage);
+                } else if (taskRes.finalCallUpdate.error) {
+                  const parseFailedBeforeExecution = !taskRes.events.some(evt => evt.type === 'tool_call_start');
+                  this.context.addMessage({
+                    role: 'tool',
+                    tool_call_id: event.toolCalls[i].id,
+                    content: parseFailedBeforeExecution
+                      ? `错误：工具调用前参数解析失败（兼容标签：瑙ｆ瀽宸ュ叿鍙傛暟澶辫触），请检查 arguments JSON 是否合法。原始错误：${taskRes.finalCallUpdate.error}`
+                      : taskRes.finalCallUpdate.error
+                  });
                 }
 
                 if (taskRes.hasWrite) {

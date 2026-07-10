@@ -3,7 +3,7 @@
  * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
  */
 
-import { validateCommand, validateCwd, isHardlineDangerous, isPlanSafeCommand, unboxNestedCommand, DANGEROUS_WRITE_PATTERNS } from './terminal-guard.js';
+import { validateCommand, validateCwd, isHardlineDangerous, isPlanSafeCommand, unboxNestedCommand, containsDangerousWriteToken } from './terminal-guard.js';
 import { runCommandEngine } from './terminal-engine.js';
 import { getWorkMode, extractSafePrefix, loadAllowedCommands, loadDefaultShellFamily } from './terminal-config.js';
 import { createShellExecutionPlan } from './terminal-plan.js';
@@ -143,7 +143,7 @@ export class ExecuteCommandTool implements NativeTool {
 
     // 4. Auto 模式且属于非高危写动作命令，进行已授权白名单的前缀校验
     // 关键改动：安全评级判定前也先解包剥壳，以防解释器外壳导致只读规则评级失效
-    const isDangerous = DANGEROUS_WRITE_PATTERNS[resolvedShellKind].test(unboxedCmd);
+    const isDangerous = containsDangerousWriteToken(unboxedCmd, resolvedShellKind);
     if (!isDangerous && workMode === 'Auto') {
       // 校验命令行是否命中白名单规则
       const allowed = sessionContext ? sessionContext.getSecurityAllowlist() : loadAllowedCommands();

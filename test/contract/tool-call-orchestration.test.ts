@@ -5,14 +5,19 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { ToolRegistry } from '../../src/adapters/tools/toolRegistry.js';
 import { PluginRegistry } from '../../src/core/usecases/plugins/plugin-registry.js';
 import { HumanApprovalPlugin } from '../../src/core/usecases/plugins/HumanApprovalPlugin.js';
+import { TracerLogPlugin } from '../../src/core/usecases/plugins/TracerLogPlugin.js';
 import { ApprovalPolicy } from '../../src/core/usecases/security/ApprovalPolicy.js';
 import { ToolCallOrchestrator } from '../../src/core/usecases/engine/tool-call-orchestrator.js';
 import { ToolDispatcher } from '../../src/core/usecases/engine/ToolDispatcher.js';
 import { ApprovalEffectApplier } from '../../src/core/usecases/engine/approval-effect-applier.js';
 import { SessionContext } from '../../src/core/domain/context.js';
+import { AgentTracer } from '../../src/core/domain/tracer.js';
 import type { ToolPolicyPort } from '../../src/ports/shared/tool-policy.js';
 
 /** 预设返回 pass 的策略端口 */
@@ -38,12 +43,15 @@ const suspendPolicy: ToolPolicyPort = {
 };
 
 /** 构造装配完整的编排器 */
-function createOrchestrator(policyPort: ToolPolicyPort): {
+function createOrchestrator(policyPort: ToolPolicyPort, tracer?: AgentTracer): {
   orchestrator: ToolCallOrchestrator;
   session: SessionContext;
 } {
   const registry = new ToolRegistry();
   const pluginRegistry = new PluginRegistry();
+  if (tracer) {
+    pluginRegistry.register(new TracerLogPlugin(() => tracer));
+  }
   pluginRegistry.register(new HumanApprovalPlugin(policyPort, new ApprovalPolicy()));
 
   const session = new SessionContext('contract-orchestrator');
@@ -78,6 +86,53 @@ describe('工具编排合约测试 — 真实装配', () => {
     // ToolCallOrchestrator 在 BeforeTool abort 时设 aborted=false，通过 error 传递阻断原因
     expect(result.finalCallUpdate.error).toBeDefined();
     expect(result.finalCallUpdate.error).toContain('contract test deny');
+  });
+
+  it('deny 路径应写入摘要化 BeforeTool audit 记录', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tool-denial-audit-contract-'));
+    try {
+      const tracer = new AgentTracer(tempDir, 'contract-orchestrator-audit', {
+        operationalEnabled: true,
+        auditEnabled: true,
+        replayEnabled: false,
+        customPatterns: [],
+        traceRetentionDays: 7,
+        traceRetentionSessions: 20,
+        auditRetentionDays: 7,
+        auditRetentionSessions: 20
+      });
+      const { orchestrator } = createOrchestrator(denyPolicy, tracer);
+
+      await orchestrator.execute(
+        0,
+        {
+          id: 'deny-audit-001',
+          function: {
+            name: 'readFile',
+            arguments: JSON.stringify({ path: 'secret.txt', password: 'raw-deny-secret' })
+          }
+        },
+        new AbortController().signal,
+        () => {},
+      );
+
+      const auditFile = join(tempDir, '.myagent', 'traces', 'audit_contract-orchestrator-audit.jsonl');
+      expect(existsSync(auditFile)).toBe(true);
+      const auditContent = readFileSync(auditFile, 'utf-8');
+      const records = auditContent.trim().split(/\r?\n/).map(line => JSON.parse(line));
+      const beforeToolRecord = records.find(record =>
+        record.type === 'lifecycle' &&
+        record.eventName === 'BeforeTool' &&
+        record.correlationId === 'deny-audit-001'
+      );
+
+      expect(beforeToolRecord).toBeDefined();
+      expect(beforeToolRecord.policyResult).toBe('abort');
+      expect(JSON.stringify(beforeToolRecord)).not.toContain('raw-deny-secret');
+      expect(JSON.stringify(beforeToolRecord)).not.toContain('secret.txt');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('pass 路径：ToolPolicyPort 返回 pass → 工具正常执行', async () => {

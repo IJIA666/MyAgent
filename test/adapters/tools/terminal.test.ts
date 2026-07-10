@@ -17,7 +17,7 @@ import {
   saveWorkMode,
   loadWorkMode
 } from '../../../src/adapters/tools/impl/system/terminal.js';
-import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
+import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand, detectAdvisoryWarnings } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
 
 describe('Terminal Tool 单元测试', () => {
@@ -182,6 +182,7 @@ describe('Terminal Tool 单元测试', () => {
   test('9. unboxNestedCommand 核心功能及 flags 容忍单元测试', () => {
     // A. 多层嵌套解包测试
     expect(unboxNestedCommand('powershell -Command "cmd /c \'npm run build\'"')).toBe('npm run build');
+    expect(unboxNestedCommand('powershell Get-PSDrive C', 'powershell')).toBe('Get-PSDrive C');
 
     // B. 带中间 CLI 选项 flags 容忍测试
     expect(unboxNestedCommand('powershell -ExecutionPolicy Bypass -Command "npm run build"')).toBe('npm run build');
@@ -289,6 +290,9 @@ describe('Terminal Tool 单元测试', () => {
     // A. 只读白名单命令无复合字符 → 返回 true
     expect(isPlanSafeCommand('dir C:\\Windows\\Temp', 'cmd')).toBe(true);
     expect(isPlanSafeCommand('type package.json', 'cmd')).toBe(true);
+    expect(isPlanSafeCommand('wmic logicaldisk where caption="C:" get caption,size,freespace /format:value', 'cmd')).toBe(true);
+    expect(isPlanSafeCommand('Get-PSDrive C', 'powershell')).toBe(true);
+    expect(isPlanSafeCommand('powershell Get-PSDrive C', 'powershell')).toBe(true);
     expect(isPlanSafeCommand('git status', 'powershell')).toBe(true);
     expect(isPlanSafeCommand('git diff', 'powershell')).toBe(true);
     expect(isPlanSafeCommand('git log', 'powershell')).toBe(true);
@@ -303,7 +307,8 @@ describe('Terminal Tool 单元测试', () => {
     expect(isPlanSafeCommand('cat file & echo done', 'posix')).toBe(false); // 拼接符 &
 
     // C. 非白名单命令 → 返回 false
-    expect(isPlanSafeCommand('wmic logicaldisk', 'cmd')).toBe(false);
+    expect(isPlanSafeCommand('wmic logicaldisk', 'cmd')).toBe(true);
+    expect(isPlanSafeCommand('wmic process', 'cmd')).toBe(false);
     expect(isPlanSafeCommand('netstat -an', 'powershell')).toBe(false);
     expect(isPlanSafeCommand('rm -rf /', 'posix')).toBe(false);           // 硬红线
 
@@ -332,6 +337,12 @@ describe('Terminal Tool 单元测试', () => {
     const safetyGitStatus = executeCommandToolInstance.checkSafety({ command: 'git status' }, mockSession);
     expect(safetyGitStatus.status).toBe('suspend');
 
+    const safetyGetPsDrive = executeCommandToolInstance.checkSafety({
+      command: 'powershell Get-PSDrive C',
+      shellKind: 'powershell'
+    }, mockSession);
+    expect(safetyGetPsDrive.status).toBe('suspend');
+
     // B. Plan 模式 + 含复合字符命令 → deny（与执行期同构）
     const safetyComposite = executeCommandToolInstance.checkSafety({ command: 'dir /-C | find "txt"' }, mockSession);
     expect(safetyComposite.status).toBe('deny');
@@ -343,9 +354,17 @@ describe('Terminal Tool 单元测试', () => {
 
     // C. Plan 模式 + 非白名单命令 → deny 并含自愈引导
     const safetyWmic = executeCommandToolInstance.checkSafety({ command: 'wmic logicaldisk' }, mockSession);
-    expect(safetyWmic.status).toBe('deny');
-    expect(safetyWmic.message).toContain('BLOCKED (Plan Mode Only)');
-    expect(safetyWmic.message).toContain('list_dir');
+    expect(safetyWmic.status).toBe('suspend');
+
+    const safetyWmicFormat = executeCommandToolInstance.checkSafety({
+      command: 'wmic logicaldisk where caption="C:" get caption,size,freespace /format:value',
+      shellKind: 'cmd'
+    }, mockSession);
+    expect(safetyWmicFormat.status).toBe('suspend');
+
+    const safetyWmicProcess = executeCommandToolInstance.checkSafety({ command: 'wmic process', shellKind: 'cmd' }, mockSession);
+    expect(safetyWmicProcess.status).toBe('deny');
+    expect(safetyWmicProcess.message).toContain('BLOCKED (Plan Mode Only)');
 
     // D. Plan 模式 + 危险写命令 → deny
     const safetyDel = executeCommandToolInstance.checkSafety({ command: 'del file.txt' }, mockSession);
@@ -417,5 +436,14 @@ describe('Terminal Tool 单元测试', () => {
     // D. shell family 错配不得进入审批，否则会重新制造"可批但不可执行"
     expect(isPlanSafeCommand('cat file.txt', 'cmd')).toBe(false);
     expect(isPlanSafeCommand('dir C:\\Windows\\Temp', 'posix')).toBe(false);
+  });
+
+  test('17. advisory warning 解析应跳过当前 shell 的命令开关', () => {
+    expect(detectAdvisoryWarnings('dir /A:H /W', 'cmd')).toHaveLength(0);
+
+    if (process.platform === 'win32') {
+      const warnings = detectAdvisoryWarnings('dir C:\\Windows', 'cmd');
+      expect(warnings.length).toBeGreaterThan(0);
+    }
   });
 });
