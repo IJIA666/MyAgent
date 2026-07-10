@@ -729,7 +729,14 @@ export async function runCommandEngine(
   if (isBackground) {
     // 200ms 的启动观察缓冲期
     await new Promise((resolve) => setTimeout(resolve, 200));
-    if (taskInfo.status === 'FAILED' || taskInfo.status === 'COMPLETED' || taskInfo.status === 'KILLED') {
+    // Windows 下 close 事件可能晚于 exit 事件到达；已有退出码说明进程已结束，
+    // 此时继续等待 promise 完成清理，不能误报为“存活超过 200ms”。
+    if (
+      taskInfo.status === 'FAILED' ||
+      taskInfo.status === 'COMPLETED' ||
+      taskInfo.status === 'KILLED' ||
+      taskInfo.exitCode !== null
+    ) {
       return promise;
     } else {
       resolved = true;

@@ -207,6 +207,11 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
       generateEmbeddings: vi.fn().mockResolvedValue([])
     } as unknown as EmbeddingPort;
 
+    /** 模拟 ToolPolicyPort，返回 pass 以避免影响测试逻辑流程 */
+    const mockToolPolicyPort = {
+      evaluate: async () => ({ status: 'pass' as const }),
+    };
+
     const session = new SessionManager(
       mockLlmConfig,
       mockDriver,
@@ -215,7 +220,8 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
       mockContextAdapter,
       mockVectorDb,
       mockEmbedding,
-      createMockAppConfig()
+      createMockAppConfig(),
+      mockToolPolicyPort
     );
     const privateSession = session as unknown as {
       isGenerating: boolean;

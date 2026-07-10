@@ -3,9 +3,10 @@
  * @description 验证统一本地工具运行时中的高危写操作审批拦截行为。
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
-import { resolve } from 'path';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { existsSync, writeFileSync, unlinkSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { join, resolve } from 'path';
+import { tmpdir } from 'os';
 import { buildNativeTools } from '../../../src/adapters/tools/tool-factory.js';
 import { ToolCatalog } from '../../../src/adapters/tools/ToolCatalog.js';
 import { ToolExecutor } from '../../../src/adapters/tools/ToolExecutor.js';
@@ -16,9 +17,13 @@ import { ReadFileTool } from '../../../src/adapters/tools/impl/filesystem/file-s
 describe('高危操作安全硬拦截单元测试', () => {
   let toolExecutor: ToolExecutor;
   let sessionContext: SessionContext;
-  const testWorkspace = process.platform === 'win32'
-    ? resolve('d:\\Projects\\MyAgent')
-    : resolve('/tmp/Projects/MyAgent');
+  const testWorkspace = mkdtempSync(join(tmpdir(), 'dangerous-intercept-'));
+
+  afterAll(() => {
+    // 清理测试工作区及其父目录中的临时白名单文件。
+    rmSync(testWorkspace, { recursive: true, force: true });
+    rmSync(join(testWorkspace, '..', 'test_temp_whitelist_write.txt'), { force: true });
+  });
 
   /** 构建统一本地工具运行时，避免测试继续依赖 virtual-mcp 适配层。 */
   function createToolExecutor(): ToolExecutor {

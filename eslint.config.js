@@ -17,6 +17,8 @@ export default [
       "no-console": "error",
       // 物理阻断业务代码直接读取全局 process.env 变量，强制统一走配置加载与依赖注入层
       "n/no-process-env": "error",
+      // 允许以下划线开头的函数参数不触发未使用警告（常见于接口实现中的占位参数）
+      "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
     },
   },
   {

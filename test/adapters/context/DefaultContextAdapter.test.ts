@@ -1,24 +1,33 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi } from 'vitest';
 import { DefaultContextAdapter } from '../../../src/adapters/context/DefaultContextAdapter.js';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
+import type { TokenEstimatorPort } from '../../../src/ports/driven/llm/TokenEstimatorPort.js';
+import type { ChatMessage } from '../../../src/ports/driven/llm/LlmPort.js';
+
+/** 模拟 TokenEstimatorPort，不依赖底层实际 LLM tokenize 实现 */
+const mockTokenEstimator: TokenEstimatorPort = {
+  countTokens: vi.fn().mockReturnValue(0),
+  estimateMessageTokens: vi.fn().mockReturnValue(0),
+  estimateSnapshotTokens: vi.fn().mockReturnValue({ total: 0, system: 0, rules: 0, transient: 0, history: 0, isEstimated: true }),
+  getCompactionThreshold: vi.fn().mockReturnValue(100000),
+};
 
 describe('DefaultContextAdapter 单元测试', () => {
-  const adapter = new DefaultContextAdapter();
+  const adapter = new DefaultContextAdapter(mockTokenEstimator);
 
   test('若无注入内容，应当原样返回会话历史', () => {
-    const history: ChatCompletionMessageParam[] = [
+    const history: ChatMessage[] = [
       { role: 'system', content: 'system prompt' },
       { role: 'user', content: 'hello' }
     ];
     const result = adapter.assemble(history);
-    
+
     // 应该浅拷贝且值完全相同
     expect(result).toEqual(history);
     expect(result).not.toBe(history);
   });
 
   test('局部规则与临时技能正确内嵌拼接在最后一条 user 消息尾部', () => {
-    const history: ChatCompletionMessageParam[] = [
+    const history: ChatMessage[] = [
       { role: 'system', content: 'system prompt' },
       { role: 'user', content: 'first user message' },
       { role: 'assistant', content: 'assistant reply' },
@@ -43,7 +52,7 @@ describe('DefaultContextAdapter 单元测试', () => {
   });
 
   test('消息历史中无任何 user 消息时安全追加包含 XML 的 user 消息至末尾', () => {
-    const history: ChatCompletionMessageParam[] = [
+    const history: ChatMessage[] = [
       { role: 'system', content: 'system prompt' }
     ];
 
@@ -52,7 +61,7 @@ describe('DefaultContextAdapter 单元测试', () => {
     // 长度从 1 变成 2
     expect(result.length).toBe(2);
     expect(result[0].content).toBe('system prompt');
-    
+
     // 追加的应该是 user 角色消息，包含规则与技能
     expect(result[1].role).toBe('user');
     const injectedContent = result[1].content as string;

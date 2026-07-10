@@ -8,6 +8,7 @@ import { resolve, join } from 'path';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { initWorkspace } from '../../../src/adapters/tools/tools.js';
 import { GrepSearchTool, GlobSearchTool, Semaphore } from '../../../src/adapters/tools/impl/filesystem/search.js';
+import type { ToolExecutionContext } from '../../../src/core/usecases/plugins/plugin-types.js';
 
 describe('Semaphore 信号量调度器单元测试', () => {
   test('应该能在并发限制内正常按序执行并限制最大并发数', async () => {
@@ -65,6 +66,10 @@ describe('GrepSearchTool & GlobSearchTool 异步与剪枝集成测试', () => {
 
   test('GrepSearchTool 应该能正确进行目录级前置剪枝并跳过被排除的文件夹', async () => {
     const tool = new GrepSearchTool();
+
+    // 构造模拟上下文。GrepSearchTool.execute() 的参数声明为 ToolExecutionContext | SessionEventPort，
+    // 但内部实现将其解构为 appConfig 的子字段使用。此处通过双重断言绕过类型检查，
+    // 是测试驱动内部契约（implementation contract）而非类型契约（type contract）的常见模式。
     const mockContext = {
       appConfig: {
         runtimeLimits: {
@@ -72,7 +77,7 @@ describe('GrepSearchTool & GlobSearchTool 异步与剪枝集成测试', () => {
           excludeDirs: ['.venv', '.git']
         }
       }
-    };
+    } as unknown as ToolExecutionContext;
 
     // 搜索特定标志词
     const resultJson = await tool.execute(
@@ -82,7 +87,7 @@ describe('GrepSearchTool & GlobSearchTool 异步与剪枝集成测试', () => {
 
     const result = JSON.parse(resultJson);
     expect(result.status).toBe('success');
-    
+
     // 应当只能在 src/app.ts 里搜到，而绝不能在 .venv 里面搜到
     const files = result.matches.map((m: { file: string }) => m.file);
     expect(files).toContain('src/app.ts');
@@ -98,7 +103,7 @@ describe('GrepSearchTool & GlobSearchTool 异步与剪枝集成测试', () => {
           excludeDirs: ['.venv']
         }
       }
-    };
+    } as unknown as ToolExecutionContext;
 
     const resultJson = await tool.execute(
       { pattern: '**/*.ts' },

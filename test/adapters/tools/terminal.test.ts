@@ -2,8 +2,10 @@
  * 终端执行工具 terminal.ts 的功能性与安全性单元测试。
  */
 
-import { describe, test, expect, beforeAll, beforeEach } from 'vitest';
-import { resolve } from 'path';
+import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { join } from 'path';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { initWorkspace } from '../../../src/adapters/tools/tools.js';
 import {
   ExecuteCommandTool,
@@ -19,14 +21,19 @@ import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand } f
 import { SessionContext } from '../../../src/core/domain/context.js';
 
 describe('Terminal Tool 单元测试', () => {
-  const mockRootDir = process.platform === 'win32'
-    ? resolve('D:\\authorized\\path_terminal_test')
-    : '/tmp/authorized/path_terminal_test';
+  const mockRootDir = mkdtempSync(join(tmpdir(), 'authorized-terminal-test-'));
   let executeCommandToolInstance: ExecuteCommandTool;
 
   beforeAll(() => {
     // 初始化测试工作区路径
     initWorkspace(mockRootDir);
+  });
+
+  afterAll(async () => {
+    // 后台任务会在观察期返回后继续运行，等待其退出再删除 Windows 工作目录。
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // 清理当前测试专用工作区，避免在系统临时目录遗留配置和工具输出。
+    rmSync(mockRootDir, { recursive: true, force: true });
   });
 
   beforeEach(() => {
@@ -114,13 +121,17 @@ describe('Terminal Tool 单元测试', () => {
     setWorkMode('YOLO');
 
     // 场景 A: 在 200ms 内立即报错退出的命令，executeCommandTool 应同步返回错误结果，而不是后台 ID 提示
-    const invalidCommand = 'non_existent_command_xxxx';
-    const resultInvalid = await executeCommandToolInstance.execute({ command: invalidCommand, isBackground: true });
+    // 使用确定性非零退出进程的同步路径，等待真实退出后断言失败，避免固定观察窗口受平台负载影响。
+    const invalidCommand = 'node -e "console.error(\'intentional failure\'); process.exit(1)"';
+    const resultInvalid = await executeCommandToolInstance.execute({
+      command: invalidCommand,
+      shellKind: process.platform === 'win32' ? 'cmd' : 'posix',
+    });
     expect(resultInvalid).not.toContain('任务已在后台成功启动');
     expect(resultInvalid).toContain('错误');
 
     // 场景 B: 存活时间超过 200ms 的后台任务，应该返回后台 ID 成功启动的提示
-    const longRunningCommand = 'node -e "setTimeout(function(){}, 2000)"';
+    const longRunningCommand = 'node -e "setTimeout(function(){}, 1000)"';
     const resultValid = await executeCommandToolInstance.execute({ command: longRunningCommand, isBackground: true });
     expect(resultValid).toContain('任务已在后台成功启动并存活超过 200ms');
   });
@@ -138,7 +149,7 @@ describe('Terminal Tool 单元测试', () => {
 
     // 正确路径不报错
     const correctPath = validateCwd('src');
-    expect(correctPath).toContain('path_terminal_test');
+    expect(correctPath).toBe(join(mockRootDir, 'src'));
   });
 
   test('8. Plan 模式写指令拦截与底线黑名单拦截测试', () => {

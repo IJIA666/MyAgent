@@ -29,11 +29,45 @@ jobs:
     - name: Build Project (TypeScript Compilation)
       run: npm run build
 
+    - name: '[L1] Run Test Type Check (tsc --noEmit -p test/tsconfig.json)'
+      run: npm run test:typecheck
+
     - name: Install Playwright OS Dependencies
       run: npx playwright install-deps
 
     - name: Install Playwright Browsers
       run: npx playwright install chromium
 
-    - name: Run Tests (Vitest Test Suite)
+    - name: '[L2] Run Tests (Vitest Test Suite)'
       run: xvfb-run npm run test
+
+    - name: '[L2] Run Coverage (Vitest Coverage)'
+      run: npm run test:coverage
+
+    - name: '[L3] Run Contract Tests'
+      run: npm run test:contract
+
+    - name: '[L3] Run Integration Tests'
+      run: npm run test:integration
+
+  platform-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+
+    - name: Install Dependencies
+      run: npm ci
+
+    - name: Install Playwright Browsers
+      run: npx playwright install chromium
+
+    - name: '[L4] Run Windows Platform Tests'
+      run: npm run test:platform:windows

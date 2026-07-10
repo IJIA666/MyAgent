@@ -1,7 +1,7 @@
 {
   "name": "my-simple-agent",
   "version": "1.0.0",
-  "description": "一个基于 TypeScript 的极简 Agent，具备沙箱化文件工具与 REPL 会话管理能力。",
+  "description": "一个以自主推理、真实工具执行和运行时安全为核心的 TypeScript 通用 Agent，而不是预定义工作流编排框架。",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
@@ -9,8 +9,12 @@
     "dev": "node --disable-warning=DEP0040 --import tsx src/index.ts",
     "build": "tsc",
     "lint": "eslint .",
+    "test:typecheck": "tsc --noEmit -p test/tsconfig.json",
     "test": "vitest run test/core test/adapters test/common test/config",
-    "test:integration": "vitest run test/integration"
+    "test:coverage": "vitest run --coverage test/core test/adapters test/common test/config test/contract",
+    "test:contract": "vitest run test/contract",
+    "test:integration": "vitest run test/integration",
+    "test:platform:windows": "vitest run test/adapters/tools/terminal.test.ts test/adapters/tools/browser-detector.test.ts test/adapters/tools/browser-action.test.ts test/adapters/tools/browser-action-multitenant.test.ts test/adapters/tools/mcp-client.test.ts"
   },
   "keywords": [],
   "author": "wangjia",
