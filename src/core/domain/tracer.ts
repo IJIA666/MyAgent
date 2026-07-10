@@ -1,12 +1,18 @@
 import { appendFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve } from 'path';
 import { logger } from '../../utils/logger.js';
-import type {
-  TraceIterationRecord,
-  TraceLegacyIterationRecord,
-  TraceMetaRecord,
-  TracePromptDefinitionRecord
+import type { DiagnosticDataConfig } from '../../config/types.js';
+import {
+  buildMetadataOnlyIterationRecord,
+  TRACE_FORMAT_VERSION,
+  type TraceCaptureMode,
+  type TraceIterationRecord,
+  type TraceLegacyIterationRecord,
+  type TraceMetaRecord,
+  type TracePromptDefinitionRecord
 } from './trace-format.js';
+import { sanitizeDiagnosticData, resolveDiagnosticPolicy } from '../../utils/diagnostic-sanitizer.js';
+import { cleanupDiagnosticFiles } from './diagnostic-retention.js';
 
 /**
  * 会话追踪与审计写入器。
@@ -16,6 +22,8 @@ export class AgentTracer {
   private readonly auditFile: string;
   private hasWrittenMeta = false;
   private readonly promptDefinitionHashes = new Set<string>();
+  /** 当前 trace/audit 的采集与脱敏配置。 */
+  private readonly diagnostics: DiagnosticDataConfig;
 
   /**
    * 实例化追踪器。
@@ -23,13 +31,33 @@ export class AgentTracer {
    * @param workspaceDir - 当前工作区根目录。
    * @param sessionId - 本次会话的唯一标识。
    */
-  constructor(workspaceDir: string, sessionId: string) {
+  constructor(workspaceDir: string, sessionId: string, diagnostics?: DiagnosticDataConfig) {
+    this.diagnostics = diagnostics ?? {
+      operationalEnabled: true,
+      auditEnabled: true,
+      replayEnabled: false,
+      customPatterns: [],
+      traceRetentionDays: 7,
+      traceRetentionSessions: 20,
+      auditRetentionDays: 7,
+      auditRetentionSessions: 20
+    };
     const traceDir = resolve(workspaceDir, '.myagent', 'traces');
     if (!existsSync(traceDir)) {
       mkdirSync(traceDir, { recursive: true });
     }
     this.traceFile = resolve(traceDir, `trace_${sessionId}.jsonl`);
     this.auditFile = resolve(traceDir, `audit_${sessionId}.jsonl`);
+    cleanupDiagnosticFiles(traceDir, sessionId, this.diagnostics);
+  }
+
+  /**
+   * 获取当前 trace 的采集模式，供诊断和读取器契约判断使用。
+   *
+   * @returns metadata-only 或 replay
+   */
+  public getCaptureMode(): TraceCaptureMode {
+    return this.diagnostics.replayEnabled ? 'replay' : 'metadata-only';
   }
 
   /**
@@ -38,10 +66,18 @@ export class AgentTracer {
    * @param record - trace 元信息记录。
    */
   public logMeta(record: TraceMetaRecord): boolean {
+    if (!this.diagnostics.operationalEnabled) {
+      return true;
+    }
     if (this.hasWrittenMeta) {
       return true;
     }
-    if (this.appendJsonLine(this.traceFile, record, '[Tracer] meta write failed')) {
+    const nextRecord: TraceMetaRecord = {
+      ...record,
+      captureMode: this.getCaptureMode(),
+      captureVersion: TRACE_FORMAT_VERSION
+    };
+    if (this.appendJsonLine(this.traceFile, nextRecord, '[Tracer] meta write failed', 'trace')) {
       this.hasWrittenMeta = true;
       return true;
     }
@@ -54,10 +90,18 @@ export class AgentTracer {
    * @param record - prompt 定义记录。
    */
   public logPromptDefinition(record: TracePromptDefinitionRecord): boolean {
+    if (!this.diagnostics.operationalEnabled || !this.diagnostics.replayEnabled) {
+      return true;
+    }
     if (this.promptDefinitionHashes.has(record.systemPromptHash)) {
       return true;
     }
-    if (this.appendJsonLine(this.traceFile, record, '[Tracer] prompt definition write failed')) {
+    const nextRecord: TracePromptDefinitionRecord = {
+      ...record,
+      captureMode: 'replay',
+      captureVersion: TRACE_FORMAT_VERSION
+    };
+    if (this.appendJsonLine(this.traceFile, nextRecord, '[Tracer] prompt definition write failed', 'trace')) {
       this.promptDefinitionHashes.add(record.systemPromptHash);
       return true;
     }
@@ -70,7 +114,17 @@ export class AgentTracer {
    * @param record - iteration 记录。
    */
   public logIteration(record: TraceIterationRecord): boolean {
-    return this.appendJsonLine(this.traceFile, record, '[Tracer] iteration write failed');
+    if (!this.diagnostics.operationalEnabled) {
+      return true;
+    }
+    const nextRecord = this.diagnostics.replayEnabled
+      ? {
+        ...record,
+        captureMode: 'replay' as const,
+        captureVersion: TRACE_FORMAT_VERSION
+      }
+      : buildMetadataOnlyIterationRecord(record);
+    return this.appendJsonLine(this.traceFile, nextRecord, '[Tracer] iteration write failed', 'trace');
   }
 
   /**
@@ -79,10 +133,13 @@ export class AgentTracer {
    * @param record - 旧版交互记录。
    */
   public logInteraction(record: Omit<TraceLegacyIterationRecord, 'type' | 'sessionId'> & { sessionId?: string }): void {
-    this.appendJsonLine(
-      this.traceFile,
-      {
+    if (!this.diagnostics.operationalEnabled) {
+      return;
+    }
+    const legacyRecord: TraceLegacyIterationRecord = {
         type: 'legacy_iteration',
+        captureMode: this.getCaptureMode(),
+        captureVersion: TRACE_FORMAT_VERSION,
         sessionId: record.sessionId || '',
         timestamp: record.timestamp,
         iteration: record.iteration,
@@ -92,9 +149,14 @@ export class AgentTracer {
         tool_calls: record.tool_calls,
         estimated_tokens: record.estimated_tokens,
         actual_tokens: record.actual_tokens
-      } satisfies TraceLegacyIterationRecord,
-      '[Tracer] legacy interaction write failed'
-    );
+    };
+    if (!this.diagnostics.replayEnabled) {
+      legacyRecord.context = [];
+      delete legacyRecord.reasoning;
+      delete legacyRecord.content;
+      delete legacyRecord.tool_calls;
+    }
+    this.appendJsonLine(this.traceFile, legacyRecord, '[Tracer] legacy interaction write failed', 'trace');
   }
 
   /**
@@ -103,7 +165,10 @@ export class AgentTracer {
    * @param record - 审计记录对象。
    */
   public logPluginAudit(record: Record<string, unknown>): boolean {
-    return this.appendJsonLine(this.auditFile, record, '[Tracer] plugin audit write failed');
+    if (!this.diagnostics.auditEnabled) {
+      return true;
+    }
+    return this.appendJsonLine(this.auditFile, record, '[Tracer] plugin audit write failed', 'audit');
   }
 
   /**
@@ -112,10 +177,20 @@ export class AgentTracer {
    * @param filePath - 目标文件路径。
    * @param record - 待写入的记录对象。
    * @param errorPrefix - 错误日志前缀。
+   * @param artifact - 目标诊断制品类型。
    */
-  private appendJsonLine(filePath: string, record: object, errorPrefix: string): boolean {
+  private appendJsonLine(
+    filePath: string,
+    record: object,
+    errorPrefix: string,
+    artifact: 'trace' | 'audit'
+  ): boolean {
     try {
-      appendFileSync(filePath, `${JSON.stringify(record)}\n`, 'utf-8');
+      const policy = resolveDiagnosticPolicy(artifact, this.diagnostics.replayEnabled);
+      const safeRecord = sanitizeDiagnosticData(record, policy, {
+        customPatterns: this.diagnostics.customPatterns
+      });
+      appendFileSync(filePath, `${JSON.stringify(safeRecord)}\n`, 'utf-8');
       return true;
     } catch (error: unknown) {
       logger.error(errorPrefix, {

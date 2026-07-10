@@ -9,8 +9,21 @@ import type { LogLevel } from "@logtape/logtape";
 import { getRotatingFileSink } from "@logtape/file";
 import { existsSync, mkdirSync } from "fs";
 import { resolve } from "path";
+import { sanitizeDiagnosticData } from './diagnostic-sanitizer.js';
 
 const rawLogger = getLogger([]);
+
+/** 当前进程中由配置边界装载的用户自定义诊断脱敏模式。 */
+let diagnosticPatterns: string[] = [];
+
+/**
+ * 设置统一 logger 使用的用户自定义脱敏模式。
+ *
+ * @param patterns - 已由配置边界校验过的正则模式
+ */
+export function setDiagnosticSanitizerPatterns(patterns: readonly string[]): void {
+  diagnosticPatterns = [...patterns];
+}
 
 /** 将 unknown 类型的第二参数适配为 LogTape 兼容的调用形式 */
 function callRawLogger(
@@ -18,12 +31,17 @@ function callRawLogger(
   message: string,
   propertiesOrError?: unknown
 ): void {
+  const sanitizeOptions = { customPatterns: diagnosticPatterns };
+  const safeMessage = sanitizeDiagnosticData(message, 'operational', sanitizeOptions);
+  const renderedMessage = typeof safeMessage === 'string' ? safeMessage : String(safeMessage);
   if (propertiesOrError instanceof Error) {
-    method(message, { error: propertiesOrError.message, stack: propertiesOrError.stack });
+    const safeError = sanitizeDiagnosticData({ error: propertiesOrError.message, stack: propertiesOrError.stack }, 'operational', sanitizeOptions);
+    method(renderedMessage, safeError as Record<string, unknown>);
   } else if (propertiesOrError !== null && typeof propertiesOrError === "object") {
-    method(message, propertiesOrError as Record<string, unknown>);
+    const safeProperties = sanitizeDiagnosticData(propertiesOrError, 'operational', sanitizeOptions);
+    method(renderedMessage, safeProperties as Record<string, unknown>);
   } else {
-    method(message);
+    method(renderedMessage);
   }
 }
 
@@ -146,15 +164,20 @@ export interface SimplePatch {
  * @returns 压缩折叠后的补丁信息对象
  */
 export function compressPatch(patch: { op: string; path: (string | number)[]; value?: unknown }): SimplePatch {
-  let val = patch.value;
+  const safePatch = sanitizeDiagnosticData(patch, 'audit', { customPatterns: diagnosticPatterns }) as {
+    op?: unknown;
+    path?: unknown;
+    value?: unknown;
+  };
+  let val = safePatch.value;
   if (typeof val === "string" && val.length > 100) {
     val = `[String: ${val.length} chars]`;
   } else if (Array.isArray(val)) {
     val = `[Array: ${val.length} items]`;
   }
   return {
-    op: patch.op,
-    path: patch.path,
+    op: typeof safePatch.op === 'string' ? safePatch.op : '[REDACTED]',
+    path: Array.isArray(safePatch.path) ? safePatch.path as (string | number)[] : [],
     value: val,
   };
 }

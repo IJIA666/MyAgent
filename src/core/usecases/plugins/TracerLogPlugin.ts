@@ -1,11 +1,12 @@
 import type { HookContext, Plugin } from './plugin-types.js';
 import { HookEventName } from './plugin-types.js';
 import type { AgentTracer } from '../../domain/tracer.js';
+import { digestDiagnosticValue } from '../../../utils/diagnostic-sanitizer.js';
 
 /**
  * 审计与足迹跟踪插件。
- * 挂载于所有的核心生命周期节点，捕获智能体运行过程中的所有生命周期阶段和执行参数，
- * 并在每一次 Hook 触发时，提取并写入由 Immer 沙箱产生的上下文属性修改（Patches）记录。
+ * 挂载于核心生命周期节点，记录事件顺序、策略结果、资源摘要和 Immer 变更摘要，
+ * 不把工具参数、工具结果、prompt 或 patch 原始值作为 audit 制品写盘。
  */
 export class TracerLogPlugin implements Plugin {
   public readonly name = 'TracerLogPlugin';
@@ -25,67 +26,37 @@ export class TracerLogPlugin implements Plugin {
   public readonly hooks = {
     [HookEventName.RunStart]: async (context: HookContext, next: () => Promise<void>) => {
       this.auditCurrentPatches(context);
-      this.tracerProvider().logPluginAudit({
-        timestamp: new Date().toISOString(),
-        type: 'lifecycle',
-        eventName: HookEventName.RunStart
-      });
+      this.logLifecycleAudit(context, HookEventName.RunStart);
       await next();
       this.auditCurrentPatches(context);
     },
     [HookEventName.BeforeModel]: async (context: HookContext, next: () => Promise<void>) => {
       this.auditCurrentPatches(context);
-      this.tracerProvider().logPluginAudit({
-        timestamp: new Date().toISOString(),
-        type: 'lifecycle',
-        eventName: HookEventName.BeforeModel,
-        details: {
-          model: context.llmRequest?.model,
-          messagesCount: context.llmRequest?.messages?.length
-        }
-      });
+      this.logLifecycleAudit(context, HookEventName.BeforeModel);
       await next();
       this.auditCurrentPatches(context);
     },
     [HookEventName.AfterModel]: async (context: HookContext, next: () => Promise<void>) => {
       this.auditCurrentPatches(context);
-      this.tracerProvider().logPluginAudit({
-        timestamp: new Date().toISOString(),
-        type: 'lifecycle',
-        eventName: HookEventName.AfterModel
-      });
+      this.logLifecycleAudit(context, HookEventName.AfterModel);
       await next();
       this.auditCurrentPatches(context);
     },
     [HookEventName.BeforeTool]: async (context: HookContext, next: () => Promise<void>) => {
       this.auditCurrentPatches(context);
-      this.tracerProvider().logPluginAudit({
-        timestamp: new Date().toISOString(),
-        type: 'lifecycle',
-        eventName: HookEventName.BeforeTool,
-        details: { toolCall: context.toolCall }
-      });
+      this.logLifecycleAudit(context, HookEventName.BeforeTool);
       await next();
       this.auditCurrentPatches(context);
     },
     [HookEventName.AfterTool]: async (context: HookContext, next: () => Promise<void>) => {
       this.auditCurrentPatches(context);
-      this.tracerProvider().logPluginAudit({
-        timestamp: new Date().toISOString(),
-        type: 'lifecycle',
-        eventName: HookEventName.AfterTool,
-        details: { toolCall: context.toolCall }
-      });
+      this.logLifecycleAudit(context, HookEventName.AfterTool);
       await next();
       this.auditCurrentPatches(context);
     },
     [HookEventName.RunEnd]: async (context: HookContext, next: () => Promise<void>) => {
       this.auditCurrentPatches(context);
-      this.tracerProvider().logPluginAudit({
-        timestamp: new Date().toISOString(),
-        type: 'lifecycle',
-        eventName: HookEventName.RunEnd
-      });
+      this.logLifecycleAudit(context, HookEventName.RunEnd);
       await next();
       this.auditCurrentPatches(context);
     }
@@ -103,10 +74,67 @@ export class TracerLogPlugin implements Plugin {
         this.tracerProvider().logPluginAudit({
           timestamp: new Date().toISOString(),
           type: 'context_mutation',
+          sessionId: context.sessionContext.getSessionId(),
           triggerEvent: patchGroup.eventName,
-          patches: patchGroup.patches
+          patches: patchGroup.patches.map((patch) => ({
+            op: patch.op,
+            path: {
+              length: patch.path.length,
+              digest: digestDiagnosticValue(patch.path)
+            },
+            value: this.summarizePatchValue(patch.value)
+          }))
         });
       }
     }
+  }
+
+  /** 记录不含原始载荷的生命周期审计事件。 */
+  private logLifecycleAudit(context: HookContext, eventName: HookEventName): void {
+    const toolCall = context.toolCall;
+    this.tracerProvider().logPluginAudit({
+      timestamp: new Date().toISOString(),
+      type: 'lifecycle',
+      sessionId: context.sessionContext.getSessionId(),
+      eventName,
+      correlationId: toolCall?.id,
+      toolName: toolCall?.name,
+      policyResult: context.control.action,
+      status: context.toolResult?.isError ? 'error' : 'ok',
+      model: context.llmRequest?.model,
+      messagesCount: context.llmRequest?.messages?.length,
+      tool: toolCall ? {
+        name: toolCall.name,
+        argumentKeys: Object.keys(toolCall.arguments),
+        argumentDigest: digestDiagnosticValue(toolCall.arguments),
+        resources: this.summarizeResources(toolCall.arguments)
+      } : undefined,
+      toolResult: context.toolResult ? {
+        isError: context.toolResult.isError === true,
+        length: context.toolResult.content.length,
+        digest: digestDiagnosticValue(context.toolResult.content)
+      } : undefined
+    });
+  }
+
+  /** 将工具参数中的潜在资源定位字段转换为不可逆摘要。 */
+  private summarizeResources(argumentsValue: Record<string, unknown>): Array<Record<string, unknown>> {
+    const resourceKeys = new Set(['path', 'filePath', 'targetPath', 'url', 'directory', 'workspace']);
+    return Object.entries(argumentsValue)
+      .filter(([key]) => resourceKeys.has(key))
+      .map(([key, value]) => ({
+        field: key,
+        type: Array.isArray(value) ? 'array' : typeof value,
+        digest: digestDiagnosticValue(value)
+      }));
+  }
+
+  /** 将 patch value 转换为长度、类型和不可逆摘要。 */
+  private summarizePatchValue(value: unknown): Record<string, unknown> {
+    return {
+      type: Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value,
+      length: typeof value === 'string' || Array.isArray(value) ? value.length : undefined,
+      digest: digestDiagnosticValue(value)
+    };
   }
 }

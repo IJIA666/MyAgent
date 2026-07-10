@@ -170,4 +170,59 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
       expect(config.runtimeLimits.subAgentTimeoutMs).toBe(60000);
     });
   });
+
+  describe('诊断数据治理配置测试', () => {
+    it('缺省时启用 operational/audit、关闭 replay，并使用 7 天/20 文件默认保留值', () => {
+      const config = loadConfig({
+        AGENT_LLM_API_KEY: 'mock-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash'
+      });
+
+      expect(config.diagnostics).toMatchObject({
+        operationalEnabled: true,
+        auditEnabled: true,
+        replayEnabled: false,
+        traceRetentionDays: 7,
+        traceRetentionSessions: 20,
+        auditRetentionDays: 7,
+        auditRetentionSessions: 20
+      });
+    });
+
+    it('应解析显式 replay、用户 pattern，并将 retention 限制在 30 天/100 文件以内', () => {
+      const config = loadConfig({
+        AGENT_LLM_API_KEY: 'mock-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash',
+        AGENT_DIAGNOSTIC_REPLAY: 'true',
+        AGENT_DIAGNOSTIC_PATTERNS: '["private-[0-9]+"]',
+        AGENT_TRACE_RETENTION_DAYS: '90',
+        AGENT_TRACE_RETENTION_SESSIONS: '200',
+        AGENT_AUDIT_RETENTION_DAYS: '2',
+        AGENT_AUDIT_RETENTION_SESSIONS: '5'
+      });
+
+      expect(config.diagnostics.replayEnabled).toBe(true);
+      expect(config.diagnostics.customPatterns).toEqual(['private-[0-9]+']);
+      expect(config.diagnostics.traceRetentionDays).toBe(30);
+      expect(config.diagnostics.traceRetentionSessions).toBe(100);
+      expect(config.diagnostics.auditRetentionDays).toBe(2);
+      expect(config.diagnostics.auditRetentionSessions).toBe(5);
+    });
+
+    it('非法 replay、retention 和 pattern 配置应安全回退且不阻断旧配置迁移', () => {
+      const config = loadConfig({
+        AGENT_LLM_API_KEY: 'mock-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash',
+        AGENT_DIAGNOSTIC_REPLAY: 'not-a-boolean',
+        AGENT_DIAGNOSTIC_PATTERNS: '["["]',
+        AGENT_TRACE_RETENTION_DAYS: '-1',
+        AGENT_AUDIT_RETENTION_SESSIONS: 'not-a-number'
+      });
+
+      expect(config.diagnostics.replayEnabled).toBe(false);
+      expect(config.diagnostics.customPatterns).toEqual([]);
+      expect(config.diagnostics.traceRetentionDays).toBe(7);
+      expect(config.diagnostics.auditRetentionSessions).toBe(20);
+    });
+  });
 });

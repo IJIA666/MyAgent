@@ -52,6 +52,16 @@ export function createMockAppConfig(custom?: Partial<AppConfig>): AppConfig {
       modelTimeoutMs: 60000,
       subAgentTimeoutMs: 60000,
     },
+    diagnostics: {
+      operationalEnabled: true,
+      auditEnabled: true,
+      replayEnabled: false,
+      customPatterns: [],
+      traceRetentionDays: 7,
+      traceRetentionSessions: 20,
+      auditRetentionDays: 7,
+      auditRetentionSessions: 20,
+    },
     ...custom,
   };
 }

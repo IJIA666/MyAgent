@@ -249,7 +249,7 @@ ${historyText}
 
     // 3. 实例化专用的沙箱追踪器
     const subBaseDir = this.appConfig ? this.appConfig.workspace : process.cwd();
-    const subTracer = new AgentTracer(subBaseDir, subContext.getSessionId());
+    const subTracer = new AgentTracer(subBaseDir, subContext.getSessionId(), this.appConfig?.diagnostics);
 
     // 4. 初始化空的 PluginRegistry
     const emptyPluginRegistry = new PluginRegistry();

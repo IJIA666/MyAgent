@@ -3,9 +3,11 @@ import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
 import {
   hydrateTraceContext,
   normalizeTraceContent,
+  TRACE_FORMAT_VERSION,
   type TraceConversationMessage,
   type TraceCanonicalSystemMessage,
   type TraceContextEntry,
+  type TraceCaptureMode,
   type TraceIterationRecord,
   type TraceLegacyIterationRecord,
   type TraceMetaRecord,
@@ -82,7 +84,30 @@ export class TraceReader {
     record: TraceIterationRecord,
     promptDefinitions: Map<string, TracePromptDefinitionRecord>
   ): ChatMessage[] {
+    if (!this.canHydrateIteration(record)) {
+      throw new Error('Metadata-only trace does not contain replayable context');
+    }
     return hydrateTraceContext(record.context, promptDefinitions);
+  }
+
+  /**
+   * 判断 iteration 是否包含可完整回放的上下文。
+   *
+   * @param record - trace iteration 记录
+   * @returns replay 模式返回 true，metadata-only 返回 false
+   */
+  public canHydrateIteration(record: TraceIterationRecord): boolean {
+    return record.captureMode === 'replay';
+  }
+
+  /**
+   * 获取记录声明的采集模式。
+   *
+   * @param record - 任意已规范化 trace 记录
+   * @returns 记录的采集模式
+   */
+  public getCaptureMode(record: TraceRecord): TraceCaptureMode {
+    return record.captureMode;
   }
 
   /**
@@ -113,6 +138,8 @@ export class TraceReader {
       }
       return {
         type: 'meta',
+        captureMode: this.normalizeCaptureMode(record.captureMode),
+        captureVersion: this.normalizeCaptureVersion(record.captureVersion),
         sessionId: record.sessionId,
         startTime: record.startTime,
         model: record.model,
@@ -127,6 +154,8 @@ export class TraceReader {
       }
       return {
         type: 'prompt_definition',
+        captureMode: 'replay',
+        captureVersion: this.normalizeCaptureVersion(record.captureVersion),
         sessionId: record.sessionId,
         promptId: record.promptId,
         systemPromptHash: record.systemPromptHash,
@@ -143,6 +172,8 @@ export class TraceReader {
       }
       return {
         type: 'iteration',
+        captureMode: this.normalizeCaptureMode(record.captureMode),
+        captureVersion: this.normalizeCaptureVersion(record.captureVersion),
         sessionId: record.sessionId,
         timestamp: record.timestamp,
         iteration: record.iteration,
@@ -152,7 +183,11 @@ export class TraceReader {
         tool_calls: Array.isArray(record.tool_calls) ? (record.tool_calls as TraceIterationRecord['tool_calls']) : undefined,
         estimated_tokens: this.normalizeEstimatedTokens(record.estimated_tokens),
         actual_tokens: this.normalizeActualTokens(record.actual_tokens),
-        systemPromptHash: record.systemPromptHash
+        systemPromptHash: record.systemPromptHash,
+        contextEntryCount: typeof record.contextEntryCount === 'number' ? record.contextEntryCount : undefined,
+        contentLength: typeof record.contentLength === 'number' ? record.contentLength : undefined,
+        reasoningLength: typeof record.reasoningLength === 'number' ? record.reasoningLength : undefined,
+        toolCallCount: typeof record.toolCallCount === 'number' ? record.toolCallCount : undefined
       } satisfies TraceIterationRecord;
     }
 
@@ -179,6 +214,8 @@ export class TraceReader {
       }
     return {
       type: 'legacy_iteration',
+      captureMode: this.normalizeCaptureMode(record.captureMode),
+      captureVersion: this.normalizeCaptureVersion(record.captureVersion),
       sessionId: record.sessionId,
       timestamp: record.timestamp,
       iteration: record.iteration,
@@ -318,6 +355,18 @@ export class TraceReader {
       return undefined;
     }
     return value as TraceIterationRecord['actual_tokens'];
+  }
+
+  /** 历史记录未声明模式时视为完整 trace，保证旧文件继续可 hydration。 */
+  private normalizeCaptureMode(value: unknown): TraceCaptureMode {
+    return value === 'metadata-only' ? 'metadata-only' : 'replay';
+  }
+
+  /** 历史记录未声明版本时使用兼容版本 1。 */
+  private normalizeCaptureVersion(value: unknown): number {
+    return typeof value === 'number' && Number.isInteger(value) && value > 0
+      ? value
+      : TRACE_FORMAT_VERSION - 1;
   }
 
   /**

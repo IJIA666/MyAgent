@@ -153,5 +153,44 @@ describe('TraceReader', () => {
       { role: 'system', content: 'sys' },
       { role: 'user', content: 'hi' }
     ]);
+    expect(reader.getCaptureMode(legacy)).toBe('replay');
+  });
+
+  it('should diagnose metadata-only traces without treating them as replayable context', async () => {
+    const filePath = path.join(tempDir, 'metadata-only.jsonl');
+    fs.writeFileSync(filePath, [
+      JSON.stringify({
+        type: 'meta',
+        captureMode: 'metadata-only',
+        captureVersion: 2,
+        sessionId: 'metadata-session',
+        startTime: '2026-07-02T00:00:00.000Z',
+        model: 'gpt-test',
+        initialSystemPromptHash: 'hash-metadata'
+      }),
+      JSON.stringify({
+        type: 'iteration',
+        captureMode: 'metadata-only',
+        captureVersion: 2,
+        sessionId: 'metadata-session',
+        timestamp: '2026-07-02T00:00:01.000Z',
+        iteration: 1,
+        context: [],
+        contextEntryCount: 3,
+        contentLength: 20,
+        reasoningLength: 10,
+        toolCallCount: 1,
+        systemPromptHash: 'hash-metadata'
+      })
+    ].join('\n'), 'utf-8');
+
+    const records = await reader.readTrace(filePath);
+    const iteration = records[1];
+    if (iteration.type !== 'iteration') {
+      throw new Error('Unexpected trace record type');
+    }
+    expect(reader.getCaptureMode(iteration)).toBe('metadata-only');
+    expect(reader.canHydrateIteration(iteration)).toBe(false);
+    expect(() => reader.hydrateIterationContext(iteration, new Map())).toThrow(/metadata-only/i);
   });
 });

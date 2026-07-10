@@ -15,11 +15,19 @@ export type TraceRecord =
   | TraceIterationRecord
   | TraceLegacyIterationRecord;
 
+/** 当前 trace 记录声明的内容采集模式。 */
+export type TraceCaptureMode = 'metadata-only' | 'replay';
+
+/** 新 trace 记录格式版本，历史记录由 reader 按兼容规则补齐为 1。 */
+export const TRACE_FORMAT_VERSION = 2;
+
 /**
  * Trace 文件头部元信息记录。
  */
 export interface TraceMetaRecord {
   type: 'meta';
+  captureMode: TraceCaptureMode;
+  captureVersion: number;
   sessionId: string;
   startTime: string;
   model: string;
@@ -41,6 +49,8 @@ export interface TraceCanonicalSystemMessage {
  */
 export interface TracePromptDefinitionRecord {
   type: 'prompt_definition';
+  captureMode: 'replay';
+  captureVersion: number;
   sessionId: string;
   promptId: string;
   systemPromptHash: string;
@@ -86,6 +96,8 @@ export interface TraceConversationMessage {
  */
 export interface TraceIterationRecord {
   type: 'iteration';
+  captureMode: TraceCaptureMode;
+  captureVersion: number;
   sessionId: string;
   timestamp: string;
   iteration: number;
@@ -107,6 +119,14 @@ export interface TraceIterationRecord {
   };
   actual_tokens?: ApiUsage;
   systemPromptHash: string;
+  /** metadata-only 记录保留的原始上下文条目数量。 */
+  contextEntryCount?: number;
+  /** metadata-only 记录保留的正文长度统计。 */
+  contentLength?: number;
+  /** metadata-only 记录保留的 reasoning 长度统计。 */
+  reasoningLength?: number;
+  /** metadata-only 记录保留的工具调用数量。 */
+  toolCallCount?: number;
 }
 
 /**
@@ -114,6 +134,8 @@ export interface TraceIterationRecord {
  */
 export interface TraceLegacyIterationRecord {
   type: 'legacy_iteration';
+  captureMode: TraceCaptureMode;
+  captureVersion: number;
   sessionId: string;
   timestamp: string;
   iteration: number;
@@ -134,6 +156,31 @@ export interface TraceLegacyIterationRecord {
     history: number;
   };
   actual_tokens?: ApiUsage;
+}
+
+/**
+ * 将完整 iteration 转换为不含正文和工具载荷的 metadata-only 记录。
+ *
+ * @param record - 内存中的完整 iteration 记录
+ * @returns 可用于默认诊断的安全 metadata 记录
+ */
+export function buildMetadataOnlyIterationRecord(record: TraceIterationRecord): TraceIterationRecord {
+  return {
+    type: 'iteration',
+    captureMode: 'metadata-only',
+    captureVersion: TRACE_FORMAT_VERSION,
+    sessionId: record.sessionId,
+    timestamp: record.timestamp,
+    iteration: record.iteration,
+    context: [],
+    estimated_tokens: record.estimated_tokens,
+    actual_tokens: record.actual_tokens,
+    systemPromptHash: record.systemPromptHash,
+    contextEntryCount: record.context.length,
+    contentLength: record.content?.length ?? 0,
+    reasoningLength: record.reasoning?.length ?? 0,
+    toolCallCount: record.tool_calls?.length ?? 0
+  };
 }
 
 /**

@@ -119,6 +119,44 @@ export interface McpConfig {
  */
 export type WorkMode = 'Safe' | 'Auto' | 'YOLO' | 'Plan';
 
+/** 诊断制品允许使用的内容采集策略。 */
+export type DiagnosticPolicy = 'operational' | 'audit' | 'replay';
+
+/** 由诊断治理模块接管的三类本地制品。 */
+export type DiagnosticArtifact = 'run-log' | 'trace' | 'audit';
+
+/** 诊断数据采集、脱敏与保留边界配置。 */
+export interface DiagnosticDataConfig {
+  /** 是否写入 operational 运行诊断数据。 */
+  operationalEnabled: boolean;
+  /** 是否写入 audit 审计数据。 */
+  auditEnabled: boolean;
+  /** 是否显式开启包含回放正文的 trace。 */
+  replayEnabled: boolean;
+  /** 用户追加的文本脱敏正则表达式。 */
+  customPatterns: string[];
+  /** trace 文件按最后修改时间保留的最长天数。 */
+  traceRetentionDays: number;
+  /** trace 文件允许保留的最大会话文件数。 */
+  traceRetentionSessions: number;
+  /** audit 文件按最后修改时间保留的最长天数。 */
+  auditRetentionDays: number;
+  /** audit 文件允许保留的最大会话文件数。 */
+  auditRetentionSessions: number;
+}
+
+/** 诊断治理的安全默认值。 */
+export const DEFAULT_DIAGNOSTIC_DATA_CONFIG: Readonly<DiagnosticDataConfig> = Object.freeze({
+  operationalEnabled: true,
+  auditEnabled: true,
+  replayEnabled: false,
+  customPatterns: Object.freeze([]) as unknown as string[],
+  traceRetentionDays: 7,
+  traceRetentionSessions: 20,
+  auditRetentionDays: 7,
+  auditRetentionSessions: 20
+});
+
 /**
  * 应用全局配置的聚合对象。
  * 由 loadConfig() 一次性构建并冻结，贯穿整个应用生命周期。
@@ -138,6 +176,8 @@ export interface AppConfig {
   enablePlanToolStripping?: boolean;
   /** 运行资源与行为限制配置 */
   runtimeLimits: RuntimeLimitsConfig;
+  /** 运行日志、trace 与 audit 的诊断治理配置。 */
+  diagnostics: DiagnosticDataConfig;
 }
 
 /**

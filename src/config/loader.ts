@@ -10,13 +10,18 @@ import { existsSync, copyFileSync, readFileSync, writeFileSync, realpathSync } f
 import { config as dotenvConfig } from 'dotenv';
 
 
-import { AppConfig, McpConfig, WorkMode, EmbeddingConfig } from './types.js';
+import { AppConfig, McpConfig, WorkMode, EmbeddingConfig, DiagnosticDataConfig, DEFAULT_DIAGNOSTIC_DATA_CONFIG } from './types.js';
 import { getModelConfig } from './models.js';
 import { getRuntimeEnv, interpolateEnvVars } from './env.js';
-import { logger } from '../utils/logger.js';
+import { logger, setDiagnosticSanitizerPatterns } from '../utils/logger.js';
+import { validateDiagnosticPatterns } from '../utils/diagnostic-sanitizer.js';
 
 /** Node.js 定时器稳定支持的最大延迟，单位为毫秒。 */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+/** 诊断 trace/audit 保留天数的安全上限。 */
+const MAX_DIAGNOSTIC_RETENTION_DAYS = 30;
+/** 诊断 trace/audit 会话文件数的安全上限。 */
+const MAX_DIAGNOSTIC_RETENTION_SESSIONS = 100;
 
 /**
  * 检查配置文件是否存在，缺失时从 .example 模板自动复制。
@@ -118,6 +123,87 @@ function parseEnvFloat(val: string | undefined, defaultValue: number): number {
   return isNaN(parsed) ? defaultValue : parsed;
 }
 
+/** 解析严格的布尔环境变量，非法值使用安全默认值且不回显原文。 */
+function parseEnvBoolean(val: string | undefined, defaultValue: boolean): boolean {
+  if (val === undefined || val.trim() === '') {
+    return defaultValue;
+  }
+  const normalized = val.trim().toLowerCase();
+  if (normalized === 'true') {
+    return true;
+  }
+  if (normalized === 'false') {
+    return false;
+  }
+  logger.warn('[配置] 诊断布尔配置非法，已采用安全默认值。', {
+    component: 'config',
+    event: 'diagnostic_config_invalid'
+  });
+  return defaultValue;
+}
+
+/** 解析并限制诊断保留数量，错误日志不包含用户原始配置值。 */
+function parseDiagnosticRetention(
+  val: string | undefined,
+  defaultValue: number,
+  maximum: number,
+  label: string
+): number {
+  const parsed = parseEnvInt(val, defaultValue);
+  if (parsed <= 0) {
+    logger.warn(`[配置] ${label} 保留配置非法，已采用安全默认值。`, {
+      component: 'config',
+      event: 'diagnostic_retention_invalid'
+    });
+    return defaultValue;
+  }
+  if (parsed > maximum) {
+    logger.warn(`[配置] ${label} 保留配置超过安全上限，已限制到上限。`, {
+      component: 'config',
+      event: 'diagnostic_retention_capped'
+    });
+    return maximum;
+  }
+  return parsed;
+}
+
+/** 解析 JSON 数组形式的用户脱敏 pattern，失败时回退为空列表。 */
+function parseDiagnosticPatterns(val: string | undefined): string[] {
+  if (val === undefined || val.trim() === '') {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(val) as unknown;
+    if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === 'string')) {
+      throw new Error('unsupported pattern shape');
+    }
+    validateDiagnosticPatterns(parsed);
+    return [...parsed];
+  } catch {
+    logger.warn('[配置] 诊断脱敏 pattern 配置非法，已忽略该配置。', {
+      component: 'config',
+      event: 'diagnostic_pattern_invalid'
+    });
+    return [];
+  }
+}
+
+/** 解析诊断治理配置并固定三类制品的默认策略。 */
+function loadDiagnosticConfig(env: Record<string, string | undefined>): DiagnosticDataConfig {
+  const diagnostics = {
+    operationalEnabled: DEFAULT_DIAGNOSTIC_DATA_CONFIG.operationalEnabled,
+    auditEnabled: DEFAULT_DIAGNOSTIC_DATA_CONFIG.auditEnabled,
+    replayEnabled: parseEnvBoolean(env.AGENT_DIAGNOSTIC_REPLAY, DEFAULT_DIAGNOSTIC_DATA_CONFIG.replayEnabled),
+    customPatterns: parseDiagnosticPatterns(env.AGENT_DIAGNOSTIC_PATTERNS),
+    traceRetentionDays: parseDiagnosticRetention(env.AGENT_TRACE_RETENTION_DAYS, 7, MAX_DIAGNOSTIC_RETENTION_DAYS, 'trace 天数'),
+    traceRetentionSessions: parseDiagnosticRetention(env.AGENT_TRACE_RETENTION_SESSIONS, 20, MAX_DIAGNOSTIC_RETENTION_SESSIONS, 'trace 会话数'),
+    auditRetentionDays: parseDiagnosticRetention(env.AGENT_AUDIT_RETENTION_DAYS, 7, MAX_DIAGNOSTIC_RETENTION_DAYS, 'audit 天数'),
+    auditRetentionSessions: parseDiagnosticRetention(env.AGENT_AUDIT_RETENTION_SESSIONS, 20, MAX_DIAGNOSTIC_RETENTION_SESSIONS, 'audit 会话数')
+  };
+  setDiagnosticSanitizerPatterns(diagnostics.customPatterns);
+  return diagnostics;
+}
+
 /**
  * 应用配置加载主入口。
  * 支持环境变量的依赖注入，隔离物理 dotenv 读写文件副作用。
@@ -175,6 +261,7 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   const subAgentTimeoutMs = parseEnvTimeoutMs(env.AGENT_SUB_AGENT_TIMEOUT_MS, 60000);
   const excludeDirsStr = env.AGENT_SEARCH_EXCLUDE || '.git,node_modules,.venv,.myagent';
   const excludeDirs = excludeDirsStr.split(',').map((d: string) => d.trim()).filter(Boolean);
+  const diagnostics = loadDiagnosticConfig(env);
 
   // 加载 Embedding 配置（支持独立环境变量配置，并高保真向 LLM 配置降级）
   const envEmbeddingApiKey = env.AGENT_EMBEDDING_API_KEY;
@@ -228,7 +315,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
       modelTimeoutMs,
       subAgentTimeoutMs,
       excludeDirs,
-    }
+    },
+    diagnostics
   };
 
 
@@ -238,6 +326,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   Object.freeze(config.embedding);
   Object.freeze(config.mcp);
   Object.freeze(config.runtimeLimits);
+  Object.freeze(config.diagnostics);
+  Object.freeze(config.diagnostics.customPatterns);
   // mcpServers 内的每个 entry 也需要冻结
   if (config.mcp.mcpServers) {
     Object.freeze(config.mcp.mcpServers);

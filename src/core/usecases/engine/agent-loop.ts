@@ -23,6 +23,7 @@ import {
   buildCanonicalSystemMessages,
   buildTraceContextEntries,
   computeSystemPromptHash,
+  TRACE_FORMAT_VERSION,
   type TraceMetaRecord,
   type TracePromptDefinitionRecord
 } from '../../domain/trace-format.js';
@@ -282,6 +283,8 @@ export class AgentLoop {
         if (this.lastSystemPromptHash !== traceSystemPromptHash) {
           const promptDefinition: TracePromptDefinitionRecord = {
             type: 'prompt_definition',
+            captureMode: 'replay',
+            captureVersion: TRACE_FORMAT_VERSION,
             sessionId: traceSessionId,
             promptId: traceSystemPromptHash,
             systemPromptHash: traceSystemPromptHash,
@@ -294,6 +297,8 @@ export class AgentLoop {
           if (!this.lastSystemPromptHash) {
             const metaRecord: TraceMetaRecord = {
               type: 'meta',
+              captureMode: tracer.getCaptureMode(),
+              captureVersion: TRACE_FORMAT_VERSION,
               sessionId: traceSessionId,
               startTime: new Date().toISOString(),
               model: llmConfig.model,
@@ -501,6 +506,8 @@ export class AgentLoop {
             const traceContext = buildTraceContextEntries(finalRequestMessages as ChatMessage[], traceSystemPromptHash);
             tracer.logIteration({
               type: 'iteration',
+              captureMode: tracer.getCaptureMode(),
+              captureVersion: TRACE_FORMAT_VERSION,
               sessionId: traceSessionId,
               timestamp: new Date().toISOString(),
               iteration,
@@ -563,6 +570,8 @@ export class AgentLoop {
             const traceContext = buildTraceContextEntries(finalRequestMessages as ChatMessage[], traceSystemPromptHash);
             tracer.logIteration({
               type: 'iteration',
+              captureMode: tracer.getCaptureMode(),
+              captureVersion: TRACE_FORMAT_VERSION,
               sessionId: traceSessionId,
               timestamp: new Date().toISOString(),
               iteration,

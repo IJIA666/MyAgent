@@ -130,7 +130,16 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.driver = driver;
     const baseDir = appConfig.workspace;
     // 实例化主跟踪仪，支持沙箱环境变量重定向
-    this.tracer = new AgentTracer(baseDir, this.context.getSessionId());
+    this.tracer = new AgentTracer(baseDir, this.context.getSessionId(), appConfig.diagnostics);
+    if (appConfig.diagnostics.replayEnabled) {
+      logger.warn('[诊断] replay_mode_enabled', {
+        component: 'diagnostic_governance',
+        event: 'replay_mode_enabled',
+        sessionId: this.context.getSessionId(),
+        retentionDays: appConfig.diagnostics.traceRetentionDays,
+        retentionSessions: appConfig.diagnostics.traceRetentionSessions
+      });
+    }
     this.contextAdapter = contextAdapter;
 
     this.memoryService = new MemoryService(
@@ -314,7 +323,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     if (success) {
       const baseDir = this.context.appConfig ? this.context.appConfig.workspace : process.cwd();
       // 状态恢复成功后，重置跟踪记录仪以绑定新的 Session ID 目录
-      this.tracer = new AgentTracer(baseDir, this.context.getSessionId());
+      this.tracer = new AgentTracer(baseDir, this.context.getSessionId(), this.context.appConfig?.diagnostics);
       this.agentLoop.resetTraceState();
     }
     return success;
