@@ -274,7 +274,7 @@ ${historyText}
       maxIterations: 3
     });
 
-    const subAgentTimeoutMs = this.appConfig?.runtimeLimits?.subAgentTimeoutMs ?? 60000;
+    const subAgentTimeoutMs = this.appConfig.runtimeLimits.subAgentTimeoutMs;
     const subAgentAC = new AbortController();
     const timeoutId = setTimeout(() => {
       subAgentAC.abort(new Error('SubAgentIntrospectionTimeout'));

@@ -320,7 +320,10 @@ export class AgentLoop {
               yield mockResponse as LlmStreamEvent;
             })() as unknown as AsyncGenerator<LlmStreamEvent, void, unknown>;
           } else {
-            const modelTimeoutMs = this.context.appConfig?.runtimeLimits?.modelTimeoutMs ?? 60000;
+            if (!this.context.appConfig) {
+              throw new Error('[AgentLoop] 配置未注入：appConfig 为空，无法获取模型调用超时。请确保在进入 AgentLoop 前已正确注入配置。');
+            }
+            const modelTimeoutMs = this.context.appConfig.runtimeLimits.modelTimeoutMs;
             const localTimeoutSignal = AbortSignal.timeout(modelTimeoutMs);
             let combinedSignal = localTimeoutSignal;
  

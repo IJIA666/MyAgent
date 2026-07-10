@@ -48,6 +48,9 @@ export function createMockAppConfig(custom?: Partial<AppConfig>): AppConfig {
       compactionTriggerDelta: 5000,
       compactionFailureLimit: 3,
       compactionRecentFilesLimit: 5,
+      toolTimeoutMs: 30000,
+      modelTimeoutMs: 60000,
+      subAgentTimeoutMs: 60000,
     },
     ...custom,
   };

@@ -15,6 +15,9 @@ import { getModelConfig } from './models.js';
 import { getRuntimeEnv, interpolateEnvVars } from './env.js';
 import { logger } from '../utils/logger.js';
 
+/** Node.js 定时器稳定支持的最大延迟，单位为毫秒。 */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 /**
  * 检查配置文件是否存在，缺失时从 .example 模板自动复制。
  * 处理 .env 和 mcp_config.json 两个配置文件。
@@ -88,6 +91,19 @@ function parseEnvInt(val: string | undefined, defaultValue: number): number {
 }
 
 /**
+ * 解析可安全传给 Node.js 定时器的正整数毫秒值。
+ *
+ * @param val - 待解析的环境变量值
+ * @param defaultValue - 缺失、非法或超出范围时使用的默认值
+ * @returns 位于 Node.js 定时器安全范围内的正整数毫秒值
+ */
+function parseEnvTimeoutMs(val: string | undefined, defaultValue: number): number {
+  const parsed = parseEnvInt(val, defaultValue);
+  // Node.js 定时器超过 32 位有符号整数范围时会发生溢出或被缩短为极小延迟。
+  return parsed > 0 && parsed <= MAX_TIMER_DELAY_MS ? parsed : defaultValue;
+}
+
+/**
  * 安全解析浮点数环境变量，解析失败或为空时退化到指定的默认值。
  *
  * @param val - 待解析的环境变量值
@@ -155,6 +171,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   const compactionFailureLimit = parseEnvInt(env.AGENT_COMPACTION_FAILURE_LIMIT, 3);
   const compactionRecentFilesLimit = parseEnvInt(env.AGENT_COMPACTION_RECENT_FILES_LIMIT, 5);
   const toolTimeoutMs = parseEnvInt(env.AGENT_TOOL_TIMEOUT_MS, 30000);
+  const modelTimeoutMs = parseEnvTimeoutMs(env.AGENT_MODEL_TIMEOUT_MS, 60000);
+  const subAgentTimeoutMs = parseEnvTimeoutMs(env.AGENT_SUB_AGENT_TIMEOUT_MS, 60000);
   const excludeDirsStr = env.AGENT_SEARCH_EXCLUDE || '.git,node_modules,.venv,.myagent';
   const excludeDirs = excludeDirsStr.split(',').map((d: string) => d.trim()).filter(Boolean);
 
@@ -207,6 +225,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
       compactionFailureLimit,
       compactionRecentFilesLimit,
       toolTimeoutMs,
+      modelTimeoutMs,
+      subAgentTimeoutMs,
       excludeDirs,
     }
   };

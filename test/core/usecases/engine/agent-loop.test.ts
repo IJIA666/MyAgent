@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AgentLoop } from '../../../../src/core/usecases/engine/agent-loop.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
-import { AppConfig, LlmConfig } from '../../../../src/config/index.js';
+import { LlmConfig } from '../../../../src/config/index.js';
 import type { LlmPort, LlmStreamEvent, ChatMessage } from '../../../../src/ports/driven/llm/LlmPort.js';
 import type { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
 import type { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdapter.js';
@@ -12,6 +12,7 @@ import type { CompactionService } from '../../../../src/core/usecases/brain/Comp
 import { PluginRegistry } from '../../../../src/core/usecases/plugins/plugin-registry.js';
 import { HookEventName, type HookContext } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { AgentTracer } from '../../../../src/core/domain/tracer.js';
+import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 
 describe('AgentLoop 动态安全特性测试', () => {
   let context: SessionContext;
@@ -29,12 +30,9 @@ describe('AgentLoop 动态安全特性测试', () => {
     context.setWorkMode('Plan'); // 设为 Plan 模式
     
     // 设置全局配置
-    context.appConfig = {
-      enablePlanToolStripping: true, // 开启过滤
-      runtimeLimits: {
-        modelTimeoutMs: 1000
-      }
-    } as unknown as AppConfig;
+    const appConfig = createMockAppConfig({ enablePlanToolStripping: true });
+    appConfig.runtimeLimits.modelTimeoutMs = 1000;
+    context.appConfig = appConfig;
 
     // Mock LLM Driver
     mockLlmDriver = {
@@ -78,6 +76,11 @@ describe('AgentLoop 动态安全特性测试', () => {
     };
     mockCompactionService = {};
     pluginRegistry = new PluginRegistry();
+  });
+
+  afterEach(() => {
+    // 确保 AbortSignal.timeout 等全局 spy 不会污染后续测试。
+    vi.restoreAllMocks();
   });
 
   it('1. 应该在 Plan 模式下在发送的最后一条 user 消息末尾注入提醒气泡，且不污染物理 messageHistory', async () => {
@@ -144,12 +147,9 @@ describe('AgentLoop 动态安全特性测试', () => {
   });
 
   it('3. 在 Plan 模式但关闭 enablePlanToolStripping 时，不应该剔除 write 工具', async () => {
-    context.appConfig = {
-      enablePlanToolStripping: false, // 关闭过滤
-      runtimeLimits: {
-        modelTimeoutMs: 1000
-      }
-    } as unknown as AppConfig;
+    const appConfig = createMockAppConfig({ enablePlanToolStripping: false });
+    appConfig.runtimeLimits.modelTimeoutMs = 1000;
+    context.appConfig = appConfig;
 
     const loop = new AgentLoop({
       toolRegistry: mockToolRegistry as unknown as ToolRegistryPort,
@@ -344,5 +344,54 @@ describe('AgentLoop 动态安全特性测试', () => {
     expect(registryMock.callTool).toHaveBeenCalledTimes(2);
     expect(registryMock.callTool).toHaveBeenNthCalledWith(1, 'primaryTool', { value: 'x' }, expect.anything(), undefined, expect.anything(), 'call-primary');
     expect(registryMock.callTool).toHaveBeenNthCalledWith(2, 'tailTool', { from: 'primary' }, expect.anything(), undefined, expect.anything(), expect.any(String));
+  });
+
+  it('7. 当 AgentLoop 到达模型调用边界时缺少 appConfig，应抛出明确的初始化错误', async () => {
+    // 创建一个没有 appConfig 的上下文
+    const noConfigContext = new SessionContext('no-config-session');
+
+    const loop = new AgentLoop({
+      toolRegistry: mockToolRegistry as unknown as ToolRegistryPort,
+      context: noConfigContext,
+      driver: mockLlmDriver as unknown as LlmPort,
+      contextAdapter: mockContextAdapter as unknown as ContextAdapter,
+      ruleManager: mockRuleManager as unknown as RuleManager,
+      contextRepo: mockContextRepo as unknown as ContextRepository,
+      toolDispatcher: mockToolDispatcher as unknown as ToolDispatcher,
+      compactionService: mockCompactionService as unknown as CompactionService,
+      pluginRegistry
+    });
+
+    const tracer = new AgentTracer(process.cwd(), 'test-no-config');
+
+    await expect(async () => {
+      for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as unknown as LlmConfig)) {
+        void event;
+      }
+    }).rejects.toThrow('[AgentLoop] 配置未注入');
+  });
+
+  it('8. 应使用配置的 modelTimeoutMs 创建模型请求超时信号', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+
+    const loop = new AgentLoop({
+      toolRegistry: mockToolRegistry as unknown as ToolRegistryPort,
+      context,
+      driver: mockLlmDriver as unknown as LlmPort,
+      contextAdapter: mockContextAdapter as unknown as ContextAdapter,
+      ruleManager: mockRuleManager as unknown as RuleManager,
+      contextRepo: mockContextRepo as unknown as ContextRepository,
+      toolDispatcher: mockToolDispatcher as unknown as ToolDispatcher,
+      compactionService: mockCompactionService as unknown as CompactionService,
+      pluginRegistry
+    });
+
+    const tracer = new AgentTracer(process.cwd(), 'test-model-timeout');
+    for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as unknown as LlmConfig)) {
+      void event;
+    }
+
+    // beforeEach 中配置的 modelTimeoutMs 为 1000
+    expect(timeoutSpy).toHaveBeenCalledWith(1000);
   });
 });

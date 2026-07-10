@@ -7,7 +7,7 @@ import { CompactionService } from '../../../../src/core/usecases/brain/Compactio
 import { SessionContext } from '../../../../src/core/domain/context.js';
 import type { LlmPort, ChatMessage } from '../../../../src/ports/driven/llm/LlmPort.js';
 import type { ContextRepository } from '../../../../src/core/usecases/brain/ContextRepository.js';
-import type { AppConfig } from '../../../../src/config/index.js';
+import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 
 describe('CompactionService', () => {
   let context: SessionContext;
@@ -17,15 +17,12 @@ describe('CompactionService', () => {
 
   beforeEach(() => {
     context = new SessionContext('test-session');
-    context.appConfig = {
-      workspace: process.cwd(),
-      runtimeLimits: {
-        compactionRetainCount: 2,
-        compactionTriggerDelta: 5000,
-        compactionFailureLimit: 3,
-        compactionRecentFilesLimit: 5
-      }
-    } as unknown as AppConfig;
+    const appConfig = createMockAppConfig({ workspace: process.cwd() });
+    appConfig.runtimeLimits.compactionRetainCount = 2;
+    appConfig.runtimeLimits.compactionTriggerDelta = 5000;
+    appConfig.runtimeLimits.compactionFailureLimit = 3;
+    appConfig.runtimeLimits.compactionRecentFilesLimit = 5;
+    context.appConfig = appConfig;
 
     // Mock LlmPort
     mockLlmPort = {

@@ -207,6 +207,7 @@ describe('MemoryService 单元测试', () => {
         compactionFailureLimit: 3,
         compactionRecentFilesLimit: 5,
         toolTimeoutMs: 1000,
+        modelTimeoutMs: 60000,
         subAgentTimeoutMs: 50 // 仅有 50 毫秒超时
       };
 
