@@ -1,6 +1,7 @@
 import { logger } from '../../utils/logger.js';
 import { EventEmitter } from 'node:events';
 import type { SafetyResource } from '../usecases/security/SafetyResource.js';
+import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabilityPort.js';
 import { buildSystemPrompt } from '../usecases/brain/prompts.js';
 import type { SkillMetadata } from '../usecases/brain/contextLoader.js';
 import { ApprovalService } from '../usecases/security/ApprovalService.js';
@@ -33,7 +34,7 @@ import type { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
  * 1. 维护当前会话的消息历史（Message History）。
  * 2. 管理会话唯一标识（Session ID）。
  */
-export class SessionContext extends EventEmitter implements SessionEventPort {
+export class SessionContext extends EventEmitter implements SessionEventPort, CallCapabilityPort {
   // ── 会话元数据（保留在 façade）──
   private sessionId: string;
   private tenantId: string;

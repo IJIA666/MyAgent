@@ -4,6 +4,8 @@
  */
 
 import type { SessionEventPort } from '../session/SessionEventPort.js';
+import type { CallCapabilityPort } from '../session/CallCapabilityPort.js';
+import type { EventNotificationPort } from '../session/EventNotificationPort.js';
 import type { McpManagerPort } from './McpManagerPort.js';
 import type { ApprovalPort } from '../session/ApprovalPort.js';
 import type { InteractionPort } from '../session/InteractionPort.js';
@@ -53,7 +55,7 @@ export interface ToolRegistryPort {
   callTool(
     functionName: string,
     functionArgs: Record<string, unknown>,
-    sessionContext?: SessionEventPort & ApprovalPort,
+    sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
     toolCallId?: string

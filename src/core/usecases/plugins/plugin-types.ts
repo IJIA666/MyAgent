@@ -10,7 +10,12 @@ import type { AgentPlugin } from '../../../ports/driven/tools/AgentPlugin.js';
 import type { SafetyResource } from '../../../ports/shared/safety-resource.js';
 import type { PortHookContext } from '../../../ports/shared/plugin-types.js';
 import type { ApprovalChoice, ApprovalChoiceId } from '../../../ports/shared/approval-types.js';
+import type { SafetyCheckResult, SafetyOperation } from '../../../ports/shared/tool-policy.js';
+import type { SessionEventPort } from '../../../ports/driven/session/SessionEventPort.js';
+import type { CallCapabilityPort } from '../../../ports/driven/session/CallCapabilityPort.js';
+import type { EventNotificationPort } from '../../../ports/driven/session/EventNotificationPort.js';
 export type { ApprovalChoice, ApprovalChoiceId };
+export type { SafetyCheckResult, SafetyOperation };
 
 /**
  * 大模型请求所需的参数载体。
@@ -74,42 +79,6 @@ export type HookMiddleware = (context: HookContext, next: HookNext) => Promise<v
 export type Plugin = AgentPlugin<HookContext>;
 
 /**
- * 工具安全校验结果契约接口。
- */
-export interface SafetyCheckResult {
-  /** 安全核查状态：通过（pass）、挂起确认（suspend）或拒绝（deny） */
-  status: 'pass' | 'suspend' | 'deny';
-  /** 用于人机审批时向用户展示的警告提示信息 */
-  message?: string;
-  /** 终端工具特有，用于安全白名单持久化的匹配前缀 */
-  safePrefix?: string;
-  /** 文件工具特有，越界读写的物理目标路径（保留向后兼容） */
-  targetPath?: string;
-  /** 新增：原子资源列表，按工具类型正确标注 read/write */
-  resources?: SafetyResource[];
-  /** 标准化安全操作描述，由工具 checkSafety() 向策略层报告操作细节的统一接口 */
-  operation?: SafetyOperation;
-}
-
-/**
- * 标准化安全操作描述契约。
- * 工具 checkSafety() 向策略层报告操作细节的统一接口。
- */
-export interface SafetyOperation {
-  /** 原子资源列表 */
-  resources: SafetyResource[];
-  /** 触发审批的风险原因 */
-  riskReason: string;
-  /** 操作类别 */
-  operationCategory:
-    | 'file-read' | 'file-write' | 'file-edit' | 'file-delete'
-    | 'file-move' | 'file-copy'
-    | 'command-execute';
-  /** 人类可读的操作摘要（用于审批 UI 展示） */
-  summary: string;
-}
-
-/**
  * 审批请求载体接口。
  * 由 ApprovalPolicy 生成，包含审批消息和可信的 choice 列表。
  */
@@ -150,10 +119,12 @@ export type PendingGrant =
 /**
  * 单次工具调用执行期间的隔离上下文。
  * 携带 toolCallId、已领取的授权资源等，解决并发工具调用隔离问题。
+ * sessionContext 的类型为端口层契约 `SessionEventPort & CallCapabilityPort`，
+ * 使工具实现不依赖 core 层具体 `SessionContext` 类型。
  */
 export interface ToolExecutionContext {
-  /** 当前智能体会话上下文 */
-  sessionContext: SessionContext;
+  /** 当前智能体会话上下文（端口层契约视图，包含事件通知能力） */
+  sessionContext: SessionEventPort & CallCapabilityPort & EventNotificationPort;
   /** 本次工具调用的唯一标识符 */
   toolCallId: string;
   /** 调用的工具名称 */

@@ -4,7 +4,13 @@ import { McpToolManager } from './mcp-client.js';
 import { ToolCatalog } from './ToolCatalog.js';
 import { ToolExecutor } from './ToolExecutor.js';
 import { ToolAccessMetadataProvider } from './ToolAccessMetadataProvider.js';
+import { BuiltinToolPolicyAdapter } from './builtin-tool-policy-adapter.js';
+import { ExternalToolPolicyAdapter } from './external-tool-policy-adapter.js';
+import { ToolPolicyRouter } from './tool-policy-router.js';
+import type { ToolPolicyPort } from '../../ports/shared/tool-policy.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
+import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabilityPort.js';
+import type { EventNotificationPort } from '../../ports/driven/session/EventNotificationPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
@@ -25,6 +31,8 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
   private executor: ToolExecutor;
   // 工具访问元数据聚合器（委托资源提取器查询）
   private metadataProvider: ToolAccessMetadataProvider;
+  // 工具策略评估端口（供 HumanApprovalPlugin 注入）
+  public readonly policyPort: ToolPolicyPort;
   // 可选的外部 MCP 工具管理器实例
   public readonly mcpManager?: McpManagerPort;
 
@@ -45,6 +53,16 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     this.executor = new ToolExecutor(this.catalog);
     // 构建元数据聚合器（从工具自带 resourceExtractor 聚合）
     this.metadataProvider = new ToolAccessMetadataProvider(allTools);
+    // 构建策略适配器：内建适配器使用同一批 NativeTool[]，外部适配器使用 MCP 管理端口
+    if (mcpManager) {
+      this.policyPort = new ToolPolicyRouter(
+        new BuiltinToolPolicyAdapter(allTools),
+        new ExternalToolPolicyAdapter(mcpManager),
+      );
+    } else {
+      // 无 MCP 时仅使用内建适配器
+      this.policyPort = new BuiltinToolPolicyAdapter(allTools);
+    }
   }
 
   /**
@@ -79,7 +97,7 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
   public async callTool(
     functionName: string,
     functionArgs: Record<string, unknown>,
-    sessionContext?: SessionEventPort & ApprovalPort,
+    sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
     toolCallId?: string
@@ -98,7 +116,14 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
         toolCallId
       );
     } else if (this.mcpManager) {
-      // 命中外部工具，跨进程分发至对应的 MCP Client 实例
+      // 命中外部工具：先 claim capability，再跨进程分发
+      if (toolCallId && sessionContext) {
+        const claimed = (sessionContext as CallCapabilityPort).claimCapability(toolCallId, functionName, functionArgs);
+        if (claimed === null) {
+          throw new Error(`外部工具 "${functionName}" 调用被拒绝：未找到匹配的授权令牌或令牌已使用`);
+        }
+        // claimed === [] 表示精确调用授权有效但没有路径资源，继续执行
+      }
       return await this.mcpManager.callMcpTool(functionName, functionArgs, signal);
     } else {
       // 异常分支：不存在该工具，阻断调用链路并抛出异常

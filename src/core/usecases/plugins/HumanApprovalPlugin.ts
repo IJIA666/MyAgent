@@ -1,81 +1,77 @@
-import type { Plugin, HookContext, SafetyCheckResult, PendingGrant } from './plugin-types.js';
-import type { SafetyOperation } from './plugin-types.js';
-import { HookEventName } from './plugin-types.js';
-import type { SafetyResource } from '../security/SafetyResource.js';
-import { ApprovalPolicy } from '../security/ApprovalPolicy.js';
-
 /**
  * 通用无状态人机协同审批插件。
  *
  * 核心职责：
- * 1. 基于 NativeTool 统一安全卡关接口契约对工具调用参数进行多态核查。
- * 2. 针对未实现安全审查契约的未知第三方外部工具实施零信任拦截（Default Deny 兜底防线）。
- * 3. 广播挂起事件并原地异步阻塞以等待用户决策，并在授权通过后将状态写入全局 SecurityService。
+ * 1. 通过显式 `ToolPolicyPort` 获取安全评估结果，不再从工具目录探测 `checkSafety`。
+ * 2. 根据 pass / deny / suspend 三分流处理调用。
+ * 3. suspend 路径复用现有 `buildSafetyOperation()`、`ApprovalPolicy.resolve()`
+ *    和 `mapChoiceToEffect()`，不新增策略缓存。
  */
+
+import type { Plugin, HookContext } from './plugin-types.js';
+import type { SafetyOperation, SafetyCheckResult } from '../../../ports/shared/tool-policy.js';
+import type { ToolPolicyCall, ToolPolicyPort } from '../../../ports/shared/tool-policy.js';
+import type { SafetyResource } from '../../../ports/shared/safety-resource.js';
+import type { PendingGrant } from './plugin-types.js';
+import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
+import { HookEventName } from './plugin-types.js';
+import { ApprovalPolicy } from '../security/ApprovalPolicy.js';
+
 export class HumanApprovalPlugin implements Plugin {
   /** 插件在系统内的唯一标识名 */
   public readonly name = 'HumanApprovalPlugin';
-  /** 执行优先级权重 */
+  /** 执行优先级权重（保持原有早执行次序，在 BeforeTool 管线中优先拦截） */
   public readonly weight = 10;
   /** 中央审批策略服务实例 */
   private approvalPolicy: ApprovalPolicy;
+  /** 工具策略评估端口（替代原先的运行时方法探测） */
+  private toolPolicyPort: ToolPolicyPort;
   /** 插件注册的生命周期钩子中间件集合 */
   public readonly hooks = {
     [HookEventName.BeforeTool]: this.beforeToolMiddleware.bind(this)
   };
 
   /**
+   * @param toolPolicyPort - 工具策略评估端口（策略来源唯一入口）
    * @param approvalPolicy - 中央审批策略服务实例
    */
-  constructor(approvalPolicy: ApprovalPolicy) {
+  constructor(toolPolicyPort: ToolPolicyPort, approvalPolicy: ApprovalPolicy) {
+    this.toolPolicyPort = toolPolicyPort;
     this.approvalPolicy = approvalPolicy;
   }
 
   /**
    * BeforeTool 钩子中间件处理逻辑。
    *
+   * 变更内容：安全评估入口从 `'checkSafety' in tool` 运行时探测
+   * 迁移为显式 `ToolPolicyPort.evaluate()` 调用。
+   * 保持现有 pass/deny/suspend 分流及后续授权效果映射不变。
+   *
    * @param context - Hook 阶段的执行上下文
    * @param next - 洋葱管道的下一个中间件回调
    */
-  private async beforeToolMiddleware(context: HookContext, next: () => Promise<void>): Promise<void> {
+  private async beforeToolMiddleware(context: HookContext, next: () => void): Promise<void> {
     const toolCall = context.toolCall;
     if (!toolCall) {
       await next();
       return;
     }
 
-    // 动态获取工具实例的 securityCategory 与安全反射判定
-    const registry = context.toolRegistry as {
-      getTool(name: string): { securityCategory: 'read' | 'write'; name: string } | undefined;
-    } | undefined;
-    const tool = registry ? registry.getTool(toolCall.name) : undefined;
-
     const sessionContext = context.sessionContext;
     const service = sessionContext.approvalService;
 
-    let safetyResult: SafetyCheckResult;
+    // 构造标准化的工具策略调用描述
+    const policyCall: ToolPolicyCall = {
+      toolCallId: toolCall.id ?? '',
+      toolName: toolCall.name,
+      args: toolCall.arguments ?? {},
+    };
 
-    // 安全自决多态校验
-    if (tool && 'checkSafety' in tool) {
-      const safetyTool = tool as unknown as {
-        checkSafety(args: Record<string, unknown>, context?: unknown): Promise<SafetyCheckResult> | SafetyCheckResult;
-      };
-      if (typeof safetyTool.checkSafety === 'function') {
-        safetyResult = await safetyTool.checkSafety(toolCall.arguments, sessionContext);
-      } else {
-        // Default Deny 兜底防御
-        safetyResult = {
-          status: 'suspend',
-          message: `外部或未知工具 "${toolCall.name}" 未定义安全核查契约，默认拦截卡关审批。`
-        };
-      }
-    } else {
-      // Default Deny 兜底防御：未定义契约接口的第三方或未知外部工具一律卡关挂起拦截
-      safetyResult = {
-        status: 'suspend',
-        message: `外部或未知工具 "${toolCall.name}" 未定义安全核查契约，默认拦截卡关审批。`
-      };
-    }
+    // 通过显式策略端口获取安全评估（替代旧 checkSafety 方法探测）
+    const safetyResult: SafetyCheckResult = await this.toolPolicyPort.evaluate(
+      policyCall,
+      sessionContext,
+    );
 
     // 处理安全评估结论
     if (safetyResult.status === 'pass') {
@@ -91,13 +87,16 @@ export class HumanApprovalPlugin implements Plugin {
 
     // 处理挂起审批分支 (suspend)
     if (safetyResult.status === 'suspend') {
-      const toolCallId = context.toolCall?.id;
+      const toolCallId = policyCall.toolCallId;
       const approvalId = `approve_${Math.random().toString(36).substring(2, 9)}`;
 
-      // 组装 SafetyOperation（含旧格式降级兼容，任务 4.6）
-      const operation: SafetyOperation = this.buildSafetyOperation(safetyResult, tool, toolCall.name);
+      // 从工具注册表获取元数据（仅用于 fallback 资源推断，非安全评估来源）
+      const toolMeta = (context.toolRegistry as ToolRegistryPort | undefined)?.getTool(toolCall.name);
 
-      // 委托 ApprovalPolicy 生成受信的审批请求（任务 4.2）
+      // 组装 SafetyOperation（含旧格式降级兼容）
+      const operation: SafetyOperation = this.buildSafetyOperation(safetyResult, toolMeta, toolCall.name);
+
+      // 委托 ApprovalPolicy 生成受信的审批请求
       const approvalRequest = this.approvalPolicy.resolve({
         toolName: toolCall.name,
         toolArgs: toolCall.arguments,
@@ -105,7 +104,7 @@ export class HumanApprovalPlugin implements Plugin {
         workMode: sessionContext.getWorkMode(),
       });
 
-      // 广播 suspend 事件给外部宿主，携带 ApprovalRequest.choices（任务 4.3）
+      // 广播 suspend 事件给外部宿主，携带 ApprovalRequest.choices
       context.emitEvent?.({
         type: 'suspend',
         id: approvalId,
@@ -124,7 +123,7 @@ export class HumanApprovalPlugin implements Plugin {
         return;
       }
 
-      // 原地挂起并等待外部决策，透传 choices 给 UI（任务 1.8）
+      // 原地挂起并等待外部决策，透传 choices 给 UI
       const decision = await service.wait(
         approvalId,
         { name: toolCall.name, arguments: toolCall.arguments },
@@ -147,7 +146,7 @@ export class HumanApprovalPlugin implements Plugin {
 
       const trustedOperation = approvalRequest.operation ?? operation;
 
-      // 委托 ApprovalPolicy 将 choiceId 映射为授权效果（任务 4.4）
+      // 委托 ApprovalPolicy 将 choiceId 映射为授权效果
       const effect = ApprovalPolicy.mapChoiceToEffect(decision.action, trustedOperation, toolCall.name);
 
       // 处理拒绝分支
@@ -159,12 +158,11 @@ export class HumanApprovalPlugin implements Plugin {
         throw haltError;
       }
 
-      // 根据效果类型构造 pendingGrant 或 persistentRuleEffect（任务 4.5）
+      // 根据效果类型构造 pendingGrant 或 persistentRuleEffect
       if (effect.type === 'persistent') {
         context.persistentRuleEffect = effect.payload as { type: 'persistent'; prefix: string };
       } else if (effect.type === 'call' || effect.type === 'session') {
         const grant = effect.payload as PendingGrant;
-        // 注入 toolCallId（mapChoiceToEffect 静态方法无法获取 toolCallId）
         const pendingGrant: PendingGrant = grant.type === 'call'
           ? { type: 'call', toolCallId: toolCallId!, toolName: grant.toolName, resources: grant.resources }
           : { type: 'session', toolCallId: toolCallId!, resources: grant.resources };
@@ -180,10 +178,15 @@ export class HumanApprovalPlugin implements Plugin {
    * 从 SafetyCheckResult 组装 SafetyOperation。
    * 若 checkSafety 已返回 operation 字段则直接使用，
    * 否则从旧格式字段（resources、targetPath、message 等）降级组装。
+   *
+   * @param safetyResult - 安全评估结果
+   * @param toolMeta - 工具元数据（仅用于降级时推断 securityCategory）
+   * @param toolName - 工具名称
+   * @returns 标准化安全操作描述
    */
   private buildSafetyOperation(
     safetyResult: SafetyCheckResult,
-    tool: { securityCategory: 'read' | 'write'; name: string } | undefined,
+    toolMeta: { securityCategory: 'read' | 'write'; name: string } | undefined,
     toolName: string
   ): SafetyOperation {
     // 优先使用工具已返回的标准化 operation
@@ -197,7 +200,7 @@ export class HumanApprovalPlugin implements Plugin {
       : safetyResult.targetPath
         ? [{
             kind: 'path',
-            access: (tool && tool.securityCategory === 'read') ? 'read' : 'write',
+            access: (toolMeta && toolMeta.securityCategory === 'read') ? 'read' : 'write',
             normalizedPath: safetyResult.targetPath
           }]
         : [];
@@ -206,7 +209,7 @@ export class HumanApprovalPlugin implements Plugin {
     let operationCategory: SafetyOperation['operationCategory'];
     if (toolName === 'execute_command') {
       operationCategory = 'command-execute';
-    } else if (tool && tool.securityCategory === 'read') {
+    } else if (toolMeta && toolMeta.securityCategory === 'read') {
       operationCategory = 'file-read';
     } else {
       operationCategory = 'file-write';

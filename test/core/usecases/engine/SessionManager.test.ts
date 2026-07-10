@@ -17,6 +17,12 @@ import type { VectorDbPort } from '../../../../src/ports/driven/db/VectorDbPort.
 import type { EmbeddingPort } from '../../../../src/ports/driven/llm/EmbeddingPort.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 import { ShellQualityCheckAdapter } from '../../../../src/adapters/tools/ShellQualityCheckAdapter.js';
+import type { ToolPolicyPort } from '../../../../src/ports/shared/tool-policy.js';
+
+/** 所有测试共享的 mock ToolPolicyPort — 直接放行所有工具 */
+const mockPolicyPort: ToolPolicyPort = {
+  evaluate: async () => ({ status: 'pass' as const }),
+};
 
 // 使用 vi.hoisted 提前在加载阶段劫持并 mock 掉 child_process.exec 行为，隔离物理执行
 const { mockExecPromisified, execMockFunc } = vi.hoisted(() => {
@@ -102,7 +108,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockContextAdapter,
       mockVectorDb,
       mockEmbedding,
-      createMockAppConfig()
+      createMockAppConfig(),
+      mockPolicyPort,
     );
 
     expect(session.getIsGenerating()).toBe(false);
@@ -164,7 +171,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockContextAdapter,
       mockVectorDb,
       mockEmbedding,
-      createMockAppConfig()
+      createMockAppConfig(),
+      mockPolicyPort,
     );
 
     // 等待事件 complete
@@ -260,7 +268,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockContextAdapter,
       mockVectorDb,
       mockEmbedding,
-      createMockAppConfig()
+      createMockAppConfig(),
+      mockPolicyPort,
     );
 
     await new Promise<void>((resolve, reject) => {
@@ -292,7 +301,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockContextAdapter,
       mockVectorDb,
       mockEmbedding,
-      createMockAppConfig()
+      createMockAppConfig(),
+      mockPolicyPort,
     );
 
     const loop = session['agentLoop'] as unknown as VirtualAgentLoop;
@@ -383,7 +393,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig(), mockPolicyPort
     );
 
     // SessionOpened 应正常完成（无插件 abort）
@@ -399,7 +409,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig(), mockPolicyPort
     );
 
     await session.close();
@@ -420,7 +430,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig(), mockPolicyPort
     );
 
     await session.close();
@@ -441,7 +451,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig(), mockPolicyPort
     );
 
     const firstClosedSpy = vi.fn();

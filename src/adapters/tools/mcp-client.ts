@@ -4,7 +4,7 @@ import { McpConfig, McpServerEntry, buildSubprocessEnv } from '../../config/inde
 import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 import { Readable } from 'node:stream';
 import { execSync } from 'node:child_process';
-import { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
+import { McpManagerPort, McpToolDescriptor } from '../../ports/driven/tools/McpManagerPort.js';
 
 // 系统本地内置文件操作及技能载入工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
 const BUILTIN_TOOL_NAMES = new Set([
@@ -22,6 +22,8 @@ export class McpToolManager implements McpManagerPort {
   private connections = new Map<string, { client: Client, transport: StdioClientTransport }>();
   // 记录工具所属的 Server，用于调用路由
   private toolRouter = new Map<string, string>();
+  /** 工具描述缓存（在 getMcpTools() 时同步建立） */
+  private toolDescriptors = new Map<string, McpToolDescriptor>();
   private isClosed = false;
   // 已加载的 MCP 配置（通过构造函数注入）
   private config: McpConfig;
@@ -211,6 +213,7 @@ export class McpToolManager implements McpManagerPort {
     }
 
     this.toolRouter.clear();
+    this.toolDescriptors.clear();
     const allTools: Record<string, unknown>[] = [];
 
     for (const [serverName, { client }] of this.connections.entries()) {
@@ -230,6 +233,20 @@ export class McpToolManager implements McpManagerPort {
 
           // 记录工具属于哪个 server
           this.toolRouter.set(tool.name, serverName);
+          // 缓存工具描述，供策略端口查询
+          this.toolDescriptors.set(tool.name, {
+            name: tool.name,
+            serverName,
+            annotations: 'annotations' in tool ? (() => {
+              const ann = (tool as Record<string, unknown>).annotations as Record<string, unknown> | undefined;
+              return ann ? {
+                readOnlyHint: ann.readOnlyHint as boolean | undefined,
+                destructiveHint: ann.destructiveHint as boolean | undefined,
+                idempotentHint: ann.idempotentHint as boolean | undefined,
+                openWorldHint: ann.openWorldHint as boolean | undefined,
+              } : undefined;
+            })() : undefined,
+          });
           allTools.push({
             type: "function",
             function: {
@@ -390,6 +407,26 @@ export class McpToolManager implements McpManagerPort {
     for (const tool of response.tools) {
       this.toolRouter.set(tool.name, name);
     }
+  }
+
+  /**
+   * 获取所有已注册 MCP 工具的只读描述列表。
+   * 描述在 getMcpTools() 调用时已同步缓存。
+   *
+   * @returns 工具描述只读数组
+   */
+  public getToolDescriptors(): ReadonlyArray<McpToolDescriptor> {
+    return Array.from(this.toolDescriptors.values());
+  }
+
+  /**
+   * 按名称获取单个 MCP 工具的只读描述。
+   *
+   * @param name - 工具名称
+   * @returns 工具描述，若不存在则返回 undefined
+   */
+  public getToolDescriptor(name: string): McpToolDescriptor | undefined {
+    return this.toolDescriptors.get(name);
   }
 
   /**

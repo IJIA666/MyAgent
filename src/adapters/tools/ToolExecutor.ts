@@ -4,6 +4,8 @@ import { secureResolveWritePath } from './impl/base.js';
 import type { NativeTool, CallToolResult } from './tool-types.js';
 import type { ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
+import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabilityPort.js';
+import type { EventNotificationPort } from '../../ports/driven/session/EventNotificationPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import type { ToolCatalog } from './ToolCatalog.js';
@@ -40,7 +42,7 @@ export class ToolExecutor {
   async execute(
     toolName: string,
     args: Record<string, unknown>,
-    sessionContext?: SessionEventPort & ApprovalPort,
+    sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
     toolCallId?: string
@@ -52,9 +54,10 @@ export class ToolExecutor {
       }
 
       // 构建 ToolExecutionContext（若 toolCallId 存在）
+      // sessionContext 同时满足 SessionEventPort & CallCapabilityPort
       const execContext: ToolExecutionContext | undefined = toolCallId && sessionContext
         ? {
-            sessionContext: sessionContext as unknown as ToolExecutionContext['sessionContext'],
+            sessionContext,
             toolCallId,
             toolName,
             argumentsDigest: computeArgumentsDigest(args),
@@ -64,7 +67,7 @@ export class ToolExecutor {
 
       // 在 execute 前 claim 一次性令牌（匹配 toolCallId + argumentsDigest）
       if (execContext) {
-        const claimed = execContext.sessionContext.claimCapability(toolCallId!, toolName, args);
+        const claimed = sessionContext!.claimCapability(toolCallId!, toolName, args);
         if (claimed) {
           execContext.claimedResources = claimed;
         }
@@ -113,7 +116,7 @@ export class ToolExecutor {
     tool: NativeTool,
     toolName: string,
     args: Record<string, unknown>,
-    sessionContext: SessionEventPort & ApprovalPort
+    sessionContext: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort
   ): Promise<void> {
     let isDangerous = false;
     let warningMsg = '';

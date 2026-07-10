@@ -8,6 +8,7 @@ import type { AskUserAnswer } from '../../../ports/driven/session/InteractionPor
 import type { TokenEstimatorPort, ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
+import type { ToolPolicyPort } from '../../../ports/shared/tool-policy.js';
 import type { ToolAccessMetadataPort } from '../../../ports/driven/tools/ToolAccessMetadataPort.js';
 import { AgentLoop } from './agent-loop.js';
 import type { CliSessionUseCase, CliSkillSummary } from '../../../ports/driving/CliSessionUseCase.js';
@@ -109,6 +110,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     vectorDb: VectorDbPort,
     embedding: EmbeddingPort,
     appConfig: AppConfig,
+    toolPolicyPort: ToolPolicyPort,
     qualityCheckPort?: QualityCheckPort,
     taskAborter?: TaskAborterPort,
     toolAccessMetadata: ToolAccessMetadataPort = {
@@ -170,7 +172,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     for (const [name, extractor] of extractors) {
       approvalPolicy.registerExtractor(name, extractor);
     }
-    this.pluginRegistry.register(new HumanApprovalPlugin(approvalPolicy));
+    this.pluginRegistry.register(new HumanApprovalPlugin(toolPolicyPort, approvalPolicy));
 
     LifecycleManager.register('file-backup-manager', async () => {
       FileBackupManager.cleanup(appConfig.workspace);

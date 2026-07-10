@@ -93,6 +93,7 @@ async function main() {
       vectorDbAdapter,
       embeddingAdapter,
       appConfig,
+      toolRegistry.policyPort,
       qualityCheckAdapter,
       abortSessionTasks,
       toolRegistry

@@ -3,6 +3,24 @@
  * @description MCP 真实服务生命周期与连接管理的输出端口接口契约。
  */
 
+/** MCP 标准 annotations 的端口层只读视图（不导入 MCP SDK 类型） */
+export interface McpToolAnnotations {
+  readonly readOnlyHint?: boolean;
+  readonly destructiveHint?: boolean;
+  readonly idempotentHint?: boolean;
+  readonly openWorldHint?: boolean;
+}
+
+/** 端口层自有 MCP 工具描述类型 */
+export interface McpToolDescriptor {
+  /** 工具名称 */
+  readonly name: string;
+  /** 所属 MCP 服务端名称 */
+  readonly serverName: string;
+  /** 标准 annotations 字段（若有则如实复制） */
+  readonly annotations?: McpToolAnnotations;
+}
+
 export interface McpServerStatus {
   name: string;
   enabled: boolean;
@@ -51,6 +69,22 @@ export interface McpManagerPort {
    * @param signal - 可选的 AbortSignal，用于物理取消工具执行
    */
   callMcpTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
+
+  /**
+   * 获取所有已注册 MCP 工具的只读描述列表。
+   * 描述信息在 getMcpTools() 调用时同步缓存，不重复查询远端。
+   *
+   * @returns 工具描述只读数组
+   */
+  getToolDescriptors(): ReadonlyArray<McpToolDescriptor>;
+
+  /**
+   * 按名称获取单个 MCP 工具的只读描述。
+   *
+   * @param name - 工具名称
+   * @returns 工具描述，若不存在则返回 undefined
+   */
+  getToolDescriptor(name: string): McpToolDescriptor | undefined;
 
   /**
    * 安全断开所有连接并回收子进程。

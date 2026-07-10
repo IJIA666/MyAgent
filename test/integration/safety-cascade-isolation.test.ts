@@ -50,10 +50,17 @@ describe('安全隔离与级联熔断集成测试', () => {
     session.approvalService.setBypassMode(false);
 
     const approvalPolicy = new ApprovalPolicy();
-    const plugin = new HumanApprovalPlugin(approvalPolicy);
+    // 构造 mock ToolPolicyPort，对 writeFile 返回 suspend（模拟旧 checkSafety 探测的 Default Deny 行为）
+    const mockPolicyPort = {
+      evaluate: async (_call: { toolName: string }) => ({
+        status: 'suspend' as const,
+        message: `外部或未知工具 "${_call.toolName}" 未定义安全核查契约，默认拦截卡关审批。`,
+      }),
+    };
+    const plugin = new HumanApprovalPlugin(mockPolicyPort, approvalPolicy);
     const service = session.approvalService;
 
-    // 模拟工具注册表，把 writeFile 工具注册进去
+    // 模拟工具注册表，把 writeFile 工具注册进去（仅用于插件 fallback 元数据查询）
     const mockToolRegistry = {
       getTool: (name: string) => {
         if (name === 'writeFile') {

@@ -1,0 +1,100 @@
+/**
+ * @file 工具策略评估的共享数据契约。
+ * 定义 ToolPolicyCall、SafetyCheckResult、SafetyOperation 等跨层复用的安全类型。
+ * 本文件是 pass/suspend/deny 三分流的单一来源，各层必须消费此处定义的类型，
+ * 不得创建与 status 字段语义重复的第二套决策联合类型。
+ */
+
+import type { SafetyResource } from './safety-resource.js';
+import type { SessionEventPort } from '../driven/session/SessionEventPort.js';
+
+// ── 从 safety-resource.ts re-export ──
+
+export type { SafetyResource };
+
+// ── ToolPolicyCall ──
+
+/**
+ * 进入策略评估的工具调用描述。
+ * 只读数据对象，包含策略端口评估所需的最小调用信息集。
+ */
+export interface ToolPolicyCall {
+  /** 工具调用唯一标识符 */
+  readonly toolCallId: string;
+  /** 工具名称 */
+  readonly toolName: string;
+  /** 本次工具调用的参数键值对 */
+  readonly args: Readonly<Record<string, unknown>>;
+}
+
+// ── ToolPolicyPort ──
+
+/**
+ * 工具安全策略评估输出端口。
+ *
+ * 职责：
+ * 以标准化的 `ToolPolicyCall` 和当前会话事件契约为输入，
+ * 返回统一的 `SafetyCheckResult`，覆盖 pass / suspend / deny 三种结果。
+ *
+ * 实现方（适配器）负责区分工具来源并进行对应的安全判定，
+ * 消费方（如 HumanApprovalPlugin）只通过此端口获取结果，不关心来源。
+ */
+export interface ToolPolicyPort {
+  /**
+   * 评估一次工具调用的安全性。
+   *
+   * @param call - 工具调用描述（只读）
+   * @param sessionContext - 当前会话事件契约，
+   *   传入目的为使工具内建 checkSafety() 可访问会话白名单
+   * @returns 统一的安全校验结果
+   */
+  evaluate(
+    call: ToolPolicyCall,
+    sessionContext: SessionEventPort,
+  ): Promise<SafetyCheckResult>;
+}
+
+// ── SafetyCheckResult ──
+
+/**
+ * 工具安全校验结果契约接口。
+ */
+export interface SafetyCheckResult {
+  /** 安全核查状态：通过（pass）、挂起确认（suspend）或拒绝（deny） */
+  status: 'pass' | 'suspend' | 'deny';
+  /** 用于人机审批时向用户展示的警告提示信息 */
+  message?: string;
+  /** 终端工具特有，用于安全白名单持久化的匹配前缀 */
+  safePrefix?: string;
+  /** 文件工具特有，越界读写的物理目标路径（保留向后兼容） */
+  targetPath?: string;
+  /** 原子资源列表，按工具类型正确标注 read/write */
+  resources?: SafetyResource[];
+  /** 标准化安全操作描述，由工具 checkSafety() 向策略层报告操作细节的统一接口 */
+  operation?: SafetyOperation;
+}
+
+// ── SafetyOperation ──
+
+/** 安全操作类别 */
+export type OperationCategory =
+  | 'file-read' | 'file-write' | 'file-edit' | 'file-delete'
+  | 'file-move' | 'file-copy'
+  | 'command-execute'
+  /** 无可信资源提取器的外部工具调用 */
+  | 'external-tool';
+
+/**
+ * 标准化安全操作描述契约。
+ * 工具 checkSafety() 向策略层报告操作细节的统一接口。
+ */
+export interface SafetyOperation {
+  /** 原子资源列表 */
+  resources: SafetyResource[];
+  /** 触发审批的风险原因 */
+  riskReason: string;
+  /** 操作类别 */
+  operationCategory: OperationCategory;
+  /** 人类可读的操作摘要（用于审批 UI 展示） */
+  summary: string;
+}
