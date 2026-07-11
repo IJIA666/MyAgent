@@ -373,8 +373,8 @@ export function checkDiagnosticConvergence(
     return undefined;
   }
 
-  // 连续 3 次调用无新增证据 → 阻断
-  if (state.stagnantCallCount >= 3) {
+  // 连续 2 次调用无新增证据时与模型提醒同步收敛，避免第三次无效扩散。
+  if (state.stagnantCallCount >= 2) {
     return `诊断已连续 ${state.stagnantCallCount} 次调用无新增证据，必须停止当前方向的扩散，基于已有证据总结或请求用户缩小范围。`;
   }
 

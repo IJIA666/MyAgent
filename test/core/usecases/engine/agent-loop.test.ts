@@ -703,6 +703,7 @@ describe('AgentLoop 动态安全特性测试', () => {
   });
 
   it('14. 诊断最终回答应在流式输出前经过证据质量门禁', async () => {
+    const safeIntroduction = '先说明当前证据边界。';
     const unsupportedClaim = '建议优先清理缓存，可释放约 500MB 空间。';
     context.addMessage({ role: 'user', content: '请诊断磁盘空间占用并给出清理建议。' });
     mockContextAdapter = {
@@ -715,12 +716,13 @@ describe('AgentLoop 动态安全特性测试', () => {
       switchModel: () => {},
       abort: () => {},
       streamChat: vi.fn().mockImplementation(async function* () {
+        yield { type: 'content', content: safeIntroduction } as LlmStreamEvent;
         yield { type: 'content', content: unsupportedClaim } as LlmStreamEvent;
         yield {
           type: 'complete',
-          content: unsupportedClaim,
+          content: safeIntroduction + unsupportedClaim,
           reasoning: '',
-          assistantMessage: { role: 'assistant', content: unsupportedClaim }
+          assistantMessage: { role: 'assistant', content: safeIntroduction + unsupportedClaim }
         } as LlmStreamEvent;
       })
     };
@@ -745,6 +747,9 @@ describe('AgentLoop 动态安全特性测试', () => {
       .filter((event): event is Extract<AgentEvent, { type: 'content' }> => event.type === 'content')
       .map(event => event.content)
       .join('');
+    const contentEvents = events.filter((event): event is Extract<AgentEvent, { type: 'content' }> => event.type === 'content');
+    expect(contentEvents.length).toBeGreaterThanOrEqual(2);
+    expect(contentEvents[0].content).toBe(safeIntroduction);
     expect(output).toContain('待验证');
     expect(output).not.toContain('500MB');
     expect(context.getHistory().at(-1)?.content).toContain('待验证');

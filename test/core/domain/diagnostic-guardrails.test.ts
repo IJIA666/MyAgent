@@ -132,6 +132,18 @@ describe('diagnostic-guardrails 结构化证据判定', () => {
     expect(final.blockedReason).toContain('枚举预算');
   });
 
+  it('连续两次调用无新增证据后应在运行时阻断继续扩散', () => {
+    const state = {
+      ...createDiagnosticTurnState('请帮我诊断磁盘空间占用'),
+      stagnantCallCount: 2,
+    };
+
+    const reservation = reserveDiagnosticToolCall(state, 'listFiles', { targetPath: '.' });
+
+    expect(state.stagnantCallCount).toBe(2);
+    expect(reservation.blockedReason).toContain('必须停止当前方向的扩散');
+  });
+
   describe('对象级证据记录（5.13-5.14）', () => {
     it('parseReadFileEvidence 应解析 sizeBytes 和 lineCount 为 complete，mtimeMs 为 partial', () => {
       const records = parseReadFileEvidence(

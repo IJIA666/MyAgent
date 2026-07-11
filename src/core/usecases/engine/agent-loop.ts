@@ -421,8 +421,29 @@ export class AgentLoop {
         hasToolCalls = false;
         // 格式化后的工具清单集合
         let finalToolCalls: Array<{ name: string, arguments: string, result?: string, error?: string }> = [];
-        // 诊断回答必须先经过确定性质量门禁，再向终端输出，避免无证据主张已经流出后才被修正。
-        const pendingDiagnosticContent: Array<Extract<LlmStreamEvent, { type: 'content' }>> = [];
+        // 诊断回答按完整文本段增量通过质量门禁，兼顾流式体验与无证据主张拦截。
+        let pendingDiagnosticContent = '';
+
+        /** 冲刷已经形成完整语义边界的诊断文本，尾段留待后续 chunk 补全。 */
+        const flushDiagnosticContent = function* (flushRemainder: boolean): Generator<AgentEvent> {
+          const boundaryPattern = /[\n。！？!?]/g;
+          let flushLength = 0;
+          if (flushRemainder) {
+            flushLength = pendingDiagnosticContent.length;
+          } else {
+            for (const match of pendingDiagnosticContent.matchAll(boundaryPattern)) {
+              flushLength = (match.index ?? 0) + match[0].length;
+            }
+          }
+          if (flushLength === 0) return;
+
+          const sourceText = pendingDiagnosticContent.slice(0, flushLength);
+          pendingDiagnosticContent = pendingDiagnosticContent.slice(flushLength);
+          const gateResult = applyDiagnosticQualityGate(sourceText, diagnosticState.evidenceRecords);
+          if (gateResult.sanitizedText.length > 0) {
+            yield { type: 'content', content: gateResult.sanitizedText };
+          }
+        };
 
         // 持续消费解析事件
         for await (const event of stream) {
@@ -430,15 +451,14 @@ export class AgentLoop {
             yield event;
           } else if (event.type === 'content') {
             if (diagnosticState.active) {
-              pendingDiagnosticContent.push(event);
+              pendingDiagnosticContent += event.content;
+              yield* flushDiagnosticContent(false);
             } else {
               yield event;
             }
           } else if (event.type === 'tool_calls') {
             // 工具调用前的内容属于过程说明，不是最终诊断结论，可以按原顺序输出。
-            for (const pendingEvent of pendingDiagnosticContent.splice(0)) {
-              yield pendingEvent;
-            }
+            yield* flushDiagnosticContent(true);
             hasToolCalls = true;
 
             // 触发 AfterModel 钩子，对模型返回的助理消息做拦截和改写
@@ -662,9 +682,8 @@ export class AgentLoop {
                 ...finalAssistantMessage,
                 content: gateResult.sanitizedText,
               };
-              // 诊断最终回答此前被缓冲，此处只输出经过门禁修正的最终文本。
-              pendingDiagnosticContent.length = 0;
-              yield { type: 'content', content: gateResult.sanitizedText };
+              // 正文已按完整文本段增量输出，完成事件仅冲刷未形成边界的尾段。
+              yield* flushDiagnosticContent(true);
             }
             this.context.addMessage(finalAssistantMessage);
 
