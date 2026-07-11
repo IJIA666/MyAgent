@@ -73,6 +73,88 @@ export class HumanApprovalPlugin implements Plugin {
       sessionContext,
     );
 
+    // 【Plan 模式统一策略】基于 planSideEffect 决定 pass/suspend/deny
+    // 仅当工具返回了可信副作用分类时生效；未设置 planSideEffect 的工具走原有流程。
+    const workMode = sessionContext.getWorkMode();
+    const planSideEffect = safetyResult.operation?.planSideEffect;
+    if (workMode === 'Plan' && planSideEffect) {
+      if (planSideEffect === 'read') {
+        // 非敏感可证明安全的只读操作直接放行
+        // 不发射伪 suspend 事件，不暴露内部模式名或副作用分类给模型
+        // 审计日志可通过 context.control.action 记录真实判定
+        await next();
+        return;
+      }
+
+      if (planSideEffect === 'sensitive-read') {
+        // 敏感只读操作进入受限审批：仅提供 call/deny 选项
+        const approvalId = `approve_${Math.random().toString(36).substring(2, 9)}`;
+        const operation: SafetyOperation = safetyResult.operation!;
+
+        const approvalRequest = this.approvalPolicy.resolve({
+          toolName: toolCall.name,
+          toolArgs: toolCall.arguments,
+          operation,
+          workMode,
+        });
+
+        // 强制覆盖为仅 call/deny（无论 ApprovalPolicy 返回什么）
+        const limitedChoices = approvalRequest.choices.filter(c => c.choiceId === 'call' || c.choiceId === 'deny');
+        if (limitedChoices.length === 0) {
+          // 没有可用选项时直接拒绝
+          context.control.action = 'abort';
+          context.control.reason = `[Plan 模式拒绝] 操作 "${toolCall.name}" 被识别为敏感读取，但无可用的审批选项。`;
+          return;
+        }
+
+        context.emitEvent?.({
+          type: 'suspend',
+          id: approvalId,
+          toolCall: { name: toolCall.name, arguments: toolCall.arguments },
+          message: `[Plan 模式受限审批] 工具 "${toolCall.name}" 的副作用分类为 "sensitive-read"，仅允许单次放行或拒绝。`,
+          choices: limitedChoices
+        });
+
+        if (!service) {
+          context.control.action = 'abort';
+          context.control.reason = 'Missing ApprovalService in SessionContext';
+          return;
+        }
+
+        const decision = await service.wait(
+          approvalId,
+          { name: toolCall.name, arguments: toolCall.arguments },
+          undefined,
+          `[Plan 模式受限审批] ${operation.summary}`,
+          300000,
+          sessionContext.getSessionId(),
+          limitedChoices
+        );
+
+        if (decision.action === 'deny') {
+          const haltError = new Error('HaltedByReject: Operation rejected by user in Plan limited approval.');
+          service.rejectBySessionId(sessionContext.getSessionId(), haltError);
+          context.control.action = 'abort';
+          context.control.reason = 'HaltedByReject: Operation rejected by user';
+          throw haltError;
+        }
+
+        // call 类型：注册一次性调用授权
+        const effect = ApprovalPolicy.mapChoiceToEffect(decision.action as 'call' | 'deny', operation, toolCall.name);
+        if (effect.type === 'call') {
+          context.pendingGrant = effect.payload as PendingGrant;
+        }
+
+        await next();
+        return;
+      }
+
+      // write / unknown / hardline → 在 Plan 模式下直接拒绝
+      context.control.action = 'abort';
+      context.control.reason = `[Plan 模式拒绝] 操作 "${toolCall.name}" 的副作用分类为 "${planSideEffect}"，Plan 模式下只允许可证明安全的只读操作。请使用只读文件 API 工具（如 readFile、listFiles、grepSearch）代替。`;
+      return;
+    }
+
     // 处理安全评估结论
     if (safetyResult.status === 'pass') {
       await next();

@@ -30,6 +30,7 @@ import {
   type TracePromptDefinitionRecord
 } from '../../domain/trace-format.js';
 import {
+  applyDiagnosticQualityGate,
   createDiagnosticTurnState,
   reserveDiagnosticToolCall,
   recordDiagnosticToolOutcome,
@@ -420,12 +421,24 @@ export class AgentLoop {
         hasToolCalls = false;
         // 格式化后的工具清单集合
         let finalToolCalls: Array<{ name: string, arguments: string, result?: string, error?: string }> = [];
+        // 诊断回答必须先经过确定性质量门禁，再向终端输出，避免无证据主张已经流出后才被修正。
+        const pendingDiagnosticContent: Array<Extract<LlmStreamEvent, { type: 'content' }>> = [];
 
         // 持续消费解析事件
         for await (const event of stream) {
-          if (event.type === 'thinking' || event.type === 'content') {
+          if (event.type === 'thinking') {
             yield event;
+          } else if (event.type === 'content') {
+            if (diagnosticState.active) {
+              pendingDiagnosticContent.push(event);
+            } else {
+              yield event;
+            }
           } else if (event.type === 'tool_calls') {
+            // 工具调用前的内容属于过程说明，不是最终诊断结论，可以按原顺序输出。
+            for (const pendingEvent of pendingDiagnosticContent.splice(0)) {
+              yield pendingEvent;
+            }
             hasToolCalls = true;
 
             // 触发 AfterModel 钩子，对模型返回的助理消息做拦截和改写
@@ -639,7 +652,20 @@ export class AgentLoop {
               break;
             }
 
-            const finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatMessage;
+            let finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatMessage;
+            if (diagnosticState.active && typeof finalAssistantMessage.content === 'string') {
+              const gateResult = applyDiagnosticQualityGate(
+                finalAssistantMessage.content,
+                diagnosticState.evidenceRecords
+              );
+              finalAssistantMessage = {
+                ...finalAssistantMessage,
+                content: gateResult.sanitizedText,
+              };
+              // 诊断最终回答此前被缓冲，此处只输出经过门禁修正的最终文本。
+              pendingDiagnosticContent.length = 0;
+              yield { type: 'content', content: gateResult.sanitizedText };
+            }
             this.context.addMessage(finalAssistantMessage);
 
             if (event.usage) {

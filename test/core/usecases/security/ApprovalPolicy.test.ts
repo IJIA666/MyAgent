@@ -286,4 +286,81 @@ describe('ApprovalPolicy — 提取器交叉校验', () => {
     });
     expect(choiceIds(result)).toEqual(['call', 'deny']);
   });
+
+  describe('ApprovalPolicy — Plan 模式 choice 过滤', () => {
+    it('Plan 模式下不应出现 session/persistent 选项', () => {
+      const policy = new ApprovalPolicy();
+      // 注册一个路径提取器，使 path+read 资源被正常校验
+      policy.registerExtractor('readFile', (args) => {
+        const path = args.targetPath as string;
+        return path ? [{ kind: 'path', access: 'read', normalizedPath: path }] : [];
+      });
+
+      // path+read 资源在 Safe 模式下产生 [call, session, deny]
+      const safeResult = policy.resolve({
+        toolName: 'readFile',
+        toolArgs: { targetPath: '/workspace/file.txt' },
+        operation: readOp('/workspace/file.txt'),
+        workMode: 'Safe',
+      });
+      const safeChoices = choiceIds(safeResult);
+      expect(safeChoices).toContain('session');
+
+      // Plan 模式下 session 和 persistent 应被过滤
+      const planResult = policy.resolve({
+        toolName: 'readFile',
+        toolArgs: { targetPath: '/workspace/file.txt' },
+        operation: readOp('/workspace/file.txt'),
+        workMode: 'Plan',
+      });
+      const planChoices = choiceIds(planResult);
+      expect(planChoices).not.toContain('session');
+      expect(planChoices).not.toContain('persistent');
+      expect(planChoices).toContain('call');
+      expect(planChoices).toContain('deny');
+    });
+  });
+
+  describe('ApprovalPolicy — command-operation 资源', () => {
+    it('command-operation 资源产生 [call, persistent, deny] 选项', () => {
+      const policy = new ApprovalPolicy();
+      // 注册一个命令操作提取器，使 command-operation 资源被正常校验
+      policy.registerExtractor('execute_command', (args) => {
+        const cmd = args.command as string;
+        if (!cmd) return [];
+        const rootCmd = cmd.split(/\s+/)[0] || '';
+        return [{ kind: 'command-operation', shellKind: 'powershell', rootCommand: rootCmd, paramPattern: cmd }];
+      });
+
+      const result = policy.resolve({
+        toolName: 'execute_command',
+        toolArgs: { command: 'git status' },
+        operation: {
+          resources: [{ kind: 'command-operation', shellKind: 'powershell', rootCommand: 'git', paramPattern: 'git status' }],
+          riskReason: 'Git 状态查询',
+          operationCategory: 'command-execute',
+          summary: '执行 git status',
+        },
+        workMode: 'Safe',
+      });
+      const ids = choiceIds(result);
+      expect(ids).toContain('call');
+      expect(ids).toContain('persistent');
+      expect(ids).toContain('deny');
+    });
+
+    it('command-operation 资源持久化映射产生 persistent 效果', () => {
+      const op: SafetyOperation = {
+        resources: [{ kind: 'command-operation', shellKind: 'powershell', rootCommand: 'git', paramPattern: 'git status' }],
+        riskReason: 'Git 状态查询',
+        operationCategory: 'command-execute',
+        summary: '执行 git status',
+      };
+      const effect = ApprovalPolicy.mapChoiceToEffect('persistent', op, 'execute_command');
+      expect(effect.type).toBe('persistent');
+      // 强制类型断言以访问 PersistentRuleEffect 的 prefix 属性
+      const payload = (effect as { type: 'persistent'; payload: { type: 'persistent'; prefix: string } }).payload;
+      expect(payload.prefix).toBe('git');
+    });
+  });
 });

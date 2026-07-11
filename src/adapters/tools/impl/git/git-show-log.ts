@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import { getAuthorizedDir } from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 
 /**
  * Git 提交日志查看工具类。
@@ -71,6 +72,6 @@ export class GitShowLogTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(): SafetyCheckResult {
-    return { status: 'pass' };
+    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'command-execute' as const, summary: '查看 Git 提交日志', resources: [] } as SafetyOperation };
   }
 }

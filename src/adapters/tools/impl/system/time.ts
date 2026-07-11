@@ -1,5 +1,6 @@
 import type { NativeTool } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 
 /**
  * 原生高精度当前系统时间获取工具。
@@ -33,7 +34,7 @@ export class GetCurrentTimeTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(): SafetyCheckResult {
-    return { status: 'pass' };
+    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'command-execute' as const, summary: '获取当前时间', resources: [] } as SafetyOperation };
   }
 
   /**

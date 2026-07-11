@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeAll } from 'vitest';
 import {
   createDiagnosticTurnState,
   detectMeasuredEvidence,
@@ -12,15 +12,30 @@ import {
   MAX_EVIDENCE_RECORDS
 } from '../../../src/core/domain/diagnostic-guardrails.js';
 import type { DiagnosticEvidenceRecord } from '../../../src/core/domain/diagnostic-guardrails.js';
+import { registerDiagnosticEvidenceInterpreters } from '../../../src/adapters/tools/tool-factory.js';
 
 describe('diagnostic-guardrails 结构化证据判定', () => {
+  // 使用生产级别的注册链注册证据解释器，与 buildNativeTools 同构
+  beforeAll(() => {
+    registerDiagnosticEvidenceInterpreters();
+  });
+
   it('普通 listFiles 枚举结果不应越级为 measured', () => {
     const state = createDiagnosticTurnState('请帮我诊断磁盘空间占用');
+    // 无元数据的目录枚举返回 entries 列表但不含 size，应为 enumeration 级
     const nextState = recordDiagnosticToolOutcome(
       state,
       'listFiles',
       { targetPath: 'cache' },
-      { result: JSON.stringify(['a', 'b']) }
+      {
+        result: JSON.stringify({
+          targetPath: 'cache',
+          entries: [
+            { name: 'a.tmp', path: 'cache/a.tmp', kind: 'file', isDirectory: false },
+            { name: 'sub', path: 'cache/sub', kind: 'directory', isDirectory: true }
+          ]
+        })
+      }
     );
 
     expect(nextState.evidenceLevel).toBe('enumeration');

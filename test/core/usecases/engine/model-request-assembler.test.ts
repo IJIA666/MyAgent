@@ -87,7 +87,7 @@ describe('ModelRequestAssembler', () => {
       expect(lastUserMsg!.content).toContain('[System Notification]');
       expect(lastUserMsg!.content).toContain('Date:');
       expect(lastUserMsg!.content).toContain('Cwd:');
-      expect(lastUserMsg!.content).toContain('SecurityMode:');
+      expect(lastUserMsg!.content).toContain('Cwd:');
     });
 
     it('应正确传递 estimatedUsage', async () => {
@@ -144,7 +144,7 @@ describe('ModelRequestAssembler', () => {
 
       expect(lastUserMsg).toBeDefined();
       expect(lastUserMsg!.content).toContain('【诊断降级规则】');
-      expect(lastUserMsg!.content).toContain('DiagnosticEvidenceLevel: presence');
+      expect(lastUserMsg!.content).toContain('Evidence:');
       expect(lastUserMsg!.content).toContain('HighRiskCleanupTargets');
       // 不应包含旧工具名别名（5.11）
       expect(lastUserMsg!.content).not.toContain('list_dir');
@@ -157,7 +157,7 @@ describe('ModelRequestAssembler', () => {
 
       expect(lastUserMsg).toBeDefined();
       expect(lastUserMsg!.content).not.toContain('【诊断降级规则】');
-      expect(lastUserMsg!.content).not.toContain('DiagnosticEvidenceLevel:');
+      expect(lastUserMsg!.content).not.toContain('Evidence:');
     });
   });
 
@@ -210,6 +210,43 @@ describe('ModelRequestAssembler', () => {
       // 实际 abort 测试依赖完整管线集成，此处为基调覆盖。
       const result = await assembler.assemble(undefined, 'gpt-4');
       expect(result.control.action).toBe('continue');
+    });
+  });
+
+  describe('assemble - 模型上下文边界', () => {
+    it('Plan 模式下发送给模型的消息不得出现 SecurityMode 等内部枚举', async () => {
+      context.setWorkMode?.('Plan');
+      context.appConfig = {
+        enablePlanToolStripping: false
+      } as unknown as AppConfig;
+
+      const result = await assembler.assemble(undefined, 'gpt-4');
+      const lastUserMsg = [...result.messages].reverse().find(m => m.role === 'user');
+
+      expect(lastUserMsg).toBeDefined();
+      const content = lastUserMsg!.content as string;
+      // 不应暴露内部模式枚举
+      expect(content).not.toContain('SecurityMode');
+      expect(content).not.toContain('Plan');
+      expect(content).not.toContain('workMode');
+      // 应有行为约束
+      expect(content).toContain('Behavior:');
+      expect(content).toContain('仅允许读取');
+    });
+
+    it('Auto 模式下不得出现行为约束或内部模式枚举', async () => {
+      context.setWorkMode?.('Auto');
+      context.appConfig = {} as unknown as AppConfig;
+
+      const result = await assembler.assemble(undefined, 'gpt-4');
+      const lastUserMsg = [...result.messages].reverse().find(m => m.role === 'user');
+
+      expect(lastUserMsg).toBeDefined();
+      const content = lastUserMsg!.content as string;
+      expect(content).not.toContain('SecurityMode');
+      expect(content).not.toContain('Plan');
+      expect(content).not.toContain('workMode');
+      expect(content).not.toContain('Behavior:'); // Auto 模式不注入行为约束
     });
   });
 });

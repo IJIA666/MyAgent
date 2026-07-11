@@ -174,12 +174,19 @@ export class ModelRequestAssembler {
       const userMsg = finalRequestMessages[latestUserMessageIdx];
       const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
       const cwdStr = process.cwd();
+      // 根据当前模式注入行为约束（不暴露内部模式枚举名）
+      // Plan：只读约束；Safe：审批约束；Auto/YOLO：不写入限制
+      const behaviorConstraint = currentMode === 'Plan'
+        ? 'Behavior: 本轮仅允许读取、分析和提出建议，不得修改文件或系统状态。'
+        : '';
       const reminderLines = [
         '[System Notification]',
         `Date: ${dateStr}`,
         `Cwd: ${cwdStr}`,
-        `SecurityMode: ${currentMode}`
       ];
+      if (behaviorConstraint) {
+        reminderLines.push(behaviorConstraint);
+      }
       // 若识别到诊断类任务，则把动态护栏一并注入到同一个提醒气泡中。
       const effectiveDiagnosticState = syncDiagnosticTurnStateWithMessages(
         diagnosticState ?? createDiagnosticTurnState(),

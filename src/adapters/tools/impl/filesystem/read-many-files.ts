@@ -78,10 +78,11 @@ export class ReadManyFilesTool implements NativeTool {
       return {
         status: 'suspend',
         message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。包含 ${outOfSandboxResources.length} 个越界路径`,
-        resources: outOfSandboxResources
+        resources: outOfSandboxResources,
+        operation: { planSideEffect: 'read', riskReason: '批量访问工作区外资源', operationCategory: 'file-read', summary: `批量读取 ${outOfSandboxResources.length} 个越界路径`, resources: outOfSandboxResources }
       };
     }
-    return { status: 'pass' };
+    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read', summary: '批量读取文件', resources: [] } };
   }
 
   /**

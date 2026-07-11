@@ -310,6 +310,66 @@ export const HARDLINE_PATTERNS_BY_SHELL: Record<ResolvedShellKind, RegExp> = {
 export const HARDLINE_PATTERNS = POSIX_HARDLINE_REGEX;
 
 /**
+ * 敏感文件路径模式列表（仅匹配 basename）。
+ * 与 ApprovalPolicy 中的 SENSITIVE_FILE_PATTERNS 保持同构。
+ */
+const SENSITIVE_READ_PATTERNS: RegExp[] = [
+  /\.env$/i,
+  /\.env\./i,
+  /\.ssh[/\\]/i,
+  /id_rsa$/i,
+  /id_ed25519$/i,
+  /\.gitconfig$/i,
+  /\.aws[/\\]/i,
+  /\.kube[/\\]/i,
+  /\.docker[/\\]/i,
+  /credentials$/i,
+  /secrets[/\\]/i,
+];
+
+/** 各 shell family 用于读取文件内容的核心命令列表。 */
+const READ_CONTENT_COMMANDS: Record<ResolvedShellKind, RegExp> = {
+  posix: /\b(cat|less|more|head|tail|nl|od|xxd)\b/i,
+  powershell: /\b(Get-Content|cat|type|gc|Select-String)\b/i,
+  cmd: /\b(type|more|findstr)\b/i,
+};
+
+/**
+ * 检测命令是否存在敏感文件的读取行为。
+ * 先验证命令结构为原子只读，再检查操作目标是否涉及敏感路径。
+ *
+ * @param command - 已解包的核心命令文本
+ * @param shellKind - 已决议的 shell family
+ * @returns 若命令为只读但目标路径涉及敏感文件则返回 true
+ */
+export function isSensitiveReadCommand(command: string, shellKind: ResolvedShellKind): boolean {
+  const trimmed = command.trim();
+
+  // 1. 必须是只读命令
+  const readPattern = READ_CONTENT_COMMANDS[shellKind];
+  if (!readPattern.test(trimmed)) {
+    return false;
+  }
+
+  // 2. 提取路径参数（命令后的第一个非选项参数）
+  const parts = trimmed.split(/\s+/).filter(p => p.length > 0);
+  const pathArg = parts.find(p => !p.startsWith('-'));
+  if (!pathArg) {
+    return false;
+  }
+
+  // 3. 检查路径是否落入敏感模式
+  const cleanedPath = pathArg.replace(/^['"`]|['"`]$/g, '');
+  for (const pattern of SENSITIVE_READ_PATTERNS) {
+    if (pattern.test(cleanedPath)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * 校验命令行是否命中绝对黑名单。
  * Git 阻断规则跨 shell 通用保持不变，毁灭级命令跨所有 shell family 做最大安全覆盖。
  *

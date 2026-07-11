@@ -85,6 +85,23 @@ export type OperationCategory =
   | 'external-tool';
 
 /**
+ * Plan 模式副作用分类。
+ * 工具根据自身元数据和参数分析，向策略层报告本次调用的实际副作用。
+ * 策略层据此决定 Plan 模式下的 pass/suspend/deny。
+ */
+export type PlanSideEffect =
+  /** 可证明安全的原子只读操作，参数结构有效且不涉及敏感资源 */
+  | 'read'
+  /** 写入或修改操作 */
+  | 'write'
+  /** 无法确定副作用的操作（复合命令、未知 shell 结构等） */
+  | 'unknown'
+  /** 语法只读但涉及凭据、敏感配置等受保护资源的操作 */
+  | 'sensitive-read'
+  /** 系统毁灭级硬红线操作 */
+  | 'hardline';
+
+/**
  * 标准化安全操作描述契约。
  * 工具 checkSafety() 向策略层报告操作细节的统一接口。
  */
@@ -97,4 +114,10 @@ export interface SafetyOperation {
   operationCategory: OperationCategory;
   /** 人类可读的操作摘要（用于审批 UI 展示） */
   summary: string;
+  /**
+   * Plan 模式副作用分类。
+   * 工具通过自身元数据和参数解析产出可信分类；
+   * 策略层据此决定 Plan 模式下是直接放行、受限审批还是拒绝。
+   */
+  planSideEffect?: PlanSideEffect;
 }

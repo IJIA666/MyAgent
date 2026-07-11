@@ -5,18 +5,257 @@
 
 import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
 
+// ── 最终回答质量门禁 ──
+
+/**
+ * 诊断质量门禁检查结果。
+ */
+export interface DiagnosticQualityGateResult {
+  /** 是否通过门禁（无违规主张） */
+  passed: boolean;
+  /** 修正后的回答文本（通过时与原文相同） */
+  sanitizedText: string;
+  /** 违规主张列表 */
+  violations: string[];
+}
+
+/**
+ * 场景感知的质量门禁关键词模式。
+ * 仅在回答中包含以下关键词时才触发对应类型的证据校验。
+ */
+const QUALITY_TRIGGER_PATTERNS: Array<{ trigger: RegExp; label: string }> = [
+  { trigger: /(?:释放|清理|删除|节省|占用)[^。\n]*?\d+\s*(?:GB|MB|KB|bytes?)/i, label: 'quantified-release' },
+  { trigger: /\b(总量|总空间|合计|容量)\s*:?\s*\d+/i, label: 'total-capacity' },
+  { trigger: /建议\s*(优先|可以|需要|应当)\s*(删除|迁移|清理|优化|修改|备份)/i, label: 'cleanup-recommendation' },
+  { trigger: /主要(原因|问题|占用|瓶颈)(是|为)/i, label: 'root-cause' },
+  { trigger: /风险.*(高|低|中|不可控|可控|安全)/i, label: 'risk-assessment' },
+  { trigger: /(完成度|进度)\s*[：:]\s*\d+%/i, label: 'completion-estimate' },
+];
+
+/** 存储容量单位到字节的换算倍率。 */
+const STORAGE_UNIT_MULTIPLIERS: Record<string, number> = {
+  byte: 1,
+  bytes: 1,
+  kb: 1024,
+  mb: 1024 ** 2,
+  gb: 1024 ** 3,
+  tb: 1024 ** 4,
+};
+
+/** 从主张文本中提取全部存储容量数值并统一换算为字节。 */
+function extractStorageClaims(text: string): number[] {
+  return Array.from(text.matchAll(/(\d+(?:\.\d+)?)\s*(bytes?|KB|MB|GB|TB)/gi), match => {
+    const multiplier = STORAGE_UNIT_MULTIPLIERS[match[2].toLowerCase()] ?? 1;
+    return Number(match[1]) * multiplier;
+  });
+}
+
+/** 构建可直接引用的测量值，并补充同一目标总量与剩余量的确定性差值。 */
+function buildMeasuredStorageValues(evidenceRecords: DiagnosticEvidenceRecord[]): number[] {
+  const completeRecords = evidenceRecords.filter(record =>
+    record.completeness === 'complete' &&
+    !record.error &&
+    STORAGE_UNIT_MULTIPLIERS[record.unit.toLowerCase()] !== undefined
+  );
+  const values = completeRecords.map(record =>
+    record.value * STORAGE_UNIT_MULTIPLIERS[record.unit.toLowerCase()]
+  );
+  for (let leftIndex = 0; leftIndex < completeRecords.length; leftIndex++) {
+    for (let rightIndex = leftIndex + 1; rightIndex < completeRecords.length; rightIndex++) {
+      if (completeRecords[leftIndex].target === completeRecords[rightIndex].target) {
+        values.push(Math.abs(values[leftIndex] - values[rightIndex]));
+      }
+    }
+  }
+  return values;
+}
+
+/** 判断量化主张是否与某个完整测量值在显示舍入误差内一致。 */
+function isSupportedStorageClaim(claim: number, measuredValues: number[]): boolean {
+  return measuredValues.some(value => Math.abs(value - claim) <= Math.max(1024 ** 2, value * 0.02));
+}
+
+/**
+ * 确定性"主张—证据"质量门禁。
+ * 对诊断类最终回答中的量化主张、完成度估算、清理建议和风险结论做证据匹配校验。
+ * 无匹配证据的主张被降级或删除，不调用模型自评。
+ *
+ * @param response - 模型生成的最终回答文本
+ * @param evidenceRecords - 当前对象级证据记录列表
+ * @returns 质量门禁检查结果
+ */
+export function applyDiagnosticQualityGate(
+  response: string,
+  evidenceRecords: DiagnosticEvidenceRecord[]
+): DiagnosticQualityGateResult {
+  const violations: string[] = [];
+  let sanitized = response;
+
+  // 遍历触发模式，检查对应主张是否有证据支持
+  const hasMeasured = evidenceRecords.some(r => r.completeness === 'complete' && !r.error);
+  const hasAnyMetric = evidenceRecords.some(r => r.metric !== 'error' && r.metric !== 'entries');
+  const measuredStorageValues = buildMeasuredStorageValues(evidenceRecords);
+  for (const { trigger, label } of QUALITY_TRIGGER_PATTERNS) {
+    if (!trigger.test(sanitized)) continue;
+
+    switch (label) {
+      case 'quantified-release': {
+        // 量化释放主张必须能匹配具体完整测量值，不能用任意 measured 记录笼统放行。
+        const claims = extractStorageClaims(sanitized.match(trigger)?.[0] ?? '');
+        if (claims.length === 0 || claims.some(claim => !isSupportedStorageClaim(claim, measuredStorageValues))) {
+          violations.push('量化释放估算无证据支持');
+          sanitized = sanitized.replace(
+            trigger,
+            '（待验证：当前证据不足，无法提供准确量化估算）'
+          );
+        }
+        break;
+      }
+      case 'total-capacity': {
+        if (!hasMeasured) {
+          violations.push('总容量声明无完整测量证据');
+          sanitized = sanitized.replace(trigger, '（待测量）');
+        }
+        break;
+      }
+      case 'cleanup-recommendation': {
+        if (!hasAnyMetric) {
+          violations.push('清理建议无任何测量证据');
+          sanitized = sanitized.replace(
+            trigger,
+            '（待验证——当前仅有文件列表，无实际大小数据）'
+          );
+        }
+        break;
+      }
+      case 'root-cause': {
+        if (!hasMeasured) {
+          violations.push('主要原因判定无完整测量证据');
+          sanitized = sanitized.replace(
+            /主要(原因|问题|占用|瓶颈)(是|为).*?[。\n]/g,
+            '（证据不足以判定主要原因）'
+          );
+        }
+        break;
+      }
+      case 'risk-assessment': {
+        if (!hasMeasured) {
+          violations.push('风险评估无测量证据');
+          sanitized = sanitized.replace(
+            trigger,
+            '（风险等级待验证——当前证据不足以判定风险）'
+          );
+        }
+        break;
+      }
+      case 'completion-estimate': {
+        if (!hasMeasured) {
+          violations.push('完成度估算无测量证据');
+          sanitized = sanitized.replace(
+            trigger,
+            '（完成度待评估——当前证据不足以计算进度百分比）'
+          );
+        }
+        break;
+      }
+    }
+  }
+
+  return {
+    passed: violations.length === 0,
+    sanitizedText: sanitized,
+    violations,
+  };
+}
+
+// ── 证据解释器注册系统 ──
+
+/**
+ * 证据解释器函数类型。
+ * 将工具调用参数和结果转换为对象级证据记录列表。
+ *
+ * @param args - 工具调用参数
+ * @param result - 工具执行结果文本
+ * @param error - 可选的执行错误
+ * @param correlationId - 可选的调用关联 ID
+ * @returns 证据记录列表（空数组表示无法解析）
+ */
+export type EvidenceInterpreter = (
+  args: Record<string, unknown>,
+  result?: string,
+  error?: string,
+  correlationId?: string
+) => DiagnosticEvidenceRecord[];
+
+/** 全局证据解释器注册表：工具名 → 解释器函数 */
+const evidenceInterpreters = new Map<string, EvidenceInterpreter>();
+
+/**
+ * 注册一个诊断工具的证据解释器。
+ *
+ * @param toolName - 工具名称
+ * @param interpreter - 解释器函数
+ */
+export function registerEvidenceInterpreter(toolName: string, interpreter: EvidenceInterpreter): void {
+  evidenceInterpreters.set(toolName, interpreter);
+}
+
+/**
+ * 获取已注册的所有解释器名称（供测试与调试使用）。
+ *
+ * @returns 已注册的解释器工具名列表
+ */
+export function getRegisteredInterpreters(): string[] {
+  return Array.from(evidenceInterpreters.keys());
+}
+
+/**
+ * 解析工具执行结果，生成对象级证据记录。
+ * 优先使用已注册的解释器；未注册时返回空数组。
+ *
+ * @param toolName - 工具名称
+ * @param args - 工具调用参数
+ * @param result - 工具执行结果文本
+ * @param error - 可选的执行错误
+ * @param correlationId - 可选的调用关联 ID
+ * @returns 证据记录列表
+ */
+export function resolveToolEvidence(
+  toolName: string,
+  args: Record<string, unknown>,
+  result?: string,
+  error?: string,
+  correlationId?: string
+): DiagnosticEvidenceRecord[] {
+  const interpreter = evidenceInterpreters.get(toolName);
+  if (interpreter) {
+    return interpreter(args, result, error, correlationId);
+  }
+  return [];
+}
+
 /** 诊断任务允许扩展的最大目录枚举次数。 */
 export const DIAGNOSTIC_LISTFILES_BUDGET = 4;
 /** 连续命中低价值枚举的最大容忍次数。 */
 export const DIAGNOSTIC_STAGNANT_SCAN_LIMIT = 2;
+
+/** 诊断相关工具名称列表。非此列表内的工具不计入证据增益与收敛计数。 */
+const DIAGNOSTIC_TOOL_NAMES = new Set([
+  'readFile', 'readManyFiles', 'listFiles', 'execute_command',
+  'grepSearch', 'globSearch', 'search',
+]);
 
 /** 诊断结论允许使用的证据等级。 */
 export type DiagnosticEvidenceLevel = 'presence' | 'enumeration' | 'measured' | 'error';
 
 /**
  * 证据完整性分类。
+ * - `complete`: 完整测量，可用于精确结论
+ * - `partial`: 部分测量，部分可量化但覆盖不完整
+ * - `lower-bound`: 下界值，仅表示"至少观察到 N"，不可推断上限
+ * - `listed`: 纯枚举/候选项列表，无量化测量
  */
-export type EvidenceCompleteness = 'complete' | 'partial' | 'lower-bound';
+export type EvidenceCompleteness = 'complete' | 'partial' | 'lower-bound' | 'listed';
 
 /**
  * 单条对象级证据记录。
@@ -46,6 +285,27 @@ export interface DiagnosticEvidenceRecord {
 /** 证据记录集合的最大数量，超出时淘汰低优先级记录。 */
 export const MAX_EVIDENCE_RECORDS = 50;
 
+/**
+ * 单次诊断工具调用的度量元数据。
+ * 用于计算证据增益和成本收敛。
+ */
+export interface ToolCallMetrics {
+  /** 工具名称 */
+  toolName: string;
+  /** 目标路径或标识 */
+  targetKey: string;
+  /** 本次调用新增的 evidenceRecords 数量 */
+  newRecordsCount: number;
+  /** 本次调用的估算耗时（毫秒） */
+  durationMs: number;
+  /** 扫描条目数（适用于枚举类工具） */
+  itemsScanned: number;
+  /** 输出体积（字节） */
+  outputSizeBytes: number;
+  /** 失败分类（无失败时为 undefined） */
+  failureType?: 'permission_denied' | 'execution_error' | 'validation_error' | 'timeout' | 'cancelled';
+}
+
 /** 诊断护栏在单轮交互中的状态快照。 */
 export interface DiagnosticTurnState {
   active: boolean;
@@ -60,6 +320,75 @@ export interface DiagnosticTurnState {
   scannedTargets: string[];
   /** 对象级证据记录集合（有界，优先保留完整测量、最新错误和高风险目标） */
   evidenceRecords: DiagnosticEvidenceRecord[];
+  /** 本轮累计的工具调用度量列表，用于证据增益与成本收敛判定 */
+  callMetrics: ToolCallMetrics[];
+  /** 连续无增益（无新增记录）的调用次数 */
+  stagnantCallCount: number;
+  /** 连续无新增目标的调用次数 */
+  stagnantTargetCount: number;
+}
+
+/**
+ * 获取当前调用中新增的 evidenceRecords 数量（与上次快照比较）。
+ * 用于计算单次调用的证据增益。
+ *
+ * @param current - 当前回合的证据记录列表
+ * @param previous - 上次调用后的证据记录列表
+ * @returns 新增记录数
+ */
+export function computeEvidenceGain(
+  current: DiagnosticEvidenceRecord[],
+  previous: DiagnosticEvidenceRecord[]
+): number {
+  const prevSet = new Set(previous.map(r => `${r.target}|${r.metric}`));
+  return current.filter(r => !prevSet.has(`${r.target}|${r.metric}`)).length;
+}
+
+/**
+ * 获取新增的 unique 目标数。
+ *
+ * @param current - 当前已扫描的目标列表
+ * @param previous - 上次扫描的目标列表
+ * @returns 新增目标数
+ */
+export function computeTargetGain(current: string[], previous: string[]): number {
+  const prevSet = new Set(previous);
+  return current.filter(t => !prevSet.has(t)).length;
+}
+
+/**
+ * 检查是否应基于证据增益和成本收敛阻断调用。
+ *
+ * @param state - 当前诊断状态
+ * @param toolName - 即将调用的工具名称
+ * @param targetKey - 本次调用的目标标识
+ * @returns 阻断原因，无阻断时返回 undefined
+ */
+export function checkDiagnosticConvergence(
+  state: DiagnosticTurnState,
+  toolName: string,
+  _targetKey?: string
+): string | undefined {
+  if (!state.active) {
+    return undefined;
+  }
+
+  // 连续 3 次调用无新增证据 → 阻断
+  if (state.stagnantCallCount >= 3) {
+    return `诊断已连续 ${state.stagnantCallCount} 次调用无新增证据，必须停止当前方向的扩散，基于已有证据总结或请求用户缩小范围。`;
+  }
+
+  // 连续 2 次调用无新增目标 → 阻断（重复扫描）
+  if (state.stagnantTargetCount >= 2) {
+    return `诊断已连续 ${state.stagnantTargetCount} 次调用无新增目标，必须停止重复扫描并汇总当前候选。`;
+  }
+
+  // listFiles 特定：已达预算上限
+  if (toolName === 'listFiles' && state.listFilesUsed >= DIAGNOSTIC_LISTFILES_BUDGET) {
+    return `诊断扫描已达到本轮枚举预算（${DIAGNOSTIC_LISTFILES_BUDGET} 次），必须停止继续扩散并转入总结或请求更窄范围。`;
+  }
+
+  return undefined;
 }
 
 /** 工具预执行护栏的判定结果。 */
@@ -95,7 +424,10 @@ export function createDiagnosticTurnState(seedText?: string): DiagnosticTurnStat
     lastDirectoryStatsTruncated: false,
     highRiskTargets: collectHighRiskTargets(seedText),
     scannedTargets: [],
-    evidenceRecords: []
+    evidenceRecords: [],
+    callMetrics: [],
+    stagnantCallCount: 0,
+    stagnantTargetCount: 0,
   };
 }
 
@@ -105,12 +437,19 @@ export function createDiagnosticTurnState(seedText?: string): DiagnosticTurnStat
  */
 export function deriveEvidenceLevelFromRecords(records: DiagnosticEvidenceRecord[]): DiagnosticEvidenceLevel {
   if (records.length === 0) return 'presence';
+
+  // 至少有一条无 error 的完整测量 → measured
+  const hasCleanComplete = records.some(r => r.completeness === 'complete' && !r.error);
+  if (hasCleanComplete) return 'measured';
+
+  // 有 error 记录，且无 clean complete → error
   const hasError = records.some(r => r.error);
   if (hasError) return 'error';
-  const hasMeasured = records.some(r => r.completeness === 'complete');
-  if (hasMeasured) return 'measured';
-  const hasPartial = records.some(r => r.completeness === 'partial' || r.completeness === 'lower-bound');
-  if (hasPartial) return 'measured';
+
+  // 无 error，有部分测量 → measured
+  const hasPartialOrLower = records.some(r => r.completeness === 'partial' || r.completeness === 'lower-bound');
+  if (hasPartialOrLower) return 'measured';
+
   return 'enumeration';
 }
 
@@ -136,6 +475,35 @@ export function addEvidenceRecord(
   });
   const keep = MAX_EVIDENCE_RECORDS - highPriority.length;
   return [...highPriority, ...lowPriority.slice(0, Math.max(0, keep))];
+}
+
+/**
+ * 批量添加证据记录到有界集合。
+ * 内部逐条调用 addEvidenceRecord 以复用淘汰策略。
+ * 同目标同指标的新完整证据替换旧 partial 记录。
+ *
+ * @param records - 现有证据记录列表
+ * @param newRecords - 新增的证据记录列表
+ * @returns 更新后的证据记录列表
+ */
+export function addEvidenceRecords(
+  records: DiagnosticEvidenceRecord[],
+  newRecords: DiagnosticEvidenceRecord[]
+): DiagnosticEvidenceRecord[] {
+  let result = records;
+  for (const record of newRecords) {
+    // 同目标同指标的新完整证据替换旧 partial
+    const existingIdx = result.findIndex(
+      r => r.target === record.target && r.metric === record.metric && r.completeness !== 'complete'
+    );
+    if (existingIdx >= 0 && record.completeness === 'complete') {
+      result = [...result];
+      result[existingIdx] = record;
+    } else {
+      result = addEvidenceRecord(result, record);
+    }
+  }
+  return result;
 }
 
 /**
@@ -224,14 +592,36 @@ export function parseListFilesEvidence(
 ): DiagnosticEvidenceRecord[] {
   if (!result) return [];
 
-  let payload: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    payload = JSON.parse(result);
+    parsed = JSON.parse(result);
   } catch {
     return [];
   }
 
   const records: DiagnosticEvidenceRecord[] = [];
+
+  // 处理 JSON 数组结果（listFiles 返回简单文件名列表 → enumeration）
+  if (Array.isArray(parsed)) {
+    records.push({
+      target: targetPath,
+      metric: 'entries',
+      value: parsed.length,
+      unit: 'files',
+      source: 'listFiles',
+      correlationId,
+      completeness: 'listed',
+      coverage: `file list in ${targetPath}`
+    });
+    return records;
+  }
+
+  // 非对象记录无法解析
+  if (typeof parsed !== 'object' || parsed === null) {
+    return records;
+  }
+
+  const payload = parsed as Record<string, unknown>;
 
   // 检查 directoryStats（旧同步统计）
   const stats = payload.directoryStats as Record<string, unknown> | undefined;
@@ -309,6 +699,19 @@ export function parseListFilesEvidence(
  * @param correlationId - 可选的调用关联 ID
  * @returns 解析出的证据记录列表
  */
+/**
+ * 提取命令文本中的核心查询命令（去除 shell wrapper 前缀）。
+ */
+function extractQueryCore(text: string): string {
+  const trimmed = text.trim();
+  // 去除常见 shell wrapper: powershell -Command "...", cmd /c "...", bash -c "..."
+  const shellMatch = trimmed.match(/^(?:powershell|pwsh|cmd|bash|sh)\s+(?:-[a-zA-Z]+\s+)*(?:-c|-Command|\/c)\s+["']?([^"']+)["']?$/i);
+  if (shellMatch) {
+    return shellMatch[1].trim();
+  }
+  return trimmed;
+}
+
 export function parseCommandEvidence(
   command: string,
   result?: string,
@@ -317,25 +720,59 @@ export function parseCommandEvidence(
   if (!result) return [];
   const records: DiagnosticEvidenceRecord[] = [];
 
-  // 只处理纯查询命令，用安全前缀检验
-  const isQuery = /^(dir|ls|wmic|systeminfo|Get-PSDrive|df|du|tasklist|ps|ipconfig|ifconfig)\b/i.test(command.trim());
+  // 提取核心命令（去除 shell wrapper）
+  const coreCommand = extractQueryCore(command);
+  const isQuery = /^(dir|ls|wmic|systeminfo|Get-PSDrive|df|du|tasklist|ps|ipconfig|ifconfig)\b/i.test(coreCommand);
   if (!isQuery) return [];
 
-  // 尝试提取数字型指标
-  const sizeMatch = result.match(/(\d+)\s*(bytes|KB|MB|GB)/i);
-  if (sizeMatch) {
-    const value = parseInt(sizeMatch[1], 10);
-    const unit = sizeMatch[2].toLowerCase();
+  const cmdPrefix = coreCommand.split(' ')[0];
+
+  // 1. wmic 输出: FreeSpace=<number>, Size=<number>
+  if (/^wmic\b/i.test(coreCommand)) {
+    const freeMatch = result.match(/FreeSpace\s*=\s*(\d+)/i);
+    const sizeMatch = result.match(/Size\s*=\s*(\d+)/i);
+    if (freeMatch) {
+      records.push({
+        target: `command:${cmdPrefix}`, metric: 'freeSpace',
+        value: parseInt(freeMatch[1], 10), unit: 'bytes',
+        source: 'execute_command', correlationId,
+        completeness: 'complete', coverage: `free space from ${cmdPrefix}`
+      });
+    }
+    if (sizeMatch) {
+      records.push({
+        target: `command:${cmdPrefix}`, metric: 'totalSize',
+        value: parseInt(sizeMatch[1], 10), unit: 'bytes',
+        source: 'execute_command', correlationId,
+        completeness: 'complete', coverage: `total size from ${cmdPrefix}`
+      });
+    }
+    if (freeMatch || sizeMatch) return records; // wmic 匹配成功
+  }
+
+  // 2. 通用数字型指标提取（大小/容量）
+  const genericSize = result.match(/(\d+)\s*(bytes|KB|MB|GB)/i);
+  if (genericSize) {
     records.push({
-      target: `command:${command.split(' ')[0]}`,
-      metric: 'size',
-      value,
-      unit,
-      source: 'execute_command',
-      correlationId,
-      completeness: 'partial',
-      coverage: `output size from ${command.split(' ')[0]}`
+      target: `command:${cmdPrefix}`, metric: 'size',
+      value: parseInt(genericSize[1], 10), unit: genericSize[2].toLowerCase(),
+      source: 'execute_command', correlationId,
+      completeness: 'partial', coverage: `output size from ${cmdPrefix}`
     });
+  }
+
+  // 3. tasklist/ps 行计数
+  if (/^(tasklist|ps)\b/i.test(coreCommand)) {
+    const lines = result.split('\n').filter(l => l.trim().length > 0);
+    const dataLines = lines.length > 3 ? lines.length - 2 : Math.max(0, lines.length - 1);
+    if (dataLines > 0) {
+      records.push({
+        target: `command:${cmdPrefix}`, metric: 'processCount',
+        value: dataLines, unit: 'processes',
+        source: 'execute_command', correlationId,
+        completeness: 'partial', coverage: `process count from ${cmdPrefix}`
+      });
+    }
   }
 
   return records;
@@ -423,6 +860,13 @@ export function reserveDiagnosticToolCall(
   const nextState = cloneDiagnosticTurnState(state);
   mergeHighRiskTargets(nextState, collectHighRiskTargets(extractTextFragments(args).join('\n')));
 
+  // 通用收敛检查：基于证据增益和成本的阻断
+  const targetKey = getToolCallTargetKey(toolName, args);
+  const convergenceReason = checkDiagnosticConvergence(nextState, toolName, targetKey);
+  if (convergenceReason) {
+    return { state: nextState, blockedReason: convergenceReason };
+  }
+
   if (toolName === 'execute_command') {
     const command = getCommandText(args);
     if (nextState.lastSystemQueryFailed && isComplexSystemQuery(command)) {
@@ -436,14 +880,6 @@ export function reserveDiagnosticToolCall(
   }
 
   if (toolName === 'listFiles') {
-    // 预算感知判定（5.8）：使用 listFilesUsed 作为扫描成本预算
-    if (nextState.listFilesUsed >= DIAGNOSTIC_LISTFILES_BUDGET) {
-      return {
-        state: nextState,
-        blockedReason: `诊断扫描已达到本轮枚举预算（${DIAGNOSTIC_LISTFILES_BUDGET} 次），必须停止继续扩散并转入总结或请求更窄范围。`
-      };
-    }
-
     // 5.9-5.10：允许对已扫描目标的子目录做更窄扫描，但不扩大 maxEntries 上限
     const newMaxEntries = typeof args.maxEntries === 'number' ? args.maxEntries : undefined;
     if (newMaxEntries !== undefined && newMaxEntries > DIAGNOSTIC_LISTFILES_BUDGET * 50) {
@@ -475,7 +911,9 @@ export function reserveDiagnosticToolCall(
 }
 
 /**
- * 在工具执行后回写证据等级与失败状态。
+ * 在工具执行后回写对象级证据并更新诊断状态。
+ * 优先使用已注册的证据解释器解析工具结果并写入对象级账本；
+ * 未注册解释器的工具保守记录 presence 或 error。
  *
  * @param state - 当前诊断状态
  * @param toolName - 已执行的工具名称
@@ -494,46 +932,96 @@ export function recordDiagnosticToolOutcome(
   }
 
   const nextState = cloneDiagnosticTurnState(state);
-  mergeHighRiskTargets(nextState, collectHighRiskTargets(`${extractTextFragments(args).join('\n')}\n${outcome.result ?? ''}\n${outcome.error ?? ''}`));
+  mergeHighRiskTargets(
+    nextState,
+    collectHighRiskTargets(
+      `${extractTextFragments(args).join('\n')}\n${outcome.result ?? ''}\n${outcome.error ?? ''}`
+    )
+  );
 
-  if (toolName === 'execute_command') {
-    if (outcome.error) {
+  // 解析对象级证据记录
+  const previousRecords = [...nextState.evidenceRecords];
+  const newRecords = resolveToolEvidence(toolName, args, outcome.result, outcome.error);
+
+  if (newRecords.length > 0) {
+    // 有结构化证据：写入账本并从记录派生回合级等级
+    const hasError = newRecords.some(r => r.error);
+    nextState.evidenceRecords = addEvidenceRecords(nextState.evidenceRecords, newRecords);
+    nextState.evidenceLevel = deriveEvidenceLevelFromRecords(nextState.evidenceRecords);
+    if (hasError) {
       nextState.lastSystemQueryFailed = true;
-      nextState.evidenceLevel = 'error';
-      return nextState;
     }
-
-    nextState.lastSystemQueryFailed = false;
-    nextState.evidenceLevel = detectMeasuredEvidence(toolName, args, outcome.result)
-      ? 'measured'
-      : elevateEvidenceLevel(nextState.evidenceLevel, 'presence');
-    return nextState;
+  } else if (outcome.error) {
+    // 无结构化证据但有错误：保守记录 error，追加通用错误标识
+    nextState.evidenceRecords = addEvidenceRecord(nextState.evidenceRecords, {
+      target: toolName,
+      metric: 'error',
+      value: 0,
+      unit: 'count',
+      source: toolName,
+      completeness: 'partial',
+      coverage: '工具执行错误',
+      error: outcome.error
+    });
+    nextState.evidenceLevel = 'error';
+  } else {
+    // 无结构化证据且无错误：保守记录 presence
+    nextState.evidenceLevel = elevateEvidenceLevel(nextState.evidenceLevel, 'presence');
   }
 
-  if (toolName === 'listFiles') {
-    if (outcome.error) {
-      nextState.evidenceLevel = 'error';
-      return nextState;
+  // 仅诊断工具参与证据增益和收敛计数
+  const isDiagTool = DIAGNOSTIC_TOOL_NAMES.has(toolName);
+  if (isDiagTool) {
+    const evidenceGain = computeEvidenceGain(nextState.evidenceRecords, previousRecords);
+    const previousTargets = [...nextState.scannedTargets];
+    const currentTargetKey = getToolCallTargetKey(toolName, args);
+    let targetGain = 0;
+    if (currentTargetKey && !previousTargets.includes(currentTargetKey)) {
+      targetGain = 1;
+      nextState.scannedTargets.push(currentTargetKey);
     }
 
-    const hasMeasuredEvidence = detectMeasuredEvidence(toolName, args, outcome.result);
-    nextState.evidenceLevel = elevateEvidenceLevel(
-      nextState.evidenceLevel,
-      hasMeasuredEvidence ? 'measured' : 'enumeration'
-    );
+    // 更新停滞计数（仅诊断工具）
+    if (evidenceGain === 0) {
+      nextState.stagnantCallCount += 1;
+    } else {
+      nextState.stagnantCallCount = 0;
+    }
+    if (targetGain === 0) {
+      nextState.stagnantTargetCount += 1;
+    } else {
+      nextState.stagnantTargetCount = 0;
+    }
+
+    // 记录调用度量（获取真实值，不伪造）
+    const outputSizeBytes = outcome.result ? outcome.result.length : 0;
+    let failureType: ToolCallMetrics['failureType'] = undefined;
+    if (outcome.error) {
+      failureType = 'execution_error';
+    }
+    // itemsScanned 和 durationMs 在无真实测量时保持 0，不在此时注入伪造值
+    nextState.callMetrics.push({
+      toolName,
+      targetKey: getToolCallTargetKey(toolName, args),
+      newRecordsCount: newRecords.length,
+      durationMs: 0,
+      itemsScanned: 0,
+      outputSizeBytes,
+      failureType,
+    });
+  }
+
+  // 保留工具特定的副状态（系统查询失败标志、枚举截断标志）
+  if (toolName === 'execute_command') {
+    nextState.lastSystemQueryFailed = !!outcome.error;
+  }
+  if (toolName === 'listFiles') {
     nextState.lastDirectoryStatsTruncated = detectDirectoryStatsTruncation(outcome.result);
     if (nextState.lastDirectoryStatsTruncated) {
       nextState.stagnantListFilesCount = DIAGNOSTIC_STAGNANT_SCAN_LIMIT;
     }
-    return nextState;
   }
 
-  if (outcome.error) {
-    nextState.evidenceLevel = 'error';
-    return nextState;
-  }
-
-  nextState.evidenceLevel = elevateEvidenceLevel(nextState.evidenceLevel, 'presence');
   return nextState;
 }
 
@@ -612,7 +1100,9 @@ function cloneDiagnosticTurnState(state: DiagnosticTurnState): DiagnosticTurnSta
   return {
     ...state,
     highRiskTargets: [...state.highRiskTargets],
-    scannedTargets: [...state.scannedTargets]
+    scannedTargets: [...state.scannedTargets],
+    evidenceRecords: [...state.evidenceRecords],
+    callMetrics: [...state.callMetrics],
   };
 }
 
@@ -655,6 +1145,25 @@ function getCommandText(args: Record<string, unknown>): string {
 function getListFilesTarget(args: Record<string, unknown>): string {
   const candidate = args.targetPath ?? args.path ?? args.directoryPath;
   return typeof candidate === 'string' ? candidate : '';
+}
+
+/**
+ * 从工具调用参数中提取稳定目标键，用于增益追踪和收敛判定。
+ */
+function getToolCallTargetKey(toolName: string, args: Record<string, unknown>): string {
+  if (toolName === 'listFiles') {
+    return getListFilesScanKey(args);
+  }
+  if (toolName === 'execute_command') {
+    const cmd = typeof args.command === 'string' ? args.command : '';
+    // 只取前两个词作为抽象键，避免参数细节导致重复计数偏差
+    return `cmd:${cmd.split(/\s+/).slice(0, 2).join(' ')}`;
+  }
+  if (toolName === 'readFile' || toolName === 'readManyFiles') {
+    const path = (args.targetPath ?? args.targetPaths) as string | undefined;
+    return path ? `read:${path}` : toolName;
+  }
+  return toolName;
 }
 
 /** 为 listFiles 调用构造稳定扫描键，避免把显式目录统计与普通枚举混为一类。 */

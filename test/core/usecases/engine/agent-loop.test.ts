@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { AgentLoop } from '../../../../src/core/usecases/engine/agent-loop.js';
+import { AgentLoop, type AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 import { LlmConfig } from '../../../../src/config/index.js';
 import type { LlmPort, LlmStreamEvent, ChatMessage } from '../../../../src/ports/driven/llm/LlmPort.js';
@@ -111,7 +111,7 @@ describe('AgentLoop 动态安全特性测试', () => {
 
     expect(lastMsg.role).toBe('user');
     expect(lastMsg.content).toContain('<system-reminder>');
-    expect(lastMsg.content).toContain('SecurityMode: Plan');
+    expect(lastMsg.content).toContain('Behavior:');
     expect(lastMsg.content).toContain('Cwd:');
 
     const history = context.getHistory();
@@ -700,5 +700,53 @@ describe('AgentLoop 动态安全特性测试', () => {
     const loop = new AgentLoop({ toolRegistry: mockToolRegistry as ToolRegistryPort, context, driver: mockLlmDriver as LlmPort, contextAdapter: mockContextAdapter as ContextAdapter, ruleManager: mockRuleManager as RuleManager, contextRepo: mockContextRepo as ContextRepository, toolDispatcher: mockToolDispatcher as ToolDispatcher, compactionService: mockCompactionService as CompactionService, pluginRegistry, qualityCheckPort: { runPostRunCheck: qcSpy } });
     for await (const e of loop.chat(undefined, new AgentTracer(process.cwd(), 't-qc-write'), { model: 'mock-model' } as LlmConfig)) { void e; }
     expect(qcSpy).toHaveBeenCalled();
+  });
+
+  it('14. 诊断最终回答应在流式输出前经过证据质量门禁', async () => {
+    const unsupportedClaim = '建议优先清理缓存，可释放约 500MB 空间。';
+    context.addMessage({ role: 'user', content: '请诊断磁盘空间占用并给出清理建议。' });
+    mockContextAdapter = {
+      assemble: vi.fn().mockReturnValue([
+        { role: 'user', content: '请诊断磁盘空间占用并给出清理建议。' }
+      ])
+    };
+    mockLlmDriver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      abort: () => {},
+      streamChat: vi.fn().mockImplementation(async function* () {
+        yield { type: 'content', content: unsupportedClaim } as LlmStreamEvent;
+        yield {
+          type: 'complete',
+          content: unsupportedClaim,
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: unsupportedClaim }
+        } as LlmStreamEvent;
+      })
+    };
+
+    const loop = new AgentLoop({
+      toolRegistry: mockToolRegistry as ToolRegistryPort,
+      context,
+      driver: mockLlmDriver as LlmPort,
+      contextAdapter: mockContextAdapter as ContextAdapter,
+      ruleManager: mockRuleManager as RuleManager,
+      contextRepo: mockContextRepo as ContextRepository,
+      toolDispatcher: mockToolDispatcher as ToolDispatcher,
+      compactionService: mockCompactionService as CompactionService,
+      pluginRegistry
+    });
+    const events: AgentEvent[] = [];
+    for await (const event of loop.chat(undefined, new AgentTracer(process.cwd(), 't-diag-gate'), { model: 'mock-model' } as LlmConfig)) {
+      events.push(event);
+    }
+
+    const output = events
+      .filter((event): event is Extract<AgentEvent, { type: 'content' }> => event.type === 'content')
+      .map(event => event.content)
+      .join('');
+    expect(output).toContain('待验证');
+    expect(output).not.toContain('500MB');
+    expect(context.getHistory().at(-1)?.content).toContain('待验证');
   });
 });

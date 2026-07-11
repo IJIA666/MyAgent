@@ -48,9 +48,9 @@ export class ApprovalEffectApplier {
       }
       case 'session': {
         // 根据资源 kind 分流写入：directory-scope 写入目录范围白名单，
-        // path 按 access 写入精确读/写白名单（command-prefix 不会出现在会话授权中）
+        // path 按 access 写入精确读/写白名单（command-prefix 和 command-operation 不会出现在会话授权中）
         for (const r of grant.resources) {
-          if (r.kind === 'command-prefix') continue;
+          if (r.kind === 'command-prefix' || r.kind === 'command-operation') continue;
           if (r.kind === 'directory-scope') {
             context.addTemporaryDirectoryScopeReadWhitelist(r.normalizedPath);
           } else if (r.access === 'read') {

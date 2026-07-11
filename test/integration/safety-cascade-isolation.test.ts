@@ -39,9 +39,9 @@ describe('安全隔离与级联熔断集成测试', () => {
     const safetyResultA = executeCommandTool.checkSafety({ command: 'npm run build' }, sessionA);
     const safetyResultB = executeCommandTool.checkSafety({ command: 'npm run build' }, sessionB);
 
-    // YOLO 模式放行（pass），Plan 模式拒绝（deny）
+    // YOLO 模式放行（pass），Plan 模式返回未知副作用分类（Plan 策略由 HumanApprovalPlugin 统一决策）
     expect(safetyResultA.status).toBe('pass');
-    expect(safetyResultB.status).toBe('deny');
+    expect(safetyResultB.status).toBe('suspend');
   });
 
   it('2. 应该在单会话内驳回其中任意一个待审批时，触发级联熔断并向其他并发链路抛出 HaltedByReject 错误', async () => {

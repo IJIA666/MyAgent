@@ -10,4 +10,10 @@
 export type SafetyResource =
   | { kind: 'path'; access: 'read' | 'write'; normalizedPath: string }
   | { kind: 'directory-scope'; access: 'read'; normalizedPath: string }
-  | { kind: 'command-prefix'; prefix: string };
+  | { kind: 'command-prefix'; prefix: string }
+  /**
+   * 结构化命令操作族资源。
+   * 包含已决议 shell family、核心根命令和可选的受限参数模式，
+   * 用于命令授权中的结构化匹配与持久化白名单消费。
+   */
+  | { kind: 'command-operation'; shellKind: string; rootCommand: string; paramPattern?: string };

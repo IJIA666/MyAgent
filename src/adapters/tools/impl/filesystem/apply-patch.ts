@@ -5,6 +5,7 @@ import { secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '.
 import { ReadFileTool } from './file-system.js';
 import type { NativeTool } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { applyReplacePatch } from './apply-patch-helper.js';
@@ -73,7 +74,7 @@ export class ApplyPatchTool implements NativeTool {
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     loadWorkMode();
     if (getWorkMode() === 'YOLO') {
-      return { status: 'pass' };
+      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-edit' as const, summary: '应用补丁', resources: [] } as SafetyOperation };
     }
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
@@ -92,7 +93,8 @@ export class ApplyPatchTool implements NativeTool {
       status: 'suspend',
       message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${targetPath}"`,
       targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : []
+      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : [],
+      operation: { planSideEffect: 'write', riskReason: `补丁操作: ${targetPath}`, operationCategory: 'file-edit' as const, summary: `应用补丁 ${targetPath}`, resources: isOutOfSandbox ? [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }] : [] }
     };
   }
 

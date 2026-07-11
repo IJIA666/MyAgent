@@ -3,7 +3,7 @@
  * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
  */
 
-import { validateCommand, validateCwd, isHardlineDangerous, isPlanSafeCommand, unboxNestedCommand, containsDangerousWriteToken } from './terminal-guard.js';
+import { validateCommand, validateCwd, isHardlineDangerous, isPlanSafeCommand, unboxNestedCommand, containsDangerousWriteToken, isSensitiveReadCommand } from './terminal-guard.js';
 import type { ToolExecutionEffect } from '../../tool-types.js';
 import { runCommandEngine } from './terminal-engine.js';
 import { getWorkMode, extractSafePrefix, loadAllowedCommands, loadDefaultShellFamily } from './terminal-config.js';
@@ -13,6 +13,7 @@ import type { NativeTool } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { SafetyOperation, ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { PlanSideEffect } from '../../../../ports/shared/tool-policy.js';
 import type { EventNotificationPort } from '../../../../ports/driven/session/EventNotificationPort.js';
 
 /**
@@ -112,32 +113,39 @@ export class ExecuteCommandTool implements NativeTool {
     const isExplicitShell = rawShellKind !== 'auto';
     const unboxShellKind = isExplicitShell ? resolvedShellKind : undefined;
 
-    // 1. 绝对拦截校验：即使在 YOLO 模式下，毁灭级命令也无权豁免
+    // 优先解包，供后续副作用分类使用
+    const unboxedCmd = unboxNestedCommand(command, unboxShellKind).trim();
+
+    // 0a. 硬红线检查优先级最高
     if (isHardlineDangerous(command, resolvedShellKind)) {
-      return { status: 'deny', message: 'BLOCKED (Hardline Blocklist): 拒绝执行毁灭性系统破坏命令。' };
+      return { status: 'deny', message: 'BLOCKED (Hardline Blocklist): 拒绝执行毁灭性系统破坏命令。', operation: { planSideEffect: 'hardline', riskReason: '', operationCategory: 'command-execute', summary: '', resources: [] } };
+    }
+
+    // 0b. 构建可信副作用分类（planSideEffect），供策略层统一决策
+    let planSideEffect: PlanSideEffect;
+
+    // 可证明安全的原子只读命令
+    if (isPlanSafeCommand(command, resolvedShellKind)) {
+      planSideEffect = isSensitiveReadCommand(unboxedCmd, resolvedShellKind)
+        ? 'sensitive-read'
+        : 'read';
+    } else if (containsDangerousWriteToken(unboxedCmd, resolvedShellKind)) {
+      // 0c. 危险写倾向命令
+      planSideEffect = 'write';
+    } else {
+      // 0d. 无法确定副作用的命令（复合命令、未知结构等）
+      planSideEffect = 'unknown';
     }
 
     // 优先从 Session 取得工作模式，否则回退到全局备用缺省值（用以向下兼容测试流）
     const workMode = sessionContext ? sessionContext.getWorkMode() : getWorkMode();
 
-    // 2. Plan 模式拦截：对终端命令实施与执行期结构校验同构的安全审查
-    const unboxedCmd = unboxNestedCommand(command, unboxShellKind).trim();
-
-    if (workMode === 'Plan') {
-      if (!isPlanSafeCommand(command, resolvedShellKind)) {
-        // 在 Plan 模式下实施终端硬拦截，并返回针对大模型的自愈引导报错
-        // 不满足安全条件的命令（非白名单、含复合字符、毁灭级命令）直接拒绝，确保不产生"审批通过但执行失败"的假阳性
-        return {
-          status: 'deny',
-          message: 'BLOCKED (Plan Mode Only): 只读规划模式下仅允许可静态证明安全的系统只读查询。该命令因未命中只读白名单、包含复合连接/重定向符或属于危险操作而被拒绝。由于您当前处于只读的 Plan 模式下，请优先改用专属的只读文件 API 工具（如 list_dir、readFile 或 grep_search）来诊断和了解系统状态；若该命令为必要的写入/修改步骤，请将其记录在任务清单或计划中供后续阶段在 Auto 或 YOLO 模式下执行。'
-        };
-      }
-      // 通过 isPlanSafeCommand 审查后，继续走统一审批路径（suspend），不再静默放行
-    }
-
     // 3. YOLO 模式直接放行（由于绝对黑名单在最外层卡关，这里放行是安全的）
     if (workMode === 'YOLO') {
-      return { status: 'pass' };
+      return {
+        status: 'pass',
+        operation: { planSideEffect, riskReason: '', operationCategory: 'command-execute', summary: '', resources: [] }
+      };
     }
 
     let needApproval = true;
@@ -173,16 +181,32 @@ export class ExecuteCommandTool implements NativeTool {
         ? `（已自动选择 ${shellFamilyLabel} 语义）`
         : `（已显式指定 ${shellFamilyLabel} 语义）`;
 
+      // 从解包命令中提取根命令（第一个非选项 token），构建结构化操作族资源
+      const rootCommand = unboxedCmd.split(/\s+/).find(p => p.length > 0 && !p.startsWith('-')) || '';
+      const commandResources: import('../../../../ports/shared/safety-resource.js').SafetyResource[] = [];
+      if (rootCommand) {
+        commandResources.push({
+          kind: 'command-operation',
+          shellKind: resolvedShellKind,
+          rootCommand,
+          paramPattern: safePrefix ?? undefined,
+        });
+      }
+      if (safePrefix) {
+        commandResources.push({ kind: 'command-prefix', prefix: safePrefix });
+      }
+
       // 知情告知融合：当解包内核与原始外壳命令不一致时，展示披露比对信息（改用单引号包裹防止引号嵌套的视觉混乱）
       const message = unboxedCmd !== command.trim()
         ? `智能体试图在终端执行未授权命令。外壳包装: '${command.trim()}'，实际执行的核心命令为: '${unboxedCmd}'。Shell 语义: ${shellFamilyLabel}`
         : `智能体试图在终端执行写倾向或未识别命令: '${command}'。${shellFamilyHint}`;
 
       const operation: SafetyOperation = {
-        resources: safePrefix ? [{ kind: 'command-prefix', prefix: safePrefix }] : [],
+        resources: commandResources,
         riskReason: message,
         operationCategory: 'command-execute',
-        summary: message
+        summary: message,
+        planSideEffect
       };
 
       return {
@@ -193,7 +217,7 @@ export class ExecuteCommandTool implements NativeTool {
       };
     }
 
-    return { status: 'pass' };
+    return { status: 'pass', operation: { planSideEffect, riskReason: '', operationCategory: 'command-execute', summary: '', resources: [] } };
   }
 
   /**

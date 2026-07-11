@@ -1,10 +1,4 @@
-# diagnostic-evidence-quality
-
-## Purpose
-
-建立诊断类回答中证据等级与结论强度的对应约束，防止模型将目录枚举或存在性检查夸大为真实测量结论，确保回答中的宣称范围与可追溯的依据严格匹配。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 诊断证据分级
 

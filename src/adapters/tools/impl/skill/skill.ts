@@ -1,5 +1,6 @@
 import type { NativeTool } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 
 /**
  * 扩展技能拉取工具类。
@@ -80,6 +81,6 @@ export class LoadSkillTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(): SafetyCheckResult {
-    return { status: 'pass' };
+    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read' as const, summary: '加载技能规范', resources: [] } as SafetyOperation };
   }
 }

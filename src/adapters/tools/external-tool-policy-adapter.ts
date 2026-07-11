@@ -63,6 +63,7 @@ export class ExternalToolPolicyAdapter implements ToolPolicyPort {
         riskReason: `外部工具调用: ${call.toolName}`,
         operationCategory: 'external-tool',
         summary: `外部工具 ${descriptor.serverName}/${call.toolName} 请求授权`,
+        planSideEffect: 'unknown' as const,
       },
     };
   }

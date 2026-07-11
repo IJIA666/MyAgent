@@ -1,5 +1,6 @@
 import type { NativeTool } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 import { InteractionRequestError } from '../../../../ports/driven/session/InteractionPort.js';
 import type { AskUserPayload, UserQuestion } from '../../../../ports/driven/session/InteractionPort.js';
 
@@ -168,7 +169,12 @@ export class AskUserQuestionTool implements NativeTool {
     options?: Array<{ label: string; description?: string }>;
   }> {
     if (!Array.isArray(raw)) {
-      return [];
+      // 参数类型错误时抛出明确中文错误，帮助模型理解 JSON 结构问题
+      const receivedType = raw === null ? 'null' : typeof raw;
+      throw new Error(
+        `参数解析失败：questions 必须是数组，但收到的类型为 "${receivedType}"。` +
+        `请检查 JSON 语法是否正确。正确格式示例：{"questions":[{"id":"q1","header":"选项","question":"请选择？","mode":"single-select","options":[{"label":"A","description":"描述"}]}]}`
+      );
     }
     return raw.map((item: unknown) => {
       const q = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
@@ -194,6 +200,6 @@ export class AskUserQuestionTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(): SafetyCheckResult {
-    return { status: 'pass' };
+    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read' as const, summary: '向用户提问', resources: [] } as SafetyOperation };
   }
 }

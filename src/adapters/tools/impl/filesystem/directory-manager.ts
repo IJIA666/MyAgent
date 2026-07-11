@@ -3,6 +3,7 @@ import { dirname, resolve } from 'path';
 import { secureResolveWritePath, secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SafetyOperation, SafetyResource } from '../../../../ports/shared/tool-policy.js';
 import { copyRecursiveSync } from './directory-manager-helper.js';
 import { getWorkMode, loadWorkMode } from '../system/terminal.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
@@ -50,7 +51,7 @@ export class CreateDirectoryTool implements NativeTool {
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     loadWorkMode();
     if (getWorkMode() === 'YOLO') {
-      return { status: 'pass' };
+      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-write' as const, summary: '创建目录', resources: [] } as SafetyOperation };
     }
     const directoryPath = args.directoryPath;
     if (typeof directoryPath !== 'string') {
@@ -69,7 +70,8 @@ export class CreateDirectoryTool implements NativeTool {
       status: 'suspend',
       message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${directoryPath}"`,
       targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : []
+      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : [],
+      operation: { planSideEffect: 'write', riskReason: `创建目录: ${directoryPath}`, operationCategory: 'file-write' as const, summary: `创建目录 ${directoryPath}`, resources: isOutOfSandbox ? [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }] : [] }
     };
   }
 
@@ -143,7 +145,7 @@ export class DeletePathTool implements NativeTool {
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     loadWorkMode();
     if (getWorkMode() === 'YOLO') {
-      return { status: 'pass' };
+      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-delete' as const, summary: '删除路径', resources: [] } as SafetyOperation };
     }
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
@@ -162,7 +164,8 @@ export class DeletePathTool implements NativeTool {
       status: 'suspend',
       message: `智能体试图安全删除以下路径: "${targetPath}"`,
       targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : []
+      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : [],
+      operation: { planSideEffect: 'write', riskReason: `删除路径: ${targetPath}`, operationCategory: 'file-delete' as const, summary: `删除 ${targetPath}`, resources: isOutOfSandbox ? [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }] : [] }
     };
   }
 
@@ -237,7 +240,7 @@ export class MovePathTool implements NativeTool {
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     loadWorkMode();
     if (getWorkMode() === 'YOLO') {
-      return { status: 'pass' };
+      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-move' as const, summary: '移动路径', resources: [] } as SafetyOperation };
     }
     const sourcePath = args.sourcePath;
     const destinationPath = args.destinationPath;
@@ -263,14 +266,16 @@ export class MovePathTool implements NativeTool {
     const rootDir = getAuthorizedDir();
     const srcResolved = getPhysicalRealPath(resolve(rootDir!, sourcePath));
     const destResolved = getPhysicalRealPath(resolve(rootDir!, destinationPath));
+    const resources: SafetyResource[] = [
+      { kind: 'path', access: 'write', normalizedPath: srcResolved },
+      { kind: 'path', access: 'write', normalizedPath: destResolved }
+    ];
     return {
       status: 'suspend',
       message: `智能体试图将 "${sourcePath}" 移动至 "${destinationPath}"`,
       targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources: [
-        { kind: 'path', access: 'write' as const, normalizedPath: srcResolved },
-        { kind: 'path', access: 'write' as const, normalizedPath: destResolved }
-      ]
+      resources,
+      operation: { planSideEffect: 'write', riskReason: `移动: ${sourcePath} → ${destinationPath}`, operationCategory: 'file-move' as const, summary: `移动 ${sourcePath} 到 ${destinationPath}`, resources }
     };
   }
 
@@ -366,7 +371,7 @@ export class CopyPathTool implements NativeTool {
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
     loadWorkMode();
     if (getWorkMode() === 'YOLO') {
-      return { status: 'pass' };
+      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-copy' as const, summary: '复制路径', resources: [] } as SafetyOperation };
     }
     const sourcePath = args.sourcePath;
     const destinationPath = args.destinationPath;
@@ -391,14 +396,16 @@ export class CopyPathTool implements NativeTool {
     const rootDir = getAuthorizedDir();
     const srcResolved = getPhysicalRealPath(resolve(rootDir!, sourcePath));
     const destResolved = getPhysicalRealPath(resolve(rootDir!, destinationPath));
+    const resources: SafetyResource[] = [
+      { kind: 'path', access: 'read', normalizedPath: srcResolved },
+      { kind: 'path', access: 'write', normalizedPath: destResolved }
+    ];
     return {
       status: 'suspend',
       message: `智能体试图将 "${sourcePath}" 复制至 "${destinationPath}"`,
       targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources: [
-        { kind: 'path', access: 'read' as const, normalizedPath: srcResolved },
-        { kind: 'path', access: 'write' as const, normalizedPath: destResolved }
-      ]
+      resources,
+      operation: { planSideEffect: 'write', riskReason: `复制: ${sourcePath} → ${destinationPath}`, operationCategory: 'file-copy' as const, summary: `复制 ${sourcePath} 到 ${destinationPath}`, resources }
     };
   }
 

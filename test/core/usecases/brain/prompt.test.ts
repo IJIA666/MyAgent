@@ -160,13 +160,18 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
       listFilesUsed: 2,
       stagnantListFilesCount: 0,
       highRiskTargets: ['Package Cache'],
-      scannedTargets: ['C:\\Package Cache']
+      scannedTargets: ['C:\\Package Cache'],
+      evidenceRecords: [],
+      callMetrics: [],
+      stagnantCallCount: 0,
+      stagnantTargetCount: 0,
+      lastDirectoryStatsTruncated: false,
     });
 
     expect(reminder).toContain(RULE_DIAGNOSTIC_DOWNGRADE);
     expect(reminder).toContain(RULE_DIAGNOSTIC_EVIDENCE);
     expect(reminder).toContain(RULE_DIAGNOSTIC_CLEANUP_SAFETY);
-    expect(reminder).toContain('DiagnosticEvidenceLevel: enumeration');
+    expect(reminder).toContain('Evidence:');
     expect(reminder).toContain('Package Cache');
   });
 
@@ -179,7 +184,12 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
       listFilesUsed: 0,
       stagnantListFilesCount: 0,
       highRiskTargets: [],
-      scannedTargets: []
+      scannedTargets: [],
+      evidenceRecords: [],
+      callMetrics: [],
+      stagnantCallCount: 0,
+      stagnantTargetCount: 0,
+      lastDirectoryStatsTruncated: false,
     });
 
     expect(reminder).toBe('');

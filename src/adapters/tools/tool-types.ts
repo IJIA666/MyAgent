@@ -241,3 +241,41 @@ export interface CallToolResult {
   }[];
   isError?: boolean;
 }
+
+// ── 批量只读结果包络 ──
+
+/**
+ * 单个子项操作结果。
+ */
+export interface BatchItemResult<T = string> {
+  /** 成功读取的对象标识 */
+  key: string;
+  /** 成功时的结果值 */
+  value?: T;
+  /** 失败时的错误摘要 */
+  error?: string;
+  /** 跳过原因 */
+  skipReason?: string;
+}
+
+/**
+ * 批量只读工具的统一部分成功结果包络。
+ * 用于枚举、搜索、批量读取等会操作多个对象的工具，
+ * 确保单个子项失败不会抛弃其他成功结果。
+ */
+export interface PartialSuccessEnvelope<T = string> {
+  /** 成功完成的对象列表 */
+  succeeded: BatchItemResult<T>[];
+  /** 失败的对象列表 */
+  failed: BatchItemResult<T>[];
+  /** 跳过的对象列表 */
+  skipped: BatchItemResult<T>[];
+  /** 截断或取消原因（若有） */
+  truncationReason?: string;
+  /** 覆盖范围描述 */
+  coverage: string;
+  /** 完整性分类 */
+  completeness: 'complete' | 'partial' | 'lower-bound';
+  /** 可选的卸载明细引用（大量失败/跳过时，完整明细可写入独立文件） */
+  detailRef?: string;
+}

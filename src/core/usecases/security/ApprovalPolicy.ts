@@ -10,17 +10,18 @@ import type { SafetyOperation, ApprovalChoiceId, ApprovalChoice, ApprovalRequest
 import type { ResourceExtractor } from '../../../ports/driven/tools/ToolAccessMetadataPort.js';
 
 /** 资源分类规则键 */
-type RuleKey = 'path+read' | 'path+write' | 'directory-scope' | 'command-prefix' | 'hardline' | 'sensitive-file' | 'untrusted';
+type RuleKey = 'path+read' | 'path+write' | 'directory-scope' | 'command-prefix' | 'command-operation' | 'hardline' | 'sensitive-file' | 'untrusted';
 
 /** choice 生成规则矩阵：资源类型 → 可用 choice 列表 */
 const CHOICE_RULES: Record<RuleKey, ApprovalChoiceId[]> = {
-  'path+read':      ['call', 'session', 'deny'],
-  'path+write':     ['call', 'session', 'deny'],
-  'directory-scope': ['call', 'session', 'deny'],
-  'command-prefix': ['call', 'persistent', 'deny'],
-  'hardline':       ['deny'],
-  'sensitive-file': ['call', 'deny'],
-  'untrusted':      ['call', 'deny'],
+  'path+read':        ['call', 'session', 'deny'],
+  'path+write':       ['call', 'session', 'deny'],
+  'directory-scope':  ['call', 'session', 'deny'],
+  'command-prefix':   ['call', 'persistent', 'deny'],
+  'command-operation': ['call', 'persistent', 'deny'],
+  'hardline':         ['deny'],
+  'sensitive-file':   ['call', 'deny'],
+  'untrusted':        ['call', 'deny'],
 };
 
 /** 硬红线命令前缀列表 */
@@ -141,8 +142,12 @@ export class ApprovalPolicy {
     // 4. 根据资源类型聚合 choice 规则
     const ruleKeys = this.classifyResources(effectiveResources);
     const mergedChoices = this.mergeChoiceRules(ruleKeys);
+
+    // 4.1 按工作模式过滤不适用的长期授权选项
+    const modeFilteredChoices = this.applyModeChoiceRestrictions(mergedChoices, params.workMode);
+
     const hasDirectoryScope = effectiveResources.some(r => r.kind === 'directory-scope');
-    const choices: ApprovalChoice[] = mergedChoices.map((choiceId) => {
+    const choices: ApprovalChoice[] = modeFilteredChoices.map((choiceId) => {
       // 目录范围资源的 session 选项描述应明确告知子树授权范围
       if (choiceId === 'session' && hasDirectoryScope) {
         return {
@@ -198,6 +203,18 @@ export class ApprovalPolicy {
         };
       }
       case 'persistent': {
+        // 优先使用 command-operation 结构化资源构建持久化规则
+        const cmdOpResource = operation.resources.find(
+          (r): r is SafetyResource & { kind: 'command-operation' } => r.kind === 'command-operation'
+        );
+        if (cmdOpResource) {
+          // 使用 shellKind:rootCommand 作为持久化前缀，确保跨 shell family 可消费
+          return {
+            type: 'persistent',
+            payload: { type: 'persistent', prefix: `${cmdOpResource.rootCommand}` } as PersistentRuleEffect,
+          };
+        }
+
         const prefixResource = operation.resources.find(
           (r): r is SafetyResource & { kind: 'command-prefix' } => r.kind === 'command-prefix'
         );
@@ -218,7 +235,7 @@ export class ApprovalPolicy {
   // ──── 私有辅助方法 ────
 
   /** 构建仅含 deny 的审批请求 */
-  private buildDenyRequest(toolName: string, message: string): ApprovalRequest {
+  private buildDenyRequest(_toolName: string, message: string): ApprovalRequest {
     return {
       id: `approval_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`,
       message,
@@ -234,7 +251,7 @@ export class ApprovalPolicy {
 
   /** 构建受限 choice 的审批请求（用于敏感文件、untrusted 等场景） */
   private buildLimitedRequest(
-    toolName: string,
+    _toolName: string,
     summary: string,
     ruleKey: RuleKey,
     operation?: SafetyOperation
@@ -263,7 +280,9 @@ export class ApprovalPolicy {
     const serialize = (r: SafetyResource): string => {
       if (r.kind === 'path') return `path:${r.access}:${r.normalizedPath}`;
       if (r.kind === 'directory-scope') return `directory-scope:read:${r.normalizedPath}`;
-      return `command-prefix:${r.prefix}`;
+      if (r.kind === 'command-prefix') return `command-prefix:${r.prefix}`;
+      if (r.kind === 'command-operation') return `command-operation:${r.shellKind}:${r.rootCommand}`;
+      return `unknown:${JSON.stringify(r)}`;
     };
 
     const extectedSet = new Set(extected.map(serialize));
@@ -278,7 +297,7 @@ export class ApprovalPolicy {
   }
 
   /** 检查是否命中硬红线命令（基于已决议 shell 语义 + 命令字符串） */
-  private isHardlineCommand(resources: SafetyResource[], toolName: string, toolArgs: Record<string, unknown>): boolean {
+  private isHardlineCommand(_resources: SafetyResource[], toolName: string, toolArgs: Record<string, unknown>): boolean {
     if (toolName !== 'execute_command') {
       return false;
     }
@@ -321,6 +340,8 @@ export class ApprovalPolicy {
         keys.add('directory-scope');
       } else if (r.kind === 'command-prefix') {
         keys.add('command-prefix');
+      } else if (r.kind === 'command-operation') {
+        keys.add('command-operation');
       }
     }
     return Array.from(keys);
@@ -349,5 +370,23 @@ export class ApprovalPolicy {
     // 按固定序排列：call → session → persistent → deny
     const order: ApprovalChoiceId[] = ['call', 'session', 'persistent', 'deny'];
     return order.filter((c) => merged.has(c));
+  }
+
+  /**
+   * 按当前工作模式过滤不适用的长期授权选项。
+   * 确保不会展示在当前模式下不会被消费的授权选项。
+   *
+   * @param choices - 合并后的可选 choiceId 列表
+   * @param workMode - 当前工作模式
+   * @returns 过滤后的 choiceId 列表
+   */
+  private applyModeChoiceRestrictions(choices: ApprovalChoiceId[], workMode: string): ApprovalChoiceId[] {
+    if (workMode === 'Plan') {
+      // Plan 模式：禁止长期授权（session/persistent），仅允许单次放行或拒绝
+      return choices.filter(c => c === 'call' || c === 'deny');
+    }
+
+    // Safe/Auto/YOLO 模式不过滤（YOLO 模式下不会到达审批）
+    return choices;
   }
 }

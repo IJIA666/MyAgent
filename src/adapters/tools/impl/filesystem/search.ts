@@ -3,6 +3,7 @@ import { existsSync, statSync, openSync, readSync, closeSync, promises as fsProm
 import { secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { SafetyOperation, SafetyResource } from '../../../../ports/shared/tool-policy.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 
@@ -185,16 +186,18 @@ export class GrepSearchTool implements NativeTool {
     const searchPath = typeof args.searchPath === 'string' ? args.searchPath : '.';
     try {
       secureResolveReadPath(searchPath, sessionContext);
-      return { status: 'pass' };
+      return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read', summary: `搜索: ${searchPath}`, resources: [] } as SafetyOperation };
     } catch {
       const rootDir = getAuthorizedDir();
       const rawPath = resolve(rootDir!, searchPath);
       const resolvedPath = getPhysicalRealPath(rawPath);
+      const resources: SafetyResource[] = [{ kind: 'path', access: 'read', normalizedPath: resolvedPath }];
       return {
         status: 'suspend',
         message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
         targetPath: resolvedPath,
-        resources: [{ kind: 'path', access: 'read' as const, normalizedPath: resolvedPath }]
+        resources,
+        operation: { planSideEffect: 'read', riskReason: '访问工作区外资源', operationCategory: 'file-read', summary: `搜索: ${resolvedPath}`, resources }
       };
     }
   }
@@ -376,7 +379,7 @@ export class GlobSearchTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(): SafetyCheckResult {
-    return { status: 'pass' };
+    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read', summary: '通配符搜索', resources: [] } as SafetyOperation };
   }
 
   /**

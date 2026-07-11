@@ -31,7 +31,8 @@ export const RULE_MINIMAL_REFACTOR = `【最小重构与零注释污染原则】
 
 /** 规则 7：原生工具优先使用与终端工具使用场景划分 */
 export const RULE_TOOL_PRIORITY = `【专用工具优先】
-   - 凡是可用原生工具（如 readFile、listFiles、grepSearch、editFile 等）完成的操作，绝对禁止调用通用的终端 Shell 工具（execute_command）执行 cat, sed, awk, find, grep 等文件操作。通用终端工具 execute_command 绝非信息查询工具。在只读规划（Plan）阶段下，智能体必须（MUST）优先使用只读原生文件工具（listFiles、readFile、grepSearch）进行诊断与状态分析。当原生工具无法覆盖特定系统查询需求时，允许调用 execute_command 发起可静态证明安全的系统只读查询审批请求，但命令示例必须与当前 shell 语义一致：例如 \`dir\` 适用于 PowerShell/CMD，\`Get-Content\` 与 \`Select-String\` 适用于 PowerShell，\`type\` 与 \`findstr\` 适用于 CMD。无论使用哪种 shell，均严禁任何复合连接（&、|、;）、重定向（>、<）、环境变量展开（%）或写倾向操作。终端工具仍被允许用于执行项目的代码编译、集成打包与运行测试等系统级管理任务。`;
+   - 凡是可用原生工具（如 readFile、listFiles、grepSearch、editFile 等）完成的操作，绝对禁止调用通用的终端 Shell 工具（execute_command）执行 cat, sed, awk, find, grep 等文件操作。通用终端工具 execute_command 绝非信息查询工具。
+   - 当只读约束生效时，智能体必须（MUST）优先使用只读原生文件工具（listFiles、readFile、grepSearch）进行诊断与状态分析。当原生工具无法覆盖特定系统查询需求时，允许调用 execute_command 发起可静态证明安全的系统只读查询审批请求，但命令示例必须与当前 shell 语义一致：例如 \`dir\` 适用于 PowerShell/CMD，\`Get-Content\` 与 \`Select-String\` 适用于 PowerShell，\`type\` 与 \`findstr\` 适用于 CMD。无论使用哪种 shell，均严禁任何复合连接（&、|、;）、重定向（>、<）、环境变量展开（%）或写倾向操作。终端工具仍被允许用于执行项目的代码编译、集成打包与运行测试等系统级管理任务。`;
 
 /** 规则 8：大语言模型参考 User 注入的长期记忆规约 */
 export const RULE_LONG_TERM_MEMORY = `【长期记忆参考指令】在对话过程中，您必须参考最新 User 消息中注入的 <long-term-memory> 长期记忆事实。`;
@@ -225,6 +226,46 @@ export const HANDOFF_INSTRUCTION = `【最高指挥官（LEADER）交接声明�
  * @param state - 当前轮次的诊断状态快照
  * @returns 适合直接拼入提醒气泡的文本，非诊断任务返回空字符串
  */
+/**
+ * 从 evidenceRecords 中提取对象级证据摘要字符串。
+ * 每个目标最多保留一条最高完整性记录，避免上下文膨胀。
+ */
+function buildEvidenceSummary(state: DiagnosticTurnState): string {
+  const records = state.evidenceRecords ?? [];
+  if (records.length === 0) {
+    return 'Evidence: none';
+  }
+
+  // 按目标去重，每个目标保留最高完整性的记录
+  const bestPerTarget = new Map<string, typeof records[0]>();
+  const priority: Record<string, number> = { 'complete': 3, 'partial': 2, 'lower-bound': 1, 'listed': 0 };
+
+  for (const r of records) {
+    const existing = bestPerTarget.get(r.target);
+    if (!existing || (priority[r.completeness] ?? 0) > (priority[existing.completeness] ?? 0)) {
+      bestPerTarget.set(r.target, r);
+    }
+  }
+
+  // 最多展示 5 条证据摘要
+  const lines: string[] = ['Evidence:'];
+  let count = 0;
+  for (const [target, r] of bestPerTarget) {
+    if (count >= 5) {
+      lines.push(`  ... and ${bestPerTarget.size - count} more targets`);
+      break;
+    }
+    const errSuffix = r.error ? ` (error: ${r.error.slice(0, 60)})` : '';
+    lines.push(`  ${target} → ${r.metric}=${r.value} ${r.unit} [${r.completeness}]${errSuffix}`);
+    count++;
+  }
+  if (count === 0) {
+    lines.push('  (no measurable records)');
+  }
+
+  return lines.join('\n');
+}
+
 export function buildDiagnosticGuardrailReminder(state?: DiagnosticTurnState): string {
   if (!state?.active) {
     return '';
@@ -234,17 +275,23 @@ export function buildDiagnosticGuardrailReminder(state?: DiagnosticTurnState): s
     ? `HighRiskCleanupTargets: ${state.highRiskTargets.join(', ')} (默认谨慎或禁止项，禁止给出整目录删除且无副作用的结论)`
     : 'HighRiskCleanupTargets: none-detected';
 
+  const evidenceSummary = buildEvidenceSummary(state);
+  const stagnationLine = state.stagnantCallCount >= 2
+    ? `Stagnation: ${state.stagnantCallCount} calls without new evidence — must stop diffusion and summarize`
+    : '';
+
   return [
     RULE_DIAGNOSTIC_DOWNGRADE,
     RULE_DIAGNOSTIC_EVIDENCE,
     RULE_DIAGNOSTIC_CLEANUP_SAFETY,
-    `DiagnosticEvidenceLevel: ${state.evidenceLevel}`,
+    evidenceSummary,
     `DiagnosticListFilesBudget: ${state.listFilesUsed}/4`,
     `DiagnosticSystemQueryAttempts: ${state.systemQueryAttempts}`,
     `DiagnosticLastSystemQueryFailed: ${state.lastSystemQueryFailed ? 'yes' : 'no'}`,
     `DiagnosticDirectoryStatsTruncated: ${state.lastDirectoryStatsTruncated ? 'yes' : 'no'}`,
-    highRiskLine
-  ].join('\n');
+    highRiskLine,
+    stagnationLine,
+  ].filter(Boolean).join('\n');
 }
 
 /**
