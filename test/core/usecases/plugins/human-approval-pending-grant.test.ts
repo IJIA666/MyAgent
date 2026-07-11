@@ -78,6 +78,106 @@ describe('HumanApprovalPlugin — pendingGrant 授权（ToolPolicyPort 路径）
     expect(ctx.control.action).toBe('continue');
   });
 
+  it('Plan 模式工作区外普通只读 suspend 必须审批并生成 call capability', async () => {
+    session.setWorkMode('Plan');
+    const targetPath = 'C:\\';
+    const waitSpy = vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'call' });
+    plugin = new HumanApprovalPlugin(
+      createMockPolicyPort({
+        status: 'suspend',
+        message: '访问工作区外资源',
+        resources: [{ kind: 'directory-scope', access: 'read', normalizedPath: targetPath }],
+        operation: {
+          planSideEffect: 'read',
+          riskReason: '访问工作区外资源',
+          operationCategory: 'file-read',
+          summary: `列出目录 ${targetPath}`,
+          resources: [{ kind: 'directory-scope', access: 'read', normalizedPath: targetPath }],
+        },
+      }),
+      createMockApprovalPolicy(),
+    );
+    const ctx = createContext(session, {
+      id: 'plan-read-outside-workspace',
+      name: 'listFiles',
+      arguments: { targetPath },
+    });
+
+    const next = vi.fn(async () => {});
+    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
+
+    expect(waitSpy).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledOnce();
+    expect(ctx.pendingGrant).toEqual({
+      type: 'call',
+      toolCallId: 'plan-read-outside-workspace',
+      toolName: 'listFiles',
+      resources: [{ kind: 'directory-scope', access: 'read', normalizedPath: targetPath }],
+    });
+  });
+
+  it('Plan 模式可证明安全的原子只读命令不应进入审批', async () => {
+    session.setWorkMode('Plan');
+    const waitSpy = vi.spyOn(session.approvalService, 'wait');
+    plugin = new HumanApprovalPlugin(
+      createMockPolicyPort({
+        status: 'suspend',
+        message: '未授权命令',
+        operation: {
+          planSideEffect: 'read',
+          riskReason: '终端命令通用挂起',
+          operationCategory: 'command-execute',
+          summary: 'wmic logicaldisk get caption,size,freespace,description',
+          resources: [{ kind: 'command-operation', shellKind: 'cmd', rootCommand: 'wmic' }],
+        },
+      }),
+      createMockApprovalPolicy(),
+    );
+    const ctx = createContext(session, {
+      id: 'plan-safe-wmic',
+      name: 'execute_command',
+      arguments: { command: 'wmic logicaldisk get caption,size,freespace,description', shellKind: 'cmd' },
+    });
+
+    const next = vi.fn(async () => {});
+    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(waitSpy).not.toHaveBeenCalled();
+    expect(ctx.pendingGrant).toBeUndefined();
+    expect(ctx.control.action).toBe('continue');
+  });
+
+  it('Plan 模式普通只读 deny 不得因 planSideEffect=read 被误放行', async () => {
+    session.setWorkMode('Plan');
+    plugin = new HumanApprovalPlugin(
+      createMockPolicyPort({
+        status: 'deny',
+        message: '只读资源被安全策略拒绝',
+        operation: {
+          planSideEffect: 'read',
+          riskReason: '安全策略拒绝',
+          operationCategory: 'file-read',
+          summary: '读取受限资源',
+          resources: [],
+        },
+      }),
+      createMockApprovalPolicy(),
+    );
+    const ctx = createContext(session, {
+      id: 'plan-read-denied',
+      name: 'readFile',
+      arguments: { targetPath: 'blocked.txt' },
+    });
+
+    const next = vi.fn(async () => {});
+    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(ctx.control.action).toBe('abort');
+    expect(ctx.control.reason).toContain('只读资源被安全策略拒绝');
+  });
+
   it('6.4 deny 决策 → 控制 abort，无 pendingGrant，不调 next', async () => {
     plugin = new HumanApprovalPlugin(
       createMockPolicyPort({

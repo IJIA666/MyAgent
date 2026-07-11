@@ -5,7 +5,6 @@
 
 import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
 import type { SkillMetadata } from './contextLoader.js';
-import type { DiagnosticTurnState } from '../../domain/diagnostic-guardrails.js';
 
 // 预设的人设和最底层的不可撼动之规则
 /** 规则 1：文件操作的沙箱与工作区边界约束 */
@@ -43,15 +42,8 @@ export const RULE_ERROR_ATTRIBUTION = `【异常归因与防参数幻觉重试�
    (2) 面对明确指明 'Arguments validation failed' 或 'Parameter missing' 的 Schema 语法校验报错时，你必须直接向用户汇报，并在用户确认后再决定是否重新对齐参数调用，严禁自行盲目猜测或修改字段；
    (3) 面对其他未知重大报错（如文件锁、权限不足、未预期的业务执行异常等，即既非网络超时也非 Schema 校验错配的未知错误）时，你必须立即停止一切修改参数并重复调用的重试行为。你必须在回复中如实向用户陈述看见的错误原文、坦承无法判断其根本原因，并请求用户协同确认为止。`;
 
-/** 诊断任务失败后的降级规则。 */
-export const RULE_DIAGNOSTIC_DOWNGRADE = `【诊断降级规则】若系统查询失败、被拦截或未提升证据等级，后续必须优先降级到内置只读工具、总结未知项或请求用户缩小范围，禁止升级为更复杂的 shell 复合命令。`;
-
-/** 诊断任务证据分级规则。 */
-export const RULE_DIAGNOSTIC_EVIDENCE = `【诊断证据分级】presence=仅确认存在，enumeration=仅有目录枚举或候选列表，measured=已有真实大小/容量数据，error=查询失败或证据不足。只有 measured 允许支撑”已确认主要占用项”或释放空间估算。
-每条证据记录包含 target（目标）、metric（指标）、value（数值）、unit（单位）、completeness（完整性：complete/partial/lower-bound）。complete 可用于精确结论，partial 和 lower-bound 必须声明不确定性，禁止将下界值伪装为完整总量。`;
-
-/** 诊断任务高风险清理规则。 */
-export const RULE_DIAGNOSTIC_CLEANUP_SAFETY = `【清理建议安全分层】安装缓存、修复介质、共享组件缓存等高风险目录默认属于谨慎项或禁止项。证据不足时，严禁输出“整目录删除且无副作用”的绝对化结论。`;
+/** 规则 10：跨领域事实、推断与建议的证据边界 */
+export const RULE_EVIDENCE_DISCIPLINE = `【证据与结论边界】对任何任务，必须区分工具直接观察到的事实、基于事实的推断和尚未执行的建议。不得将枚举、局部数据、经验概率或对象属性外推为已验证的总量、因果、安全性、可行性或执行结果。证据不足时，应明确未知项与验证方式，不得编造精确数值或绝对化结论。`;
 
 /** 系统核心工程红线指令数组，按装配顺序排列 */
 export const SYSTEM_RULES = [
@@ -64,6 +56,7 @@ export const SYSTEM_RULES = [
   RULE_TOOL_PRIORITY,
   RULE_LONG_TERM_MEMORY,
   RULE_ERROR_ATTRIBUTION,
+  RULE_EVIDENCE_DISCIPLINE,
 ];
 
 /** 预设的人设和最底层的不可撼动之规则的提示词头部前缀 */
@@ -219,80 +212,6 @@ export const HANDOFF_INSTRUCTION = `【最高指挥官（LEADER）交接声明�
 你正在接手一份从历史截断恢复的新会话。
 你是整个系统的最高指挥官（LEADER），之前的具体执行工作是由你的子单元（SUBORDINATE）完成的。
 请根据当前的上下文状态继续指挥，切勿重复子单元已经完成的底层体力代码编写工作，你只需给出战略级指令。`;
-
-/**
- * 构造诊断类回合附加到 `<system-reminder>` 内的动态护栏文本。
- *
- * @param state - 当前轮次的诊断状态快照
- * @returns 适合直接拼入提醒气泡的文本，非诊断任务返回空字符串
- */
-/**
- * 从 evidenceRecords 中提取对象级证据摘要字符串。
- * 每个目标最多保留一条最高完整性记录，避免上下文膨胀。
- */
-function buildEvidenceSummary(state: DiagnosticTurnState): string {
-  const records = state.evidenceRecords ?? [];
-  if (records.length === 0) {
-    return 'Evidence: none';
-  }
-
-  // 按目标去重，每个目标保留最高完整性的记录
-  const bestPerTarget = new Map<string, typeof records[0]>();
-  const priority: Record<string, number> = { 'complete': 3, 'partial': 2, 'lower-bound': 1, 'listed': 0 };
-
-  for (const r of records) {
-    const existing = bestPerTarget.get(r.target);
-    if (!existing || (priority[r.completeness] ?? 0) > (priority[existing.completeness] ?? 0)) {
-      bestPerTarget.set(r.target, r);
-    }
-  }
-
-  // 最多展示 5 条证据摘要
-  const lines: string[] = ['Evidence:'];
-  let count = 0;
-  for (const [target, r] of bestPerTarget) {
-    if (count >= 5) {
-      lines.push(`  ... and ${bestPerTarget.size - count} more targets`);
-      break;
-    }
-    const errSuffix = r.error ? ` (error: ${r.error.slice(0, 60)})` : '';
-    lines.push(`  ${target} → ${r.metric}=${r.value} ${r.unit} [${r.completeness}]${errSuffix}`);
-    count++;
-  }
-  if (count === 0) {
-    lines.push('  (no measurable records)');
-  }
-
-  return lines.join('\n');
-}
-
-export function buildDiagnosticGuardrailReminder(state?: DiagnosticTurnState): string {
-  if (!state?.active) {
-    return '';
-  }
-
-  const highRiskLine = state.highRiskTargets.length > 0
-    ? `HighRiskCleanupTargets: ${state.highRiskTargets.join(', ')} (默认谨慎或禁止项，禁止给出整目录删除且无副作用的结论)`
-    : 'HighRiskCleanupTargets: none-detected';
-
-  const evidenceSummary = buildEvidenceSummary(state);
-  const stagnationLine = state.stagnantCallCount >= 2
-    ? `Stagnation: ${state.stagnantCallCount} calls without new evidence — must stop diffusion and summarize`
-    : '';
-
-  return [
-    RULE_DIAGNOSTIC_DOWNGRADE,
-    RULE_DIAGNOSTIC_EVIDENCE,
-    RULE_DIAGNOSTIC_CLEANUP_SAFETY,
-    evidenceSummary,
-    `DiagnosticListFilesBudget: ${state.listFilesUsed}/4`,
-    `DiagnosticSystemQueryAttempts: ${state.systemQueryAttempts}`,
-    `DiagnosticLastSystemQueryFailed: ${state.lastSystemQueryFailed ? 'yes' : 'no'}`,
-    `DiagnosticDirectoryStatsTruncated: ${state.lastDirectoryStatsTruncated ? 'yes' : 'no'}`,
-    highRiskLine,
-    stagnationLine,
-  ].filter(Boolean).join('\n');
-}
 
 /**
  * 本地原生函数生成的确定性兜底摘要（防死锁变砖）。

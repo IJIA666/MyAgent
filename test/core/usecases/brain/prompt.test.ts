@@ -18,10 +18,7 @@ import {
   RULE_TOOL_PRIORITY,
   RULE_LONG_TERM_MEMORY,
   RULE_ERROR_ATTRIBUTION,
-  RULE_DIAGNOSTIC_DOWNGRADE,
-  RULE_DIAGNOSTIC_EVIDENCE,
-  RULE_DIAGNOSTIC_CLEANUP_SAFETY,
-  buildDiagnosticGuardrailReminder
+  RULE_EVIDENCE_DISCIPLINE,
 } from '../../../../src/core/usecases/brain/prompts.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 
@@ -115,7 +112,7 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     // 1. 验证最终装配渲染后的 RESOLVED_BASE_PROMPT 不包含冷启动占位符
     expect(RESOLVED_BASE_PROMPT).not.toContain('{{OS_SECURITY_INSTRUCTIONS}}');
 
-    // 2. 验证所有 9 个导出的核心规则常量均被完整装配入最终提示词中
+    // 2. 验证所有导出的核心规则常量均被完整装配入最终提示词中
     const rulesToVerify = [
       RULE_FILE_SANDBOX,
       RULE_ERROR_HANDLING,
@@ -126,6 +123,7 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
       RULE_TOOL_PRIORITY,
       RULE_LONG_TERM_MEMORY,
       RULE_ERROR_ATTRIBUTION,
+      RULE_EVIDENCE_DISCIPLINE,
     ];
 
     for (const rule of rulesToVerify) {
@@ -141,7 +139,7 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     }
 
     // 3. 校验装配数组中的规则数量，确保没有漏装
-    expect(SYSTEM_RULES.length).toBe(9);
+    expect(SYSTEM_RULES.length).toBe(10);
   });
 
   test('8. 文件沙箱规则应保留默认边界，但不得预判工具层拒绝', () => {
@@ -151,47 +149,12 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     expect(RULE_FILE_SANDBOX).not.toContain('工具将返回拒绝访问');
   });
 
-  test('9. 诊断护栏提醒应包含降级、证据分级与高风险清理约束', () => {
-    const reminder = buildDiagnosticGuardrailReminder({
-      active: true,
-      evidenceLevel: 'enumeration',
-      systemQueryAttempts: 1,
-      lastSystemQueryFailed: true,
-      listFilesUsed: 2,
-      stagnantListFilesCount: 0,
-      highRiskTargets: ['Package Cache'],
-      scannedTargets: ['C:\\Package Cache'],
-      evidenceRecords: [],
-      callMetrics: [],
-      stagnantCallCount: 0,
-      stagnantTargetCount: 0,
-      lastDirectoryStatsTruncated: false,
-    });
-
-    expect(reminder).toContain(RULE_DIAGNOSTIC_DOWNGRADE);
-    expect(reminder).toContain(RULE_DIAGNOSTIC_EVIDENCE);
-    expect(reminder).toContain(RULE_DIAGNOSTIC_CLEANUP_SAFETY);
-    expect(reminder).toContain('Evidence:');
-    expect(reminder).toContain('Package Cache');
-  });
-
-  test('10. 非诊断状态不应生成额外护栏提醒', () => {
-    const reminder = buildDiagnosticGuardrailReminder({
-      active: false,
-      evidenceLevel: 'presence',
-      systemQueryAttempts: 0,
-      lastSystemQueryFailed: false,
-      listFilesUsed: 0,
-      stagnantListFilesCount: 0,
-      highRiskTargets: [],
-      scannedTargets: [],
-      evidenceRecords: [],
-      callMetrics: [],
-      stagnantCallCount: 0,
-      stagnantTargetCount: 0,
-      lastDirectoryStatsTruncated: false,
-    });
-
-    expect(reminder).toBe('');
+  test('9. 证据约束应跨领域持续生效，不依赖场景意图识别', () => {
+    expect(RULE_EVIDENCE_DISCIPLINE).toContain('任何任务');
+    expect(RULE_EVIDENCE_DISCIPLINE).toContain('事实');
+    expect(RULE_EVIDENCE_DISCIPLINE).toContain('推断');
+    expect(RULE_EVIDENCE_DISCIPLINE).toContain('建议');
+    expect(RULE_EVIDENCE_DISCIPLINE).not.toContain('C 盘');
+    expect(RULE_EVIDENCE_DISCIPLINE).not.toContain('缓存目录');
   });
 });

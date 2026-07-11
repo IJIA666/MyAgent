@@ -126,7 +126,7 @@ describe('ModelRequestAssembler', () => {
       expect(emitted).toContainEqual({ type: 'thinking', content: 'before-model-event' });
     });
 
-    it('应在诊断类用户消息中注入动态护栏提醒', async () => {
+    it('不应根据用户场景注入专用运行时状态机', async () => {
       mockContextAdapter = {
         assemble: () => [
           { role: 'system', content: 'You are a helpful assistant.' },
@@ -143,15 +143,12 @@ describe('ModelRequestAssembler', () => {
       const lastUserMsg = [...result.messages].reverse().find(m => m.role === 'user');
 
       expect(lastUserMsg).toBeDefined();
-      expect(lastUserMsg!.content).toContain('【诊断降级规则】');
-      expect(lastUserMsg!.content).toContain('Evidence:');
-      expect(lastUserMsg!.content).toContain('HighRiskCleanupTargets');
-      // 不应包含旧工具名别名（5.11）
-      expect(lastUserMsg!.content).not.toContain('list_dir');
-      expect(lastUserMsg!.content).not.toContain('grep_search');
+      expect(lastUserMsg!.content).not.toContain('【诊断降级规则】');
+      expect(lastUserMsg!.content).not.toContain('DiagnosticListFilesBudget');
+      expect(lastUserMsg!.content).not.toContain('HighRiskCleanupTargets');
     });
 
-    it('非诊断类消息不应注入额外护栏提醒', async () => {
+    it('普通消息也不应注入场景专用护栏', async () => {
       const result = await assembler.assemble(undefined, 'gpt-4');
       const lastUserMsg = [...result.messages].reverse().find(m => m.role === 'user');
 

@@ -6,12 +6,6 @@ import type { PluginRegistry } from '../plugins/plugin-registry.js';
 import type { SessionContext, ContextTokenUsage } from '../../domain/context.js';
 import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
 import type { AgentEvent } from './agent-loop.js';
-import {
-  createDiagnosticTurnState,
-  syncDiagnosticTurnStateWithMessages,
-  type DiagnosticTurnState
-} from '../../domain/diagnostic-guardrails.js';
-import { buildDiagnosticGuardrailReminder } from '../brain/prompts.js';
 
 /**
  * 模型请求组装阶段产生的结果。
@@ -81,14 +75,12 @@ export class ModelRequestAssembler {
    * @param transientSkillContent - 当前请求独占的临时技能规范内容
    * @param llmModel - 大模型名称，用于 BeforeModel 管线上下文中
    * @param emitEvent - 可选的事件发射回调，用于透传 BeforeToolSelection / BeforeModel 阶段的插件流式事件
-   * @param diagnosticState - 可选的诊断状态快照，用于拼装诊断类动态提醒
    * @returns 组装结果，包含最终消息、工具列表、控制流状态与管线事件
    */
   public async assemble(
     transientSkillContent: string | undefined,
     llmModel: string,
-    emitEvent?: (event: unknown) => void,
-    diagnosticState?: DiagnosticTurnState
+    emitEvent?: (event: unknown) => void
   ): Promise<AssemblyResult> {
     const events: AgentEvent[] = [];
 
@@ -186,15 +178,6 @@ export class ModelRequestAssembler {
       ];
       if (behaviorConstraint) {
         reminderLines.push(behaviorConstraint);
-      }
-      // 若识别到诊断类任务，则把动态护栏一并注入到同一个提醒气泡中。
-      const effectiveDiagnosticState = syncDiagnosticTurnStateWithMessages(
-        diagnosticState ?? createDiagnosticTurnState(),
-        finalRequestMessages as ChatMessage[]
-      );
-      const diagnosticReminder = buildDiagnosticGuardrailReminder(effectiveDiagnosticState);
-      if (diagnosticReminder) {
-        reminderLines.push(diagnosticReminder);
       }
       const reminderBubble = `\n\n<system-reminder>\n${reminderLines.join('\n')}\n</system-reminder>`;
 

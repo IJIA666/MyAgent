@@ -492,7 +492,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     expect(registryMock.callTool).not.toHaveBeenCalled();
   });
 
-  it('10. 诊断类回合在系统查询失败后，应阻断升级为复杂 shell 命令', async () => {
+  it('10. AgentLoop 不应根据任务场景额外拦截工具调用', async () => {
     let streamCalledTimes = 0;
     mockContextAdapter = {
       assemble: vi.fn().mockReturnValue([
@@ -592,14 +592,11 @@ describe('AgentLoop 动态安全特性测试', () => {
       void event;
     }
 
-    const toolMessages = context.getHistory().filter(message => message.role === 'tool');
-    expect(toolMessages.some(message => String(message.content).includes('诊断护栏已阻断当前工具调用'))).toBe(true);
-
     const registryMock = mockToolRegistry as { callTool: ReturnType<typeof vi.fn> };
-    expect(registryMock.callTool).toHaveBeenCalledTimes(1);
+    expect(registryMock.callTool).toHaveBeenCalledTimes(2);
   });
 
-  it('11. 诊断类回合达到 listFiles 枚举预算后，应阻断继续扩散扫描', async () => {
+  it('11. AgentLoop 不应为特定工具硬编码场景次数上限', async () => {
     mockContextAdapter = {
       assemble: vi.fn().mockReturnValue([
         { role: 'user', content: '请帮我扫描磁盘空间占用，先找出最大的几个目录。' }
@@ -672,9 +669,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     }
 
     const registryMock = mockToolRegistry as { callTool: ReturnType<typeof vi.fn> };
-    expect(registryMock.callTool).toHaveBeenCalledTimes(4);
-    const toolMessages = context.getHistory().filter(message => message.role === 'tool');
-    expect(toolMessages.some(message => String(message.content).includes('达到本轮枚举预算'))).toBe(true);
+    expect(registryMock.callTool).toHaveBeenCalledTimes(5);
   });
 
   it('12. 只执行 Plan 原子只读命令不应调用 QualityCheckPort', async () => {
@@ -702,7 +697,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     expect(qcSpy).toHaveBeenCalled();
   });
 
-  it('14. 诊断最终回答应在流式输出前经过证据质量门禁', async () => {
+  it('14. 所有任务的正文都应保持模型原生流式输出', async () => {
     const safeIntroduction = '先说明当前证据边界。';
     const unsupportedClaim = '建议优先清理缓存，可释放约 500MB 空间。';
     context.addMessage({ role: 'user', content: '请诊断磁盘空间占用并给出清理建议。' });
@@ -750,8 +745,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     const contentEvents = events.filter((event): event is Extract<AgentEvent, { type: 'content' }> => event.type === 'content');
     expect(contentEvents.length).toBeGreaterThanOrEqual(2);
     expect(contentEvents[0].content).toBe(safeIntroduction);
-    expect(output).toContain('待验证');
-    expect(output).not.toContain('500MB');
-    expect(context.getHistory().at(-1)?.content).toContain('待验证');
+    expect(output).toBe(safeIntroduction + unsupportedClaim);
+    expect(context.getHistory().at(-1)?.content).toBe(safeIntroduction + unsupportedClaim);
   });
 });

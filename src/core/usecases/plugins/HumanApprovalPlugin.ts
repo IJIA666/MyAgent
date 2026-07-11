@@ -78,15 +78,18 @@ export class HumanApprovalPlugin implements Plugin {
     const workMode = sessionContext.getWorkMode();
     const planSideEffect = safetyResult.operation?.planSideEffect;
     if (workMode === 'Plan' && planSideEffect) {
-      if (planSideEffect === 'read') {
-        // 非敏感可证明安全的只读操作直接放行
-        // 不发射伪 suspend 事件，不暴露内部模式名或副作用分类给模型
-        // 审计日志可通过 context.control.action 记录真实判定
+      const isTrustedPlanRead = planSideEffect === 'read' && (
+        safetyResult.status === 'pass' ||
+        (safetyResult.status === 'suspend' && safetyResult.operation?.operationCategory === 'command-execute')
+      );
+      if (isTrustedPlanRead) {
+        // 可证明安全的原子只读命令由 Plan 中央策略直接放行，不进入命令授权流程。
+        // file-read 类的 suspend 仍表示工作区外访问，必须保留审批与 capability 注册。
         await next();
         return;
       }
 
-      if (planSideEffect === 'sensitive-read') {
+      if (planSideEffect === 'sensitive-read' && safetyResult.status === 'suspend') {
         // 敏感只读操作进入受限审批：仅提供 call/deny 选项
         const approvalId = `approve_${Math.random().toString(36).substring(2, 9)}`;
         const operation: SafetyOperation = safetyResult.operation!;
@@ -149,10 +152,13 @@ export class HumanApprovalPlugin implements Plugin {
         return;
       }
 
-      // write / unknown / hardline → 在 Plan 模式下直接拒绝
-      context.control.action = 'abort';
-      context.control.reason = `[Plan 模式拒绝] 操作 "${toolCall.name}" 的副作用分类为 "${planSideEffect}"，Plan 模式下只允许可证明安全的只读操作。请使用只读文件 API 工具（如 readFile、listFiles、grepSearch）代替。`;
-      return;
+      if (planSideEffect !== 'read') {
+        // write / unknown / hardline → 在 Plan 模式下直接拒绝。
+        context.control.action = 'abort';
+        context.control.reason = `[Plan 模式拒绝] 操作 "${toolCall.name}" 的副作用分类为 "${planSideEffect}"，Plan 模式下只允许可证明安全的只读操作。请使用只读文件 API 工具（如 readFile、listFiles、grepSearch）代替。`;
+        return;
+      }
+      // read + suspend/deny 保留工具安全评估的原始语义，继续交由下方通用三分流处理。
     }
 
     // 处理安全评估结论

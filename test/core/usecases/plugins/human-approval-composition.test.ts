@@ -127,6 +127,52 @@ describe('HumanApprovalPlugin — 真实 BuiltinToolPolicyAdapter 组合', () =>
     expect(ctx.pendingGrant!.toolCallId).toBe('comp-suspend-001');
   });
 
+  it('Plan 模式使用真实 listFiles 访问 C 盘时应请求只读授权', async () => {
+    const session = new SessionContext('test-plan-external-read');
+    session.setWorkMode('Plan');
+    session.approvalService.setBypassMode(false);
+    const plugin = new HumanApprovalPlugin(realPolicyPort, new ApprovalPolicy());
+    const waitSpy = vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'call' });
+    const ctx = createMinimalContext(session, {
+      id: 'plan-list-c-drive',
+      name: 'listFiles',
+      arguments: { targetPath: 'C:\\' },
+    });
+
+    const next = vi.fn(async () => {});
+    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
+
+    expect(waitSpy).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledOnce();
+    expect(ctx.pendingGrant?.type).toBe('call');
+    expect(ctx.pendingGrant?.resources).toEqual([
+      expect.objectContaining({ kind: 'directory-scope', access: 'read' }),
+    ]);
+  });
+
+  it('Plan 模式使用真实 execute_command 查询磁盘时应直接放行', async () => {
+    const session = new SessionContext('test-plan-wmic-read');
+    session.setWorkMode('Plan');
+    session.approvalService.setBypassMode(false);
+    const plugin = new HumanApprovalPlugin(realPolicyPort, new ApprovalPolicy());
+    const waitSpy = vi.spyOn(session.approvalService, 'wait');
+    const ctx = createMinimalContext(session, {
+      id: 'plan-wmic-disk-query',
+      name: 'execute_command',
+      arguments: {
+        command: 'wmic logicaldisk get caption,size,freespace,description',
+        shellKind: 'cmd',
+      },
+    });
+
+    const next = vi.fn(async () => {});
+    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(waitSpy).not.toHaveBeenCalled();
+    expect(ctx.control.action).toBe('continue');
+  });
+
   it('6.6 未知工具 fail-closed：BuiltinToolPolicyAdapter 返回 deny', async () => {
     const session = new SessionContext('test-unknown-tool');
     session.setWorkMode('Safe');
