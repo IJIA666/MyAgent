@@ -7,7 +7,7 @@ import { deleteRuntimeEnvVariable, getRuntimeEnv, setRuntimeEnvVariable } from '
 import { resolve } from 'path';
 import { existsSync, rmSync } from 'fs';
 import readline from 'readline';
-import type { NativeTool } from '../../tool-types.js';
+import type { NativeTool, ToolExecutionEffect } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 
@@ -438,6 +438,42 @@ export class BrowserNavigateTool implements NativeTool {
     const page = await BrowserSession.getPage(cdpUrl, tenantId);
     await page.goto(url, { waitUntil: 'load', timeout: 30000 });
     return await generateAriaSnapshot(page);
+  }
+
+  /**
+   * 精化浏览器导航的实际副作用。
+   * 导航只改变浏览器会话读取位置，不修改外部系统资源；
+   * 成功与执行后失败均按只读记录（无外部写入），
+   * 避免默认推导器根据 securityCategory='write' 将失败导航升级为潜在写入。
+   *
+   * @param _args - 原始工具调用参数
+   * @param _result - 工具执行结果文本
+   * @param error - 可选的执行异常
+   * @returns 精化后的 read effect，或 undefined 表示无执行
+   */
+  resolveExecutionEffect?(
+    _args: Record<string, unknown>,
+    _result?: string,
+    error?: Error
+  ): ToolExecutionEffect | undefined {
+    // 导航失败但未改变外部资源时仍记录为失败的读取尝试
+    if (error) {
+      return {
+        kind: 'read',
+        executionStarted: true,
+        completed: false,
+        resources: [],
+        reason: 'browser_navigate'
+      };
+    }
+    // 成功导航：只改变浏览器会话读取位置
+    return {
+      kind: 'read',
+      executionStarted: true,
+      completed: true,
+      resources: [],
+      reason: 'browser_navigate'
+    };
   }
 }
 

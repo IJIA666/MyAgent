@@ -221,7 +221,7 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   // 优先从环境变量加载大模型名称，若包含窗口后缀（如 [1m]、[128k] 等）自动剥离为内置模型 ID 进行预检
   const rawModelId = env.AGENT_LLM_MODEL || 'deepseek-v4-flash';
   const defaultModelId = rawModelId.replace(/\[\d+[km]\]/i, '');
-  const llm = getModelConfig(defaultModelId, env);
+  const llm = getModelConfig(defaultModelId, { allowEnvModelOverride: true }, env);
 
   // 3. 工作区路径解析：在初始化阶段强制调用 realpathSync 进行物理路径解析与展开，锁定绝对物理路径，防止路径漂移与挂载逃逸风险。
   // ====================================================================================

@@ -40,6 +40,7 @@ class MockChatUseCase extends EventEmitter {
   loadState = vi.fn().mockResolvedValue(true);
   reloadRules = vi.fn();
   switchModel = vi.fn();
+  getLlmConfig = vi.fn().mockReturnValue({ contextWindow: 64000 });
   handleUserInput = vi.fn();
   resumePendingInteraction = vi.fn().mockResolvedValue(undefined);
   getPendingInteraction = vi.fn().mockReturnValue(null);

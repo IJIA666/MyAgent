@@ -879,6 +879,21 @@ export function reserveDiagnosticToolCall(
     return { state: nextState };
   }
 
+  // 诊断上下文中不允许 browser_navigate 访问 file:// 资源（磁盘容量诊断场景下
+  // 不具备测量语义，不得作为系统查询失败的降级替代）。
+  // 合法的本地 HTML 内容检查由 Agent 在非 file:// 目标或非容量诊断路径中执行。
+  if (toolName === 'browser_navigate') {
+    const url = typeof args.url === 'string' ? args.url : '';
+    if (/^file:\/\//i.test(url.trim())) {
+      return {
+        state: nextState,
+        blockedReason: '诊断上下文中不允许浏览器导航到 file:// 资源：浏览器不具备磁盘容量测量能力，且此类导航结果不能形成 measured 级证据。请使用内置只读文件工具或请求用户缩小范围。'
+      };
+    }
+    // 非 file:// 导航放行
+    return { state: nextState };
+  }
+
   if (toolName === 'listFiles') {
     // 5.9-5.10：允许对已扫描目标的子目录做更窄扫描，但不扩大 maxEntries 上限
     const newMaxEntries = typeof args.maxEntries === 'number' ? args.maxEntries : undefined;

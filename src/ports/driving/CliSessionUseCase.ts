@@ -51,6 +51,13 @@ export interface CliSessionUseCase extends ChatUseCase {
   switchModel(newConfig: LlmConfig, options?: Record<string, unknown>): void;
 
   /**
+   * 获取当前生效的完整大语言模型连接配置（只读）。
+   *
+   * @returns 当前生效的 LlmConfig
+   */
+  getLlmConfig(): LlmConfig;
+
+  /**
    * 强制触发当前会话的上下文压缩。
    *
    * @returns 是否压缩成功

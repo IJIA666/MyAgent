@@ -336,8 +336,39 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    * @param options - 额外的运行时交互配置选项
    */
   public switchModel(newConfig: LlmConfig, options?: Record<string, unknown>): void {
-    this.llmConfig = newConfig;
-    this.driver.switchModel(newConfig, options);
+    const previousConfig = this.llmConfig;
+    try {
+      this.driver.switchModel(newConfig, options);
+      this.llmConfig = newConfig;
+
+      logger.info('[会话] model_switch_succeeded', {
+        component: 'session',
+        event: 'model_switch_succeeded',
+        sessionId: this.context.getSessionId(),
+        previousProfile: previousConfig.profile?.id,
+        previousModel: previousConfig.model,
+        previousContextWindow: previousConfig.contextWindow,
+        previousReasoningEffort: previousConfig.reasoningEffort,
+        newProfile: newConfig.profile?.id,
+        newModel: newConfig.model,
+        newContextWindow: newConfig.contextWindow,
+        newReasoningEffort: newConfig.reasoningEffort
+      });
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      // 驱动层切换失败时，llmConfig 仍保留旧配置不变
+      logger.warn('[会话] model_switch_failed', {
+        component: 'session',
+        event: 'model_switch_failed',
+        sessionId: this.context.getSessionId(),
+        targetProfile: newConfig.profile?.id,
+        targetModel: newConfig.model,
+        currentProfile: previousConfig.profile?.id,
+        currentModel: previousConfig.model,
+        error: errorMsg
+      });
+      throw error;
+    }
   }
 
   /**
@@ -808,6 +839,18 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    */
   public getContext(): SessionContext {
     return this.context;
+  }
+
+  /**
+   * 获取当前生效的完整大语言模型连接配置（只读）。
+   * 返回当前会话实际使用的 LlmConfig，包含 profile、provider model、context window
+   * 和 reasoning effort 等有效字段。UI 层和 Token 估算链路应从此方法获取配置，
+   * 而不是维护独立副本。
+   *
+   * @returns 当前生效的大语言模型连接配置
+   */
+  public getLlmConfig(): LlmConfig {
+    return this.llmConfig;
   }
 
   /**

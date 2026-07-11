@@ -130,6 +130,64 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     expect(mockToolRegistry.close).toHaveBeenCalled();
   });
 
+  it('switchModel 应原子传递 LlmConfig：profile、contextWindow、reasoningEffort 同时生效', async () => {
+    const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+    const switchModelSpy = vi.fn();
+    const mockDriver = {
+      getModelName: () => 'MockModel',
+      switchModel: switchModelSpy,
+      abort: vi.fn(),
+      streamChat: async function* () { }
+    } as unknown as LlmPort;
+    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const mockToolRegistry = {
+      getTools: async () => [],
+      callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }),
+      close: vi.fn().mockResolvedValue(undefined)
+    } as unknown as ToolRegistryPort;
+    const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+
+    const session = new SessionManager(
+      mockLlmConfig,
+      mockDriver,
+      mockEstimator,
+      mockToolRegistry,
+      mockContextAdapter,
+      mockVectorDb,
+      mockEmbedding,
+      createMockAppConfig(),
+      mockPolicyPort,
+    );
+
+    const profile = { id: 'deepseek-v4-flash', defaultModel: 'deepseek-v4-flash', contextWindow: 1000000 };
+    const fullConfig: LlmConfig = {
+      apiKey: 'test-key',
+      baseUrl: 'https://api.test.com',
+      model: 'deepseek-v4-flash',
+      profile: profile as unknown as LlmConfig['profile'],
+      maxTokens: 4096,
+      contextWindow: 1000000,
+      reasoningEffort: 'high',
+      temperature: 0.2,
+      timeout: 600000,
+      maxRetries: 3
+    };
+
+    session.switchModel(fullConfig, { reasoning_effort: 'high' });
+
+    // driver.switchModel 应收到完整配置
+    expect(switchModelSpy).toHaveBeenCalledWith(fullConfig, { reasoning_effort: 'high' });
+
+    // session.getLlmConfig() 应返回相同的有效配置
+    const effective = session.getLlmConfig();
+    expect(effective.model).toBe('deepseek-v4-flash');
+    expect(effective.contextWindow).toBe(1000000);
+    expect(effective.reasoningEffort).toBe('high');
+    expect(effective.profile.id).toBe('deepseek-v4-flash');
+
+    await session.close();
+  });
+
   it('应该能够正确驱动一次完整的 ReAct 交互循环', async () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = {

@@ -18,7 +18,8 @@ export const BUILTIN_MODELS: Record<string, ModelProfile> = {
     envUrlName: 'AGENT_LLM_BASE_URL',
     defaultBaseUrl: 'https://api.deepseek.com',
     defaultModel: 'deepseek-v4-flash[1m]',
-    /** 预设上下文最大窗口为 1000000 tokens */
+    /** 唯一上下文窗口大小（只读元数据，非用户选项）。
+     * 不同上下文版本应注册为不同 profile ID。 */
     contextWindow: 1000000,
     /** 预设采样温度为 0.2 */
     temperature: 0.2,
@@ -45,7 +46,7 @@ export const BUILTIN_MODELS: Record<string, ModelProfile> = {
     envUrlName: 'AGENT_LLM_BASE_URL',
     defaultBaseUrl: 'https://api.deepseek.com',
     defaultModel: 'deepseek-v4-pro[1m]',
-    /** 预设上下文最大窗口为 1000000 tokens */
+    /** 唯一上下文窗口大小（只读元数据，非用户选项）。 */
     contextWindow: 1000000,
     /** 预设采样温度为 0.2 */
     temperature: 0.2,
@@ -88,12 +89,29 @@ export function parseContextWindow(val: string): number {
 }
 
 /**
+ * 获取模型配置的构建选项。
+ */
+export interface GetModelConfigOptions {
+  /** 是否允许进程级 AGENT_LLM_MODEL 覆盖 profile 默认 provider model。
+   * 启动加载路径应为 true，显式 `/model` 选择路径必须为 false。 */
+  allowEnvModelOverride?: boolean;
+  /** 显式指定的推理努力度。由 CLI 向导传入，启动路径由环境变量决定。 */
+  explicitReasoningEffort?: ReasoningEffort;
+}
+
+/**
  * 根据模型 ID 动态构建大语言模型连接配置，支持通过环境变量进行高优先级覆写。
  *
  * @param id - 模型在 BUILTIN_MODELS 中的 ID
+ * @param options - 构建选项，控制环境变量覆盖与显式参数
+ * @param env - 环境变量源（注入以支持测试隔离）
  * @returns 构建完成的大语言模型连接配置对象
  */
-export function getModelConfig(id: string, env: Record<string, string | undefined> = getRuntimeEnv()): LlmConfig {
+export function getModelConfig(
+  id: string,
+  options?: GetModelConfigOptions,
+  env: Record<string, string | undefined> = getRuntimeEnv()
+): LlmConfig {
   const profile = BUILTIN_MODELS[id];
   if (!profile) {
     throw new Error(`未知的模型 ID: ${id}`);
@@ -107,37 +125,75 @@ export function getModelConfig(id: string, env: Record<string, string | undefine
     baseUrl = env[profile.envUrlName]!;
   }
 
-  // 优先读取环境变量进行模型名称与最大输出 Tokens 的覆盖
-  const rawModel = env.AGENT_LLM_MODEL || profile.defaultModel;
-  const maxTokens = parseInt(env.AGENT_LLM_MAX_TOKENS || '4096', 10);
+  const allowEnvOverride = options?.allowEnvModelOverride !== false;
 
-  // 匹配并剥除模型名中的窗口尺寸后缀（如 [1m]、[128k] 等）
-  let model = rawModel;
-  let extractedWindow: number | null = null;
-  const suffixRegex = /\[(\d+)([km])\]/i;
-  const match = rawModel.match(suffixRegex);
-  if (match) {
-    const value = parseInt(match[1], 10);
-    const unit = match[2].toLowerCase();
-    if (unit === 'm') {
-      extractedWindow = value * 1000000;
-    } else if (unit === 'k') {
-      extractedWindow = value * 1000;
+  // ── 路径选择：启动默认 vs 显式会话选择 ──
+  let model: string;
+  let contextWindow: number;
+  let validatedEffort: ReasoningEffort | undefined;
+
+  if (allowEnvOverride) {
+    // 启动默认路径：允许进程级 AGENT_LLM_MODEL 覆盖，支持后缀解析
+    const rawModel = env.AGENT_LLM_MODEL || profile.defaultModel;
+
+    // 匹配并剥除模型名中的窗口尺寸后缀（如 [1m]、[128k] 等）
+    let extractedWindow: number | null = null;
+    const suffixRegex = /\[(\d+)([km])\]/i;
+    const match = rawModel.match(suffixRegex);
+    if (match) {
+      const value = parseInt(match[1], 10);
+      const unit = match[2].toLowerCase();
+      if (unit === 'm') {
+        extractedWindow = value * 1000000;
+      } else if (unit === 'k') {
+        extractedWindow = value * 1000;
+      }
+      // 自动剥除后缀，以防向第三方 API 发送模型参数时因携带非标准后缀发生接口报错
+      model = rawModel.replace(suffixRegex, '');
+    } else {
+      model = rawModel;
     }
-    // 自动剥除后缀，以防向第三方 API 发送模型参数时因携带非标准后缀发生接口报错
-    model = rawModel.replace(suffixRegex, '');
+
+    // 级联读取环境变量或使用模型预设的默认值。若检测到模型名已被覆写但缺失窗口环境变量配置且无后缀特征，主动退化至 32000 保守值防爆
+    // 注：去后缀对比 baseName，避免 AGENT_LLM_MODEL=deepseek-v4-pro 与 defaultModel=deepseek-v4-pro[1m] 被错误判定为"覆写"
+    const profileBaseName = profile.defaultModel.replace(/\[\d+[km]\]/i, '');
+    const isModelOverridden = env.AGENT_LLM_MODEL !== undefined
+      && env.AGENT_LLM_MODEL !== profile.defaultModel
+      && env.AGENT_LLM_MODEL !== profileBaseName;
+    contextWindow = profile.contextWindow || 1000000;
+    if (env.AGENT_LLM_CONTEXT_WINDOW) {
+      contextWindow = parseContextWindow(env.AGENT_LLM_CONTEXT_WINDOW);
+    } else if (extractedWindow !== null) {
+      contextWindow = extractedWindow;
+    } else if (isModelOverridden) {
+      contextWindow = 32000;
+    }
+
+    // 提取推理努力度并执行值域 Fail-Fast 校验
+    const rawEffort = env.AGENT_LLM_REASONING_EFFORT;
+    validatedEffort = undefined;
+    if (rawEffort !== undefined && rawEffort.trim() !== '') {
+      const trimmedEffort = rawEffort.trim();
+      if (!(VALID_REASONING_EFFORTS as readonly string[]).includes(trimmedEffort)) {
+        throw new Error(`[配置] 不合法的 AGENT_LLM_REASONING_EFFORT 值: "${rawEffort}"。仅允许 ${VALID_REASONING_EFFORTS.map(e => `'${e}'`).join(' | ')}。`);
+      }
+      validatedEffort = trimmedEffort as ReasoningEffort;
+    }
+  } else {
+    // 显式会话选择路径：不得被进程级 AGENT_LLM_MODEL 覆盖
+    model = profile.defaultModel;
+    // 移除可能的后缀
+    const suffixRegex = /\[(\d+)([km])\]/i;
+    model = model.replace(suffixRegex, '');
+
+    // 上下文窗口由 profile 唯一决定，用户只选模型
+    contextWindow = profile.contextWindow ?? 1000000;
+
+    // 推理努力度由 CLI 向导传入
+    validatedEffort = options?.explicitReasoningEffort;
   }
 
-  // 级联读取环境变量或使用模型预设的默认值。若检测到模型名已被覆写但缺失窗口环境变量配置且无后缀特征，主动退化至 32000 保守值防爆
-  const isModelOverridden = env.AGENT_LLM_MODEL !== undefined && env.AGENT_LLM_MODEL !== profile.defaultModel;
-  let contextWindow = profile.contextWindow || 1000000;
-  if (env.AGENT_LLM_CONTEXT_WINDOW) {
-    contextWindow = parseContextWindow(env.AGENT_LLM_CONTEXT_WINDOW);
-  } else if (extractedWindow !== null) {
-    contextWindow = extractedWindow;
-  } else if (isModelOverridden) {
-    contextWindow = 32000;
-  }
+  const maxTokens = parseInt(env.AGENT_LLM_MAX_TOKENS || '4096', 10);
 
   const temperature = env.AGENT_LLM_TEMPERATURE
     ? parseFloat(env.AGENT_LLM_TEMPERATURE)
@@ -168,17 +224,6 @@ export function getModelConfig(id: string, env: Record<string, string | undefine
         }
       }
     }
-  }
-
-  // 提取推理努力度并执行值域 Fail-Fast 校验
-  const reasoningEffort = env.AGENT_LLM_REASONING_EFFORT;
-  let validatedEffort: ReasoningEffort | undefined = undefined;
-  if (reasoningEffort !== undefined && reasoningEffort.trim() !== '') {
-    const trimmedEffort = reasoningEffort.trim();
-    if (!(VALID_REASONING_EFFORTS as readonly string[]).includes(trimmedEffort)) {
-      throw new Error(`[配置] 不合法的 AGENT_LLM_REASONING_EFFORT 值: "${reasoningEffort}"。仅允许 ${VALID_REASONING_EFFORTS.map(e => `'${e}'`).join(' | ')}。`);
-    }
-    validatedEffort = trimmedEffort as ReasoningEffort;
   }
 
   return {

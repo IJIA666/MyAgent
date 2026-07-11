@@ -13,7 +13,7 @@ import { readFileSync } from 'fs';
 import { OpenAiEmbeddingAdapter } from './adapters/llm/OpenAiEmbeddingAdapter.js';
 import { DashScopeEmbeddingAdapter } from './adapters/llm/DashScopeEmbeddingAdapter.js';
 import { LocalVectorDbAdapter } from './adapters/vectordb/LocalVectorDbAdapter.js';
-import { initLogger } from './utils/logger.js';
+import { initLogger, logger } from './utils/logger.js';
 import { ShellQualityCheckAdapter } from './adapters/tools/ShellQualityCheckAdapter.js';
 
 /**
@@ -111,6 +111,23 @@ async function main() {
     const errorMsg = openError instanceof Error ? openError.message : String(openError);
     console.log(theme.error(`[错误] 会话打开被拦截：${errorMsg}`));
     process.exit(1);
+  }
+
+  // 记录启动配置结构化日志（空会话不产生 trace iteration 或伪聊天消息）
+  // 日志与会话制品边界：run.log 记录配置事件，但 session snapshot 和 trace 只在
+  // 真实聊天内容产生后创建，因此此处不触发 ContextRepository.saveState()。
+  {
+    const llmConfig = appConfig.llm;
+    const safeUrl = llmConfig.baseUrl ? new URL(llmConfig.baseUrl) : null;
+    logger.info('[启动] runtime_config_loaded', {
+      component: 'runtime',
+      event: 'runtime_config_loaded',
+      profileId: llmConfig.profile?.id ?? 'unknown',
+      providerModel: llmConfig.model,
+      contextWindow: llmConfig.contextWindow,
+      reasoningEffort: llmConfig.reasoningEffort,
+      endpoint: safeUrl ? `${safeUrl.protocol}//${safeUrl.hostname}` : 'unknown'
+    });
   }
 
   // 5. 将会话实例注入 Interface 层，启动终端应用

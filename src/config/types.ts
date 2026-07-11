@@ -13,7 +13,10 @@ export interface ModelProfile {
   envUrlName?: string;
   defaultBaseUrl: string;
   defaultModel: string;
-  /** 上下文最大窗口（Token数） */
+  /** 上下文最大窗口（Token数）。
+   * 该字段是模型 profile 的只读元数据，由具体模型唯一决定。
+   * 不同上下文容量的模型（如 32k 与 1M 版本）应注册为不同 profile ID，
+   * 而非对同一个模型覆盖窗口。运行时切换模型时 contextWindow 随 profile 自动同步。 */
   contextWindow?: number;
   /** 采样温度 */
   temperature?: number;

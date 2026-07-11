@@ -100,4 +100,99 @@ describe('Model Configuration & Window Parsing Tests', () => {
       }
     });
   });
+
+  describe('getModelConfig 显式 profile 选择路径（allowEnvModelOverride=false）', () => {
+    beforeEach(() => {
+      process.env.AGENT_LLM_MODEL = 'env-override-model';
+    });
+
+    it('显式 profile 选择不得被进程级 AGENT_LLM_MODEL 覆盖', () => {
+      const config = getModelConfig('deepseek-v4-flash', { allowEnvModelOverride: false });
+      // 应使用 profile 内置 defaultModel，而非 AGENT_LLM_MODEL
+      expect(config.model).toBe('deepseek-v4-flash'); // [1m] 后缀已被剥离
+      expect(config.profile.id).toBe('deepseek-v4-flash');
+    });
+
+    it('显式 profile 选择应回退至 profile 默认 contextWindow', () => {
+      const config = getModelConfig('deepseek-v4-flash', { allowEnvModelOverride: false });
+      expect(config.contextWindow).toBe(1000000);
+    });
+
+    it('显式 profile 选择应接受 explicitReasoningEffort', () => {
+      const config = getModelConfig('deepseek-v4-flash', {
+        allowEnvModelOverride: false,
+        explicitReasoningEffort: 'max'
+      });
+      expect(config.reasoningEffort).toBe('max');
+    });
+
+    it('显式 profile 选择中 AGENT_LLM_CONTEXT_WINDOW 不应影响 contextWindow（由 profile 唯一决定）', () => {
+      process.env.AGENT_LLM_CONTEXT_WINDOW = '128k';
+      const config = getModelConfig('deepseek-v4-flash', { allowEnvModelOverride: false });
+      // 显式路径下，contextWindow 来自 profile 默认值而非环境变量
+      expect(config.contextWindow).toBe(1000000);
+    });
+
+    it('flash 到 pro 切换应返回不同的 profile ID 与 provider model', () => {
+      const flashConfig = getModelConfig('deepseek-v4-flash', { allowEnvModelOverride: false });
+      const proConfig = getModelConfig('deepseek-v4-pro', { allowEnvModelOverride: false });
+      expect(flashConfig.profile.id).toBe('deepseek-v4-flash');
+      expect(proConfig.profile.id).toBe('deepseek-v4-pro');
+      expect(flashConfig.model).not.toBe(proConfig.model);
+    });
+  });
+
+  describe('getModelConfig 启动默认路径（allowEnvModelOverride=true）', () => {
+    beforeEach(() => {
+      delete process.env.AGENT_LLM_MODEL;
+    });
+
+    it('启动默认路径应读取 AGENT_LLM_MODEL 覆盖', () => {
+      process.env.AGENT_LLM_MODEL = 'custom-model';
+      const config = getModelConfig('deepseek-v4-flash', { allowEnvModelOverride: true });
+      expect(config.model).toBe('custom-model');
+    });
+
+    it('启动默认路径下环境变量 AGENT_LLM_CONTEXT_WINDOW 应优先于 profile 默认值', () => {
+      process.env.AGENT_LLM_CONTEXT_WINDOW = '64000';
+      const config = getModelConfig('deepseek-v4-flash', { allowEnvModelOverride: true });
+      expect(config.contextWindow).toBe(64000);
+    });
+
+    it('启动默认路径下 AGENT_LLM_REASONING_EFFORT 应生效', () => {
+      process.env.AGENT_LLM_REASONING_EFFORT = 'low';
+      const config = getModelConfig('deepseek-v4-flash', { allowEnvModelOverride: true });
+      expect(config.reasoningEffort).toBe('low');
+    });
+  });
+
+  describe('getModelConfig 启动默认路径——后缀解析与非法值', () => {
+    beforeEach(() => {
+      delete process.env.AGENT_LLM_MODEL;
+      delete process.env.AGENT_LLM_CONTEXT_WINDOW;
+    });
+
+    it('应自动剥除模型名中的 [1m] 后缀并将窗口解析为 1000000', () => {
+      process.env.AGENT_LLM_MODEL = 'my-model[1m]';
+      const config = getModelConfig('deepseek-v4-flash', { allowEnvModelOverride: true });
+      expect(config.model).toBe('my-model');
+      expect(config.contextWindow).toBe(1000000);
+    });
+
+    it('应自动剥除模型名中的 [128k] 后缀并将窗口解析为 128000', () => {
+      process.env.AGENT_LLM_MODEL = 'my-model[128k]';
+      const config = getModelConfig('deepseek-v4-flash', { allowEnvModelOverride: true });
+      expect(config.model).toBe('my-model');
+      expect(config.contextWindow).toBe(128000);
+    });
+
+    it('当 AGENT_LLM_MODEL 等于 profile baseName（不含后缀）不应退化至 32k', () => {
+      // profile defaultModel 为 deepseek-v4-flash[1m]，baseName 为 deepseek-v4-flash
+      process.env.AGENT_LLM_MODEL = 'deepseek-v4-flash';
+      const config = getModelConfig('deepseek-v4-flash', { allowEnvModelOverride: true });
+      expect(config.model).toBe('deepseek-v4-flash');
+      // 不应被判定为"覆写"而退化到 32k，应保留 profile 默认的 1M
+      expect(config.contextWindow).toBe(1000000);
+    });
+  });
 });

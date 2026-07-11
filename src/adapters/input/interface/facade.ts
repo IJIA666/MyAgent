@@ -395,7 +395,8 @@ export class CliFacade {
         renderTokenPanel(
           this.session.getLastEstimatedUsage(),
           this.session.getLastApiUsage(),
-          this.session.getSystemPromptHash()
+          this.session.getSystemPromptHash(),
+          this.session.getLlmConfig()?.contextWindow
         );
         this.isRendering = false;
         this.listener.resume(); // 本轮推理完全结束，恢复 Stdin 监听

@@ -227,11 +227,13 @@ export function redrawHistory(history: ChatMessage[], modelName: string): void {
  * @param lastEstimated 预测 Token 预算明细
  * @param lastUsage 实际结算 Usage 详情
  * @param systemPromptHash 当前 System Prompt 的 MD5 摘要哈希值
+ * @param effectiveContextWindow 当前会话的有效上下文窗口（可选，缺失时显示未知状态）
  */
 export function renderTokenPanel(
   lastEstimated: ContextTokenUsage | null,
   lastUsage: ApiUsage | null,
-  systemPromptHash: string | null
+  systemPromptHash: string | null,
+  effectiveContextWindow?: number
 ): void {
   if (!lastEstimated) return;
 
@@ -246,7 +248,8 @@ export function renderTokenPanel(
   const pctSkill = totalEstimated > 0 ? ((skillTokens / totalEstimated) * 100).toFixed(1) : '0.0';
   const pctHistory = totalEstimated > 0 ? ((historyTokens / totalEstimated) * 100).toFixed(1) : '0.0';
 
-  const contextWindow = 64000;
+  // 使用调用方传入的有效窗口，未知时显示明确的未知状态
+  const contextWindow = effectiveContextWindow ?? 0;
   const totalActual = lastUsage ? (lastUsage.input_tokens + lastUsage.output_tokens) : totalEstimated;
   const windowRatio = ((totalActual / contextWindow) * 100).toFixed(1);
 

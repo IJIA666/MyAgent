@@ -4,6 +4,7 @@ import {
   detectMeasuredEvidence,
   recordDiagnosticToolOutcome,
   reserveDiagnosticToolCall,
+  checkDiagnosticConvergence,
   parseReadFileEvidence,
   parseListFilesEvidence,
   parseCommandEvidence,
@@ -11,7 +12,7 @@ import {
   deriveEvidenceLevelFromRecords,
   MAX_EVIDENCE_RECORDS
 } from '../../../src/core/domain/diagnostic-guardrails.js';
-import type { DiagnosticEvidenceRecord } from '../../../src/core/domain/diagnostic-guardrails.js';
+import type { DiagnosticEvidenceRecord, DiagnosticTurnState } from '../../../src/core/domain/diagnostic-guardrails.js';
 import { registerDiagnosticEvidenceInterpreters } from '../../../src/adapters/tools/tool-factory.js';
 
 describe('diagnostic-guardrails 结构化证据判定', () => {
@@ -205,6 +206,98 @@ describe('diagnostic-guardrails 结构化证据判定', () => {
         { target: 'test', metric: 'error', value: 0, unit: '', source: 'test', completeness: 'partial', coverage: '', error: 'failed' }
       ];
       expect(deriveEvidenceLevelFromRecords(errorRecords)).toBe('error');
+    });
+  });
+
+  describe('browser_navigate 诊断阻断', () => {
+    it('系统查询失败后的 browser_navigate(file://) 应被 reserve 拒绝', () => {
+      const state = createDiagnosticTurnState('请帮我诊断磁盘空间占用');
+      state.lastSystemQueryFailed = true;
+
+      const reservation = reserveDiagnosticToolCall(state, 'browser_navigate', { url: 'file:///C:/Users' });
+
+      expect(reservation.blockedReason).toBeDefined();
+      expect(reservation.blockedReason).toContain('不允许浏览器导航');
+    });
+
+    it('非 file:// 的 browser_navigate 放行', () => {
+      const state = createDiagnosticTurnState('请帮我诊断磁盘空间占用');
+
+      const reservation = reserveDiagnosticToolCall(state, 'browser_navigate', { url: 'https://example.com' });
+
+      expect(reservation.blockedReason).toBeUndefined();
+    });
+
+    it('非诊断上下文中 browser_navigate(file://) 放行', () => {
+      const state = createDiagnosticTurnState('帮我查一下今天的天气');
+
+      const reservation = reserveDiagnosticToolCall(state, 'browser_navigate', { url: 'file:///C:/temp/report.html' });
+
+      expect(reservation.blockedReason).toBeUndefined();
+    });
+  });
+
+  describe('低增益停机', () => {
+    it('连续 3 次无新增证据应被收敛检查阻断', () => {
+      const state: DiagnosticTurnState = {
+        active: true,
+        evidenceLevel: 'enumeration',
+        systemQueryAttempts: 0,
+        lastSystemQueryFailed: false,
+        listFilesUsed: 0,
+        stagnantListFilesCount: 0,
+        lastDirectoryStatsTruncated: false,
+        highRiskTargets: [],
+        scannedTargets: ['dir1', 'dir2'],
+        evidenceRecords: [],
+        callMetrics: [],
+        stagnantCallCount: 3,
+        stagnantTargetCount: 0
+      };
+
+      const reason = checkDiagnosticConvergence(state, 'listFiles', 'dir3');
+      expect(reason).toBeDefined();
+      expect(reason).toContain('连续');
+      expect(reason).toContain('无新增证据');
+    });
+
+    it('有效窄化（新目标 + 新证据）后停滞计数应重置', () => {
+      let state = createDiagnosticTurnState('请诊断磁盘空间占用');
+      // 第一次调用，产生新证据
+      state = recordDiagnosticToolOutcome(
+        state, 'listFiles', { targetPath: 'cache' },
+        { result: JSON.stringify({ targetPath: 'cache', entries: [{ name: 'a.tmp' }] }) }
+      );
+      expect(state.stagnantCallCount).toBe(0); // 正常调用，有 evidenceGain
+
+      // 第二次对不同目录调用
+      state = recordDiagnosticToolOutcome(
+        state, 'listFiles', { targetPath: 'other' },
+        { result: JSON.stringify({ targetPath: 'other', entries: [{ name: 'b.log' }] }) }
+      );
+      expect(state.stagnantCallCount).toBe(0);
+    });
+
+    it('局部 error 不应清除其他对象的 measured 记录', () => {
+      let state = createDiagnosticTurnState('请诊断磁盘空间占用');
+      // 先建立一条 complete measured 记录
+      state.evidenceRecords = [{
+        target: 'C:\\data', metric: 'totalSize', value: 500000000,
+        unit: 'bytes', source: 'listFiles', completeness: 'complete',
+        coverage: 'C:\\data'
+      }];
+      state.evidenceLevel = 'measured';
+
+      // 再出现一个无关的局部 error（不同目标）
+      state = recordDiagnosticToolOutcome(
+        state, 'listFiles', { targetPath: 'other' },
+        { error: '权限不足', result: undefined }
+      );
+
+      // 原有的 measured 记录应仍保留，不应被 error 清除
+      expect(state.evidenceRecords.some(r => r.target === 'C:\\data' && r.metric === 'totalSize')).toBe(true);
+      // 局部 error 不丢失已有精确记录（error 是回合级最高优先等级，但对象级记录保留）
+      expect(state.evidenceRecords.filter(r => r.target === 'C:\\data').length).toBe(1);
     });
   });
 });

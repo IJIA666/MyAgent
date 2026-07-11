@@ -199,6 +199,7 @@ export type ToolExecutionEffectReason =
   | 'declared_write_tool'
   | 'plan_safe_command'
   | 'execution_failed_after_start'
+  | 'browser_navigate'
   | 'legacy_fallback';
 
 /**

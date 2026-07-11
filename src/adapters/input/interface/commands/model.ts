@@ -31,6 +31,7 @@ export class ModelCommand implements ICommand {
 
     const targetModelId = modelSelect as string;
 
+    // ── 推理努力度选择 ──
     const reasoningSelect = await selectWithCleanCancel({
       message: '请选择思考等级 (Reasoning Effort):',
       options: [
@@ -48,6 +49,7 @@ export class ModelCommand implements ICommand {
 
     const reasoningEffort = reasoningSelect as string;
 
+    // ── 保存为默认值 ──
     const saveDefault = await p.confirm({
       message: '是否将此模型设为全局默认配置？(保存至 .env)',
       initialValue: false
@@ -59,15 +61,36 @@ export class ModelCommand implements ICommand {
     }
 
     try {
-      const newConfig = getModelConfig(targetModelId);
+      // 构造完整配置。上下文窗口由 profile 唯一决定，用户只选模型。
+      const newConfig = getModelConfig(targetModelId, {
+        allowEnvModelOverride: false,
+        explicitReasoningEffort: reasoningEffort as 'low' | 'medium' | 'high' | 'max' | 'disabled' | undefined
+      });
       context.session.switchModel(newConfig, { reasoning_effort: reasoningEffort });
 
+      // ── 持久化保存逻辑：先切换再保存，失败时分步报告 ──
+      let persistFailed = false;
       if (saveDefault) {
-        updateEnvVariable('AGENT_LLM_MODEL', targetModelId);
-        updateEnvVariable('AGENT_LLM_REASONING_EFFORT', reasoningEffort);
+        try {
+          updateEnvVariable('AGENT_LLM_MODEL', targetModelId);
+          updateEnvVariable('AGENT_LLM_REASONING_EFFORT', reasoningEffort);
+        } catch {
+          persistFailed = true;
+        }
       }
 
-      p.outro(theme.success(`配置已生效！当前激活模型：${targetModelId}`));
+      const effectiveWindow = newConfig.contextWindow;
+      if (persistFailed) {
+        p.outro(theme.warning(
+          `当前会话已激活：${targetModelId}（provider: ${newConfig.model}，窗口: ${effectiveWindow?.toLocaleString() ?? '未知'} tokens），` +
+          `但默认配置保存失败，请检查 .env 文件权限。`
+        ));
+      } else {
+        p.outro(theme.success(
+          `配置已生效！当前激活模型：${targetModelId}，provider model: ${newConfig.model}，` +
+          `context window: ${effectiveWindow?.toLocaleString() ?? '未知'} tokens`
+        ));
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       p.outro(theme.error(`模型切换失败: ${msg}`));

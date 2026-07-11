@@ -32,6 +32,11 @@ export const LOG_EVENT = {
   SKILL_WATCH_EVENT: 'skill_watch_event',
   SKILL_CACHE_REFRESHED: 'skill_cache_refreshed',
   SKILL_WATCHER_CLOSED: 'skill_watcher_closed',
+  // runtime config
+  RUNTIME_CONFIG_LOADED: 'runtime_config_loaded',
+  MODEL_SWITCH_SUCCEEDED: 'model_switch_succeeded',
+  MODEL_SWITCH_FAILED: 'model_switch_failed',
+  MODEL_SAVE_DEFAULT_FAILED: 'model_save_default_failed',
 } as const;
 
 import { configure, getConsoleSink, getJsonLinesFormatter, getLogger, dispose, withFilter } from "@logtape/logtape";
