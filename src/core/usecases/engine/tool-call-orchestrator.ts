@@ -10,6 +10,9 @@ import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryP
 import type { SessionContext, StoredChatMessage } from '../../domain/context.js';
 import type { PluginRegistry } from '../plugins/plugin-registry.js';
 import type { AgentEvent } from './agent-loop.js';
+import type { ToolExecutionEffect } from '../../../adapters/tools/tool-types.js';
+import { deriveDefaultToolExecutionEffect } from '../../../adapters/tools/tool-types.js';
+import { logger, LOG_COMPONENT, LOG_EVENT } from '../../../utils/logger.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 
 /**
@@ -22,9 +25,11 @@ export interface ToolExecutionResult {
   events: AgentEvent[];
   /** 执行完毕后需追加到消息历史的工具回执消息 */
   toolMessage?: StoredChatMessage;
-  /** 本次工具调用是否属于写操作 */
+  /** 本次工具调用的实际副作用（废弃 hasWrite，改用 effect），向下兼容保留旧字段供过渡 */
   hasWrite: boolean;
-  /** 最终的工具调用更新（error 或 result） */
+  /** 本次工具调用的实际副作用 */
+  effect: ToolExecutionEffect;
+  /** 最终的工具调用更新（error 或 result），携带 outcome 包装 */
   finalCallUpdate: {
     error?: string;
     result?: string;
@@ -119,6 +124,15 @@ export class ToolCallOrchestrator {
     const taskFinalCallUpdate: { error?: string; result?: string } = {};
     let hasWrite = false;
     let toolMessage: StoredChatMessage | undefined;
+    let executionStarted = false;
+    let toolSecurityCategory: 'read' | 'write' = 'read';
+    let resolvedEffect: ToolExecutionEffect = {
+      kind: 'none',
+      executionStarted: false,
+      completed: false,
+      resources: [],
+      reason: 'no_execution'
+    };
 
     /**
      * 区分对待事件类型：suspend 挂起审批事件实时通过回调广播给外层 UI 确权以防死锁；
@@ -140,10 +154,12 @@ export class ToolCallOrchestrator {
       const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
       taskFinalCallUpdate.error = `解析参数失败：${errorMsg}`;
       taskEvents.push({ type: 'error', message: `解析工具参数失败：${errorMsg}`, cause: parseError });
+      const noExecEffect = deriveDefaultToolExecutionEffect(toolSecurityCategory, false, false);
       return {
         index,
         events: taskEvents,
         hasWrite,
+        effect: noExecEffect,
         finalCallUpdate: taskFinalCallUpdate,
         interrupted: false,
         aborted: false
@@ -171,7 +187,7 @@ export class ToolCallOrchestrator {
       );
 
       if (beforeToolResult.control.action === 'abort') {
-        const toolResult = `错误：工具调用被插件拦截拦截：${beforeToolResult.control.reason ?? '安全策略限制'}`;
+        const toolResult = `错误：工具调用被插件拦截：${beforeToolResult.control.reason ?? '安全策略限制'}`;
         taskFinalCallUpdate.error = beforeToolResult.control.reason ?? '安全策略限制';
         taskEvents.push({ type: 'error', message: `[插件拦截] 工具调用被拦截阻断：${beforeToolResult.control.reason ?? '策略安全限制'}` });
         taskEvents.push({ type: 'tool_call_result', functionName, result: toolResult });
@@ -180,11 +196,19 @@ export class ToolCallOrchestrator {
           tool_call_id: toolCall.id,
           content: toolResult
         };
+        const abortEffect: ToolExecutionEffect = {
+          kind: 'none',
+          executionStarted: false,
+          completed: false,
+          resources: [],
+          reason: 'pre_execution_abort'
+        };
         return {
           index,
           events: taskEvents,
           toolMessage,
           hasWrite,
+          effect: abortEffect,
           finalCallUpdate: taskFinalCallUpdate,
           interrupted: false,
           aborted: false
@@ -217,11 +241,17 @@ export class ToolCallOrchestrator {
       const toolInstance = this.toolRegistry.getTool(functionName);
       if (toolInstance && toolInstance.securityCategory === 'write') {
         hasWrite = true;
+        toolSecurityCategory = toolInstance.securityCategory;
+      } else if (toolInstance) {
+        toolSecurityCategory = toolInstance.securityCategory;
       }
 
       if (signal.aborted) {
         throw new Error("工具执行已被 Abort 阻断（超时）");
       }
+
+      // BeforeTool 通过、参数解析完成、锁/备份开始前标记已进入执行
+      executionStarted = true;
 
       // 并发锁物理路径冲突排队编排
       const pathsToLock = resolveFilePaths(actualArgs, toolInstance?.filePathParamKey, this.context.appConfig?.workspace);
@@ -249,10 +279,14 @@ export class ToolCallOrchestrator {
           throw new Error("工具执行已被 Abort 阻断（超时）");
         }
 
-        const mcpResult = await this.toolRegistry.callTool(
+        const outcome = await this.toolRegistry.callTool(
           functionName, actualArgs, this.context, this.interactionPort, signal, toolCall.id
         );
-        const rawResult = JSON.stringify(mcpResult);
+        // 使用 outcome 中的 effect（工具可能已精化），供后续质量门禁消费
+        if (outcome.effect) {
+          resolvedEffect = outcome.effect;
+        }
+        const rawResult = JSON.stringify(outcome.value);
         outputResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
         toolResult = outputResult.content;
       } catch (toolError: unknown) {
@@ -287,15 +321,27 @@ export class ToolCallOrchestrator {
       );
 
       if (afterToolResult.control.action === 'abort') {
+        // AfterTool abort 不得抹去已发生的 write/unknown effect——工具已经执行完毕
+        // 仅当之前没有更精确的 effect（来自 tool.resolveExecutionEffect）时才回退默认推导
+        if (resolvedEffect.kind === 'none' || resolvedEffect.reason === 'no_execution') {
+          resolvedEffect = deriveDefaultToolExecutionEffect(toolSecurityCategory, executionStarted, true);
+        }
+        taskFinalCallUpdate.error = afterToolResult.control.reason ?? '无原因';
         return {
           index,
           events: taskEvents,
           hasWrite,
+          effect: resolvedEffect,
           finalCallUpdate: taskFinalCallUpdate,
           interrupted: false,
           aborted: true,
           abortReason: afterToolResult.control.reason ?? '无原因'
         };
+      }
+
+      // 正常完成：仅当 outcome 未提供精确 effect 时才回退默认推导
+      if (resolvedEffect.kind === 'none' && resolvedEffect.reason === 'no_execution') {
+        resolvedEffect = deriveDefaultToolExecutionEffect(toolSecurityCategory, executionStarted, true);
       }
 
       const finalToolResultContent = afterToolResult.toolResult?.content ?? toolResult;
@@ -350,9 +396,10 @@ export class ToolCallOrchestrator {
 
         let tailResultRaw: unknown;
         try {
-          tailResultRaw = await this.toolRegistry.callTool(
+          const tailOutcome = await this.toolRegistry.callTool(
             tailCall.name, tailCall.args, this.context, this.interactionPort, signal, tailCallId
           );
+          tailResultRaw = tailOutcome.value;
         } finally {
           // 消费 tail call 的 capability 令牌
           this.context.consumeCapability(tailCallId);
@@ -397,10 +444,12 @@ export class ToolCallOrchestrator {
           toolCallId: toolCall.id
         });
         taskEvents.push({ type: 'interaction_request', interaction });
+        const interactionEffect = deriveDefaultToolExecutionEffect(toolSecurityCategory, executionStarted, false);
         return {
           index,
           events: taskEvents,
           hasWrite,
+          effect: interactionEffect,
           finalCallUpdate: taskFinalCallUpdate,
           interrupted: true,
           aborted: false
@@ -413,6 +462,8 @@ export class ToolCallOrchestrator {
       taskFinalCallUpdate.error = finalErrorMsg;
       taskEvents.push({ type: 'error', message: isAbortError ? `工具执行超时阻断` : `工具执行失败：${errorMsg}`, cause: toolError });
       taskEvents.push({ type: 'tool_call_result', functionName, result: finalErrorMsg });
+      // 执行失败时根据 executionStarted 和安全类别推导 effect
+      resolvedEffect = deriveDefaultToolExecutionEffect(toolSecurityCategory, executionStarted, false);
       toolMessage = {
         role: 'tool',
         tool_call_id: toolCall.id,
@@ -420,11 +471,23 @@ export class ToolCallOrchestrator {
       };
     }
 
+    // 记录 effect 解析结果（DEBUG 级，只含 kind、reason、资源数量）
+    logger.debug('[ToolOrchestrator] tool_effect_resolved', {
+      component: LOG_COMPONENT.TOOL_EFFECT,
+      event: LOG_EVENT.TOOL_EFFECT_RESOLVED,
+      sessionId: this.context.getSessionId(),
+      correlationId: toolCall.id,
+      kind: resolvedEffect.kind,
+      reason: resolvedEffect.reason,
+      resourceCount: resolvedEffect.resources.length,
+    });
+
     return {
       index,
       events: taskEvents,
       toolMessage,
       hasWrite,
+      effect: resolvedEffect,
       finalCallUpdate: taskFinalCallUpdate,
       interrupted: false,
       aborted: false

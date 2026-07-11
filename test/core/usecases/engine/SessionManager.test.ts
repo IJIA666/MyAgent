@@ -95,7 +95,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
     const mockToolRegistry = {
       getTools: async () => [],
-      callTool: async () => ({}),
+      callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }),
       close: vi.fn().mockResolvedValue(undefined)
     } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
@@ -156,7 +156,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const mockToolRegistry = {
       getTools: async () => [],
-      callTool: async () => ({}),
+      callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }),
       getTool: () => undefined,
       close: async () => { }
     } as unknown as ToolRegistryPort;
@@ -249,11 +249,14 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
           inputSchema: { type: 'object', properties: { arg: { type: 'string' } } }
         }
       ],
-      callTool: vi.fn().mockResolvedValue('Mocked Tool Result Value'),
+      callTool: vi.fn().mockResolvedValue({
+        value: { content: [{ type: 'text' as const, text: 'Mocked Tool Result Value' }] },
+        effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const }
+      }),
       getTool: () => ({
         name: 'testDummyTool',
-        description: 'A test dummy tool',
-        execute: async () => 'Mocked Tool Result Value'
+        securityCategory: 'read' as const,
+        executionMode: 'immediate' as const
       }),
       close: async () => { }
     } as unknown as ToolRegistryPort;
@@ -290,7 +293,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = { getModelName: () => 'MockModel', switchModel: () => { }, abort: () => { } } as unknown as LlmPort;
     const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
-    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}) } as unknown as ToolRegistryPort;
+    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }) } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
     const session = new SessionManager(
@@ -360,6 +363,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
   it('应该能够运行后置质量强校验 runPostRunCheck', async () => {
     const qualityCheckAdapter = new ShellQualityCheckAdapter();
+    const mockContext = { sessionId: 'test', triggerEffects: [], changedResources: [], signal: undefined };
 
     // 1. 成功测试
     mockExecPromisified.mockResolvedValue({
@@ -367,9 +371,10 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       stderr: ''
     });
 
-    const successResult = await qualityCheckAdapter.runPostRunCheck();
+    const successResult = await qualityCheckAdapter.runPostRunCheck(mockContext);
     expect(successResult.success).toBe(true);
-    expect(successResult.output).toContain('lint/tsc mock passed');
+    expect(successResult.steps.length).toBeGreaterThanOrEqual(1);
+    expect(successResult.summary).toBeDefined();
 
     // 2. 失败测试 (验证 catch 分支)
     mockExecPromisified.mockRejectedValue({
@@ -378,17 +383,66 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       message: 'Mock lint tsc exception'
     });
 
-    const failResult = await qualityCheckAdapter.runPostRunCheck();
+    const failResult = await qualityCheckAdapter.runPostRunCheck(mockContext);
     expect(failResult.success).toBe(false);
-    expect(failResult.output).toContain('ESLint 检查失败');
-    expect(failResult.output).toContain('stdout error snippet');
+    expect(failResult.steps.length).toBeGreaterThanOrEqual(1);
+    expect(failResult.steps[0].summary).toBeDefined();
+  });
+
+  it('ShellQualityCheckAdapter 注入式执行器测试：步骤耗时、第一步失败不启动第二步、取消和输出截断（3.13）', async () => {
+    // 使用注入式 executor 替代真实 exec
+    let stepCommands: string[] = [];
+    const mockExecutor = async (cmd: string) => {
+      stepCommands.push(cmd);
+      if (cmd.includes('lint')) {
+        // eslint 成功
+        return { stdout: 'ESLint passed', stderr: '' };
+      }
+      // tsc
+      return { stdout: 'TSC passed', stderr: '' };
+    };
+    const adapter = new ShellQualityCheckAdapter(mockExecutor);
+    const mockCtx = { sessionId: 'test', triggerEffects: [], changedResources: [], signal: undefined };
+
+    // 1. 两步都成功
+    const successResult = await adapter.runPostRunCheck(mockCtx);
+    expect(successResult.success).toBe(true);
+    expect(successResult.steps.length).toBe(2);
+    expect(successResult.steps[0].name).toBe('eslint');
+    expect(successResult.steps[1].name).toBe('tsc');
+    expect(typeof successResult.steps[0].durationMs).toBe('number');
+
+    // 2. 第一步失败不启动第二步
+    stepCommands = [];
+    const failExecutor = async (cmd: string) => {
+      stepCommands.push(cmd);
+      if (cmd.includes('lint')) {
+        throw { stdout: '', stderr: 'lint error', message: 'ESLint failed' };
+      }
+      return { stdout: '', stderr: '' };
+    };
+    const failAdapter = new ShellQualityCheckAdapter(failExecutor);
+    const failResult = await failAdapter.runPostRunCheck(mockCtx);
+    expect(failResult.success).toBe(false);
+    expect(failResult.steps.length).toBe(1);
+    expect(stepCommands.length).toBe(1); // 只有 eslint 被调用
+
+    // 3. AbortSignal 取消
+    const controller = new AbortController();
+    const abortCtx = { sessionId: 'test', triggerEffects: [], changedResources: [], signal: controller.signal };
+    const abortAdapter = new ShellQualityCheckAdapter(async (_cmd) => {
+      controller.abort();
+      return { stdout: '', stderr: '' };
+    });
+    const abortResult = await abortAdapter.runPostRunCheck(abortCtx);
+    expect(abortResult.steps.length).toBeGreaterThanOrEqual(1);
   });
 
   it('open() 应该派发 SessionOpened 事件并允许插件执行初始化', async () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
     const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
-    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}), close: vi.fn().mockResolvedValue(undefined) } as unknown as ToolRegistryPort;
+    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }), close: vi.fn().mockResolvedValue(undefined) } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
     const session = new SessionManager(
@@ -404,7 +458,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
     const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
-    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}), close: vi.fn().mockResolvedValue(undefined) } as unknown as ToolRegistryPort;
+    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }), close: vi.fn().mockResolvedValue(undefined) } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
     const session = new SessionManager(
@@ -425,7 +479,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
     const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
     const closeSpy = vi.fn().mockResolvedValue(undefined);
-    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}), close: closeSpy } as unknown as ToolRegistryPort;
+    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }), close: closeSpy } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
     const session = new SessionManager(
@@ -446,7 +500,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
     const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
     const closeSpy = vi.fn().mockResolvedValue(undefined);
-    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({}), close: closeSpy } as unknown as ToolRegistryPort;
+    const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }), close: closeSpy } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
     const session = new SessionManager(

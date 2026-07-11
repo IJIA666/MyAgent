@@ -1,13 +1,47 @@
 import { join } from 'path';
-import { existsSync, watch } from 'fs';
+import { existsSync, watch, type FSWatcher } from 'fs';
+import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
 import { SessionContext } from '../../domain/context.js';
-import { logger } from '../../../utils/logger.js'; // 导入统一日志单例 logger
+import { logger } from '../../../utils/logger.js';
 import {
   readAndLimitFile,
   scanSkills,
   readSkillContent,
   SkillMetadata
 } from './contextLoader.js';
+
+/**
+ * RuleManager 构造选项。
+ */
+export interface RuleManagerOptions {
+  /** 是否启用技能文件变更监听，默认 true（主会话启用，短生命周期实例禁用） */
+  enableWatcher?: boolean;
+}
+
+/** 技能主体内容摘要的类型。 */
+type ContentHash = string;
+
+/** 计算文件内容的 SHA-256 摘要。 */
+function computeFileHash(filePath: string): ContentHash | null {
+  try {
+    if (!existsSync(filePath)) return null;
+    const content = readFileSync(filePath, 'utf-8');
+    return createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/** 判断事件文件名是否属于候选 SKILL.md。 */
+function isSkillCandidate(eventType: string, filename: string | null): boolean {
+  if (!filename) return false;
+  // 仅接受 .agent/skills/**/SKILL.md
+  const normalized = filename.replace(/\\/g, '/');
+  if (!normalized.endsWith('SKILL.md')) return false;
+  if (!normalized.includes('.agent/skills/')) return false;
+  return true;
+}
 
 /**
  * 负责全局规则、局部项目规则和技能列表的实例级热加载与生命周期管理。
@@ -21,20 +55,29 @@ export class RuleManager {
   private skillsCache = new Map<string, SkillMetadata>();
   /** 监听状态标识 */
   private isWatching = false;
-  /** 防抖定时器句柄，用于合并短期内的并发文件系统事件 */
+  /** 防抖定时器句柄 */
   private watchDebounceTimer: NodeJS.Timeout | null = null;
+  /** 保存的 FSWatcher 句柄 */
+  private watcher: FSWatcher | null = null;
+  /** 候选技能主体路径集合（防抖期内暂存变更候选） */
+  private candidateSkillPaths = new Set<string>();
+  /** 当前技能内容摘要映射（path → hash），用于检测真实内容变化 */
+  private skillContentHashes = new Map<string, ContentHash>();
+  /** 是否启用 watcher */
+  private enableWatcher: boolean;
+  /** 是否已关闭 */
+  private closed = false;
 
   /**
-   * 实例初始化，并首次将规则和技能加载到缓存中。
-   *
    * @param context - 会话上下文管理实例
+   * @param options - 可选构造选项
    */
-  constructor(private context: SessionContext) {
+  constructor(private context: SessionContext, options?: RuleManagerOptions) {
+    this.enableWatcher = options?.enableWatcher ?? true;
     const workspacePath = this.context.appConfig?.workspace || process.cwd();
     this.loadRulesToCache(workspacePath);
     this.refreshSkillsCache(workspacePath);
-    
-    // 初始化时直接刷入完整的规则和技能列表，保证系统 Prompt 数据同步
+
     this.context.updateSystemPrompt(
       this.cachedGlobalRules || undefined,
       this.cachedLocalRules || undefined,
@@ -61,13 +104,13 @@ export class RuleManager {
   }
 
   /**
-   * 极速获取当前实例已缓存的技能列表，支持惰性初始化 Watcher。
-   * 
+   * 极速获取当前实例已缓存的技能列表。
+   *
    * @returns 技能元数据数组
    */
   public getSkills(): SkillMetadata[] {
     const workspacePath = this.context.appConfig?.workspace || process.cwd();
-    if (!this.isWatching) {
+    if (!this.isWatching && this.enableWatcher && !this.closed) {
       this.initSkillsWatcher(workspacePath);
     }
     return Array.from(this.skillsCache.values());
@@ -75,7 +118,7 @@ export class RuleManager {
 
   /**
    * 惰性获取指定技能的完整 Markdown 内容。
-   * 
+   *
    * @param name - 技能名称
    * @returns 技能正文内容，找不到则返回 null
    */
@@ -86,22 +129,30 @@ export class RuleManager {
   }
 
   /**
-   * 初始化实例级技能文件变更监听服务
+   * 初始化实例级技能文件变更监听服务。
+   * 仅接受 `.agent/skills/` 下以 `SKILL.md` 结尾的文件事件；
+   * 防抖到期后比较内容摘要，无差异不更新。
    */
   private initSkillsWatcher(workspacePath: string): void {
-    if (this.isWatching) return;
-    this.refreshSkillsCache(workspacePath);
-    
+    if (this.isWatching || !this.enableWatcher) return;
+    this.precomputeSkillHashes(workspacePath);
+
     try {
       const skillsDir = join(workspacePath, '.agent/skills');
       if (existsSync(skillsDir)) {
-        watch(skillsDir, { recursive: true }, () => {
-          // 引入 100ms 防抖合并高频并发文件变动事件，消除 Windows 底层触发多次的抖动缺陷
-          clearTimeout(this.watchDebounceTimer || undefined);
+        this.watcher = watch(skillsDir, { recursive: true }, (eventType, filename) => {
+          if (this.closed) return;
+          if (!isSkillCandidate(eventType, filename)) return;
+
+          // 加入候选路径集合
+          const fullPath = filename ? join(skillsDir, filename) : '';
+          if (fullPath) this.candidateSkillPaths.add(fullPath);
+
+          // 防抖合并
+          clearTimeout(this.watchDebounceTimer ?? undefined);
           this.watchDebounceTimer = setTimeout(() => {
-            logger.info('[RuleManager] 检测到技能文件变动，正在自动刷新缓存...');
-            this.refreshSkillsCache(workspacePath);
-            this.reloadRules();
+            if (this.closed) return;
+            this.processSkillChanges(workspacePath);
           }, 100);
         });
         this.isWatching = true;
@@ -112,25 +163,98 @@ export class RuleManager {
   }
 
   /**
-   * 刷新当前实例的技能索引缓存
+   * 预先计算所有技能的当前内容摘要。
    */
-  private refreshSkillsCache(workspacePath: string): void {
-    this.skillsCache.clear();
+  private precomputeSkillHashes(workspacePath: string): void {
+    this.skillContentHashes.clear();
     try {
       const list = scanSkills(workspacePath);
       for (const item of list) {
-        this.skillsCache.set(item.name, item);
+        const hash = computeFileHash(item.filePath);
+        if (hash) this.skillContentHashes.set(item.filePath, hash);
       }
-    } catch (e) {
-      logger.warn(`[RuleManager] 刷新技能缓存失败: ${e}`);
+    } catch {
+      // 静默
     }
   }
 
   /**
-   * 将规则文件探测并加载锁定至内存缓存中，统一路径约定。
+   * 防抖到期后统一处理技能变更：重新扫描元数据、比较内容摘要，仅在有差异时更新缓存。
+   */
+  private processSkillChanges(workspacePath: string): void {
+    if (this.closed) return;
+
+    // 扫描当前技能元数据
+    let currentList: SkillMetadata[];
+    try {
+      currentList = scanSkills(workspacePath);
+    } catch {
+      return;
+    }
+
+    // 计算新摘要并与旧摘要比较
+    const newHashes = new Map<string, ContentHash>();
+    for (const item of currentList) {
+      const hash = computeFileHash(item.filePath);
+      if (hash) newHashes.set(item.filePath, hash);
+    }
+
+    let hasChanges = false;
+    // 检查新增/修改
+    for (const [path, hash] of newHashes) {
+      const oldHash = this.skillContentHashes.get(path);
+      if (oldHash !== hash) { hasChanges = true; break; }
+    }
+    // 检查删除
+    if (!hasChanges) {
+      for (const path of this.skillContentHashes.keys()) {
+        if (!newHashes.has(path)) { hasChanges = true; break; }
+      }
+    }
+
+    // 无差异时只清空候选状态，不调用 updateSystemPrompt
+    this.candidateSkillPaths.clear();
+    if (!hasChanges) {
+      logger.debug('[RuleManager] 技能候选事件无内容差异，跳过刷新。', {
+        component: 'rule_manager',
+        event: 'skill_watch_no_change',
+      });
+      return;
+    }
+
+    // 有真实变化：原子替换缓存
+    logger.info('[RuleManager] 检测到技能文件真实变化，正在刷新缓存...');
+    this.refreshSkillsCache(workspacePath);
+    this.skillContentHashes = newHashes;
+
+    this.context.updateSystemPrompt(
+      this.cachedGlobalRules || undefined,
+      this.cachedLocalRules || undefined,
+      this.getSkills()
+    );
+  }
+
+  /**
+   * 刷新当前实例的技能索引缓存（原子替换）。
+   */
+  private refreshSkillsCache(workspacePath: string): void {
+    const newCache = new Map<string, SkillMetadata>();
+    try {
+      const list = scanSkills(workspacePath);
+      for (const item of list) {
+        newCache.set(item.name, item);
+      }
+    } catch (e) {
+      logger.warn(`[RuleManager] 刷新技能缓存失败: ${e}`);
+    }
+    // 原子替换
+    this.skillsCache = newCache;
+  }
+
+  /**
+   * 将规则文件探测并加载锁定至内存缓存中。
    */
   private loadRulesToCache(workspacePath: string): void {
-    // 1. 加载全局级规则
     try {
       const globalRulesPath = join(workspacePath, '.agent/global_rules.md');
       if (existsSync(globalRulesPath)) {
@@ -143,7 +267,6 @@ export class RuleManager {
       this.cachedGlobalRules = '';
     }
 
-    // 2. 自动探测并加载局部项目规则 (.agent/rules/guize.md)
     try {
       const localRulesPath = join(workspacePath, '.agent/rules/guize.md');
       if (existsSync(localRulesPath)) {
@@ -159,20 +282,48 @@ export class RuleManager {
   }
 
   /**
-   * 清除全局与局部规则的内存缓存，并重新从磁盘中加载。
-   * 会在下一轮交互时强制生效最新的规则与技能内容。
+   * 手动重载规则和技能（完整读盘）。
+   * 与 watcher 增量刷新分开实现，避免一次事件触发两次刷新。
    */
   public reloadRules(): void {
     logger.info('[RuleManager] 正在重载规则与技能文件...');
     const workspacePath = this.context.appConfig?.workspace || process.cwd();
     this.loadRulesToCache(workspacePath);
     this.refreshSkillsCache(workspacePath);
-    
-    // 更新系统提示词，支持技能与规则的热重载同步
+
     this.context.updateSystemPrompt(
       this.cachedGlobalRules || undefined,
       this.cachedLocalRules || undefined,
       this.getSkills()
     );
+  }
+
+  /**
+   * 幂等地关闭 RuleManager：清理 timer、关闭 watcher、清空候选集。
+   * 关闭后阻止 watcher 回调更新上下文。
+   * 关闭异常只能记录诊断，不得阻塞会话关闭。
+   */
+  public close(): void {
+    if (this.closed) return;
+    this.closed = true;
+
+    try {
+      if (this.watchDebounceTimer) {
+        clearTimeout(this.watchDebounceTimer);
+        this.watchDebounceTimer = null;
+      }
+      if (this.watcher) {
+        this.watcher.close();
+        this.watcher = null;
+      }
+      this.candidateSkillPaths.clear();
+      this.isWatching = false;
+      logger.debug('[RuleManager] 已关闭 watcher 和清理资源。', {
+        component: 'rule_manager',
+        event: 'skill_watcher_closed',
+      });
+    } catch (e) {
+      logger.warn(`[RuleManager] 关闭异常: ${e}`);
+    }
   }
 }

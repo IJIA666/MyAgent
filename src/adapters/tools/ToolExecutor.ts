@@ -1,7 +1,8 @@
 import { existsSync } from 'fs';
 import { computeArgumentsDigest } from '../../core/domain/context.js';
 import { secureResolveWritePath } from './impl/base.js';
-import type { NativeTool, CallToolResult } from './tool-types.js';
+import type { NativeTool, CallToolResult, ToolExecutionOutcome, ToolExecutionEffect } from './tool-types.js';
+import { deriveDefaultToolExecutionEffect } from './tool-types.js';
 import type { ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabilityPort.js';
@@ -46,7 +47,7 @@ export class ToolExecutor {
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
     toolCallId?: string
-  ): Promise<CallToolResult> {
+  ): Promise<ToolExecutionOutcome<CallToolResult>> {
     try {
       const tool = this.catalog.getTool(toolName);
       if (!tool) {
@@ -82,7 +83,7 @@ export class ToolExecutor {
       const contextToPass = execContext ?? sessionContext;
       const resultText = await tool.execute(args, contextToPass, signal, interactionPort);
 
-      return {
+      const rawResult: CallToolResult = {
         content: [
           {
             type: "text",
@@ -90,12 +91,22 @@ export class ToolExecutor {
           }
         ]
       };
+
+      // 尝试使用工具的精确 effect 解析，回退到默认推导器
+      const refinedEffect = tool.resolveExecutionEffect?.(args, resultText);
+      const effect: ToolExecutionEffect = refinedEffect ?? deriveDefaultToolExecutionEffect(
+        tool.securityCategory,
+        true,
+        true
+      );
+
+      return { value: rawResult, effect };
     } catch (error: unknown) {
       if (error instanceof InteractionRequestError) {
         throw error;
       }
       const errorMsg = error instanceof Error ? error.message : String(error);
-      return {
+      const errorResult: CallToolResult = {
         content: [
           {
             type: "text",
@@ -104,6 +115,17 @@ export class ToolExecutor {
         ],
         isError: true
       };
+
+      // 尝试使用工具的精确 effect 解析（失败时传 error），回退到默认推导器
+      const tool = this.catalog.getTool(toolName);
+      const refinedEffect = tool?.resolveExecutionEffect?.(args, undefined, error instanceof Error ? error : undefined);
+      const effect: ToolExecutionEffect = refinedEffect ?? deriveDefaultToolExecutionEffect(
+        tool?.securityCategory ?? 'write',
+        true,
+        false
+      );
+
+      return { value: errorResult, effect, cause: error instanceof Error ? error : undefined };
     }
   }
 

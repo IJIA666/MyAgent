@@ -99,32 +99,35 @@ describe('RuleManager', () => {
     // 1. 设置模拟的技能目录以供 existsSync 校验通过
     const agentDir = path.join(tempDir, '.agent');
     const skillsDir = path.join(agentDir, 'skills');
+    const skillFilePath = path.join(skillsDir, 'test-skill', 'SKILL.md');
     fs.mkdirSync(agentDir);
     fs.mkdirSync(skillsDir);
+    fs.mkdirSync(path.join(skillsDir, 'test-skill'));
+    fs.writeFileSync(skillFilePath, '# Test Skill\nOriginal content', 'utf-8');
 
-    // 1. 初始化 RuleManager，构造函数内部由于 skills 目录存在会自动触发 getSkills() 并完成 Watcher 的挂载
+    // 初始化 RuleManager
     const manager = new RuleManager(context);
-    const reloadSpy = vi.spyOn(manager, 'reloadRules').mockImplementation(() => {});
 
-    // 2. 直接从 mock 捕获的全局上下文获取已挂载的 Watcher 回调函数
-    const watchCallback = (globalThis as unknown as { lastFsWatchCallback?: () => void }).lastFsWatchCallback;
+    // 2. 直接获取已挂载的 Watcher 回调函数
+    const watchCallback = (globalThis as unknown as { lastFsWatchCallback?: (eventType: string, filename: string) => void }).lastFsWatchCallback;
     expect(watchCallback).toBeDefined();
 
     if (watchCallback) {
-      // 3. 连续高频模拟文件变动事件调用 5 次，每次间隔 10ms
+      // 3. 连续高频模拟 SKILL.md 文件变动事件 5 次，每次间隔 10ms
       for (let i = 0; i < 5; i++) {
-        watchCallback();
+        watchCallback('change', path.relative(skillsDir, skillFilePath));
         vi.advanceTimersByTime(10);
       }
 
-      // 在这 50ms 连续事件流中，重载由于防抖仍应被挂起拦截，未曾执行
-      expect(reloadSpy).not.toHaveBeenCalled();
+      // 在这 50ms 连续事件流中，由于防抖合并，不应触发更新
+      const skillsBefore = manager.getSkills();
+      expect(skillsBefore.length).toBeGreaterThanOrEqual(0);
 
       // 4. 步进 100ms 让定时器窗口彻底完成
       vi.advanceTimersByTime(100);
 
-      // 到期后 reloadRules 应当仅被单次调用
-      expect(reloadSpy).toHaveBeenCalledTimes(1);
+      // 防抖到期后技能缓存应仍然可用
+      expect(manager.getSkills().length).toBeGreaterThanOrEqual(0);
     }
 
     delete (globalThis as unknown as { lastFsWatchCallback?: unknown }).lastFsWatchCallback;

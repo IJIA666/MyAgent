@@ -98,6 +98,59 @@ describe('AgentTracer diagnostic capture modes', () => {
     });
   });
 
+  it('logEventSpan 在 metadata-only 模式下只写阶段、状态、耗时和计数', () => {
+    const tracer = new AgentTracer(tempDir, 'event-span-session', createDiagnostics());
+    tracer.logEventSpan('tool_effect_resolved', {
+      kind: 'read',
+      durationMs: 50,
+      status: 'completed',
+      count: 1,
+      commandOutput: 'sensitive_data_here',
+      fileContent: 'file_content_here',
+    }, 'corr-001');
+
+    const traceFile = path.join(tempDir, '.myagent', 'traces', 'trace_event-span-session.jsonl');
+    const content = fs.readFileSync(traceFile, 'utf-8');
+    const parsed = JSON.parse(content.trim());
+
+    expect(parsed.type).toBe('event_span');
+    expect(parsed.event).toBe('tool_effect_resolved');
+    expect(parsed.correlationId).toBe('corr-001');
+    // metadata-only 不应包含敏感字段
+    expect(content).not.toContain('sensitive_data_here');
+    expect(content).not.toContain('file_content_here');
+    // 只保留摘要字段
+    expect(parsed.metadata).toMatchObject({
+      durationMs: 50,
+      status: 'completed',
+      count: 1,
+    });
+    expect(parsed.metadata.kind).toBeUndefined();
+  });
+
+  it('logEventSpan 在 replay 模式下保留完整元数据并脱敏', () => {
+    const diagnostics = createDiagnostics({ replayEnabled: true });
+    const tracer = new AgentTracer(tempDir, 'event-span-replay', diagnostics);
+    tracer.logEventSpan('quality_check_finished', {
+      status: 'failed',
+      durationMs: 1234,
+      count: 3,
+      errorSummary: 'some error context',
+    }, 'corr-002');
+
+    const traceFile = path.join(tempDir, '.myagent', 'traces', 'trace_event-span-replay.jsonl');
+    const content = fs.readFileSync(traceFile, 'utf-8');
+    const parsed = JSON.parse(content.trim());
+
+    expect(parsed.type).toBe('event_span');
+    expect(parsed.event).toBe('quality_check_finished');
+    expect(parsed.correlationId).toBe('corr-002');
+    // replay 模式保留完整元数据
+    expect(parsed.metadata).toBeDefined();
+    expect(parsed.metadata.status).toBe('failed');
+    expect(parsed.metadata.durationMs).toBe(1234);
+  });
+
   it('should retain recent files, protect the active session, and tolerate cleanup failures', () => {
     const traceDir = path.join(tempDir, '.myagent', 'traces');
     fs.mkdirSync(traceDir, { recursive: true });

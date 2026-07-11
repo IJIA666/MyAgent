@@ -172,6 +172,43 @@ export class AgentTracer {
   }
 
   /**
+   * 记录结构化事件 span（effect、质量门禁、目录测量、技能刷新等）。
+   * metadata-only 模式只记录阶段、状态、耗时和计数；
+   * replay 模式下经过既有脱敏器保存。
+   *
+   * @param event - 事件名称
+   * @param metadata - 事件元数据（仅保留不可逆摘要）
+   * @param correlationId - 关联的调用 ID
+   */
+  public logEventSpan(
+    event: string,
+    metadata: Record<string, unknown>,
+    correlationId?: string
+  ): void {
+    const span: Record<string, unknown> = {
+      type: 'event_span',
+      captureMode: this.getCaptureMode(),
+      captureVersion: TRACE_FORMAT_VERSION,
+      timestamp: new Date().toISOString(),
+      event,
+      correlationId,
+    };
+
+    // metadata-only 模式只保留级别、耗时、计数等摘要
+    if (!this.diagnostics.replayEnabled) {
+      span.metadata = {
+        durationMs: metadata.durationMs,
+        status: metadata.status,
+        count: metadata.count,
+      };
+    } else {
+      span.metadata = metadata;
+    }
+
+    this.appendJsonLine(this.traceFile, span, '[Tracer] event span write failed', 'trace');
+  }
+
+  /**
    * 通用 JSONL 追加写入。
    *
    * @param filePath - 目标文件路径。

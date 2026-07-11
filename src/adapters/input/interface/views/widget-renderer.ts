@@ -10,6 +10,132 @@ import type { ChatMessage } from '../../../../ports/driven/llm/LlmPort.js';
 import type { ApiUsage, ContextTokenUsage } from '../../../../ports/driven/llm/TokenEstimatorPort.js';
 import { theme } from './theme.js';
 
+const DEFAULT_RENDER_WIDTH = 88;
+const MIN_RENDER_WIDTH = 56;
+const MAX_RENDER_WIDTH = 104;
+
+/** 获取适合当前终端的安全渲染宽度。 */
+function getRenderWidth(): number {
+  const columns = process.stdout.columns || DEFAULT_RENDER_WIDTH;
+  return Math.max(MIN_RENDER_WIDTH, Math.min(MAX_RENDER_WIDTH, columns));
+}
+
+/** 截断过长文本，防止状态行撑破终端布局。 */
+function truncateText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+/** 创建固定宽度的终端横线。 */
+function rule(char: string, width = getRenderWidth()): string {
+  return char.repeat(Math.max(1, width));
+}
+
+/** 创建固定宽度的边框内容行。 */
+function frameLine(content: string, width = getRenderWidth()): string {
+  const innerWidth = Math.max(1, width - 4);
+  return `│ ${truncateText(content, innerWidth).padEnd(innerWidth)} │`;
+}
+
+/** 创建简洁的单行比例条。 */
+function usageBar(value: number, total: number, width = 22): string {
+  if (total <= 0) {
+    return `[${'-'.repeat(width)}]`;
+  }
+  const filled = Math.max(0, Math.min(width, Math.round((value / total) * width)));
+  return `[${'#'.repeat(filled)}${'-'.repeat(width - filled)}]`;
+}
+
+/** 将 JSON 对象压缩为适合终端单行展示的文本。 */
+function compactJson(value: unknown): string {
+  try {
+    return truncateText(JSON.stringify(value), 240);
+  } catch {
+    return '[无法序列化参数]';
+  }
+}
+
+/**
+ * 渲染 CLI 启动页头。
+ *
+ * @param modelName - 当前激活模型名称
+ * @param workMode - 当前工作模式
+ * @param sessionId - 当前会话 ID
+ */
+export function renderSessionHeader(modelName: string, workMode: string, sessionId: string): void {
+  const width = getRenderWidth();
+  const shortSessionId = truncateText(sessionId, 20);
+  console.log(theme.brand(`┌${rule('─', width - 2)}┐`));
+  console.log(theme.brand(frameLine('MyAgent CLI', width)));
+  console.log(theme.info(frameLine(`model: ${truncateText(modelName, 28)}  mode: ${workMode}  session: ${shortSessionId}`, width)));
+  console.log(theme.brand(`└${rule('─', width - 2)}┘`));
+  console.log(theme.dim('输入 / 打开命令菜单，输入 exit 或 quit 结束会话。双击 Esc 可中断或回滚。'));
+  console.log();
+}
+
+/**
+ * 构建动态输入提示符。
+ *
+ * @param modelName - 当前激活模型名称
+ * @param workMode - 当前工作模式
+ * @returns 可直接传给 readline 的提示符文本
+ */
+export function renderPromptPrefix(modelName: string, workMode: string): string {
+  return `${theme.brand('myagent')} ${theme.dim(`[${modelName} | ${workMode}]`)} ${theme.highlight('›')} `;
+}
+
+/**
+ * 渲染流式区块标题。
+ *
+ * @param title - 区块标题
+ * @param detail - 可选补充说明
+ * @returns 带换行的标题文本
+ */
+export function renderSectionTitle(title: string, detail?: string): string {
+  const suffix = detail ? ` ${detail}` : '';
+  return `\n${theme.divider(`┄ [${title}]${suffix} ${rule('┄', 12)}`)}\n`;
+}
+
+/**
+ * 渲染工具调用开始卡片。
+ *
+ * @param functionName - 工具名称
+ * @param functionArgs - 工具调用参数
+ * @returns 工具调用开始提示文本
+ */
+export function renderToolCallStart(functionName: string, functionArgs: unknown): string {
+  const args = compactJson(functionArgs);
+  return [
+    '',
+    theme.info(`[⚡ 正在调用工具 "${functionName}"]`),
+    theme.dim(`┌─ 调度参数`),
+    `│ ${theme.highlight(args)}`,
+    theme.dim(`└─ 等待工具返回`)
+  ].join('\n');
+}
+
+/**
+ * 渲染工具调用完成反馈。
+ *
+ * @param functionName - 工具名称
+ * @param result - 工具返回文本
+ * @returns 工具调用完成提示文本
+ */
+export function renderToolCallResult(functionName: string, result: string): string {
+  return theme.dim(`[反馈] 工具 "${functionName}" 执行完毕，返回了 ${result.length} 字节的数据。`);
+}
+
+/**
+ * 渲染本轮响应完成提示。
+ *
+ * @returns 完成提示文本
+ */
+export function renderCompletionBanner(): string {
+  return `\n\n${theme.divider('系统响应 >')} ${theme.success('完毕。')}\n`;
+}
+
 /**
  * 将消息内容中内含的 XML 标签和定界符，解析并折叠转换为具有终端视觉效果的精美标签卡片微件。
  * @param content 原始的文本消息内容
@@ -60,6 +186,10 @@ export function renderContentWithWidgets(content: string): string {
  */
 export function redrawHistory(history: ChatMessage[], modelName: string): void {
   console.clear();
+  const width = getRenderWidth();
+  console.log(theme.brand(`┌${rule('─', width - 2)}┐`));
+  console.log(theme.brand(frameLine('会话历史重绘', width)));
+  console.log(theme.brand(`└${rule('─', width - 2)}┘`));
   console.log(theme.dim('--- 时间旅行完成，当前剩余的有效记忆 ---'));
 
   for (const msg of history) {
@@ -70,12 +200,12 @@ export function redrawHistory(history: ChatMessage[], modelName: string): void {
       if (typeof msg.content === 'string') {
         contentStr = msg.content;
       }
-      console.log(`\n${theme.info(`用户 [${modelName}] > `)}${renderContentWithWidgets(contentStr)}`);
+      console.log(`\n${theme.info(`用户 [${modelName}]`)} ${theme.highlight('›')} ${renderContentWithWidgets(contentStr)}`);
     } else if (msg.role === 'assistant') {
       // 强转是为了兼容提取本地存储时的隐藏属性（例如 DeepSeek 特有的 reasoning_content）
       const customMsg = msg as unknown as { reasoning_content?: string };
       if (customMsg.reasoning_content) {
-        console.log(`\n${theme.dim('[思考过程]')}\n${theme.dim(customMsg.reasoning_content)}`);
+        console.log(`${renderSectionTitle('思考过程')}${theme.dim(customMsg.reasoning_content)}`);
       }
       if (msg.content) {
         console.log(`\n${msg.content}`);
@@ -141,21 +271,24 @@ export function renderTokenPanel(
 
   const hashShort = systemPromptHash ? systemPromptHash.slice(0, 8) : '暂无';
 
-  console.log(theme.divider('======================= 📊 TOKEN 监控面板 ======================='));
-  console.log(`${theme.highlight('💡 预测 Token 预算：')}${totalEstimated}`);
-  console.log(`   ├── 基础人设 (System):  ${systemTokens} (${pctSystem}%)`);
-  console.log(`   ├── 规则集   (Rules):   ${rulesTokens} (${pctRules}%)`);
-  console.log(`   ├── 临时技能 (Skill):   ${skillTokens} (${pctSkill}%)`);
-  console.log(`   └── 历史对话 (History): ${historyTokens} (${pctHistory}%)`);
-  console.log(theme.dim('--------------------------------------------------------------'));
-  console.log(`${theme.highlight('⚡ API 实际结算 (Usage)：')}`);
-  console.log(`   ├── 输入 Token (Input):  ${actualInput}`);
-  console.log(`   ├── 输出 Token (Output): ${actualOutput}`);
-  console.log(`   ├── 缓存命中 (Cached):   ${cachedTokens} (${hitRate}%)`);
-  console.log(`   ├── 窗口占用 (Window):   ${totalActual} / ${contextWindow} (${windowRatio}%)`);
-  console.log(`   └── 本轮估算花费 (Cost):  ${theme.success(costStr)}`);
-  console.log(theme.dim('--------------------------------------------------------------'));
-  console.log(`${theme.highlight('🔒 缓存一致性哈希 (Cache Hash)：')}${hashShort}`);
-  console.log(theme.divider('================================================================'));
+  const panelWidth = getRenderWidth();
+  console.log(theme.divider(`┌${rule('─', panelWidth - 2)}┐`));
+  console.log(theme.divider(frameLine('TOKEN 监控面板', panelWidth)));
+  console.log(theme.divider(`└${rule('─', panelWidth - 2)}┘`));
+  console.log(`${theme.highlight('预测 Token 预算：')}${totalEstimated} ${theme.dim(usageBar(totalEstimated, contextWindow))}`);
+  console.log(`  ${theme.dim('System ')} ${String(systemTokens).padStart(7)} (${pctSystem.padStart(5)}%) ${usageBar(systemTokens, totalEstimated, 16)}`);
+  console.log(`  ${theme.dim('Rules  ')} ${String(rulesTokens).padStart(7)} (${pctRules.padStart(5)}%) ${usageBar(rulesTokens, totalEstimated, 16)}`);
+  console.log(`  ${theme.dim('Skill  ')} ${String(skillTokens).padStart(7)} (${pctSkill.padStart(5)}%) ${usageBar(skillTokens, totalEstimated, 16)}`);
+  console.log(`  ${theme.dim('History')} ${String(historyTokens).padStart(7)} (${pctHistory.padStart(5)}%) ${usageBar(historyTokens, totalEstimated, 16)}`);
+  console.log(theme.dim(rule('─', Math.min(70, getRenderWidth()))));
+  console.log(`${theme.highlight('API 实际结算 (Usage)：')}`);
+  console.log(`  Input  ${actualInput}`);
+  console.log(`  Output ${actualOutput}`);
+  console.log(`  Cached ${cachedTokens} (${hitRate}%)`);
+  console.log(`  Window ${totalActual} / ${contextWindow} (${windowRatio}%) ${usageBar(totalActual, contextWindow, 16)}`);
+  console.log(`  Cost   ${theme.success(costStr)}`);
+  console.log(theme.dim(rule('─', Math.min(70, getRenderWidth()))));
+  console.log(`${theme.highlight('缓存一致性哈希 (Cache Hash)：')}${hashShort}`);
+  console.log(theme.divider(rule('═', Math.min(70, getRenderWidth()))));
   console.log();
 }

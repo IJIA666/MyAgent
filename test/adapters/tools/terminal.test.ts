@@ -446,4 +446,48 @@ describe('Terminal Tool 单元测试', () => {
       expect(warnings.length).toBeGreaterThan(0);
     }
   });
+
+  describe('ExecuteCommandTool resolveExecutionEffect 测试', () => {
+    const tool = new ExecuteCommandTool();
+
+    test('2.4 Plan 安全只读命令返回 read effect', () => {
+      // isPlanSafeCommand 判定的原子只读命令
+      const effect1 = tool.resolveExecutionEffect!({ command: 'wmic logicaldisk' })!;
+      expect(effect1.kind).toBe('read');
+      expect(effect1.reason).toBe('plan_safe_command');
+
+      const effect2 = tool.resolveExecutionEffect!({ command: 'dir', shellKind: 'cmd' })!;
+      expect(effect2.kind).toBe('read');
+      expect(effect2.reason).toBe('plan_safe_command');
+
+      const effect3 = tool.resolveExecutionEffect!({ command: 'Get-PSDrive C', shellKind: 'powershell' })!;
+      expect(effect3.kind).toBe('read');
+      expect(effect3.reason).toBe('plan_safe_command');
+    });
+
+    test('2.5 管道/重定向/复合命令无法被 Plan 判定，execute_command 不可达，resolveExecutionEffect 不会返回 read', () => {
+      // 这些命令会被 checkSafety 在 Plan 模式下拒绝，但没有执行，resolveExecutionEffect 不会返回 pre_execution_abort
+      // 验证 effect 为 unknown（因为安全判定未命中只读规则，按 legacy_fallback 保守处理）
+      const effect1 = tool.resolveExecutionEffect!({ command: 'type a.txt | find "txt"', shellKind: 'cmd' })!;
+      expect(effect1.kind).toBe('unknown');
+      expect(effect1.reason).toBe('legacy_fallback');
+    });
+
+    test('2.6 非只读但获准执行的命令返回 unknown', () => {
+      const effect1 = tool.resolveExecutionEffect!({ command: 'npm run build' })!;
+      expect(effect1.kind).toBe('unknown');
+      expect(effect1.reason).toBe('legacy_fallback');
+
+      const effect2 = tool.resolveExecutionEffect!({ command: 'node scripts/build.js' })!;
+      expect(effect2.kind).toBe('unknown');
+      expect(effect2.reason).toBe('legacy_fallback');
+    });
+
+    test('执行失败但仍为 Plan 安全命令时 effect 为 read', () => {
+      const effect = tool.resolveExecutionEffect!({ command: 'wmic logicaldisk' }, undefined, new Error('执行失败'))!;
+      expect(effect.kind).toBe('read');
+      expect(effect.completed).toBe(false);
+      expect(effect.reason).toBe('plan_safe_command');
+    });
+  });
 });

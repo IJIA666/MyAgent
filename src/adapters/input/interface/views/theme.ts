@@ -10,8 +10,19 @@ const COLOR_YELLOW = '\x1b[33m';
 const COLOR_GRAY = '\x1b[90m';
 const COLOR_RED = '\x1b[31m';
 const COLOR_GREEN = '\x1b[32m';
+const STYLE_BOLD = '\x1b[1m';
 
 export const theme = {
+  /**
+   * 品牌与一级标题文本。
+   */
+  brand: (text: string) => `${STYLE_BOLD}${COLOR_CYAN}${text}${COLOR_RESET}`,
+
+  /**
+   * 加粗文本，不额外附加颜色。
+   */
+  bold: (text: string) => `${STYLE_BOLD}${text}${COLOR_RESET}`,
+
   /**
    * 成功、正常退出的系统级反馈（绿色）
    */

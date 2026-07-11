@@ -4,6 +4,7 @@
  */
 
 import { validateCommand, validateCwd, isHardlineDangerous, isPlanSafeCommand, unboxNestedCommand, containsDangerousWriteToken } from './terminal-guard.js';
+import type { ToolExecutionEffect } from '../../tool-types.js';
 import { runCommandEngine } from './terminal-engine.js';
 import { getWorkMode, extractSafePrefix, loadAllowedCommands, loadDefaultShellFamily } from './terminal-config.js';
 import { createShellExecutionPlan } from './terminal-plan.js';
@@ -193,6 +194,55 @@ export class ExecuteCommandTool implements NativeTool {
     }
 
     return { status: 'pass' };
+  }
+
+  /**
+   * 精化终端命令的实际副作用。
+   * 复用 checkSafety 阶段的同构 Plan 安全判定，避免审批判定与 effect 判定漂移。
+   * 已通过 Plan 安全判定的原子只读命令返回 read；其他获准执行的命令返回 unknown。
+   *
+   * @param args - 原始工具调用参数
+   * @param result - 工具执行结果文本
+   * @param error - 可选的执行异常
+   * @returns 精化后的 effect，或 undefined 表示由默认推导器决定
+   */
+  resolveExecutionEffect?(
+    args: Record<string, unknown>,
+    result?: string,
+    error?: Error
+  ): ToolExecutionEffect | undefined {
+    const command = args.command;
+    if (typeof command !== 'string') {
+      return undefined; // 无法判定，交由默认推导器
+    }
+    const rawShellKind = (args.shellKind as string) || 'auto';
+    let resolvedShellKind: ShellKind;
+    try {
+      const plan = this.createPlan(command, rawShellKind as ShellKind);
+      resolvedShellKind = plan.shellKind;
+    } catch {
+      return undefined;
+    }
+
+    // 复用同一套 isPlanSafeCommand 判定，防止正则漂移
+    if (isPlanSafeCommand(command, resolvedShellKind)) {
+      return {
+        kind: 'read',
+        executionStarted: true,
+        completed: !error,
+        resources: [],
+        reason: 'plan_safe_command'
+      };
+    }
+
+    // 非 Plan 安全但已获准执行的命令，保守返回 unknown
+    return {
+      kind: 'unknown',
+      executionStarted: true,
+      completed: !error,
+      resources: [],
+      reason: 'legacy_fallback'
+    };
   }
 
   /**

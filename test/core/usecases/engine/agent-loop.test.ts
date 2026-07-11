@@ -648,7 +648,10 @@ describe('AgentLoop 动态安全特性测试', () => {
         name,
         securityCategory: 'read'
       })),
-      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: '[]' }] })
+      callTool: vi.fn().mockResolvedValue({
+        value: { content: [{ type: 'text' as const, text: '[]' }] },
+        effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const }
+      })
     };
 
     const loop = new AgentLoop({
@@ -672,5 +675,30 @@ describe('AgentLoop 动态安全特性测试', () => {
     expect(registryMock.callTool).toHaveBeenCalledTimes(4);
     const toolMessages = context.getHistory().filter(message => message.role === 'tool');
     expect(toolMessages.some(message => String(message.content).includes('达到本轮枚举预算'))).toBe(true);
+  });
+
+  it('12. 只执行 Plan 原子只读命令不应调用 QualityCheckPort', async () => {
+    mockContextAdapter = { assemble: vi.fn().mockReturnValue([{ role: 'user', content: 'Show disk info' }]) };
+    mockLlmDriver = { getModelName: () => 'mock-model', switchModel: () => {}, abort: () => {}, streamChat: vi.fn().mockImplementation(async function* () {
+      yield { type: 'tool_calls', toolCalls: [{ id: 'call-r', type: 'function', function: { name: 'execute_command', arguments: '{}' } }], assistantMessage: { role: 'assistant', content: null, tool_calls: [{ id: 'call-r', type: 'function', function: { name: 'execute_command', arguments: '{}' } }] } } as LlmStreamEvent;
+      yield { type: 'complete', content: 'done', reasoning: '', assistantMessage: { role: 'assistant', content: 'done' } } as LlmStreamEvent;
+    }) };
+    mockToolRegistry = { getTools: vi.fn().mockResolvedValue([]), getTool: vi.fn().mockReturnValue({ name: 'execute_command', securityCategory: 'write' }), callTool: vi.fn().mockResolvedValue({ value: { content: [{ type: 'text', text: 'ok' }] }, effect: { kind: 'read', executionStarted: true, completed: true, resources: [], reason: 'plan_safe_command' } }) };
+    const qcSpy = vi.fn().mockResolvedValue({ success: true, steps: [], durationMs: 0, summary: '' });
+    const loop = new AgentLoop({ toolRegistry: mockToolRegistry as ToolRegistryPort, context, driver: mockLlmDriver as LlmPort, contextAdapter: mockContextAdapter as ContextAdapter, ruleManager: mockRuleManager as RuleManager, contextRepo: mockContextRepo as ContextRepository, toolDispatcher: mockToolDispatcher as ToolDispatcher, compactionService: mockCompactionService as CompactionService, pluginRegistry, qualityCheckPort: { runPostRunCheck: qcSpy } });
+    for await (const e of loop.chat(undefined, new AgentTracer(process.cwd(), 't-qc-ro'), { model: 'mock-model' } as LlmConfig)) { void e; }
+    expect(qcSpy).not.toHaveBeenCalled();
+  });
+
+  it('13. 真实文件写入应触发 QualityCheckPort', async () => {
+    mockLlmDriver = { getModelName: () => 'mock-model', switchModel: () => {}, abort: () => {}, streamChat: vi.fn().mockImplementation(async function* () {
+      yield { type: 'tool_calls', toolCalls: [{ id: 'call-w', type: 'function', function: { name: 'writeFile', arguments: '{}' } }], assistantMessage: { role: 'assistant', content: null, tool_calls: [{ id: 'call-w', type: 'function', function: { name: 'writeFile', arguments: '{}' } }] } } as LlmStreamEvent;
+      yield { type: 'complete', content: 'done', reasoning: '', assistantMessage: { role: 'assistant', content: 'done' } } as LlmStreamEvent;
+    }) };
+    mockToolRegistry = { getTools: vi.fn().mockResolvedValue([]), getTool: vi.fn().mockReturnValue({ name: 'writeFile', securityCategory: 'write' }), callTool: vi.fn().mockResolvedValue({ value: { content: [{ type: 'text', text: 'ok' }] }, effect: { kind: 'write', executionStarted: true, completed: true, resources: ['t.txt'], reason: 'declared_write_tool' } }) };
+    const qcSpy = vi.fn().mockResolvedValue({ success: true, steps: [], durationMs: 0, summary: 'ok' });
+    const loop = new AgentLoop({ toolRegistry: mockToolRegistry as ToolRegistryPort, context, driver: mockLlmDriver as LlmPort, contextAdapter: mockContextAdapter as ContextAdapter, ruleManager: mockRuleManager as RuleManager, contextRepo: mockContextRepo as ContextRepository, toolDispatcher: mockToolDispatcher as ToolDispatcher, compactionService: mockCompactionService as CompactionService, pluginRegistry, qualityCheckPort: { runPostRunCheck: qcSpy } });
+    for await (const e of loop.chat(undefined, new AgentTracer(process.cwd(), 't-qc-write'), { model: 'mock-model' } as LlmConfig)) { void e; }
+    expect(qcSpy).toHaveBeenCalled();
   });
 });

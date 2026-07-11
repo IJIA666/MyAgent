@@ -146,6 +146,9 @@ describe('ModelRequestAssembler', () => {
       expect(lastUserMsg!.content).toContain('【诊断降级规则】');
       expect(lastUserMsg!.content).toContain('DiagnosticEvidenceLevel: presence');
       expect(lastUserMsg!.content).toContain('HighRiskCleanupTargets');
+      // 不应包含旧工具名别名（5.11）
+      expect(lastUserMsg!.content).not.toContain('list_dir');
+      expect(lastUserMsg!.content).not.toContain('grep_search');
     });
 
     it('非诊断类消息不应注入额外护栏提醒', async () => {

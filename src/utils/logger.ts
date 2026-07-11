@@ -4,6 +4,36 @@
  * 以及针对 Vitest 单元测试静音和进程异常退出时的刷盘防丢失机制。
  */
 
+/**
+ * 结构化日志的统一 component 名称常量。
+ */
+export const LOG_COMPONENT = {
+  TOOL_EFFECT: 'tool_effect',
+  QUALITY_CHECK: 'quality_check',
+  DIRECTORY_MEASUREMENT: 'directory_measurement',
+  SKILL_RELOAD: 'skill_reload',
+  PLUGIN_RUNNER: 'plugin_runner',
+} as const;
+
+/**
+ * 结构化日志的统一事件名常量。
+ */
+export const LOG_EVENT = {
+  // tool_effect
+  TOOL_EFFECT_RESOLVED: 'tool_effect_resolved',
+  // quality_check
+  QUALITY_CHECK_STARTED: 'quality_check_started',
+  QUALITY_CHECK_STEP_FINISHED: 'quality_check_step_finished',
+  QUALITY_CHECK_FINISHED: 'quality_check_finished',
+  // directory_measurement
+  DIRECTORY_MEASUREMENT_STARTED: 'directory_measurement_started',
+  DIRECTORY_MEASUREMENT_FINISHED: 'directory_measurement_finished',
+  // skill_reload
+  SKILL_WATCH_EVENT: 'skill_watch_event',
+  SKILL_CACHE_REFRESHED: 'skill_cache_refreshed',
+  SKILL_WATCHER_CLOSED: 'skill_watcher_closed',
+} as const;
+
 import { configure, getConsoleSink, getJsonLinesFormatter, getLogger, dispose, withFilter } from "@logtape/logtape";
 import type { LogLevel } from "@logtape/logtape";
 import { getRotatingFileSink } from "@logtape/file";
@@ -101,6 +131,11 @@ export async function initLogger(): Promise<void> {
       sinks: {},
       loggers: [
         {
+          category: ["logtape", "meta"],
+          lowestLevel: "warning",
+          sinks: [],
+        },
+        {
           category: [],
           sinks: [],
         },
@@ -130,6 +165,11 @@ export async function initLogger(): Promise<void> {
       }),
     },
     loggers: [
+      {
+        category: ["logtape", "meta"],
+        lowestLevel: "warning",
+        sinks: ["console", "file"],
+      },
       {
         category: [],
         lowestLevel: "debug",

@@ -11,6 +11,24 @@ import { ReadManyFilesTool } from '../../../src/adapters/tools/impl/filesystem/r
 import { ExecuteCommandTool } from '../../../src/adapters/tools/impl/system/terminal.js';
 
 describe('工具描述中性边界约束', () => {
+  test('ListFilesTool 描述应包含预算参数和默认不递归说明', () => {
+    const listTool = new ListFilesTool();
+    const fnDef = listTool.definition.function as {
+      description: string;
+      parameters: { properties: Record<string, unknown> };
+    };
+    const desc = fnDef.description;
+    expect(desc).toContain('直接子项');
+    expect(desc).toContain('默认仅返回名称列表');
+
+    const props = fnDef.parameters.properties;
+    expect(props).toHaveProperty('includeDirectoryStats');
+    expect(props).toHaveProperty('compareDirectories');
+    expect(props).toHaveProperty('maxDepth');
+    expect(props).toHaveProperty('maxEntries');
+    expect(props).toHaveProperty('maxBytes');
+    expect(props).toHaveProperty('maxDurationMs');
+  });
   test('文件工具描述应保留默认工作区边界并委托工具层裁决', () => {
     const tools = [
       new ReadFileTool(),

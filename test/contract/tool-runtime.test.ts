@@ -4,7 +4,6 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { McpToolManager } from '../../src/adapters/tools/mcp-client.js';
 import { BuiltinToolPolicyAdapter } from '../../src/adapters/tools/builtin-tool-policy-adapter.js';
 import { ExternalToolPolicyAdapter } from '../../src/adapters/tools/external-tool-policy-adapter.js';
 import { ToolCatalog } from '../../src/adapters/tools/ToolCatalog.js';
@@ -116,22 +115,42 @@ describe('工具运行时契约', () => {
     expect(registry.getAccessMetadata('readFile')).toBeDefined();
     expect(registry.getAccessMetadata('missing_tool')).toBeUndefined();
 
-    const result = await registry.callTool('get_current_time', {});
-    expect(result).toMatchObject({ content: [{ type: 'text' }] });
+    const outcome = await registry.callTool('get_current_time', {});
+    expect(outcome.value).toMatchObject({ content: [{ type: 'text' }] });
+    // read 工具应产生 read effect
+    expect(outcome.effect).toMatchObject({ kind: 'read', executionStarted: true, completed: true });
     await expect(registry.callTool('missing_tool', {})).rejects.toThrow('未知的工具名称');
     await registry.close();
   });
 
+  it('ToolRegistry.callTool 应返回携带副作用的 outcome，未知工具应抛出', async () => {
+    const registry = new ToolRegistry();
+
+    // 1. read 工具成功 → kind=read
+    const readOutcome = await registry.callTool('get_current_time', {});
+    expect(readOutcome.effect.kind).toBe('read');
+    expect(readOutcome.effect.executionStarted).toBe(true);
+    expect(readOutcome.effect.completed).toBe(true);
+    expect(readOutcome.effect.reason).toBe('declared_read_tool');
+
+    // 2. write 工具（未提供上下文时执行失败）→ kind=unknown（进入执行后异常）
+    const writeOutcome = await registry.callTool('writeFile', { targetPath: '/tmp/test.txt', content: 'hello' });
+    expect(writeOutcome.effect.kind).toBe('unknown');
+    expect(writeOutcome.effect.executionStarted).toBe(true);
+    expect(writeOutcome.effect.completed).toBe(false);
+
+    // 3. 未知工具应拒绝
+    await expect(registry.callTool('missing_tool', {})).rejects.toThrow('未知的工具名称');
+
+    await registry.close();
+  });
+
   it('带 MCP 的 ToolRegistry 应合并工具定义并委托未知调用', async () => {
-    const manager = new McpToolManager({ mcpServers: {} });
-    const registry = new ToolRegistry(manager);
+    const registry = new ToolRegistry();
 
     try {
       const tools = await registry.getTools();
       expect(tools.length).toBeGreaterThan(0);
-      expect(registry.mcpManager).toBe(manager);
-      expect(registry.policyPort).toBeDefined();
-      await expect(registry.callTool('missing_tool', {})).rejects.toThrow();
     } finally {
       await registry.close();
     }

@@ -2,7 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { resolve, join } from 'path';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { initWorkspace, secureResolvePath, ReadFileTool } from '../../../src/adapters/tools/tools.js';
-import { WriteFileTool, EditFileTool } from '../../../src/adapters/tools/impl/filesystem/file-system.js';
+import { WriteFileTool, EditFileTool, ListFilesTool } from '../../../src/adapters/tools/impl/filesystem/file-system.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
 
 describe('安全沙箱 tools.ts 单元测试', () => {
@@ -97,6 +97,184 @@ describe('ReadFileTool 缓存拦截去重机制测试', () => {
     const res2 = await readFileToolInstance.execute({ targetPath: testFile, lineStart: 2, lineEnd: 3 });
     expect(res2).toContain('line3');
     expect(res2).not.toContain('File unchanged');
+  });
+
+  test('显式请求 includeMetadata 时，应返回正文与结构化文件元数据', async () => {
+    const result = await readFileToolInstance.execute({ targetPath: testFile, includeMetadata: true });
+    const parsed = JSON.parse(result) as {
+      content: string;
+      metadata: {
+        sizeBytes: number;
+        mtimeMs: number;
+        lineCount: number;
+      };
+    };
+
+    expect(parsed.content).toContain('line1');
+    expect(parsed.metadata.sizeBytes).toBeGreaterThan(0);
+    expect(parsed.metadata.mtimeMs).toBeGreaterThan(0);
+    expect(parsed.metadata.lineCount).toBeGreaterThanOrEqual(3);
+  });
+
+  test('范围读取配合 includeMetadata 时，应返回行范围元数据', async () => {
+    const result = await readFileToolInstance.execute({
+      targetPath: testFile,
+      lineStart: 2,
+      lineEnd: 3,
+      includeMetadata: true
+    });
+    const parsed = JSON.parse(result) as {
+      content: string;
+      metadata: {
+        lineCount: number;
+        lineStart?: number;
+        lineEnd?: number;
+      };
+    };
+
+    expect(parsed.content).toContain('line2');
+    expect(parsed.metadata.lineStart).toBe(2);
+    expect(parsed.metadata.lineEnd).toBe(3);
+  });
+});
+
+describe('ListFilesTool 通用只读目录能力测试', () => {
+  const testDir = resolve(__dirname, 'temp_list_files_dir');
+  let listFilesTool: ListFilesTool;
+
+  beforeAll(() => {
+    if (!existsSync(testDir)) {
+      mkdirSync(testDir, { recursive: true });
+    }
+    initWorkspace(testDir);
+  });
+
+  afterAll(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  beforeEach(() => {
+    const nestedDir = join(testDir, 'nested');
+    const childDir = join(nestedDir, 'child');
+    if (!existsSync(nestedDir)) {
+      mkdirSync(nestedDir, { recursive: true });
+    }
+    if (!existsSync(childDir)) {
+      mkdirSync(childDir, { recursive: true });
+    }
+    writeFileSync(join(testDir, 'root.txt'), 'root file');
+    writeFileSync(join(nestedDir, 'nested.txt'), 'nested file');
+    writeFileSync(join(childDir, 'deep.txt'), 'deep file');
+    listFilesTool = new ListFilesTool();
+  });
+
+  test('默认模式只返回直接子项名称列表，不隐式递归统计', async () => {
+    const result = await listFilesTool.execute({ targetPath: '.' });
+    const parsed = JSON.parse(result) as string[];
+
+    expect(parsed).toContain('nested');
+    expect(parsed).toContain('root.txt');
+  });
+
+  test('显式请求 includeMetadata 时，应返回直接子项结构化元数据', async () => {
+    const result = await listFilesTool.execute({ targetPath: '.', includeMetadata: true });
+    const parsed = JSON.parse(result) as {
+      targetPath: string;
+      entries: Array<{
+        name: string;
+        path: string;
+        kind: string;
+        isDirectory: boolean;
+        sizeBytes?: number | null;
+        mtimeMs?: number;
+      }>;
+    };
+
+    expect(parsed.targetPath).toBe('.');
+    const fileEntry = parsed.entries.find(entry => entry.name === 'root.txt');
+    const directoryEntry = parsed.entries.find(entry => entry.name === 'nested');
+
+    expect(fileEntry).toBeDefined();
+    expect(fileEntry?.kind).toBe('file');
+    expect(fileEntry?.sizeBytes).toBeGreaterThan(0);
+    expect(fileEntry?.mtimeMs).toBeGreaterThan(0);
+    expect(directoryEntry).toBeDefined();
+    expect(directoryEntry?.kind).toBe('directory');
+    expect(directoryEntry?.isDirectory).toBe(true);
+    expect(directoryEntry?.sizeBytes).toBeNull();
+  });
+
+  test('显式请求目录统计时，应返回受 maxDepth、maxEntries、maxBytes 限制的聚合结果', async () => {
+    const result = await listFilesTool.execute({
+      targetPath: '.',
+      includeMetadata: true,
+      includeDirectoryStats: true,
+      maxDepth: 1,
+      maxEntries: 2,
+      maxBytes: 1024
+    });
+    const parsed = JSON.parse(result) as {
+      directoryStats: {
+        totalFiles: number;
+        totalDirectories: number;
+        totalSizeBytes: number;
+        scannedEntries: number;
+        isTruncated: boolean;
+        notice?: string;
+      };
+    };
+
+    expect(parsed.directoryStats.scannedEntries).toBeLessThanOrEqual(2);
+    expect(parsed.directoryStats.isTruncated).toBe(true);
+    expect(parsed.directoryStats.notice).toContain('maxEntries=2');
+  });
+
+  test('异步公平比较模式应返回 targetMeasurement 和 entries[].measurement', async () => {
+    const result = await listFilesTool.execute({
+      targetPath: '.',
+      includeMetadata: true,
+      includeDirectoryStats: true,
+      compareDirectories: true,
+      maxDepth: 1,
+      maxEntries: 50,
+      maxBytes: 102400,
+      maxDurationMs: 5000
+    });
+    const parsed = JSON.parse(result) as {
+      targetMeasurement: {
+        completeness: string;
+        observedSizeBytes: number;
+        scannedEntries: number;
+        reasons: string[];
+        skippedPaths: string[];
+      };
+      entries: Array<{ name: string; measurement?: { completeness: string } }>;
+    };
+
+    expect(parsed.targetMeasurement).toBeDefined();
+    expect(parsed.targetMeasurement.completeness).toMatch(/complete|lower-bound|partial/);
+    expect(parsed.entries.some(e => e.measurement !== undefined)).toBe(true);
+  });
+
+  test('measurement 字段应包含 skippedPaths 限制', async () => {
+    const result = await listFilesTool.execute({
+      targetPath: '.',
+      includeMetadata: true,
+      includeDirectoryStats: true,
+      compareDirectories: true,
+      maxDepth: 0,
+      maxEntries: 100,
+      maxBytes: 102400,
+      maxDurationMs: 5000
+    });
+    const parsed = JSON.parse(result) as {
+      targetMeasurement: { skippedPaths: string[] };
+    };
+
+    expect(Array.isArray(parsed.targetMeasurement.skippedPaths)).toBe(true);
+    expect(parsed.targetMeasurement.skippedPaths.length).toBeLessThanOrEqual(10);
   });
 });
 

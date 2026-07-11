@@ -4,7 +4,15 @@ import type { AgentEvent } from '../../../ports/shared/agent-events.js';
 import type { ApprovalChoice } from '../../../ports/shared/approval-types.js';
 import type { PendingInteraction } from '../../../ports/shared/pending-interaction.js';
 import { InputListener } from './io/input-listener.js';
-import { redrawHistory, renderTokenPanel } from './views/widget-renderer.js';
+import {
+  redrawHistory,
+  renderCompletionBanner,
+  renderSectionTitle,
+  renderSessionHeader,
+  renderTokenPanel,
+  renderToolCallResult,
+  renderToolCallStart
+} from './views/widget-renderer.js';
 import { dispatchCommand, showInteractiveMenu } from './command.js';
 import { theme } from './views/theme.js';
 import { waitUserIntervention } from './cli.js';
@@ -206,6 +214,7 @@ export class CliFacade {
    * 启动终端交互 REPL 主循环。
    */
   public start(): void {
+    renderSessionHeader(this.session.getModelName(), this.session.getWorkMode(), this.session.getSessionId());
     this.listener.start();
   }
 
@@ -329,7 +338,7 @@ export class CliFacade {
         if (!this.hasPrintedReasoning) {
           // 若 content 包含特殊系统通知字样，避免重复输出 [思考过程] 的标题
           if (!event.content.includes('[系统通知]')) {
-            process.stdout.write(`\n${theme.dim('[思考过程]')}\n`);
+            process.stdout.write(renderSectionTitle('思考过程'));
           }
           this.hasPrintedReasoning = true;
         }
@@ -345,18 +354,31 @@ export class CliFacade {
         break;
 
       case 'tool_call_start':
-        process.stdout.write(`\n\n${theme.info(`[⚡ 正在调用工具 "${event.functionName}"]`)}\n`);
-        console.log(theme.highlight(`[调度参数] ${JSON.stringify(event.functionArgs)}`));
+        process.stdout.write(`\n${renderToolCallStart(event.functionName, event.functionArgs)}\n`);
         break;
 
       case 'tool_call_result':
-        console.log(theme.dim(`[反馈] 工具 "${event.functionName}" 执行完毕，返回了 ${event.result.length} 字节的数据。`));
+        console.log(renderToolCallResult(event.functionName, event.result));
         break;
 
       case 'interaction_request':
         this.isRendering = false;
         void this.handlePendingInteraction(event.interaction);
         break;
+
+      case 'quality_check_status': {
+        const qcPhase = event.phase;
+        if (qcPhase === 'started') {
+          process.stdout.write(`\n${theme.info('[验证中] 正在运行修改后代码验证...')}\n`);
+        } else if (qcPhase === 'passed') {
+          process.stdout.write(`${theme.success('[验证通过] 代码验证已通过。')}\n`);
+        } else if (qcPhase === 'failed') {
+          process.stdout.write(`${theme.error('[验证失败] 代码验证未通过，正在尝试修复。')}\n`);
+        } else if (qcPhase === 'cancelled') {
+          process.stdout.write(`${theme.warning('[验证已取消]')}\n`);
+        }
+        break;
+      }
 
       case 'suspend':
         // 挂起事件，不需要处理（ApprovalHandler 会处理）
@@ -368,7 +390,7 @@ export class CliFacade {
         break;
 
       case 'complete':
-        console.log(`\n\n${theme.divider('系统响应 >')} 完毕。\n`);
+        console.log(renderCompletionBanner());
         // 渲染 Token 信息和哈希指纹监控面板
         renderTokenPanel(
           this.session.getLastEstimatedUsage(),

@@ -25,4 +25,11 @@ export type AgentEvent =
       message?: string;
       choices?: ApprovalChoice[];
     }
+  | {
+      type: 'quality_check_status';
+      phase: 'started' | 'passed' | 'failed' | 'cancelled';
+      summary: string;
+      durationMs: number;
+      detailRef?: string;
+    }
   | { type: 'complete' };

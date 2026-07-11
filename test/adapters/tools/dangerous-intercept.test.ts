@@ -64,8 +64,8 @@ describe('高危操作安全硬拦截单元测试', () => {
     // 验证审批提问回调被触发
     expect(handler).toHaveBeenCalled();
     // 验证返回结果是错误，且包含用户拒绝信息
-    expect(callResult.isError).toBe(true);
-    expect(callResult.content[0].text).toContain('用户拒绝了高危操作');
+    expect(callResult.value.isError).toBe(true);
+    expect(callResult.value.content[0].text).toContain('用户拒绝了高危操作');
   });
 
   it('2. 调用 deletePath 工具时，如果审批放行则应该执行成功', async () => {
@@ -89,7 +89,7 @@ describe('高危操作安全硬拦截单元测试', () => {
 
     // 验证审批通过后，文件被成功删除，返回成功
     expect(handler).toHaveBeenCalled();
-    expect(callResult.isError).toBeUndefined();
+    expect(callResult.value.isError).toBeUndefined();
     expect(existsSync(tempFilePath)).toBe(false);
   });
 
@@ -112,8 +112,8 @@ describe('高危操作安全硬拦截单元测试', () => {
     );
 
     expect(handler).toHaveBeenCalled();
-    expect(callResult.isError).toBe(true);
-    expect(callResult.content[0].text).toContain('用户拒绝了高危操作');
+    expect(callResult.value.isError).toBe(true);
+    expect(callResult.value.content[0].text).toContain('用户拒绝了高危操作');
 
     // 验证文件内容未被修改
     expect(existsSync(tempFilePath)).toBe(true);
@@ -140,7 +140,7 @@ describe('高危操作安全硬拦截单元测试', () => {
 
     // 验证未触发审批提问
     expect(handler).not.toHaveBeenCalled();
-    expect(callResult.isError).toBeUndefined();
+    expect(callResult.value.isError).toBeUndefined();
     expect(existsSync(tempFilePath)).toBe(true);
 
     if (existsSync(tempFilePath)) {
@@ -167,8 +167,8 @@ describe('高危操作安全硬拦截单元测试', () => {
     );
 
     expect(handler).not.toHaveBeenCalled();
-    expect(callResult.isError).toBeUndefined();
-    expect(callResult.content[0].text).toContain('写入执行成功');
+    expect(callResult.value.isError).toBeUndefined();
+    expect(callResult.value.content[0].text).toContain('写入执行成功');
 
     if (existsSync(outsideFilePath)) {
       unlinkSync(outsideFilePath);

@@ -113,8 +113,8 @@ describe('安全与并发增强特性测试', () => {
       );
 
       expect(handler).toHaveBeenCalled();
-      expect(callResult.isError).toBe(true);
-      expect(callResult.content[0].text).toContain('用户拒绝了高危操作');
+      expect(callResult.value.isError).toBe(true);
+      expect(callResult.value.content[0].text).toContain('用户拒绝了高危操作');
     });
   });
 

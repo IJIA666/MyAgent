@@ -64,6 +64,7 @@ describe('日志管道合约测试 — 真实 initLogger / file sink', () => {
       const content = readFileSync(logFile, 'utf-8');
       const lines = content.trim().split('\n').filter(Boolean);
       expect(lines.length).toBeGreaterThanOrEqual(4);
+      expect(content).not.toContain('LogTape loggers are configured');
 
       // 每条日志应为合法 JSON
       for (const line of lines) {
@@ -107,6 +108,103 @@ describe('日志管道合约测试 — 真实 initLogger / file sink', () => {
       if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
       // 恢复测试环境变量
       process.env.MYAGENT_TEST_LOG = '1';
+    }
+  });
+
+  it('结构化事件应包含 component/event/sessionId 字段，内部名称不进入前台', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'contract-logger-structured-'));
+    process.chdir(tmpDir);
+    process.env.MYAGENT_TEST_LOG = '1';
+    process.env.LOG_LEVEL = 'debug';
+
+    try {
+      vi.resetModules();
+      const { initLogger, disposeLogger, logger, LOG_COMPONENT } = await import('../../src/utils/logger.js');
+      await initLogger();
+
+      // 写入模拟的结构化事件
+      logger.debug('[Test] tool_effect_resolved', {
+        component: LOG_COMPONENT.TOOL_EFFECT,
+        event: 'tool_effect_resolved',
+        sessionId: 'test-session-001',
+        kind: 'read',
+        reason: 'declared_read_tool',
+        resourceCount: 0,
+      });
+
+      logger.info('[Test] quality_check_finished', {
+        component: LOG_COMPONENT.QUALITY_CHECK,
+        event: 'quality_check_finished',
+        sessionId: 'test-session-001',
+        success: true,
+        durationMs: 1234,
+      });
+
+      await disposeLogger();
+
+      const logFile = join(tmpDir, '.myagent', 'run.log');
+      const content = readFileSync(logFile, 'utf-8');
+      const lines = content.trim().split('\n').filter(Boolean);
+
+      // 验证结构化字段存在
+      const toolEffectLine = lines.find(l => l.includes('tool_effect_resolved'));
+      expect(toolEffectLine).toBeDefined();
+      const toolEffectObj = JSON.parse(toolEffectLine!);
+      expect(toolEffectObj.component).toBe('tool_effect');
+      expect(toolEffectObj.sessionId).toBe('test-session-001');
+      expect(toolEffectObj.kind).toBe('read');
+
+      const qualityLine = lines.find(l => l.includes('quality_check_finished'));
+      expect(qualityLine).toBeDefined();
+      const qualityObj = JSON.parse(qualityLine!);
+      expect(qualityObj.component).toBe('quality_check');
+      expect(qualityObj.success).toBe(true);
+      expect(qualityObj.durationMs).toBe(1234);
+    } finally {
+      process.chdir(originalCwd);
+      if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('无内容变化的技能事件应为 DEBUG 级别，内部名称不进入前台 console', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'contract-logger-skill-'));
+    process.chdir(tmpDir);
+    process.env.MYAGENT_TEST_LOG = '1';
+    process.env.LOG_LEVEL = 'info'; // 前台 console 只显示 INFO+
+
+    try {
+      vi.resetModules();
+      const { initLogger, disposeLogger, logger, LOG_COMPONENT, LOG_EVENT } = await import('../../src/utils/logger.js');
+      await initLogger();
+
+      // 写入 DEBUG 级别的无变化事件
+      logger.debug('[RuleManager] 技能候选事件无内容差异，跳过刷新。', {
+        component: LOG_COMPONENT.SKILL_RELOAD,
+        event: LOG_EVENT.SKILL_WATCH_EVENT,
+        sessionId: 'test-skill-session',
+        hasChanges: false,
+      });
+
+      // INFO 级别的真实变化事件
+      logger.info('[RuleManager] 检测到技能文件真实变化，正在刷新缓存...', {
+        component: LOG_COMPONENT.SKILL_RELOAD,
+        event: LOG_EVENT.SKILL_CACHE_REFRESHED,
+        sessionId: 'test-skill-session',
+        hasChanges: true,
+      });
+
+      await disposeLogger();
+
+      const logFile = join(tmpDir, '.myagent', 'run.log');
+      const content = readFileSync(logFile, 'utf-8');
+
+      // DEBUG 事件应被文件 sink 捕获（使用事件名值，非常量名）
+      expect(content).toContain('skill_watch_event');
+      // INFO 事件也应存在
+      expect(content).toContain('skill_cache_refreshed');
+    } finally {
+      process.chdir(originalCwd);
+      if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });

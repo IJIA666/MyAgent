@@ -8,6 +8,7 @@
 
 import { createInterface } from 'readline';
 import { theme } from '../views/theme.js';
+import { renderPromptPrefix } from '../views/widget-renderer.js';
 
 /**
  * 实例化 InputListener 必须传入的配置与回调接口。
@@ -184,7 +185,7 @@ export class InputListener {
    */
   public updatePrompt(): void {
     if (this.rl) {
-      this.rl.setPrompt(theme.info(`用户 [${this.getModelName()} | ${this.getWorkMode()}] > `));
+      this.rl.setPrompt(renderPromptPrefix(this.getModelName(), this.getWorkMode()));
     }
   }
 

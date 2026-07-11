@@ -20,7 +20,45 @@ setAutoFreeze(false);
 // 显式启用 Immer 的变更补丁功能，以支持局部变更溯源
 enablePatches();
 
+/**
+ * Hook 管线额外参数。
+ */
+type HookExtraParams = Partial<Pick<HookContext, 'llmRequest' | 'llmResponse' | 'toolCall' | 'toolResult' | 'emitEvent' | 'toolRegistry'>>;
 
+/**
+ * 按 SessionContext 维度串行化 Hook 管线，避免并发工具调用同时改写 busy 锁与会话沙箱。
+ */
+const sessionHookQueues = new WeakMap<SessionContext, Promise<void>>();
+
+/**
+ * 将同一会话的 Hook 管线排队执行。
+ *
+ * @param sessionContext - 当前会话上下文
+ * @param task - 实际要执行的 Hook 管线任务
+ * @returns Hook 管线任务的返回值
+ */
+async function runSerializedSessionHook<T>(
+  sessionContext: SessionContext,
+  task: () => Promise<T>
+): Promise<T> {
+  const previousTail = sessionHookQueues.get(sessionContext) ?? Promise.resolve();
+  let releaseCurrent!: () => void;
+  const currentTail = new Promise<void>((resolve) => {
+    releaseCurrent = resolve;
+  });
+  const nextTail = previousTail.catch(() => undefined).then(() => currentTail);
+  sessionHookQueues.set(sessionContext, nextTail);
+
+  await previousTail.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    releaseCurrent();
+    if (sessionHookQueues.get(sessionContext) === nextTail) {
+      sessionHookQueues.delete(sessionContext);
+    }
+  }
+}
 
 /**
  * 包装在 Immer 隔离沙箱中的纯状态数据结构。
@@ -57,7 +95,39 @@ export async function runHookPipeline(
   eventName: HookEventName,
   sessionContext: SessionContext,
   middlewares: HookMiddleware[],
-  extraParams?: Partial<Pick<HookContext, 'llmRequest' | 'llmResponse' | 'toolCall' | 'toolResult' | 'emitEvent' | 'toolRegistry'>>
+  extraParams?: HookExtraParams
+): Promise<HookContext> {
+  if (middlewares.length === 0) {
+    return {
+      sessionContext,
+      eventName,
+      ...extraParams,
+      control: { action: 'continue' }
+    };
+  }
+
+  return runSerializedSessionHook(sessionContext, () => runHookPipelineInternal(
+    eventName,
+    sessionContext,
+    middlewares,
+    extraParams
+  ));
+}
+
+/**
+ * 执行已经进入会话串行队列的 Hook 管线。
+ *
+ * @param eventName - 当前触发的生命周期节点名
+ * @param sessionContext - 智能体会话的 SessionContext 实例
+ * @param middlewares - 已按权重排序 of 中间件回调链
+ * @param extraParams - 触发此 Hook 节点所附带的可选参数（ 如 llmRequest, toolCall 等 ）
+ * @returns 执行完成并合并了沙箱修改后的最终 HookContext 对象
+ */
+async function runHookPipelineInternal(
+  eventName: HookEventName,
+  sessionContext: SessionContext,
+  middlewares: HookMiddleware[],
+  extraParams?: HookExtraParams
 ): Promise<HookContext> {
   // 1. 装配外层基础 Context，初始化控制信号为 continue
   const context: HookContext = {
@@ -88,13 +158,14 @@ export async function runHookPipeline(
 
   // 3. 启用忙锁并创建沙箱隔离 Draft
   const processingStart = Date.now();
+  const oldProcessingValue = sessionContext.isProcessing;
   sessionContext.isProcessing = true;
   logger.debug('[PluginRunner] isProcessing_changed', {
     component: 'plugin_runner',
     event: 'isProcessing_changed',
     sessionId: sessionContext.getSessionId(),
     eventName,
-    oldValue: false,
+    oldValue: oldProcessingValue,
     newValue: true
   });
   const draft = createDraft(baseState);
@@ -182,13 +253,14 @@ export async function runHookPipeline(
   } finally {
     // 强制还原并释放并发忙状态锁，杜绝死锁风险
     const duration = Date.now() - processingStart;
+    const oldProcessingValue = sessionContext.isProcessing;
     sessionContext.isProcessing = false;
     logger.debug('[PluginRunner] isProcessing_changed', {
       component: 'plugin_runner',
       event: 'isProcessing_changed',
       sessionId: sessionContext.getSessionId(),
       eventName,
-      oldValue: true,
+      oldValue: oldProcessingValue,
       newValue: false,
       duration
     });

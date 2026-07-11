@@ -95,6 +95,22 @@ export interface NativeTool {
    * 声明该工具涉及的资源类型、访问模式等审批前置信息。
    */
   accessMetadata?: ToolAccessMetadata;
+
+  /**
+   * 可选的精确 effect 解析入口。
+   * 工具可根据参数、执行上下文、成功结果或执行错误精化 effect；
+   * 未实现该入口的工具必须走统一默认推导器，不得在调用方按工具名称分支。
+   *
+   * @param args - 原始工具调用参数
+   * @param result - 工具执行结果（成功时为文本，失败时含错误）
+   * @param error - 可选的工具执行异常
+   * @returns 精化后的 effect 实例，或 undefined 表示由默认推导器决定
+   */
+  resolveExecutionEffect?(
+    args: Record<string, unknown>,
+    result?: string,
+    error?: Error
+  ): ToolExecutionEffect | undefined;
 }
 
 /**
@@ -104,6 +120,114 @@ export interface NativeTool {
 export interface CallToolRequest {
   name: string;
   arguments?: Record<string, unknown>;
+}
+
+/**
+ * 默认 effect 推导器。
+ * 当工具未实现 resolveExecutionEffect 时使用统一规则推导：
+ * - 未进入执行 → none
+ * - 静态 read 工具（成功或失败）→ read
+ * - 静态 write 工具成功 → write
+ * - 静态 write 工具进入执行后失败 → unknown
+ *
+ * @param securityCategory - 工具的静态安全类别
+ * @param executionStarted - 是否已进入工具执行
+ * @param completed - 是否正常完成
+ * @param error - 可选的异常
+ * @returns 推导出的 ToolExecutionEffect
+ */
+export function deriveDefaultToolExecutionEffect(
+  securityCategory: 'read' | 'write',
+  executionStarted: boolean,
+  completed: boolean
+): ToolExecutionEffect {
+  if (!executionStarted) {
+    return {
+      kind: 'none',
+      executionStarted: false,
+      completed: false,
+      resources: [],
+      reason: 'no_execution'
+    };
+  }
+
+  if (securityCategory === 'read') {
+    return {
+      kind: 'read',
+      executionStarted: true,
+      completed,
+      resources: [],
+      reason: 'declared_read_tool'
+    };
+  }
+
+  // securityCategory === 'write'
+  if (completed) {
+    return {
+      kind: 'write',
+      executionStarted: true,
+      completed: true,
+      resources: [],
+      reason: 'declared_write_tool'
+    };
+  }
+
+  // write tool entered execution but failed after start
+  return {
+    kind: 'unknown',
+    executionStarted: true,
+    completed: false,
+    resources: [],
+    reason: 'execution_failed_after_start'
+  };
+}
+
+/**
+ * 单次工具调用的实际副作用类别。
+ * 区别于 securityCategory（静态潜在风险），effect kind 描述本次调用事实。
+ */
+export type ToolExecutionEffectKind = 'none' | 'read' | 'write' | 'unknown';
+
+/**
+ * effect 判定来源的稳定枚举值。
+ * 禁止在日志和测试中依赖自由文本。
+ */
+export type ToolExecutionEffectReason =
+  | 'no_execution'
+  | 'pre_execution_abort'
+  | 'declared_read_tool'
+  | 'declared_write_tool'
+  | 'plan_safe_command'
+  | 'execution_failed_after_start'
+  | 'legacy_fallback';
+
+/**
+ * 单次工具调用的实际副作用事实记录。
+ */
+export interface ToolExecutionEffect {
+  /** 副作用类别 */
+  kind: ToolExecutionEffectKind;
+  /** 是否进入工具执行 */
+  executionStarted: boolean;
+  /** 是否正常完成 */
+  completed: boolean;
+  /** 本次实际或可能受影响的结构化资源 */
+  resources: string[];
+  /** effect 判定来源的稳定原因 */
+  reason: ToolExecutionEffectReason;
+}
+
+/**
+ * 携带实际副作用的工具调用结果。
+ * 成功与失败均携带 outcome，保留原始 Error 作为 cause。
+ */
+export interface ToolExecutionOutcome<T = string> {
+  /** 实际执行结果值 */
+  value: T;
+  /** 本次调用的实际副作用 */
+  effect: ToolExecutionEffect;
+  /** 原始异常（失败时保留） */
+  cause?: Error;
 }
 
 /**

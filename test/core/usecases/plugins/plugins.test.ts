@@ -31,6 +31,24 @@ import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 import type { VectorDbPort } from '../../../../src/ports/driven/db/VectorDbPort.js';
 import type { EmbeddingPort } from '../../../../src/ports/driven/llm/EmbeddingPort.js';
 
+/** 测试中用于精确控制异步 Hook 释放时机的 Promise 手柄。 */
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: T extends void ? () => void : (value: T | PromiseLike<T>) => void;
+}
+
+/** 创建可由测试主动 resolve 的 Promise。 */
+function createDeferred<T = void>(): Deferred<T> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return {
+    promise,
+    resolve: ((value?: T | PromiseLike<T>) => resolve(value as T | PromiseLike<T>)) as Deferred<T>['resolve']
+  };
+}
+
 describe('Plugins Lifecycle & Action Tests', () => {
   let sessionContext: SessionContext;
 
@@ -234,6 +252,69 @@ describe('Plugins Lifecycle & Action Tests', () => {
       const history = sessionContext.getHistory();
       expect(history.some(m => m.content === 'sandbox-write')).toBe(true);
       expect(history.some(m => m.content === 'concurrency-dirty-write')).toBe(false);
+    });
+
+    it('应该按会话串行化并发 Hook，避免 busy 锁提前释放', async () => {
+      const firstContinue = createDeferred();
+      const secondStarted = createDeferred();
+      const secondContinue = createDeferred();
+      const order: string[] = [];
+
+      const firstMiddleware = async (context: HookContext, next: () => Promise<void>) => {
+        order.push('first-start');
+        expect(sessionContext.isProcessing).toBe(true);
+        expect(() => sessionContext.addMessage({ role: 'user', content: 'external-dirty-write-1' })).toThrow(
+          'Cannot modify SessionContext: session is currently busy processing hooks.'
+        );
+
+        await firstContinue.promise;
+        context.sessionContext.addMessage({ role: 'assistant', content: 'first-hook-write' });
+        await next();
+      };
+
+      const secondMiddleware = async (context: HookContext, next: () => Promise<void>) => {
+        order.push('second-start');
+        secondStarted.resolve();
+        expect(sessionContext.isProcessing).toBe(true);
+
+        await secondContinue.promise;
+        context.sessionContext.addMessage({ role: 'assistant', content: 'second-hook-write' });
+        await next();
+      };
+
+      const firstRun = runHookPipeline(
+        HookEventName.BeforeTool,
+        sessionContext,
+        [firstMiddleware]
+      );
+      await Promise.resolve();
+
+      const secondRun = runHookPipeline(
+        HookEventName.BeforeTool,
+        sessionContext,
+        [secondMiddleware]
+      );
+      await Promise.resolve();
+
+      expect(order).toEqual(['first-start']);
+      expect(sessionContext.isProcessing).toBe(true);
+
+      firstContinue.resolve();
+      await secondStarted.promise;
+      expect(order).toEqual(['first-start', 'second-start']);
+      expect(() => sessionContext.addMessage({ role: 'user', content: 'external-dirty-write-2' })).toThrow(
+        'Cannot modify SessionContext: session is currently busy processing hooks.'
+      );
+
+      secondContinue.resolve();
+      await Promise.all([firstRun, secondRun]);
+
+      const history = sessionContext.getHistory();
+      expect(sessionContext.isProcessing).toBe(false);
+      expect(history.some(m => m.content === 'first-hook-write')).toBe(true);
+      expect(history.some(m => m.content === 'second-hook-write')).toBe(true);
+      expect(history.some(m => m.content === 'external-dirty-write-1')).toBe(false);
+      expect(history.some(m => m.content === 'external-dirty-write-2')).toBe(false);
     });
 
     it('应该在中间件链流转异常时安全熔断、释放忙锁并不做任何脏数据落盘', async () => {

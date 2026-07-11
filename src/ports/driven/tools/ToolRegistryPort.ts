@@ -9,6 +9,7 @@ import type { EventNotificationPort } from '../session/EventNotificationPort.js'
 import type { McpManagerPort } from './McpManagerPort.js';
 import type { ApprovalPort } from '../session/ApprovalPort.js';
 import type { InteractionPort } from '../session/InteractionPort.js';
+import type { ToolExecutionOutcome } from '../../../adapters/tools/tool-types.js';
 
 /**
  * 统一的工具元数据接口契约。
@@ -50,7 +51,7 @@ export interface ToolRegistryPort {
    * @param functionArgs - 工具参数
    * @param sessionContext - 可选的会话事件契约上下文
    * @param signal - 可选的 AbortSignal，用于物理取消工具执行
-   * @returns 工具执行完毕后返回的序列化数据
+   * @returns 携带实际副作用的工具执行结果
    */
   callTool(
     functionName: string,
@@ -59,7 +60,7 @@ export interface ToolRegistryPort {
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
     toolCallId?: string
-  ): Promise<unknown>;
+  ): Promise<ToolExecutionOutcome<unknown>>;
 
   /**
    * 根据工具名称获取本地工具实例的元信息。

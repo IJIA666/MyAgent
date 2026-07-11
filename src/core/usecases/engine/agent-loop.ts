@@ -8,7 +8,8 @@ import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js'
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { HookEventName } from '../plugins/plugin-types.js';
-import { QualityCheckPort } from '../../../ports/driven/security/QualityCheckPort.js';
+import { QualityCheckPort, type QualityCheckContext } from '../../../ports/driven/security/QualityCheckPort.js';
+import { logger, LOG_COMPONENT, LOG_EVENT } from '../../../utils/logger.js';
 import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 
 // 导入领域服务
@@ -72,6 +73,44 @@ export interface AgentLoopOptions {
   interactionPort?: InteractionPort;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
   maxIterations?: number;
+}
+
+/**
+ * 判断资源路径是否属于应当触发质量检查的代码相关资源。
+ * 纯日志、trace、会话快照和已知非代码缓存被排除；
+ * 无法分类的工作区写入按可能代码写入处理，避免漏检。
+ */
+function isCodeRelatedResource(resource: string): boolean {
+  const nonCodePatterns = [
+    /\.myagent[/\\]/,
+    /node_modules[/\\]\.cache[/\\]/,
+    /\.git[/\\]/
+  ];
+  if (/\.(log|trace|snap)$/i.test(resource)) return false;
+  for (const pattern of nonCodePatterns) {
+    if (pattern.test(resource)) return false;
+  }
+  return true;
+}
+
+/**
+ * 质量门禁触发谓词。
+ * read/none 永不触发；write 仅在资源属于代码范围时触发；
+ * unknown 在资源为空或与工作区代码相交时保守触发。
+ */
+function shouldTriggerQualityCheck(
+  accumulatedEffects: Array<{ kind: string; resources: string[]; correlationId: string }>
+): boolean {
+  for (const effect of accumulatedEffects) {
+    if (effect.kind === 'read' || effect.kind === 'none') continue;
+    if (effect.kind === 'write') {
+      if (effect.resources.length === 0) return true;
+      if (effect.resources.some(r => isCodeRelatedResource(r))) return true;
+      continue;
+    }
+    if (effect.kind === 'unknown') return true;
+  }
+  return false;
 }
 
 /** 缓存击穿校验：缓存跌幅百分比阈值（5% = 0.95 倍） */
@@ -229,8 +268,12 @@ export class AgentLoop {
   ): AsyncGenerator<AgentEvent, void, unknown> {
     // 初始化迭代计数器
     let iteration = 0;
-    // 追踪本次 chat 中是否执行过写操作工具
-    let hasWriteOperation = false;
+    // 本轮累积的实际 effect 列表（为质量门禁迁移提供兼容数据）
+    const accumulatedEffects: Array<{ kind: string; resources: string[]; correlationId: string }> = [];
+    // 去重后的变更资源集合
+    const changedResources = new Set<string>();
+    // 质量门禁修复尝试次数
+    let qualityRepairAttempts = 0;
     // 诊断护栏状态在本轮 chat 生命周期内持续累积，不写入长期上下文。
     let diagnosticState = createDiagnosticTurnState(getLatestUserContent(this.context.getHistory() as ChatMessage[]));
 
@@ -515,8 +558,17 @@ export class AgentLoop {
                   });
                 }
 
-                if (taskRes.hasWrite) {
-                  hasWriteOperation = true;
+                // 累积实际 effect 并去重资源（为下一阶段质量门禁迁移提供兼容数据）
+                const effect = taskRes.effect;
+                if (effect) {
+                  accumulatedEffects.push({
+                    kind: effect.kind,
+                    resources: effect.resources,
+                    correlationId: event.toolCalls[i].id
+                  });
+                  for (const res of effect.resources) {
+                    changedResources.add(res);
+                  }
                 }
 
                 if (taskRes.aborted) {
@@ -597,20 +649,87 @@ export class AgentLoop {
               }
             }
 
-            // PostRunHook：在完成响应后且存在写操作时运行后置 lint/typecheck 自测
-            if (hasWriteOperation && this.qualityCheckPort) {
-              yield { type: 'thinking', content: '[PostRunHook] 正在执行修改后自动代码规范与类型检查自测...' };
-              const checkResult = await this.qualityCheckPort.runPostRunCheck();
+            // 质量门禁：在完成响应后且存在代码写入 effect 时运行后置代码校验
+            const hasQualityTrigger = shouldTriggerQualityCheck(accumulatedEffects);
+            // 修复轮无新增 write/unknown effect 时直接终止重跑
+            const hasNewEffectsSinceLastCheck = qualityRepairAttempts === 0 ||
+              accumulatedEffects.some(e => e.kind === 'write' || e.kind === 'unknown');
+
+            if (hasQualityTrigger && this.qualityCheckPort && hasNewEffectsSinceLastCheck) {
+              logger.debug('[AgentLoop] quality_check_started', {
+                component: LOG_COMPONENT.QUALITY_CHECK,
+                event: LOG_EVENT.QUALITY_CHECK_STARTED,
+                sessionId: this.context.getSessionId(),
+                triggerEffectCount: accumulatedEffects.length,
+                changedResourceCount: changedResources.size,
+                qualityRepairAttempts,
+              });
+
+              yield {
+                type: 'quality_check_status',
+                phase: 'started',
+                summary: '正在验证修改...',
+                durationMs: 0,
+                detailRef: undefined
+              };
+
+              const qualityContext: QualityCheckContext = {
+                sessionId: this.context.getSessionId(),
+                triggerEffects: accumulatedEffects.map(e => ({ kind: e.kind, reason: e.kind })),
+                changedResources: Array.from(changedResources),
+                signal: undefined
+              };
+              const checkResult = await this.qualityCheckPort.runPostRunCheck(qualityContext);
+
+              logger.debug('[AgentLoop] quality_check_finished', {
+                component: LOG_COMPONENT.QUALITY_CHECK,
+                event: LOG_EVENT.QUALITY_CHECK_FINISHED,
+                sessionId: this.context.getSessionId(),
+                success: checkResult.success,
+                durationMs: checkResult.durationMs,
+                stepCount: checkResult.steps.length,
+                qualityRepairAttempts,
+                summary: checkResult.summary,
+              });
+
               if (!checkResult.success) {
-                yield { type: 'thinking', content: `[PostRunHook] 校验未通过，正在将报错反馈给模型进行自我修复...\n${checkResult.output}` };
+                qualityRepairAttempts++;
+
+                yield {
+                  type: 'quality_check_status',
+                  phase: qualityRepairAttempts >= 2 ? 'failed' : 'failed',
+                  summary: checkResult.summary,
+                  durationMs: checkResult.durationMs,
+                  detailRef: undefined
+                };
+
+                // 第二次失败后停止自动修复，保留失败摘要进入 complete
+                if (qualityRepairAttempts >= 2) {
+                  // 不再注入修复消息，仅输出失败状态
+                  break;
+                }
+
+                // 首次失败：注入修复上下文，允许一次自动修复
                 this.context.addMessage({
                   role: 'user',
-                  content: `[系统自动质量强校验失败]\n检测到您刚刚的修改引入了代码规范或编译错误，请根据以下报错信息进行修正，修正后请重新编译或测试：\n\`\`\`\n${checkResult.output}\n\`\`\`\n注意：请勿忽略本报错，必须确保代码编译和 lint 完全通过。`
+                  content: `[系统自动质量强校验失败]\n检测到您刚刚的修改引入了代码规范或编译错误，请根据以下报错信息进行修正，修正后请重新编译或测试：\n\`\`\`\n${checkResult.summary}\n\`\`\`\n注意：请勿忽略本报错，必须确保代码编译和 lint 完全通过。`
                 });
-                hasToolCalls = true; // 强制继续下一轮 ReAct 循环
-                break; // 退出当前 stream 消费，进入下一轮迭代
+                hasToolCalls = true;
+                break;
               }
-              yield { type: 'thinking', content: '[PostRunHook] 静态规范及编译类型检查全部通过。' };
+
+              // 修复成功后清空已消费的变更 effect
+              accumulatedEffects.length = 0;
+              changedResources.clear();
+              qualityRepairAttempts = 0;
+
+              yield {
+                type: 'quality_check_status',
+                phase: 'passed',
+                summary: checkResult.summary,
+                durationMs: checkResult.durationMs,
+                detailRef: undefined
+              };
             }
 
             const traceContext = buildTraceContextEntries(finalRequestMessages as ChatMessage[], traceSystemPromptHash);
@@ -792,6 +911,13 @@ function createDiagnosticBlockedResult(
       content: errorText
     },
     hasWrite: false,
+    effect: {
+      kind: 'none',
+      executionStarted: false,
+      completed: false,
+      resources: [],
+      reason: 'pre_execution_abort'
+    },
     finalCallUpdate: { error: errorText },
     interrupted: false,
     aborted: false

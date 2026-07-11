@@ -51,8 +51,12 @@ describe('ToolCallOrchestrator', () => {
         return undefined;
       },
       callTool: async (name: string, args: Record<string, unknown>) => {
-        return { result: `echo: ${JSON.stringify(args)}` };
-      }
+        return {
+          value: { result: `echo: ${JSON.stringify(args)}` },
+          effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const }
+        };
+      },
+      close: async () => {}
     } as unknown as ToolRegistryPort;
 
     // 空的 PluginRegistry（无插件挂载，管线直通）
@@ -130,6 +134,70 @@ describe('ToolCallOrchestrator', () => {
       expect(result.events.some(e => e.type === 'tool_call_result')).toBe(true);
     });
 
+    it('应为只读工具正确推导 read effect', async () => {
+      const toolCall = makeToolCall('echo', { message: 'hello' });
+
+      const result = await orchestrator.execute(
+        0, toolCall, makeSignal(),
+        () => {}
+      );
+
+      expect(result.effect.kind).toBe('read');
+      expect(result.effect.executionStarted).toBe(true);
+      expect(result.effect.completed).toBe(true);
+      expect(result.effect.reason).toBe('declared_read_tool');
+    });
+
+    it('应为写工具正确推导 write effect', async () => {
+      const mockToolRegistryWithWrite: ToolRegistryPort = {
+        getTools: async () => [],
+        getTool: (name: string) => {
+          if (name === 'writeFile') return { name: 'writeFile', securityCategory: 'write', executionMode: 'auto' };
+          return undefined;
+        },
+        callTool: async () => ({
+          value: { result: 'written' },
+          effect: { kind: 'write' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_write_tool' as const }
+        }),
+        close: async () => {}
+      } as unknown as ToolRegistryPort;
+
+      const writeOrchestrator = new ToolCallOrchestrator(
+        mockToolRegistryWithWrite, dispatcher,
+        { getPluginsForEvent: () => [] } as unknown as PluginRegistry,
+        context, applier
+      );
+
+      const toolCall = makeToolCall('writeFile', { filePath: '/test/output.txt' });
+
+      const result = await writeOrchestrator.execute(
+        0, toolCall, makeSignal(),
+        () => {}
+      );
+
+      expect(result.effect.kind).toBe('write');
+      expect(result.effect.executionStarted).toBe(true);
+      expect(result.effect.completed).toBe(true);
+      expect(result.effect.reason).toBe('declared_write_tool');
+    });
+
+    it('参数解析失败应产生 none effect', async () => {
+      const badCall = {
+        id: 'call-bad-001',
+        function: { name: 'echo', arguments: '{invalid json' }
+      };
+
+      const result = await orchestrator.execute(
+        0, badCall, makeSignal(),
+        () => {}
+      );
+
+      expect(result.effect.kind).toBe('none');
+      expect(result.effect.executionStarted).toBe(false);
+      expect(result.effect.completed).toBe(false);
+      expect(result.effect.reason).toBe('no_execution');
+    });
+
     it('应正确标记写操作工具', async () => {
       // 构造一个 write 类工具的 mock
       const mockToolRegistryWithWrite: ToolRegistryPort = {
@@ -138,7 +206,11 @@ describe('ToolCallOrchestrator', () => {
           if (name === 'writeFile') return { name: 'writeFile', securityCategory: 'write', executionMode: 'auto' };
           return undefined;
         },
-        callTool: async () => ({ result: 'written' })
+        callTool: async () => ({
+          value: { result: 'written' },
+          effect: { kind: 'write' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_write_tool' as const }
+        }),
+        close: async () => {}
       } as unknown as ToolRegistryPort;
 
       const writeOrchestrator = new ToolCallOrchestrator(
@@ -187,8 +259,12 @@ describe('ToolCallOrchestrator', () => {
           interactionPort?: unknown
         ) => {
           capturedInteractionPort = interactionPort;
-          return { result: 'ok' };
-        }
+          return {
+            value: { result: 'ok' },
+            effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const }
+          };
+        },
+        close: async () => {}
       } as unknown as ToolRegistryPort;
 
       const orchestratorWithPort = new ToolCallOrchestrator(

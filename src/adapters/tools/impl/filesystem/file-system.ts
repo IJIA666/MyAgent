@@ -4,6 +4,7 @@
  */
 
 import { existsSync, statSync, mkdirSync, readdirSync, promises as fsPromises } from 'fs';
+import type { Dirent } from 'fs';
 import { dirname, resolve, basename } from 'path';
 import { createPatch } from 'diff';
 import { secureResolveReadPath, secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
@@ -12,6 +13,7 @@ import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin
 import { getWorkMode } from '../system/terminal.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
+import { logger, LOG_COMPONENT, LOG_EVENT } from '../../../../utils/logger.js';
 
 /** 判断给定的文件路径是否属于敏感的环境变量配置文件 */
 function isSensitiveEnvFile(filePath: string): boolean {
@@ -20,6 +22,432 @@ function isSensitiveEnvFile(filePath: string): boolean {
     return false;
   }
   return name === '.env' || name.startsWith('.env.');
+}
+
+/** 读取布尔型开关参数。 */
+function readBooleanArg(args: Record<string, unknown>, key: string): boolean {
+  return args[key] === true;
+}
+
+/** 读取正整数参数，不存在时返回 undefined。 */
+function readPositiveIntegerArg(args: Record<string, unknown>, key: string): number | undefined {
+  const value = args[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${key} 必须是大于等于 0 的整数`);
+  }
+  return value;
+}
+
+/** 构造附带元数据的 readFile 结构化结果。 */
+function buildReadFilePayload(
+  content: string,
+  sizeBytes: number,
+  mtimeMs: number,
+  lineCount: number,
+  lineStart?: number,
+  lineEnd?: number
+): string {
+  return JSON.stringify({
+    content,
+    metadata: {
+      sizeBytes,
+      mtimeMs,
+      lineCount,
+      ...(lineStart === undefined ? {} : { lineStart }),
+      ...(lineEnd === undefined ? {} : { lineEnd })
+    }
+  }, null, 2);
+}
+
+/**
+ * 目录测量的覆盖完整性分类。
+ */
+export type MeasurementCompleteness = 'complete' | 'partial' | 'lower-bound';
+
+/**
+ * 截断或跳过原因。
+ */
+export type MeasurementTruncationReason =
+  | 'maxEntries_exceeded'
+  | 'maxBytes_exceeded'
+  | 'maxDepth_exceeded'
+  | 'maxDuration_exceeded'
+  | 'permission_denied'
+  | 'link_skipped'
+  | 'mount_skipped'
+  | 'cancelled'
+  | 'error';
+
+/**
+ * 单次目录测量请求参数。
+ */
+export interface MeasurementRequest {
+  /** 递归深度上限 */
+  maxDepth: number;
+  /** 最多扫描的条目数 */
+  maxEntries: number;
+  /** 累计文件字节数上限 */
+  maxBytes: number;
+  /** 最大耗时（毫秒） */
+  maxDurationMs: number;
+  /** 可选的取消信号 */
+  signal?: AbortSignal;
+}
+
+/**
+ * 单个目录或文件的测量结果。
+ */
+export interface DirectoryMeasurement {
+  /** 相对路径 */
+  path: string;
+  /** 观察到的字节数（完整时为总量，部分时可能为下界） */
+  observedSizeBytes: number;
+  /** 仅当完整且无跳过时可用，语义与 observedSizeBytes 相同 */
+  totalSizeBytes?: number;
+  /** 文件数量 */
+  files: number;
+  /** 目录数量 */
+  directories: number;
+  /** 实际扫描的条目数 */
+  scannedEntries: number;
+  /** 跳过/错误的条目数 */
+  errorCount: number;
+  /** 跳过的符号链接数 */
+  skippedLinks: number;
+  /** 跳过的跨卷目录数 */
+  skippedMounts: number;
+  /** 跳过的路径摘要列表（数量受限，使用相对路径避免敏感信息） */
+  skippedPaths: string[];
+  /** 覆盖完整性 */
+  completeness: MeasurementCompleteness;
+  /** 截断/跳过原因列表 */
+  reasons: MeasurementTruncationReason[];
+  /** 耗时（毫秒） */
+  durationMs: number;
+}
+
+interface DirectoryStatsOptions {
+  maxDepth: number;
+  maxEntries: number;
+  maxBytes: number;
+}
+
+interface DirectoryStatsResult {
+  totalFiles: number;
+  totalDirectories: number;
+  totalSizeBytes: number;
+  scannedEntries: number;
+  isTruncated: boolean;
+  notice?: string;
+}
+
+/** 递归统计目录规模，并通过限制字段避免单次重型扫描失控。 */
+function measureDirectoryStats(rootPath: string, options: DirectoryStatsOptions): DirectoryStatsResult {
+  const stack: Array<{ path: string; depth: number }> = [{ path: rootPath, depth: 0 }];
+  let totalFiles = 0;
+  let totalDirectories = 0;
+  let totalSizeBytes = 0;
+  let scannedEntries = 0;
+  let isTruncated = false;
+  let notice: string | undefined;
+
+  while (stack.length > 0 && !isTruncated) {
+    const current = stack.pop()!;
+    let entries: Dirent[];
+
+    try {
+      entries = readdirSync(current.path, { withFileTypes: true });
+    } catch {
+      isTruncated = true;
+      notice = `目录统计在读取 "${current.path}" 时中断，结果已截断。`;
+      break;
+    }
+
+    for (const entry of entries) {
+      if (scannedEntries >= options.maxEntries) {
+        isTruncated = true;
+        notice = `目录统计触发 maxEntries=${options.maxEntries} 限制，结果已截断。`;
+        break;
+      }
+
+      scannedEntries += 1;
+      const entryPath = resolve(current.path, entry.name);
+
+      if (entry.isDirectory()) {
+        totalDirectories += 1;
+        if (current.depth < options.maxDepth) {
+          stack.push({ path: entryPath, depth: current.depth + 1 });
+        }
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      try {
+        const entryStat = statSync(entryPath);
+        if (totalSizeBytes + entryStat.size > options.maxBytes) {
+          isTruncated = true;
+          notice = `目录统计触发 maxBytes=${options.maxBytes} 限制，结果已截断。`;
+          break;
+        }
+        totalFiles += 1;
+        totalSizeBytes += entryStat.size;
+      } catch {
+        isTruncated = true;
+        notice = `目录统计在读取文件 "${entryPath}" 时中断，结果已截断。`;
+        break;
+      }
+    }
+  }
+
+  return {
+    totalFiles,
+    totalDirectories,
+    totalSizeBytes,
+    scannedEntries,
+    isTruncated,
+    notice
+  };
+}
+
+/**
+ * 创建空的目录测量结果。
+ */
+function createEmptyMeasurement(path: string): DirectoryMeasurement {
+  return {
+    path,
+    observedSizeBytes: 0,
+    files: 0,
+    directories: 0,
+    scannedEntries: 0,
+    errorCount: 0,
+    skippedLinks: 0,
+    skippedMounts: 0,
+    skippedPaths: [],
+    completeness: 'complete',
+    reasons: [],
+    durationMs: 0
+  };
+}
+
+/**
+ * 异步扫描单个目录的直接子项列表并返回 Dirent 数组，失败时返回错误原因。
+ */
+async function readDirEntries(dirPath: string): Promise<{ entries?: Dirent[]; error?: MeasurementTruncationReason }> {
+  try {
+    const { readdir } = await import('fs/promises');
+    const entries = await readdir(dirPath, { withFileTypes: true }) as unknown as import('fs').Dirent[];
+    return { entries };
+  } catch {
+    return { error: 'permission_denied' };
+  }
+}
+
+/**
+ * 异步目录测量核心——统一停机检查 + 递归扫描单个对象。
+ * 通过外部调用方提供的 budget 跟踪来协调公平轮转。
+ */
+async function scanSingleDirectory(
+  targetPath: string,
+  depth: number,
+  request: MeasurementRequest,
+  budget: { scanned: number; bytes: number; startMs: number; cancelled: boolean }
+): Promise<DirectoryMeasurement> {
+  const meas = createEmptyMeasurement(targetPath);
+  const startMs = Date.now();
+
+  async function scanDir(dirPath: string, currentDepth: number): Promise<void> {
+    // 统一停机检查
+    const elapsed = Date.now() - budget.startMs;
+    if (budget.cancelled || (request.signal && request.signal.aborted) ||
+        budget.scanned >= request.maxEntries ||
+        budget.bytes >= request.maxBytes ||
+        elapsed >= request.maxDurationMs ||
+        currentDepth > request.maxDepth) {
+      if (budget.scanned >= request.maxEntries && !meas.reasons.includes('maxEntries_exceeded')) {
+        meas.reasons.push('maxEntries_exceeded');
+      }
+      if (budget.bytes >= request.maxBytes && !meas.reasons.includes('maxBytes_exceeded')) {
+        meas.reasons.push('maxBytes_exceeded');
+      }
+      if (elapsed >= request.maxDurationMs && !meas.reasons.includes('maxDuration_exceeded')) {
+        meas.reasons.push('maxDuration_exceeded');
+      }
+      return;
+    }
+
+    const { entries, error } = await readDirEntries(dirPath);
+    if (error) {
+      meas.errorCount++;
+      if (!meas.reasons.includes('permission_denied')) meas.reasons.push('permission_denied');
+      const relPath = dirPath.replace(/\\/g, '/');
+      const shortPath = relPath.length > 40 ? `...${relPath.slice(-37)}` : relPath;
+      if (meas.skippedPaths.length < 10) meas.skippedPaths.push(shortPath);
+      return;
+    }
+
+    for (const entry of entries!) {
+      if (budget.scanned >= request.maxEntries || budget.bytes >= request.maxBytes ||
+          (Date.now() - budget.startMs) >= request.maxDurationMs || budget.cancelled) {
+        break;
+      }
+
+      budget.scanned++;
+      meas.scannedEntries++;
+
+      if (entry.isDirectory()) {
+        meas.directories++;
+        if (currentDepth < request.maxDepth) {
+          await scanDir(`${dirPath}/${entry.name}`, currentDepth + 1);
+        }
+        continue;
+      }
+
+      if (!entry.isFile()) continue;
+
+      try {
+        const { stat } = await import('fs/promises');
+        const entryStat = await stat(`${dirPath}/${entry.name}`);
+        if (budget.bytes + entryStat.size > request.maxBytes) {
+          if (!meas.reasons.includes('maxBytes_exceeded')) meas.reasons.push('maxBytes_exceeded');
+          break;
+        }
+        budget.bytes += entryStat.size;
+        meas.observedSizeBytes += entryStat.size;
+        meas.files++;
+      } catch {
+        meas.errorCount++;
+      }
+    }
+  }
+
+  // 异步检查 AbortSignal 之间取消
+  if (request.signal && request.signal.aborted) {
+    budget.cancelled = true;
+    if (!meas.reasons.includes('cancelled')) meas.reasons.push('cancelled');
+  }
+
+  await scanDir(targetPath, depth);
+
+  meas.durationMs = Date.now() - startMs;
+
+  // 确定完整性
+  if (budget.cancelled) {
+    meas.completeness = 'partial';
+    if (!meas.reasons.includes('cancelled')) meas.reasons.push('cancelled');
+  } else if (meas.reasons.length > 0) {
+    meas.completeness = 'lower-bound';
+  } else {
+    meas.completeness = 'complete';
+    meas.totalSizeBytes = meas.observedSizeBytes;
+  }
+
+  return meas;
+}
+
+/**
+ * 为多个直接子目录执行公平轮转扫描。
+ * 使用共享预算队列，确保目录枚举顺序不会让第一个目录独占全部预算。
+ */
+export async function measureDirectoriesFair(
+  rootPath: string,
+  request: MeasurementRequest
+): Promise<{ targetMeasurement: DirectoryMeasurement; entryMeasurements: DirectoryMeasurement[] }> {
+  const startMs = Date.now();
+  const budget = { scanned: 0, bytes: 0, startMs, cancelled: false };
+
+  logger.debug('[ListFiles] directory_measurement_started', {
+    component: LOG_COMPONENT.DIRECTORY_MEASUREMENT,
+    event: LOG_EVENT.DIRECTORY_MEASUREMENT_STARTED,
+    rootPath,
+    maxDepth: request.maxDepth,
+    maxEntries: request.maxEntries,
+    maxBytes: request.maxBytes,
+    maxDurationMs: request.maxDurationMs,
+  });
+
+  // 读取直接子目录列表
+  const { entries, error } = await readDirEntries(rootPath);
+  if (error) {
+    logger.debug('[ListFiles] directory_measurement_finished', {
+      component: LOG_COMPONENT.DIRECTORY_MEASUREMENT,
+      event: LOG_EVENT.DIRECTORY_MEASUREMENT_FINISHED,
+      rootPath,
+      error: '根目标不可读',
+      durationMs: Date.now() - startMs,
+    });
+    throw new Error(`根目标不可读: ${rootPath}`);
+  }
+
+  const subDirs = entries!.filter(e => e.isDirectory()).map(e => e.name);
+  const entryMeasurements: DirectoryMeasurement[] = [];
+
+  // 轮转推进：每次扫描一个子目录的一层，轮流进行
+  const queue = [...subDirs.map(name => ({ name, depth: 0 }))];
+  const perDirBudget = new Map<string, number>();
+  for (const { name } of queue) {
+    perDirBudget.set(name, 0);
+  }
+
+  let anyWorkDone = true;
+  while (anyWorkDone && queue.length > 0) {
+    anyWorkDone = false;
+
+    // 每轮从队列中取一个目录扫描一层
+    const entry = queue.shift()!;
+    const dirPath = `${rootPath}/${entry.name}`;
+    const meas = await scanSingleDirectory(dirPath, entry.depth, request, budget);
+
+    // 如果该目录还有更多层且预算未耗尽，重新入队
+    if (entry.depth < request.maxDepth && budget.scanned < request.maxEntries &&
+        !budget.cancelled && !request.signal?.aborted) {
+      queue.push({ name: entry.name, depth: entry.depth + 1 });
+      anyWorkDone = true;
+    }
+
+    // 更新或添加该目录的测量结果
+    const existingIdx = entryMeasurements.findIndex(m => m.path === entry.name);
+    if (existingIdx >= 0) {
+      const existing = entryMeasurements[existingIdx];
+      existing.observedSizeBytes += meas.observedSizeBytes;
+      existing.files += meas.files;
+      existing.directories += meas.directories;
+      existing.scannedEntries += meas.scannedEntries;
+      existing.errorCount += meas.errorCount;
+      existing.durationMs += meas.durationMs;
+      if (meas.reasons.length > 0) {
+        for (const r of meas.reasons) {
+          if (!existing.reasons.includes(r)) existing.reasons.push(r);
+        }
+      }
+      existing.completeness = meas.reasons.length > 0 || existing.reasons.length > 0 ? 'lower-bound' : 'complete';
+    } else {
+      meas.path = entry.name;
+      entryMeasurements.push(meas);
+    }
+  }
+
+  // 目标整体统计
+  const targetMeas = await scanSingleDirectory(rootPath, 0, request, budget);
+  targetMeas.path = '.';
+
+  logger.debug('[ListFiles] directory_measurement_finished', {
+    component: LOG_COMPONENT.DIRECTORY_MEASUREMENT,
+    event: LOG_EVENT.DIRECTORY_MEASUREMENT_FINISHED,
+    rootPath,
+    durationMs: Date.now() - startMs,
+    targetCompleteness: targetMeas.completeness,
+    targetEntries: targetMeas.scannedEntries,
+    targetErrors: targetMeas.errorCount,
+    subDirCount: entryMeasurements.length,
+  });
+
+  return { targetMeasurement: targetMeas, entryMeasurements };
 }
 
 /**
@@ -65,6 +493,10 @@ export class ReadFileTool implements NativeTool {
           lineEnd: {
             type: "number",
             description: "要读取的结束行号（可选，包含该行，从 1 开始，如 25）。"
+          },
+          includeMetadata: {
+            type: "boolean",
+            description: "是否在正文之外附带结构化文件元数据（如 sizeBytes、mtimeMs、lineCount），默认 false。"
           }
         },
         required: ["targetPath"]
@@ -137,11 +569,13 @@ export class ReadFileTool implements NativeTool {
 
     const lineStart = typeof args.lineStart === 'number' ? args.lineStart : undefined;
     const lineEnd = typeof args.lineEnd === 'number' ? args.lineEnd : undefined;
+    const includeMetadata = readBooleanArg(args, 'includeMetadata');
 
     const currentMtimeMs = fileStat.mtimeMs;
     const cachedState = ReadFileTool.readFileState.get(safePath);
 
     if (
+      !includeMetadata &&
       cachedState &&
       cachedState.lineStart === lineStart &&
       cachedState.lineEnd === lineEnd &&
@@ -151,14 +585,15 @@ export class ReadFileTool implements NativeTool {
     }
 
     const content = await fsPromises.readFile(safePath, { encoding: 'utf-8', signal });
+    const lines = content.split(/\r?\n/);
+    const totalLines = lines.length;
     let resultText: string;
+    let resultLineStart: number | undefined;
+    let resultLineEnd: number | undefined;
 
     if (lineStart === undefined && lineEnd === undefined) {
       resultText = content;
     } else {
-      const lines = content.split(/\r?\n/);
-      const totalLines = lines.length;
-
       const start = lineStart !== undefined ? Math.max(1, lineStart) : 1;
       const end = lineEnd !== undefined ? Math.min(totalLines, lineEnd) : totalLines;
 
@@ -172,11 +607,24 @@ export class ReadFileTool implements NativeTool {
         const slicedLines = lines.slice(sliceStart, sliceEnd);
         const prefix = `[文件：${targetPath} 第 ${start} 至 ${end} 行，总共 ${totalLines} 行]\n`;
         resultText = prefix + slicedLines.join('\n');
+        resultLineStart = start;
+        resultLineEnd = end;
       }
     }
 
     ReadFileTool.readFileState.set(safePath, { lineStart, lineEnd, mtimeMs: currentMtimeMs });
-    return resultText;
+    if (!includeMetadata) {
+      return resultText;
+    }
+
+    return buildReadFilePayload(
+      resultText,
+      fileStat.size,
+      currentMtimeMs,
+      totalLines,
+      resultLineStart,
+      resultLineEnd
+    );
   }
 }
 
@@ -519,6 +967,47 @@ export class ListFilesTool implements NativeTool {
    */
   readonly name = 'listFiles';
 
+  constructor() {
+    const functionDefinition = this.definition.function as {
+      description: string;
+      parameters: {
+        properties: Record<string, unknown>;
+        required?: string[];
+      };
+    };
+
+    functionDefinition.description = "列出目标文件夹的直接子项。默认在工作区内列出目标路径；外部路径由工具层依据安全策略处理。默认仅返回名称列表；只有在显式请求时才附带子项元数据或目录统计，避免把普通列目录升级为递归重扫描。";
+    functionDefinition.parameters.properties.includeMetadata = {
+      type: "boolean",
+      description: "是否为每个直接子项附带结构化元数据（如 path、kind、isDirectory、sizeBytes、mtimeMs），默认 false。"
+    };
+    functionDefinition.parameters.properties.includeDirectoryStats = {
+      type: "boolean",
+      description: "是否显式请求目录总览统计（totalFiles、totalDirectories、totalSizeBytes 等），默认 false。"
+    };
+    functionDefinition.parameters.properties.maxDepth = {
+      type: "number",
+      description: "目录统计递归深度上限；仅在 includeDirectoryStats=true 时生效。"
+    };
+    functionDefinition.parameters.properties.maxEntries = {
+      type: "number",
+      description: "目录统计最多扫描的文件与目录项数量；仅在 includeDirectoryStats=true 时生效。"
+    };
+    functionDefinition.parameters.properties.maxBytes = {
+      type: "number",
+      description: "目录统计累计扫描文件字节数上限；仅在 includeDirectoryStats=true 时生效。"
+    };
+    functionDefinition.parameters.properties.maxDurationMs = {
+      type: "number",
+      description: "目录统计最大耗时毫秒数；仅在 includeDirectoryStats=true 时生效。"
+    };
+    functionDefinition.parameters.properties.compareDirectories = {
+      type: "boolean",
+      description: "是否显式请求直接子目录公平比较测量；仅与 includeDirectoryStats=true 配合使用，默认 false。"
+    };
+    functionDefinition.parameters.required = [];
+  }
+
   /**
    * 工具的 OpenAI Function Calling 声明定义。
    */
@@ -570,8 +1059,97 @@ export class ListFilesTool implements NativeTool {
    * @param _context - 工具调用执行上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
    * @returns 目录子项 JSON 序列化字符串
    */
-  execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort): string {
+  execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort, signal?: AbortSignal): string | Promise<string> {
     const targetPath = typeof args.targetPath === 'string' ? args.targetPath : '.';
+    const includeMetadata = readBooleanArg(args, 'includeMetadata');
+    const includeDirectoryStats = readBooleanArg(args, 'includeDirectoryStats');
+    const compareDirectories = readBooleanArg(args, 'compareDirectories');
+    const maxDurationMs = readPositiveIntegerArg(args, 'maxDurationMs');
+    const safePath = _context ? secureResolveReadPath(targetPath, _context) : secureResolveReadPath(targetPath);
+
+    if (!existsSync(safePath)) {
+      throw new Error(`未找到文件夹："${targetPath}"`);
+    }
+
+    if (!statSync(safePath).isDirectory()) {
+      throw new Error(`路径 "${targetPath}" 是一个文件，不能作为文件夹列出。`);
+    }
+
+    const files = readdirSync(safePath, { withFileTypes: true });
+    if (!includeMetadata && !includeDirectoryStats) {
+      return JSON.stringify(files.map(entry => entry.name));
+    }
+
+    const entries = files.map(entry => {
+      const entryPath = resolve(safePath, entry.name);
+      const relativePath = targetPath === '.' ? entry.name : `${targetPath}/${entry.name}`.replace(/\\/g, '/');
+      const isDirectory = entry.isDirectory();
+      const item = {
+        name: entry.name,
+        path: relativePath,
+        kind: isDirectory ? 'directory' : entry.isFile() ? 'file' : 'other',
+        isDirectory
+      };
+
+      if (!includeMetadata) {
+        return item;
+      }
+
+      const entryStat = statSync(entryPath);
+      return {
+        ...item,
+        sizeBytes: entryStat.isFile() ? entryStat.size : null,
+        mtimeMs: entryStat.mtimeMs
+      };
+    });
+
+    const result: Record<string, unknown> = {
+      targetPath,
+      entries
+    };
+
+    if (includeDirectoryStats) {
+      const maxDepth = readPositiveIntegerArg(args, 'maxDepth');
+      const maxEntries = readPositiveIntegerArg(args, 'maxEntries');
+      const maxBytes = readPositiveIntegerArg(args, 'maxBytes');
+      if (maxDepth === undefined || maxEntries === undefined || maxBytes === undefined) {
+        throw new Error('当 includeDirectoryStats=true 时，必须同时提供 maxDepth、maxEntries 和 maxBytes。');
+      }
+
+      // 使用旧的同步测量或新的异步公平比较
+      if (compareDirectories) {
+        // 异步公平轮转比较测量
+        const request: MeasurementRequest = {
+          maxDepth,
+          maxEntries,
+          maxBytes,
+          maxDurationMs: maxDurationMs ?? 30000,
+          signal
+        };
+        return measureDirectoriesFair(safePath, request).then(({ targetMeasurement, entryMeasurements }) => {
+          result.targetMeasurement = targetMeasurement;
+          result.entries = (result.entries as unknown[]).map((entry: unknown) => {
+            const e = entry as { name: string };
+            const em = entryMeasurements.find(em => em.path === e.name);
+            if (em) {
+              return { ...(e as Record<string, unknown>), measurement: em };
+            }
+            return e;
+          });
+          return JSON.stringify(result, null, 2);
+        });
+      }
+
+      // 同步统计（向后兼容）
+      result.directoryStats = measureDirectoryStats(safePath, {
+        maxDepth,
+        maxEntries,
+        maxBytes
+      });
+    }
+
+    return JSON.stringify(result, null, 2);
+/*
     const safePath = _context ? secureResolveReadPath(targetPath, _context) : secureResolveReadPath(targetPath);
 
     if (!existsSync(safePath)) {
@@ -584,5 +1162,6 @@ export class ListFilesTool implements NativeTool {
 
     const files = readdirSync(safePath);
     return JSON.stringify(files);
+*/
   }
 }

@@ -16,6 +16,8 @@ import type { InteractionPort } from '../../ports/driven/session/InteractionPort
 import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
 import type { ToolAccessMetadataPort, ResourceExtractor, ToolAccessMetadata } from '../../ports/driven/tools/ToolAccessMetadataPort.js';
 import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
+import type { ToolExecutionOutcome, ToolExecutionEffect } from './tool-types.js';
+import { deriveDefaultToolExecutionEffect } from './tool-types.js';
 
 /**
  * 工具注册表管理类。
@@ -101,33 +103,70 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
     toolCallId?: string
-  ): Promise<unknown> {
+  ): Promise<ToolExecutionOutcome<unknown>> {
     // 检查目标工具是否隶属于本地内置集合
-    const isLocalTool = this.catalog.getTool(functionName) !== undefined;
+    const toolMeta = this.catalog.getToolMetadata(functionName);
+    const isLocalTool = toolMeta !== undefined;
+    const hasMcp = this.mcpManager !== undefined;
 
-    if (isLocalTool) {
-      // 命中本地工具，委托给 ToolExecutor 执行
-      return await this.executor.execute(
-        functionName,
-        functionArgs,
-        sessionContext,
-        interactionPort,
-        signal,
-        toolCallId
-      );
-    } else if (this.mcpManager) {
-      // 命中外部工具：先 claim capability，再跨进程分发
-      if (toolCallId && sessionContext) {
-        const claimed = (sessionContext as CallCapabilityPort).claimCapability(toolCallId, functionName, functionArgs);
-        if (claimed === null) {
-          throw new Error(`外部工具 "${functionName}" 调用被拒绝：未找到匹配的授权令牌或令牌已使用`);
-        }
-        // claimed === [] 表示精确调用授权有效但没有路径资源，继续执行
-      }
-      return await this.mcpManager.callMcpTool(functionName, functionArgs, signal);
-    } else {
-      // 异常分支：不存在该工具，阻断调用链路并抛出异常
+    // 工具完全不存在时直接抛出，不包装为 outcome
+    if (!isLocalTool && !hasMcp) {
       throw new Error(`未知的工具名称："${functionName}"`);
+    }
+
+    try {
+      if (isLocalTool) {
+        // 命中本地工具，委托给 ToolExecutor 执行（已包含精确 effect 解析和默认推导）
+        return await this.executor.execute(
+          functionName,
+          functionArgs,
+          sessionContext,
+          interactionPort,
+          signal,
+          toolCallId
+        );
+      } else if (this.mcpManager) {
+        // 命中外部工具：先 claim capability，再跨进程分发
+        if (toolCallId && sessionContext) {
+          const claimed = (sessionContext as CallCapabilityPort).claimCapability(toolCallId, functionName, functionArgs);
+          if (claimed === null) {
+            throw new Error(`外部工具 "${functionName}" 调用被拒绝：未找到匹配的授权令牌或令牌已使用`);
+          }
+        }
+        const mcpRaw = await this.mcpManager.callMcpTool(functionName, functionArgs, signal);
+        // 外部 MCP 无法精确推导 effect，使用访问元数据安全降级
+        const accessMeta = this.getAccessMetadata(functionName);
+        const mcpSecurityCategory: 'read' | 'write' = accessMeta?.accessMode === 'read' ? 'read' : 'write';
+        const mcpEffect = deriveDefaultToolExecutionEffect(
+          mcpSecurityCategory,
+          true,
+          true
+        );
+        return { value: mcpRaw, effect: mcpEffect };
+      } else {
+        throw new Error(`未知的工具名称："${functionName}"`);
+      }
+    } catch (error: unknown) {
+      if (error instanceof Error && (
+        error.name === 'InteractionRequestError' ||
+        error.message.includes('审批拒绝') ||
+        error.message.includes('被拒绝') ||
+        error.message.includes('找不到提供工具')
+      )) {
+        throw error; // 交互类或工具找不到异常向上冒泡
+      }
+      const toolEffect: ToolExecutionEffect = {
+        kind: isLocalTool && toolMeta?.securityCategory === 'read' ? 'read' : 'unknown',
+        executionStarted: true,
+        completed: false,
+        resources: [],
+        reason: isLocalTool && toolMeta?.securityCategory === 'read' ? 'declared_read_tool' : 'execution_failed_after_start'
+      };
+      return {
+        value: error instanceof Error ? error.message : String(error),
+        effect: toolEffect,
+        cause: error instanceof Error ? error : undefined
+      };
     }
   }
 

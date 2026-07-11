@@ -16,6 +16,7 @@ import type { EmbeddingPort } from '../../../ports/driven/llm/EmbeddingPort.js';
 import type { VectorDbPort } from '../../../ports/driven/db/VectorDbPort.js';
 import type { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import type { ToolRegistryPort, ToolMetadata } from '../../../ports/driven/tools/ToolRegistryPort.js';
+import type { ToolExecutionOutcome, ToolExecutionEffect } from '../../../adapters/tools/tool-types.js';
 
 /**
  * 长期记忆管理与提炼自省领域服务。
@@ -358,14 +359,21 @@ class MemoryRefinementToolRegistry implements ToolRegistryPort {
   public async callTool(
     functionName: string,
     functionArgs: Record<string, unknown>
-  ): Promise<unknown> {
+  ): Promise<ToolExecutionOutcome<unknown>> {
     if (functionName === 'writeMemoryFile') {
       const content = functionArgs.content;
       if (typeof content !== 'string') {
         throw new Error('content 参数缺失或非字符串');
       }
       await this.writeMemoryFn(content);
-      return '成功追加写入记忆。';
+      const writeEffect: ToolExecutionEffect = {
+        kind: 'write',
+        executionStarted: true,
+        completed: true,
+        resources: [],
+        reason: 'declared_write_tool'
+      };
+      return { value: '成功追加写入记忆。', effect: writeEffect };
     }
     throw new Error(`未知的工具名称："${functionName}"`);
   }
