@@ -199,6 +199,33 @@ describe('BrowserSession 多租户隔离集成测试', () => {
     }
   });
 
+  test('有头浏览器启动失败时也应恢复 headless 配置并释放租户资源', async () => {
+    const originalHeadless = process.env.BROWSER_HEADLESS;
+    process.env.BROWSER_HEADLESS = 'true';
+
+    const initialPage = { url: vi.fn().mockReturnValue('about:blank') } as unknown as Page;
+    const getPageSpy = vi.spyOn(BrowserSession, 'getPage')
+      .mockResolvedValueOnce(initialPage)
+      .mockRejectedValueOnce(new Error('模拟 headed 浏览器启动失败'));
+    const closeTenantSpy = vi.spyOn(BrowserSession, 'closeTenant').mockResolvedValue(undefined);
+
+    try {
+      const tool = new BrowserEnsureLoginTool();
+      await expect(tool.execute({ reason: '测试异常清理' }, new SessionContext('session-error', 'tenant-error')))
+        .rejects.toThrow('模拟 headed 浏览器启动失败');
+      expect(process.env.BROWSER_HEADLESS).toBe('true');
+      expect(closeTenantSpy).toHaveBeenCalledWith('tenant-error');
+    } finally {
+      getPageSpy.mockRestore();
+      closeTenantSpy.mockRestore();
+      if (originalHeadless === undefined) {
+        delete process.env.BROWSER_HEADLESS;
+      } else {
+        process.env.BROWSER_HEADLESS = originalHeadless;
+      }
+    }
+  });
+
   test('BrowserGetTextTool 基础网页文本提取功能', async () => {
     const tenantId = 'tenant-temp';
     const ctx = new SessionContext('session-temp', tenantId);

@@ -39,16 +39,17 @@ jobs:
       run: npx playwright install chromium
 
     - name: '[L2] Run Tests (Vitest Test Suite)'
-      run: xvfb-run npm run test
+      # 所有浏览器测试都必须在独立虚拟显示器中运行，避免 headed Playwright 在无 DISPLAY 环境下退出。
+      run: xvfb-run -a npm run test
 
     - name: '[L2] Run Coverage (Vitest Coverage)'
-      run: npm run test:coverage
+      run: xvfb-run -a npm run test:coverage
 
     - name: '[L3] Run Contract Tests'
       run: npm run test:contract
 
     - name: '[L3] Run Integration Tests'
-      run: npm run test:integration
+      run: xvfb-run -a npm run test:integration
 
   platform-windows:
     runs-on: windows-latest

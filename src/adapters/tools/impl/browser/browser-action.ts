@@ -976,13 +976,14 @@ export class BrowserEnsureLoginTool implements NativeTool {
     // 备份运行时 BROWSER_HEADLESS 的原始状态，用于非破坏性还原
     const runtimeEnv = getRuntimeEnv();
     const originalHeadless = runtimeEnv.BROWSER_HEADLESS;
-
-    // 1. 获取当前页面实例
-    let page = await BrowserSession.getPage(undefined, tenantId);
-
-    // 2. 如果当前是无头模式（headless），我们需要以有头模式重建浏览器以供用户手动操作
     const isHeadless = runtimeEnv.BROWSER_HEADLESS !== 'false';
     const cdpUrl = runtimeEnv.BROWSER_CDP_URL;
+
+    // 1. 获取当前页面实例
+    try {
+      let page = await BrowserSession.getPage(undefined, tenantId);
+
+    // 2. 如果当前是无头模式（headless），我们需要以有头模式重建浏览器以供用户手动操作
     
     if (isHeadless && !cdpUrl) {
       // 备份当前 URL
@@ -1013,19 +1014,20 @@ export class BrowserEnsureLoginTool implements NativeTool {
     // 4. 阻塞释放后，由于接下来要关闭该有头页面，我们先在此处获取最新的 ARIA 快照
     const snapshot = await generateAriaSnapshot(page);
 
-    // 5. 恢复 headless 原始配置并优雅关闭有头页面，以防其常驻缓存，确保切回后台无头静默运行
-    if (isHeadless && !cdpUrl) {
-      if (originalHeadless !== undefined) {
-        setRuntimeEnvVariable('BROWSER_HEADLESS', originalHeadless);
-      } else {
-        deleteRuntimeEnvVariable('BROWSER_HEADLESS');
-      }
-
-      // 再次显式关闭并销毁协作期间创建的有头实例，解开物理磁盘锁，清除缓存
-      await BrowserSession.closeTenant(tenantId);
-    }
-
     return snapshot;
+    } finally {
+      // 无论有头实例启动或人工协作流程是否抛出异常，都恢复配置并释放租户资源。
+      if (isHeadless && !cdpUrl) {
+        if (originalHeadless !== undefined) {
+          setRuntimeEnvVariable('BROWSER_HEADLESS', originalHeadless);
+        } else {
+          deleteRuntimeEnvVariable('BROWSER_HEADLESS');
+        }
+
+        // 显式关闭协作期间创建的实例，解开物理磁盘锁并清理缓存。
+        await BrowserSession.closeTenant(tenantId);
+      }
+    }
   }
 }
 
