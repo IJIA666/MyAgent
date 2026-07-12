@@ -33,28 +33,21 @@
 - **THEN** 终端引擎将其判定为只读级别命令，进行解包剥壳得到内核命令 `npm run lint`，提取安全前缀为 `npm run`。由于其未命中任何已放行的白名单前缀规则，系统将其判定为 `suspend` 挂起，且在审批弹窗中呈现 message，明确指示：“外壳包装为 'powershell -Command "npm run lint"'，实际执行的核心命令为 'npm run lint'”以触发人工确认交互。
 
 ### 需求: 动态安全工作模式 (Work Modes)
-终端引擎必须支持多种工作环境模式（Safe 每次确认、Auto 白名单放行、YOLO 全自动免审、Plan 只读计划）。为了防止多会话并发越权，系统必须（MUST）将会话工作安全模式解耦。每个会话在 `SessionContext` 中独立持有并流转该会话专属的安全模式副本，彻底杜绝全局状态污染。全局配置文件或环境变量仅作为初始会话启动的默认默认值参考。
 
-#### 场景: 在不同模式下的命令执行策略
-- **WHEN** 系统处于 YOLO 工作模式下，模型发起了未经白名单授权的非危险非敏感命令
-- **THEN** 终端引擎跳过安全交互提问，自动放行命令执行。
-- **WHEN** 系统处于 Safe 工作模式下，模型发起了已经在白名单中的受信任命令
-- **THEN** 终端引擎依然忽略白名单，强制发起人工确认交互。
+> ❌ 已删除 — 由 Claude PermissionMode 同构实现替代。旧 `Safe`、`Auto`、`YOLO`、`Plan` 枚举同时承载阶段和审批语义，已在 `claude-permission-model` 变更中移除。
 
-#### 场景: 多个会话安全工作模式的物理级隔离
-- **WHEN** 会话 A 的安全模式切换到 YOLO 模式，而并发的另一个会话 B 安全模式为 Safe 模式时
-- **THEN** 系统在执行会话 B 的命令时依然强制触发人工确认交互，且会话 A 的 YOLO 提权决不影响宿主进程内的任何其他会话。
+**Migration:** 迁移到 `PermissionMode`（`default`、`acceptEdits`、`plan`、`auto`、`dontAsk`、`bypassPermissions`）与统一权限服务。
 
-#### 场景: YOLO模式下的硬核底线黑名单拦截
-- **WHEN** 会话在 YOLO 模式下，模型试图执行命中了底线黑名单 `HARDLINE_PATTERNS` 的破坏性命令（如 `rm -rf /`，磁盘格式化 `mkfs` 等）时
-- **THEN** 终端引擎必须（MUST）无条件强行拦截，直接拒绝物理执行，且不抛出人工确认（直接返回拒绝状态），YOLO 模式无权豁免。
+### 需求: Session-Scoped Permission Modes
 
-#### 场景: Plan只读计划模式的写入操作拦截
-- **WHEN** 系统处于 Plan 工作模式下，模型发起了任何试图修改文件、应用代码补丁或执行终端写入/修改命令等导致副作用的 Action 时
-- **THEN** 系统必须（MUST）无条件强行拦截并拒绝执行，仅允许读取 and 模拟只读操作，使用户能够安全审计方案。
+每个会话 MUST 独立保存 `PermissionMode`，模式切换 MUST 通过统一模式管理器执行，不得使用进程级共享模式状态。
 
-#### 场景: 机密敏感文件在 YOLO 模式下的分级降级审批保护
-- **WHEN** 模型试图读取或修改真实包含凭据的敏感文件（如 `.env`、`.env.production`）时
-- **THEN** 系统必须（MUST）无条件剥夺该会话当前模式（如 YOLO 模式）的静默放行权，自动强制将其降级为 Safe 模式进行人工审批，并向用户展示完整的明文内容或 Diff 差异。
-- **WHEN** 模型读取或修改非凭据性样例文件（如 `.env.example`）时
-- **THEN** 系统不触发强制降级，依原有模式规则（如 YOLO 模式下直接放行）处理。
+#### 场景: One session mode does not affect another session
+
+- **WHEN** 会话 A 切换到 `bypassPermissions`，会话 B 保持 `default`
+- **THEN** 会话 B 的工具调用 MUST 继续按 `default` 评估
+
+#### 场景: Mode behavior follows Claude semantics
+
+- **WHEN** 调用分别处于 `default`、`acceptEdits`、`plan`、`auto`、`dontAsk` 或 `bypassPermissions`
+- **THEN** 系统 MUST 按对应 Claude 权限行为产生最终决策

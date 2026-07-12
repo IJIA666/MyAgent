@@ -12,18 +12,50 @@ import type { Plugin, HookContext } from './plugin-types.js';
 import type { SafetyOperation, SafetyCheckResult } from '../../../ports/shared/tool-policy.js';
 import type { ToolPolicyCall, ToolPolicyPort } from '../../../ports/shared/tool-policy.js';
 import type { SafetyResource } from '../../../ports/shared/safety-resource.js';
-import type { PendingGrant } from './plugin-types.js';
 import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
 import { HookEventName } from './plugin-types.js';
-import { ApprovalPolicy } from '../security/ApprovalPolicy.js';
+import type { PendingGrant } from './plugin-types.js';
+import type { ApprovalChoice } from './plugin-types.js';
+
+/**
+ * @deprecated 将 ToolPermissionService + PermissionPromptAdapter 替代。
+ * ApprovalPolicy 已弃用，保留此映射函数仅为过渡期兼容。
+ */
+function mapChoiceToEffectCompat(
+  choiceId: string,
+  _resources: import('../../../ports/shared/safety-resource.js').SafetyResource[] | undefined,
+  _toolName: string
+): { type: 'call' | 'session' | 'persistent' | 'deny'; payload?: PendingGrant | { prefix: string } } {
+  switch (choiceId) {
+    case 'approve': return { type: 'call' };
+    case 'session': return { type: 'session' };
+    case 'persistent': return { type: 'persistent', payload: { prefix: _toolName } };
+    default: return { type: 'deny' };
+  }
+}
+
+/** ApprovalPolicy.resolve 返回的审批请求格式 */
+interface ApprovalResolveResult {
+  choices: ApprovalChoice[];
+  message: string;
+  operation: SafetyOperation;
+}
+
+/** ApprovalPolicy.resolve 函数的类型签名 */
+type ApprovalResolver = (params: {
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  operation: SafetyOperation;
+  workMode: string;
+}) => ApprovalResolveResult;
 
 export class HumanApprovalPlugin implements Plugin {
   /** 插件在系统内的唯一标识名 */
   public readonly name = 'HumanApprovalPlugin';
   /** 执行优先级权重（保持原有早执行次序，在 BeforeTool 管线中优先拦截） */
   public readonly weight = 10;
-  /** 中央审批策略服务实例 */
-  private approvalPolicy: ApprovalPolicy;
+  /** 中央审批策略服务实例（可选，已弃用） */
+  private approvalPolicy?: Record<string, unknown>;
   /** 工具策略评估端口（替代原先的运行时方法探测） */
   private toolPolicyPort: ToolPolicyPort;
   /** 插件注册的生命周期钩子中间件集合 */
@@ -33,9 +65,9 @@ export class HumanApprovalPlugin implements Plugin {
 
   /**
    * @param toolPolicyPort - 工具策略评估端口（策略来源唯一入口）
-   * @param approvalPolicy - 中央审批策略服务实例
+   * @param approvalPolicy - 中央审批策略服务实例（可选，已弃用）
    */
-  constructor(toolPolicyPort: ToolPolicyPort, approvalPolicy: ApprovalPolicy) {
+  constructor(toolPolicyPort: ToolPolicyPort, approvalPolicy?: Record<string, unknown>) {
     this.toolPolicyPort = toolPolicyPort;
     this.approvalPolicy = approvalPolicy;
   }
@@ -94,7 +126,7 @@ export class HumanApprovalPlugin implements Plugin {
         const approvalId = `approve_${Math.random().toString(36).substring(2, 9)}`;
         const operation: SafetyOperation = safetyResult.operation!;
 
-        const approvalRequest = this.approvalPolicy.resolve({
+        const approvalRequest = (this.approvalPolicy as { resolve: ApprovalResolver } | undefined)?.resolve({
           toolName: toolCall.name,
           toolArgs: toolCall.arguments,
           operation,
@@ -102,7 +134,12 @@ export class HumanApprovalPlugin implements Plugin {
         });
 
         // 强制覆盖为仅 call/deny（无论 ApprovalPolicy 返回什么）
-        const limitedChoices = approvalRequest.choices.filter(c => c.choiceId === 'call' || c.choiceId === 'deny');
+        if (!approvalRequest) {
+          context.control.action = 'abort';
+          context.control.reason = `[Plan 模式拒绝] 操作 "${toolCall.name}"：无法生成审批请求（approvalPolicy 未配置）。`;
+          return;
+        }
+        const limitedChoices = approvalRequest.choices.filter((c: ApprovalChoice) => c.choiceId === 'call' || c.choiceId === 'deny');
         if (limitedChoices.length === 0) {
           // 没有可用选项时直接拒绝
           context.control.action = 'abort';
@@ -143,7 +180,7 @@ export class HumanApprovalPlugin implements Plugin {
         }
 
         // call 类型：注册一次性调用授权
-        const effect = ApprovalPolicy.mapChoiceToEffect(decision.action as 'call' | 'deny', operation, toolCall.name);
+        const effect = mapChoiceToEffectCompat(decision.action as string, undefined, toolCall.name);
         if (effect.type === 'call') {
           context.pendingGrant = effect.payload as PendingGrant;
         }
@@ -185,12 +222,19 @@ export class HumanApprovalPlugin implements Plugin {
       const operation: SafetyOperation = this.buildSafetyOperation(safetyResult, toolMeta, toolCall.name);
 
       // 委托 ApprovalPolicy 生成受信的审批请求
-      const approvalRequest = this.approvalPolicy.resolve({
+      const approvalRequest = (this.approvalPolicy as { resolve: ApprovalResolver } | undefined)?.resolve({
         toolName: toolCall.name,
         toolArgs: toolCall.arguments,
         operation,
         workMode: sessionContext.getWorkMode(),
       });
+
+      // 广播 suspend 事件给外部宿主，携带 ApprovalRequest.choices
+      if (!approvalRequest) {
+        context.control.action = 'abort';
+        context.control.reason = `工具 "${toolCall.name}"：无法生成审批请求（approvalPolicy 未配置）。`;
+        return;
+      }
 
       // 广播 suspend 事件给外部宿主，携带 ApprovalRequest.choices
       context.emitEvent?.({
@@ -223,7 +267,7 @@ export class HumanApprovalPlugin implements Plugin {
       );
 
       // UI 回传的 choiceId 必须属于本次受信的 choices 集，否则按拒绝处理
-      const allowedChoices = new Set(approvalRequest.choices.map(choice => choice.choiceId));
+      const allowedChoices = new Set(approvalRequest.choices.map((choice: { choiceId: string }) => choice.choiceId));
       if (!allowedChoices.has(decision.action)) {
         const haltError = new Error(`HaltedByReject: Untrusted approval choice "${decision.action}" is not allowed for this operation.`);
         service.rejectBySessionId(sessionContext.getSessionId(), haltError);
@@ -234,8 +278,8 @@ export class HumanApprovalPlugin implements Plugin {
 
       const trustedOperation = approvalRequest.operation ?? operation;
 
-      // 委托 ApprovalPolicy 将 choiceId 映射为授权效果
-      const effect = ApprovalPolicy.mapChoiceToEffect(decision.action, trustedOperation, toolCall.name);
+      // 委托兼容函数将 choiceId 映射为授权效果
+      const effect = mapChoiceToEffectCompat(decision.action, trustedOperation.resources, toolCall.name);
 
       // 处理拒绝分支
       if (effect.type === 'deny') {

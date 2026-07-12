@@ -89,7 +89,7 @@ export async function showInteractiveMenu(): Promise<string | null> {
       { value: 'resume', label: '恢复历史会话 (Resume)' },
       { value: 'tool', label: '查看扩展工具清单 (Tool)' },
       { value: 'mcp', label: '管理 MCP 服务 (MCP)' },
-      { value: 'workmode', label: '切换安全执行模式 (WorkMode)' },
+      { value: 'workmode', label: '切换权限模式 (PermissionMode)' },
       { value: 'reload-rules', label: '重载全局和项目规则 (Reload Rules)' },
       { value: 'help', label: '查看帮助 (Help)' },
       { value: 'cancel', label: '取消' },

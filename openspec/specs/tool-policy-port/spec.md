@@ -2,25 +2,23 @@
 
 ### 需求: 工具安全评估必须通过显式端口
 
-系统必须提供独立的工具安全策略端口，以工具调用描述和当前会话事件契约为输入，返回现有 `SafetyCheckResult`，不得要求核心层取得适配器工具对象。
+> ❌ 已删除 — 旧 `ToolPolicyPort` 返回最终安全决策形成重复契约。已在 `claude-permission-model` 变更中移除。
 
-#### 场景: 评估内建工具调用
+**Migration:** 工具改为提供 Claude 风格 `checkPermissions`，最终结果由统一工具权限服务产生。
 
-- **WHEN** BeforeTool 阶段评估一个已注册内建工具
-- **THEN** 策略端口必须调用该工具真实的 `checkSafety(args, sessionContext)`
-- **THEN** 必须原样保留 `status`、`message`、`safePrefix`、`targetPath`、`resources` 和 `operation`
+### 需求: Tool Check Permissions Contract
 
-#### 场景: 识别已有会话授权
+工具端口 MUST 支持 `checkPermissions(input, context)`，返回工具内部的 `allow`、`ask`、`deny` 或 `passthrough`，并由统一权限服务产生最终 `allow`、`ask` 或 `deny`。
 
-- **WHEN** 内建工具的目标资源已存在于当前会话授权中
-- **THEN** 策略评估必须向 `checkSafety()` 传递当前 `SessionEventPort`
-- **THEN** 工具可以返回 `status: 'pass'`，不得因为策略端口缺少会话状态而重复挂起
+#### 场景: Tool passthrough is resolved centrally
 
-#### 场景: 未知工具 fail closed
+- **WHEN** 工具返回 `passthrough`
+- **THEN** 统一权限服务 MUST 继续执行规则和模式处理，不得把 `passthrough` 当作允许执行
 
-- **WHEN** 工具既不在内建工具集合中，也不在当前 MCP 工具描述缓存中
-- **THEN** 策略端口必须返回 `status: 'deny'`
-- **THEN** 系统不得为无法执行的未知工具创建审批请求
+#### 场景: Tool deny cannot be overridden by mode
+
+- **WHEN** 工具检查返回 `deny`，当前模式为 `auto` 或 `bypassPermissions`
+- **THEN** 系统 MUST 保持 `deny`
 
 ### 需求: 策略端口与工具目录必须保持契约隔离
 

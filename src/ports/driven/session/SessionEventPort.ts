@@ -3,7 +3,7 @@
  * @description 定义智能体会话基本属性与安全策略访问的输出端口契约。
  */
 
-import type { WorkMode } from '../../../config/index.js';
+import type { WorkMode, ConfigPermissionMode } from '../../../config/index.js';
 
 /**
  * 会话属性与只读策略输出端口接口。
@@ -30,6 +30,13 @@ export interface SessionEventPort {
    * @returns 当前的安全工作模式配置
    */
   getWorkMode(): WorkMode;
+
+  /**
+   * 获取当前会话的权限模式（Claude Code 同构）。
+   *
+   * @returns 当前权限模式
+   */
+  getPermissionMode(): ConfigPermissionMode;
 
   /**
    * 获取当前有效的安全命令白名单列表。

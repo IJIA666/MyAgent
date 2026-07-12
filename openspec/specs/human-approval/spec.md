@@ -85,21 +85,25 @@
 - **WHEN** tail call 触发需要审批的工具调用
 - **THEN** 系统必须生成独立的 `toolCallId`，传入 `toolRegistry.callTool()`，走完整的 beforeTool 管线 → pendingGrant 提交 → 令牌生命周期，与主调用路径行为一致
 
-### 需求: HumanApprovalPlugin 委托 ApprovalPolicy（ADDED）
-`HumanApprovalPlugin` 的审批决策映射逻辑必须（MUST）委托 `ApprovalPolicy` 中央策略服务，不再自行硬编码 `once/always → call/session` 映射。
+### 需求: HumanApprovalPlugin 委托 ApprovalPolicy
 
-#### 场景: 委托策略层生成 choice 列表
-- **WHEN** `HumanApprovalPlugin.beforeToolMiddleware` 收到 `suspend` 状态且工具已返回 `SafetyOperation`
-- **THEN** 插件必须调用 `ApprovalPolicy.resolve({ toolName, toolArgs, operation, workMode })`，获取 `ApprovalRequest`（含 choices + 校验后的资源），将 `choices` 随 `suspend` 事件广播给 UI 层
+> ❌ 已删除 — HumanApprovalPlugin 不再判断模式、风险或 `planSideEffect`。已在 `claude-permission-model` 变更中迁移为 `PermissionPromptAdapter`。
 
-#### 场景: 降级处理缺失的 SafetyOperation
-- **WHEN** 工具的 `checkSafety()` 返回 `suspend` 但未附带 `SafetyOperation`（旧格式）
-- **THEN** `HumanApprovalPlugin` 必须从 `safetyResult.resources`、`safetyResult.targetPath`、`safetyResult.message` 和工具的 `securityCategory` 组装降级 `SafetyOperation`，再委托 `ApprovalPolicy`
+**Migration:** 插件改为 `PermissionPromptAdapter`，只处理统一权限服务返回的 `ask`。
 
-#### 场景: 委托策略层映射授权效果
-- **WHEN** UI 返回 `choiceId` 后
-- **THEN** `HumanApprovalPlugin` 必须调用 `ApprovalPolicy.mapChoiceToEffect(choiceId, operation, toolName)` 获取授权效果
-- **THEN** 根据效果类型构造 `context.pendingGrant` 或 `context.persistentRuleEffect`，不再自行判断 `decision.action`
+### 需求: Ask Decision Interaction
+
+人工审批适配器 MUST 只对 `ask` 决策提供交互，并将用户选择转化为 once/session/persistent `PermissionUpdate`。
+
+#### 场景: Ask is presented with the service reason
+
+- **WHEN** 权限服务返回 `ask` 及其决策原因
+- **THEN** 审批适配器 MUST 展示该原因，不得重新执行安全分析
+
+#### 场景: User approval updates rules
+
+- **WHEN** 用户选择 session 或 persistent 授权
+- **THEN** 审批适配器 MUST 返回并应用对应 `PermissionUpdate`
 
 ### 需求: UI 层从 ApprovalRequest 渲染选项
 UI 层（`facade.ts`）必须（MUST）从 `ApprovalRequest.choices` 渲染审批选项，不再硬编码 `once/always/deny` 列表。

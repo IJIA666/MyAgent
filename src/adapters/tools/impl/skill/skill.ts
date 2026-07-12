@@ -83,4 +83,12 @@ export class LoadSkillTool implements NativeTool {
   checkSafety(): SafetyCheckResult {
     return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read' as const, summary: '加载技能规范', resources: [] } as SafetyOperation };
   }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 技能加载是安全的只读操作。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'allow', decisionReason: '技能加载只读操作' };
+  }
 }

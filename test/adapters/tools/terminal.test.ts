@@ -19,6 +19,7 @@ import {
 } from '../../../src/adapters/tools/impl/system/terminal.js';
 import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand, detectAdvisoryWarnings } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
+import type { ToolPermissionCheckResult } from '../../../src/core/domain/permissions/permission-types.js';
 
 describe('Terminal Tool 单元测试', () => {
   const mockRootDir = mkdtempSync(join(tmpdir(), 'authorized-terminal-test-'));
@@ -520,5 +521,41 @@ describe('Terminal Tool 单元测试', () => {
       expect(effect.completed).toBe(false);
       expect(effect.reason).toBe('plan_safe_command');
     });
+  });
+});
+
+// ── checkPermissions 测试（5.5 工具迁移测试）──
+
+describe('ExecuteCommandTool.checkPermissions', () => {
+  const tool = new ExecuteCommandTool();
+
+  test('合法只读命令应返回 allow', () => {
+    const result = tool.checkPermissions!({ command: 'git log' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('allow');
+  });
+
+  test('未识别的写倾向命令应返回 passthrough（由 ToolPermissionService 决策）', () => {
+    const result = tool.checkPermissions!({ command: 'npm run build' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('passthrough');
+  });
+
+  test('未识别的命令应返回 passthrough（由 ToolPermissionService 决策）', () => {
+    const result = tool.checkPermissions!({ command: 'env' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('passthrough');
+  });
+
+  test('危险命令应返回 deny', () => {
+    const result = tool.checkPermissions!({ command: 'rm -rf /' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('deny');
+  });
+
+  test('空 command 应返回 deny', () => {
+    const result = tool.checkPermissions!({}) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('deny');
+  });
+
+  test('checkPermissions 不应读取 WorkMode（无 sessionContext 参数）', () => {
+    // checkPermissions 的签名不包含 sessionContext，证明其不依赖 WorkMode
+    expect(tool.checkPermissions!.length).toBeLessThanOrEqual(1);
   });
 });

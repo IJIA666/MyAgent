@@ -82,7 +82,7 @@ describe('BrowserAction 浏览器自动化工具集成测试', () => {
     expect(snapshot).toContain('[@e1]');
     expect(snapshot).toContain('[@e2]');
     expect(snapshot).toContain('[@e3]');
-  });
+  }, 15000);
 
   test('常规浏览器 Action 动作的映射执行（Navigate, Type, Click）', async () => {
     const page = await BrowserSession.getPage();

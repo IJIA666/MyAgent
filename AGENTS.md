@@ -1,4 +1,4 @@
-- **探索核心目标**：本项目旨在构建一个 Agentic 的通用智能助手。workflow是我们的对立面（比如LangGraph）。
+- **探索核心目标**：本项目旨在构建一个 Agentic 的通用智能助手(当前以编程为主要方向，但是是为了提升通用能力)。workflow是我们的对立面（比如LangGraph）。
 
 - **主要学习对象**：研究和剖析的主要对象为 D:\projects\Agents 目录下的 7 个开源/参考项目。由于我们主要使用OpenAI标准，所以Claude Code和Gemini CLI这种特化的项目只做参考，但不妨碍他们是优质项目。最主要的是Claude Code、Hermes Agent、OpenClaw、OpenCode这四个。其中Claude Code和opencode是一组，他们都是专门编码的agent，openclaw和Hermes是一组，他们俩都是通用agent
 

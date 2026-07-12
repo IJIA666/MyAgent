@@ -12,6 +12,7 @@ import { unboxNestedCommand } from './terminal-guard.js';
 import { getRuntimeEnv } from '../../../../config/env.js';
 import { logger } from '../../../../utils/logger.js'; // 导入统一日志单例 logger
 import type { ShellKind } from './terminal-types.js';
+import type { ConfigPermissionMode } from '../../../../config/types.js';
 
 /**
  * 终端执行工作模式定义
@@ -295,6 +296,88 @@ export function saveWorkMode(mode: WorkMode): void {
     writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
   } catch (e) {
     logger.error(`保存工作模式失败:`, e);
+  }
+}
+
+/** 缓存当前内存中的 Claude 同构权限模式 */
+let cachedPermissionMode: ConfigPermissionMode = 'default';
+
+/**
+ * 获取当前内存中的默认权限模式。
+ *
+ * @returns 权限模式
+ */
+export function getPermissionMode(): ConfigPermissionMode {
+  return cachedPermissionMode;
+}
+
+/**
+ * 设置内存中的默认权限模式。
+ *
+ * @param mode - 目标权限模式
+ */
+export function setPermissionMode(mode: ConfigPermissionMode): void {
+  cachedPermissionMode = mode;
+}
+
+/**
+ * 从配置文件和环境变量加载默认权限模式。
+ *
+ * @param env - 环境变量字典（默认取 process.env）
+ * @returns 加载后的权限模式
+ */
+export function loadPermissionMode(env: Record<string, string | undefined> = getRuntimeEnv()): ConfigPermissionMode {
+  const validModes: ConfigPermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'];
+
+  try {
+    const configPath = getAgentConfigPath();
+    if (existsSync(configPath)) {
+      const data = readFileSync(configPath, 'utf-8');
+      const parsed = JSON.parse(data);
+      const val = parsed.permissionMode ?? parsed.permission?.defaultMode;
+      if (validModes.includes(val)) {
+        cachedPermissionMode = val as ConfigPermissionMode;
+        return cachedPermissionMode;
+      }
+    }
+  } catch {
+    // 忽略读取错误
+  }
+
+  const envMode = env.AGENT_PERMISSION_MODE;
+  if (envMode && validModes.includes(envMode as ConfigPermissionMode)) {
+    cachedPermissionMode = envMode as ConfigPermissionMode;
+    return cachedPermissionMode;
+  }
+
+  return cachedPermissionMode;
+}
+
+/**
+ * 持久化保存并更新当前权限模式。
+ *
+ * @param mode - 目标权限模式
+ */
+export function savePermissionMode(mode: ConfigPermissionMode): void {
+  try {
+    cachedPermissionMode = mode;
+    const configPath = getAgentConfigPath();
+    const dir = dirname(configPath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    let parsed: Record<string, unknown> = {};
+    if (existsSync(configPath)) {
+      try {
+        parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        // 忽略解析错误，直接重新组装
+      }
+    }
+    parsed.permissionMode = mode;
+    writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
+  } catch (e) {
+    logger.error(`保存权限模式失败:`, e);
   }
 }
 

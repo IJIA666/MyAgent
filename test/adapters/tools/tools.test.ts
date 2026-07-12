@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { initWorkspace, secureResolvePath, ReadFileTool } from '../../../src/adapters/tools/tools.js';
 import { WriteFileTool, EditFileTool, ListFilesTool } from '../../../src/adapters/tools/impl/filesystem/file-system.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
+import type { ToolPermissionCheckResult } from '../../../src/core/domain/permissions/permission-types.js';
 
 describe('安全沙箱 tools.ts 单元测试', () => {
   const mockRootDir = process.platform === 'win32'
@@ -356,5 +357,58 @@ describe('机密环境文件分级保护审计测试', () => {
       mockSession
     );
     expect(editSafety.status).toBe('pass');
+  });
+});
+
+// ── checkPermissions 测试（5.5 工具迁移测试）──
+
+describe('ReadFileTool.checkPermissions', () => {
+  const tool = new ReadFileTool();
+
+  test('合法路径应返回 allow', () => {
+    const result = tool.checkPermissions!({ targetPath: 'src/index.ts' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('allow');
+  });
+
+  test('空 targetPath 应返回 deny', () => {
+    const result = tool.checkPermissions!({}) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('deny');
+  });
+});
+
+describe('WriteFileTool.checkPermissions', () => {
+  const tool = new WriteFileTool();
+
+  test('写入操作应返回 passthrough（由 ToolPermissionService 决策）', () => {
+    const result = tool.checkPermissions!({ targetPath: 'src/test.ts' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('passthrough');
+  });
+
+  test('空 targetPath 应返回 deny', () => {
+    const result = tool.checkPermissions!({}) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('deny');
+  });
+});
+
+describe('EditFileTool.checkPermissions', () => {
+  const tool = new EditFileTool();
+
+  test('编辑操作应返回 passthrough（由 ToolPermissionService 决策）', () => {
+    const result = tool.checkPermissions!({ targetPath: 'src/index.ts' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('passthrough');
+  });
+
+  test('空 targetPath 应返回 deny', () => {
+    const result = tool.checkPermissions!({}) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('deny');
+  });
+});
+
+describe('ListFilesTool.checkPermissions', () => {
+  const tool = new ListFilesTool();
+
+  test('目录列举应返回 allow', () => {
+    const result = tool.checkPermissions!({}) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('allow');
   });
 });

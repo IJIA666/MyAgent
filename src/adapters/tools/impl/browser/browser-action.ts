@@ -422,6 +422,14 @@ export class BrowserNavigateTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 浏览器操作由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
+  }
+
+  /**
    * 执行网页导航跳转。
    *
    * @param args - 参数字典
@@ -508,6 +516,14 @@ export class BrowserClickTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 浏览器操作由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
+  }
+
+  /**
    * 执行网页元素点击操作。
    *
    * @param args - 参数字典
@@ -566,6 +582,14 @@ export class BrowserTypeTool implements NativeTool {
   checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
     void _args;
     return { status: 'pass' };
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 浏览器操作由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
   }
 
   /**
@@ -635,6 +659,14 @@ export class BrowserScrollTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 浏览器操作由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
+  }
+
+  /**
    * 执行视口滚动。
    *
    * @param args - 参数字典
@@ -680,6 +712,14 @@ export class BrowserBackTool implements NativeTool {
   checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
     void _args;
     return { status: 'pass' };
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 浏览器操作由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
   }
 
   /**
@@ -773,6 +813,14 @@ export class BrowserVisionTool implements NativeTool {
   checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
     void _args;
     return { status: 'pass' };
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 浏览器操作由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
   }
 
   /**
@@ -908,6 +956,14 @@ export class BrowserEnsureLoginTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 浏览器操作由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
+  }
+
+  /**
    * 执行人机协作登录阻塞等待。
    *
    * @param args - 参数字典
@@ -1008,6 +1064,14 @@ export class BrowserGetTextTool implements NativeTool {
   checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
     void _args;
     return { status: 'pass' };
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 浏览器操作由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
   }
 
   /**

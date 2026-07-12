@@ -550,6 +550,26 @@ export class ReadFileTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 只执行工具专属的路径安全检查，不处理 WorkMode/模式逻辑。
+   */
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const targetPath = args.targetPath;
+    if (typeof targetPath !== 'string') {
+      return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
+    }
+    if (isSensitiveEnvFile(targetPath)) {
+      return { kind: 'ask', message: `读取敏感文件: ${targetPath}`, decisionReason: '敏感文件' };
+    }
+    try {
+      secureResolveReadPath(targetPath);
+      return { kind: 'allow', decisionReason: '路径安全通过' };
+    } catch {
+      return { kind: 'ask', message: `访问工作区外路径: ${targetPath}`, decisionReason: '越界路径' };
+    }
+  }
+
+  /**
    * 执行文件读取操作。
    *
    * @param args - 工具调用参数字典
@@ -732,6 +752,21 @@ export class WriteFileTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 写入操作由 ToolPermissionService 统一决策，工具只做敏感文件检测。
+   */
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const targetPath = args.targetPath;
+    if (typeof targetPath !== 'string') {
+      return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
+    }
+    if (isSensitiveEnvFile(targetPath)) {
+      return { kind: 'ask', message: `写入敏感文件: ${targetPath}`, decisionReason: '敏感文件' };
+    }
+    return { kind: 'passthrough' };
+  }
+
+  /**
    * 执行文件写入操作。
    *
    * @param args - 工具调用参数字典
@@ -868,6 +903,21 @@ export class EditFileTool implements NativeTool {
       resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : [],
       operation: { planSideEffect: 'write', riskReason: `编辑操作: ${targetPath}`, operationCategory: 'file-edit', summary: `编辑文件 ${targetPath}`, resources: isOutOfSandbox ? [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }] : [] }
     };
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 编辑操作由 ToolPermissionService 统一决策，工具只做敏感文件检测。
+   */
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const targetPath = args.targetPath;
+    if (typeof targetPath !== 'string') {
+      return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
+    }
+    if (isSensitiveEnvFile(targetPath)) {
+      return { kind: 'ask', message: `编辑敏感文件: ${targetPath}`, decisionReason: '敏感文件' };
+    }
+    return { kind: 'passthrough' };
   }
 
   /**
@@ -1062,6 +1112,20 @@ export class ListFilesTool implements NativeTool {
         resources,
         operation: { planSideEffect: 'read', riskReason: '访问工作区外资源', operationCategory: 'file-read', summary: `列出目录 ${resolvedPath}`, resources }
       };
+    }
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 只执行工具专属的路径安全检查，不处理 WorkMode/模式逻辑。
+   */
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const targetPath = typeof args.targetPath === 'string' ? args.targetPath : '.';
+    try {
+      secureResolveReadPath(targetPath);
+      return { kind: 'allow', decisionReason: '路径安全通过' };
+    } catch {
+      return { kind: 'ask', message: `访问工作区外路径: ${targetPath}`, decisionReason: '越界路径' };
     }
   }
 

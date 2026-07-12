@@ -92,4 +92,12 @@ export class GitShowStatusTool implements NativeTool {
   checkSafety(): SafetyCheckResult {
     return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'command-execute' as const, summary: '查看 Git 工作区状态', resources: [] } as SafetyOperation };
   }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * Git 状态查看是安全的只读操作。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'allow', decisionReason: 'Git 只读操作' };
+  }
 }

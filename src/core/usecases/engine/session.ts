@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { AppConfig, LlmConfig, WorkMode } from '../../../config/index.js';
+import { AppConfig, LlmConfig, WorkMode, ConfigPermissionMode } from '../../../config/index.js';
 import { logger } from '../../../utils/logger.js'; // 导入统一日志单例 logger
 import { AgentTracer } from '../../domain/tracer.js';
 import { SessionContext, ContextTokenUsage, type PendingInteraction } from '../../domain/context.js';
@@ -18,7 +18,6 @@ import { HookEventName, type HookContext, type ApprovalChoice } from '../plugins
 import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { TokenWatermarkPlugin } from '../plugins/TokenWatermarkPlugin.js';
 import { JitRulesPlugin } from '../plugins/JitRulesPlugin.js';
-import { HumanApprovalPlugin } from '../plugins/HumanApprovalPlugin.js';
 import { TracerLogPlugin } from '../plugins/TracerLogPlugin.js';
 import { LoopPreventionPlugin } from '../plugins/LoopPreventionPlugin.js';
 import { LongTermMemoryPlugin } from '../plugins/LongTermMemoryPlugin.js';
@@ -35,7 +34,6 @@ import { ContextRepository } from '../brain/ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import { CompactionService } from '../brain/CompactionService.js';
 import { ApprovalService } from '../security/ApprovalService.js';
-import { ApprovalPolicy } from '../security/ApprovalPolicy.js';
 import { MemoryService } from '../brain/MemoryService.js';
 
 /**
@@ -110,10 +108,10 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     vectorDb: VectorDbPort,
     embedding: EmbeddingPort,
     appConfig: AppConfig,
-    toolPolicyPort: ToolPolicyPort,
+    _toolPolicyPort: ToolPolicyPort,
     qualityCheckPort?: QualityCheckPort,
     taskAborter?: TaskAborterPort,
-    toolAccessMetadata: ToolAccessMetadataPort = {
+    _toolAccessMetadata: ToolAccessMetadataPort = {
       getResourceExtractor: () => undefined,
       getAccessMetadata: () => undefined,
       getResourceExtractors: () => new Map()
@@ -174,14 +172,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     );
     this.pluginRegistry.register(new LoopPreventionPlugin(appConfig));
 
-    // 装配中央审批策略服务并注入 HumanApprovalPlugin（任务 3.5、4.7）
-    const approvalPolicy = new ApprovalPolicy();
-    // 从独立元数据端口注入资源提取器，避免核心层依赖适配器具体实现
-    const extractors = toolAccessMetadata.getResourceExtractors();
-    for (const [name, extractor] of extractors) {
-      approvalPolicy.registerExtractor(name, extractor);
-    }
-    this.pluginRegistry.register(new HumanApprovalPlugin(toolPolicyPort, approvalPolicy));
+    // 权限审批已收敛到 ToolRegistry 的 ToolCallGateway，避免旧插件形成第二决策入口。
 
     LifecycleManager.register('file-backup-manager', async () => {
       FileBackupManager.cleanup(appConfig.workspace);
@@ -869,6 +860,24 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    */
   public setWorkMode(mode: WorkMode): void {
     this.context.setWorkMode(mode);
+  }
+
+  /**
+   * 获取当前智能体的权限模式（Claude Code 同构）。
+   *
+   * @returns 当前权限模式
+   */
+  public getPermissionMode(): ConfigPermissionMode {
+    return this.context.getPermissionMode();
+  }
+
+  /**
+   * 设置当前智能体的权限模式。
+   *
+   * @param mode - 目标权限模式
+   */
+  public setPermissionMode(mode: ConfigPermissionMode): void {
+    this.context.setPermissionMode(mode);
   }
 
   /**

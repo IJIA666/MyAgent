@@ -203,6 +203,20 @@ export class GrepSearchTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 只执行工具专属的路径安全检查。
+   */
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const searchPath = typeof args.searchPath === 'string' ? args.searchPath : '.';
+    try {
+      secureResolveReadPath(searchPath);
+      return { kind: 'allow', decisionReason: '路径安全通过' };
+    } catch {
+      return { kind: 'ask', message: `搜索越界路径: ${searchPath}`, decisionReason: '越界路径' };
+    }
+  }
+
+  /**
    * 执行 Grep 文本匹配检索。
    *
    * @param args - 工具调用参数字典
@@ -380,6 +394,14 @@ export class GlobSearchTool implements NativeTool {
    */
   checkSafety(): SafetyCheckResult {
     return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read', summary: '通配符搜索', resources: [] } as SafetyOperation };
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 通配符搜索始终是安全的只读操作。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'allow', decisionReason: '通配符搜索始终是安全的只读操作' };
   }
 
   /**

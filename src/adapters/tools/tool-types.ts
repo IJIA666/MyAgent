@@ -9,6 +9,7 @@ import type { ResourceExtractor, ToolAccessMetadata } from '../../ports/driven/t
 import type { SafetyCheckResult, ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
+import type { ToolPermissionCheckResult } from '../../core/domain/permissions/permission-types.js';
 
 export type { SafetyCheckResult };
 export type { ResourceExtractor };
@@ -82,6 +83,21 @@ export interface NativeTool {
     sessionContext?: SessionEventPort,
     signal?: AbortSignal
   ): Promise<SafetyCheckResult> | SafetyCheckResult;
+
+  /**
+   * Claude 风格的 checkPermissions 检查（可选的迁移过渡接口）。
+   * 优先于 checkSafety，供 ToolPermissionService 调用。
+   * 工具通过此方法返回 allow/ask/deny/passthrough，
+   * 由统一权限服务产生最终 PermissionDecision。
+   *
+   * 若未实现，ToolPermissionService 会继续调用 checkSafety 并适配结果。
+   *
+   * @param args - 调用工具时传入的参数字典
+   * @returns 工具内部检查结果
+   */
+  checkPermissions?(
+    args: Record<string, unknown>,
+  ): Promise<ToolPermissionCheckResult> | ToolPermissionCheckResult;
 
   /**
    * 工具自带的资源提取器（可选）。

@@ -202,4 +202,12 @@ export class AskUserQuestionTool implements NativeTool {
   checkSafety(): SafetyCheckResult {
     return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read' as const, summary: '向用户提问', resources: [] } as SafetyOperation };
   }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 用户提问是安全的交互操作。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'allow', decisionReason: '用户交互操作' };
+  }
 }

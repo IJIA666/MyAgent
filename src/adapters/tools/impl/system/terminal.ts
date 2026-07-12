@@ -221,6 +221,64 @@ export class ExecuteCommandTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 只执行工具专属的安全检查（硬红线、只读/写判定），
+   * 不处理 WorkMode/模式相关逻辑——这些由 ToolPermissionService 统一处理。
+   *
+   * @param args - 工具调用参数
+   * @returns 工具内部检查结果
+   */
+  checkPermissions(
+    args: Record<string, unknown>,
+  ): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const command = args.command;
+    if (typeof command !== 'string') {
+      return { kind: 'deny', decisionReason: 'command 必须是字符串' };
+    }
+
+    const rawShellKind = (args.shellKind as ShellKind) || 'auto';
+    let plan;
+    try {
+      plan = this.createPlan(command, rawShellKind);
+    } catch (error) {
+      return {
+        kind: 'deny',
+        decisionReason: error instanceof Error ? error.message : '无法解析 shell 执行计划',
+      };
+    }
+
+    const resolvedShellKind = plan.shellKind;
+    const isExplicitShell = rawShellKind !== 'auto';
+    const unboxShellKind = isExplicitShell ? resolvedShellKind : undefined;
+    const unboxedCmd = unboxNestedCommand(command, unboxShellKind).trim();
+
+    // 硬红线检查（工具级 deny）
+    if (isHardlineDangerous(command, resolvedShellKind)) {
+      return { kind: 'deny', decisionReason: '拒绝执行毁灭性系统破坏命令' };
+    }
+
+    // 可证明安全的只读命令 → allow
+    const isReadSafe = isPlanSafeCommand(command, resolvedShellKind)
+      && !isSensitiveReadCommand(unboxedCmd, resolvedShellKind);
+    if (isReadSafe) {
+      return { kind: 'allow', decisionReason: '安全的只读命令' };
+    }
+
+    // 敏感读取 → ask
+    if (isPlanSafeCommand(command, resolvedShellKind) && isSensitiveReadCommand(unboxedCmd, resolvedShellKind)) {
+      return { kind: 'ask', message: '该命令可能读取敏感信息', decisionReason: '敏感只读命令' };
+    }
+
+    // 写倾向命令 → ask
+    if (containsDangerousWriteToken(unboxedCmd, resolvedShellKind)) {
+      return { kind: 'ask', message: `执行写操作命令: ${command}`, decisionReason: '写倾向命令' };
+    }
+
+    // 无法确定副作用的命令 → passthrough，由 ToolPermissionService 处理
+    return { kind: 'passthrough' };
+  }
+
+  /**
    * 精化终端命令的实际副作用。
    * 复用 checkSafety 阶段的同构 Plan 安全判定，避免审批判定与 effect 判定漂移。
    * 已通过 Plan 安全判定的原子只读命令返回 read；其他获准执行的命令返回 unknown。

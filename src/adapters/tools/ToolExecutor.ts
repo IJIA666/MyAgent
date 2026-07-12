@@ -1,194 +1,55 @@
-import { existsSync } from 'fs';
-import { computeArgumentsDigest } from '../../core/domain/context.js';
-import { secureResolveWritePath } from './impl/base.js';
-import type { NativeTool, CallToolResult, ToolExecutionOutcome, ToolExecutionEffect } from './tool-types.js';
-import { deriveDefaultToolExecutionEffect } from './tool-types.js';
-import type { ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
-import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
-import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabilityPort.js';
-import type { EventNotificationPort } from '../../ports/driven/session/EventNotificationPort.js';
-import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
-import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
+/**
+ * @file 宸ュ叿鎵ц璋冨害鍣ㄣ€? * 璐熻矗 tools/call 璇箟锛氬弬鏁拌繘鍏ユ墽琛岃竟鐣屻€佽兘鍔涜棰嗐€佸伐鍏锋墽琛屽垎鍙戜笌缁撴灉鍖呰銆? * 鏂版潈闄愰摼璺笅浣跨敤 executeAuthorized() 鏂规硶銆? */
+
+import type { CallToolResult, ToolExecutionOutcome, ToolExecutionEffect } from './tool-types.js';
 import type { ToolCatalog } from './ToolCatalog.js';
-import { InteractionRequestError } from '../../ports/driven/session/InteractionPort.js';
+import type { AuthorizedExecutionContext } from '../../core/domain/permissions/tool-permission-service.js';
 
 /**
- * 工具执行调度器。
- * 负责 tools/call 语义：参数进入执行边界、能力认领、工具执行分发与结果包装。
- * 不负责工具目录管理——目录查询由 ToolCatalog 处理。
- */
+ * 宸ュ叿鎵ц璋冨害鍣ㄣ€? * 璐熻矗 tools/call 璇箟锛氬弬鏁拌繘鍏ユ墽琛岃竟鐣屻€佽兘鍔涜棰嗐€佸伐鍏锋墽琛屽垎鍙戜笌缁撴灉鍖呰銆? */
 export class ToolExecutor {
-  /** 工具目录引用，用于执行前的工具查找 */
   private catalog: ToolCatalog;
+  private readonly isAuthorizedContext: (context: AuthorizedExecutionContext) => boolean;
 
-  /**
-   * @param catalog - 工具目录实例，用于按名称查找 NativeTool
-   */
-  constructor(catalog: ToolCatalog) {
+  constructor(
+    catalog: ToolCatalog,
+    isAuthorizedContext: (context: AuthorizedExecutionContext) => boolean = () => false,
+  ) {
     this.catalog = catalog;
+    this.isAuthorizedContext = isAuthorizedContext;
+  }
+
+  async executeAuthorized(
+    authorizedContext: AuthorizedExecutionContext,
+  ): Promise<ToolExecutionOutcome<CallToolResult>> {
+    if (!this.isAuthorizedContext(authorizedContext)) {
+      throw new Error('ToolExecutor 拒绝未经当前权限服务签发的执行上下文');
+    }
+    const tool = this.catalog.getTool(authorizedContext.toolName);
+    if (!tool) {
+      throw new Error('Tool is not registered: ' + authorizedContext.toolName);
+    }
+    const resultText = await tool.execute(authorizedContext.args);
+    const rawResult: CallToolResult = {
+      content: [{ type: "text", text: resultText }]
+    };
+    const effect: ToolExecutionEffect = { kind: "none", executionStarted: true, completed: true, resources: [], reason: "no_execution" };
+    return { value: rawResult, effect };
   }
 
   /**
-   * 执行指定的工具调用。
-   * 保持与当前 callTool() 一致的执行时序：工具查找 → 能力认领 → 工具执行 → 结果包装。
+   * 保留旧方法签名用于显式拒绝绕过请求。
    *
-   * @param toolName - 工具名称
-   * @param args - 工具参数
-   * @param sessionContext - 可选的全功能会话上下文
-   * @param interactionPort - 可选的交互端口
-   * @param signal - 可选的 AbortSignal
-   * @param toolCallId - 可选的工具调用唯一标识（用于 call capability 生命周期管理）
-   * @returns 符合 MCP CallToolResult 结构的结果对象
+   * @param _toolName - 被拒绝的工具名称
+   * @param _args - 被拒绝的工具参数
+   * @returns 不返回执行结果
+   * @throws 所有未经 Gateway 的直接执行请求
    */
   async execute(
-    toolName: string,
-    args: Record<string, unknown>,
-    sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
-    interactionPort?: InteractionPort,
-    signal?: AbortSignal,
-    toolCallId?: string
+    _toolName: string,
+    _args: Record<string, unknown>,
   ): Promise<ToolExecutionOutcome<CallToolResult>> {
-    try {
-      const tool = this.catalog.getTool(toolName);
-      if (!tool) {
-        throw new Error(`虚拟 MCP Server 不支持工具: ${toolName}`);
-      }
-
-      // 构建 ToolExecutionContext（若 toolCallId 存在）
-      // sessionContext 同时满足 SessionEventPort & CallCapabilityPort
-      const execContext: ToolExecutionContext | undefined = toolCallId && sessionContext
-        ? {
-            sessionContext,
-            toolCallId,
-            toolName,
-            argumentsDigest: computeArgumentsDigest(args),
-            claimedResources: []
-          }
-        : undefined;
-
-      // 在 execute 前 claim 一次性令牌（匹配 toolCallId + argumentsDigest）
-      if (execContext) {
-        const claimed = sessionContext!.claimCapability(toolCallId!, toolName, args);
-        if (claimed) {
-          execContext.claimedResources = claimed;
-        }
-      }
-
-      // 底层高危操作安全硬拦截——仅对"未接入新生命周期"的旧调用路径生效
-      if (sessionContext && !execContext) {
-        await this.enforceDangerCheck(tool, toolName, args, sessionContext);
-      }
-
-      // 传入 ToolExecutionContext（含 claim 后的 claimedResources），无 toolCallId 时传入原始 sessionContext
-      const contextToPass = execContext ?? sessionContext;
-      const resultText = await tool.execute(args, contextToPass, signal, interactionPort);
-
-      const rawResult: CallToolResult = {
-        content: [
-          {
-            type: "text",
-            text: resultText
-          }
-        ]
-      };
-
-      // 尝试使用工具的精确 effect 解析，回退到默认推导器
-      const refinedEffect = tool.resolveExecutionEffect?.(args, resultText);
-      const effect: ToolExecutionEffect = refinedEffect ?? deriveDefaultToolExecutionEffect(
-        tool.securityCategory,
-        true,
-        true
-      );
-
-      return { value: rawResult, effect };
-    } catch (error: unknown) {
-      if (error instanceof InteractionRequestError) {
-        throw error;
-      }
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      const errorResult: CallToolResult = {
-        content: [
-          {
-            type: "text",
-            text: `执行失败: ${errorMsg}`
-          }
-        ],
-        isError: true
-      };
-
-      // 尝试使用工具的精确 effect 解析（失败时传 error），回退到默认推导器
-      const tool = this.catalog.getTool(toolName);
-      const refinedEffect = tool?.resolveExecutionEffect?.(args, undefined, error instanceof Error ? error : undefined);
-      const effect: ToolExecutionEffect = refinedEffect ?? deriveDefaultToolExecutionEffect(
-        tool?.securityCategory ?? 'write',
-        true,
-        false
-      );
-
-      return { value: errorResult, effect, cause: error instanceof Error ? error : undefined };
-    }
+    throw new Error('ToolExecutor 不接受未经 ToolCallGateway 授权的直接执行请求');
   }
 
-  /**
-   * 旧调用路径的高危操作安全硬拦截。
-   * 仅供未接入 toolCallId / ToolExecutionContext 的旧路径使用。
-   * 新路径的审批由 BeforeTool Hook + claimCapability 机制处理。
-   */
-  private async enforceDangerCheck(
-    tool: NativeTool,
-    toolName: string,
-    args: Record<string, unknown>,
-    sessionContext: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort
-  ): Promise<void> {
-    let isDangerous = false;
-    let warningMsg = '';
-
-    const category = tool.securityCategory;
-    if (category !== 'read') {
-      const pathKey = tool.filePathParamKey;
-      if (pathKey && typeof args[pathKey] === 'string') {
-        const targetPath = args[pathKey] as string;
-        try {
-          const safePath = secureResolveWritePath(targetPath, sessionContext);
-          if (existsSync(safePath)) {
-            if (toolName === 'deletePath') {
-              isDangerous = true;
-              warningMsg = `智能体试图删除文件或目录。目标路径: "${targetPath}"`;
-            } else if (toolName !== 'createDirectory') {
-              isDangerous = true;
-              if (toolName === 'writeFile') {
-                warningMsg = `智能体试图强行覆盖已有的文件。目标路径: "${targetPath}"`;
-              } else {
-                warningMsg = `智能体试图修改或覆盖已有的文件。工具: "${toolName}"，目标路径: "${targetPath}"`;
-              }
-            }
-          } else {
-            if (toolName === 'deletePath') {
-              isDangerous = true;
-              warningMsg = `智能体试图删除文件或目录。目标路径: "${targetPath}"`;
-            }
-          }
-        } catch {
-          // 路径解析越权或错误，交给工具自身的 checkSafety 处理
-        }
-      } else {
-        isDangerous = true;
-        warningMsg = `智能体试图执行高危写入操作（缺少参数元数据声明）。工具: "${toolName}"`;
-      }
-    }
-
-    if (isDangerous) {
-      const approvalId = `approve_dangerous_${Math.random().toString(36).substring(2, 9)}`;
-      const decision = await sessionContext.waitApproval(
-        approvalId,
-        { name: toolName, arguments: args },
-        undefined,
-        warningMsg
-      );
-
-      if (decision.action === 'deny') {
-        throw new Error(`用户拒绝了高危操作。工具: "${toolName}"，原因: 用户审批拒绝`);
-      }
-    }
-  }
 }

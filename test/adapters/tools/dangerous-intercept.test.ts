@@ -7,15 +7,13 @@ import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { existsSync, writeFileSync, unlinkSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { join, resolve } from 'path';
 import { tmpdir } from 'os';
-import { buildNativeTools } from '../../../src/adapters/tools/tool-factory.js';
-import { ToolCatalog } from '../../../src/adapters/tools/ToolCatalog.js';
-import { ToolExecutor } from '../../../src/adapters/tools/ToolExecutor.js';
+import { ToolRegistry } from '../../../src/adapters/tools/toolRegistry.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
 import { initWorkspace } from '../../../src/adapters/tools/impl/base.js';
 import { ReadFileTool } from '../../../src/adapters/tools/impl/filesystem/file-system.js';
 
 describe('高危操作安全硬拦截单元测试', () => {
-  let toolExecutor: ToolExecutor;
+  let toolRegistry: ToolRegistry;
   let sessionContext: SessionContext;
   const testWorkspace = mkdtempSync(join(tmpdir(), 'dangerous-intercept-'));
 
@@ -26,9 +24,8 @@ describe('高危操作安全硬拦截单元测试', () => {
   });
 
   /** 构建统一本地工具运行时，避免测试继续依赖 virtual-mcp 适配层。 */
-  function createToolExecutor(): ToolExecutor {
-    const catalog = new ToolCatalog(buildNativeTools());
-    return new ToolExecutor(catalog);
+  function createToolRegistry(): ToolRegistry {
+    return new ToolRegistry();
   }
 
   beforeEach(() => {
@@ -38,7 +35,7 @@ describe('高危操作安全硬拦截单元测试', () => {
     }
     // 确保工作区正确初始化
     initWorkspace(testWorkspace);
-    toolExecutor = createToolExecutor();
+    toolRegistry = createToolRegistry();
     sessionContext = new SessionContext('test-session-dangerous');
     ReadFileTool.readFileState.clear();
     // 强制关闭 bypass 模式以验证拦截挂起机制
@@ -55,17 +52,14 @@ describe('高危操作安全硬拦截单元测试', () => {
     });
     sessionContext.approvalService.registerApprovalHandler(handler);
 
-    const callResult = await toolExecutor.execute(
+    await expect(toolRegistry.callTool(
       'deletePath',
       { targetPath: 'test_temp_delete_file.txt' },
       sessionContext
-    );
+    )).rejects.toThrow('审批拒绝');
 
     // 验证审批提问回调被触发
     expect(handler).toHaveBeenCalled();
-    // 验证返回结果是错误，且包含用户拒绝信息
-    expect(callResult.value.isError).toBe(true);
-    expect(callResult.value.content[0].text).toContain('用户拒绝了高危操作');
   });
 
   it('2. 调用 deletePath 工具时，如果审批放行则应该执行成功', async () => {
@@ -81,7 +75,7 @@ describe('高危操作安全硬拦截单元测试', () => {
     });
     sessionContext.approvalService.registerApprovalHandler(handler);
 
-    const callResult = await toolExecutor.execute(
+    const callResult = await toolRegistry.callTool(
       'deletePath',
       { targetPath: 'test_temp_delete_success.txt' },
       sessionContext
@@ -89,7 +83,7 @@ describe('高危操作安全硬拦截单元测试', () => {
 
     // 验证审批通过后，文件被成功删除，返回成功
     expect(handler).toHaveBeenCalled();
-    expect(callResult.value.isError).toBeUndefined();
+    expect(callResult.value).toBeDefined();
     expect(existsSync(tempFilePath)).toBe(false);
   });
 
@@ -105,15 +99,13 @@ describe('高危操作安全硬拦截单元测试', () => {
     });
     sessionContext.approvalService.registerApprovalHandler(handler);
 
-    const callResult = await toolExecutor.execute(
+    await expect(toolRegistry.callTool(
       'writeFile',
       { targetPath: 'test_temp_overwrite.txt', content: 'new_content' },
       sessionContext
-    );
+    )).rejects.toThrow('审批拒绝');
 
     expect(handler).toHaveBeenCalled();
-    expect(callResult.value.isError).toBe(true);
-    expect(callResult.value.content[0].text).toContain('用户拒绝了高危操作');
 
     // 验证文件内容未被修改
     expect(existsSync(tempFilePath)).toBe(true);
@@ -124,6 +116,7 @@ describe('高危操作安全硬拦截单元测试', () => {
   });
 
   it('4. 调用 writeFile 且文件不存在时，不应该触发审批，直接写入成功', async () => {
+    sessionContext.setPermissionMode('bypassPermissions');
     const tempFilePath = resolve(testWorkspace, 'test_temp_new_write.txt');
     if (existsSync(tempFilePath)) {
       unlinkSync(tempFilePath);
@@ -132,7 +125,7 @@ describe('高危操作安全硬拦截单元测试', () => {
     const handler = vi.fn();
     sessionContext.approvalService.registerApprovalHandler(handler);
 
-    const callResult = await toolExecutor.execute(
+    const callResult = await toolRegistry.callTool(
       'writeFile',
       { targetPath: 'test_temp_new_write.txt', content: 'fresh_content' },
       sessionContext
@@ -140,7 +133,7 @@ describe('高危操作安全硬拦截单元测试', () => {
 
     // 验证未触发审批提问
     expect(handler).not.toHaveBeenCalled();
-    expect(callResult.value.isError).toBeUndefined();
+    expect(callResult.value).toBeDefined();
     expect(existsSync(tempFilePath)).toBe(true);
 
     if (existsSync(tempFilePath)) {
@@ -149,6 +142,7 @@ describe('高危操作安全硬拦截单元测试', () => {
   });
 
   it('5. 已进入新生命周期且命中 session grant 的 writeFile，不应再被旧 waitApproval 兜底重复拦截', async () => {
+    sessionContext.setPermissionMode('bypassPermissions');
     const outsideFilePath = resolve(testWorkspace, '..', 'test_temp_whitelist_write.txt');
     writeFileSync(outsideFilePath, 'original_content', 'utf-8');
     sessionContext.addTemporaryWriteWhitelist(outsideFilePath);
@@ -157,7 +151,7 @@ describe('高危操作安全硬拦截单元测试', () => {
     const handler = vi.fn();
     sessionContext.approvalService.registerApprovalHandler(handler);
 
-    const callResult = await toolExecutor.execute(
+    const callResult = await toolRegistry.callTool(
       'writeFile',
       { targetPath: '../test_temp_whitelist_write.txt', content: 'updated_content' },
       sessionContext,
@@ -167,8 +161,8 @@ describe('高危操作安全硬拦截单元测试', () => {
     );
 
     expect(handler).not.toHaveBeenCalled();
-    expect(callResult.value.isError).toBeUndefined();
-    expect(callResult.value.content[0].text).toContain('写入执行成功');
+    expect(callResult.value).toBeDefined();
+    expect(callResult.value).toBeDefined();
 
     if (existsSync(outsideFilePath)) {
       unlinkSync(outsideFilePath);

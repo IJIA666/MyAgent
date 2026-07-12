@@ -76,6 +76,14 @@ export class CreateDirectoryTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 目录创建由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
+  }
+
+  /**
    * 执行递归创建目录。
    *
    * @param args - 工具调用参数字典
@@ -167,6 +175,14 @@ export class DeletePathTool implements NativeTool {
       resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : [],
       operation: { planSideEffect: 'write', riskReason: `删除路径: ${targetPath}`, operationCategory: 'file-delete' as const, summary: `删除 ${targetPath}`, resources: isOutOfSandbox ? [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }] : [] }
     };
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 路径删除由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
   }
 
   /**
@@ -277,6 +293,14 @@ export class MovePathTool implements NativeTool {
       resources,
       operation: { planSideEffect: 'write', riskReason: `移动: ${sourcePath} → ${destinationPath}`, operationCategory: 'file-move' as const, summary: `移动 ${sourcePath} 到 ${destinationPath}`, resources }
     };
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 路径移动由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
   }
 
   /**
@@ -407,6 +431,14 @@ export class CopyPathTool implements NativeTool {
       resources,
       operation: { planSideEffect: 'write', riskReason: `复制: ${sourcePath} → ${destinationPath}`, operationCategory: 'file-copy' as const, summary: `复制 ${sourcePath} 到 ${destinationPath}`, resources }
     };
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 路径复制由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'passthrough' };
   }
 
   /**

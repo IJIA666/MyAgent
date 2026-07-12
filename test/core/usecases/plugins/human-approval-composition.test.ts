@@ -1,195 +1,69 @@
 /**
- * HumanApprovalPlugin 组合测试。
- * 使用真实 BuiltinToolPolicyAdapter + 真实内建工具 + HumanApprovalPlugin，
- * 验证 pass/deny/suspend 三条路径在生产组合下的可达性。
- * 不依赖 MCP 连接，仅使用本地内建工具。
+ * @file 权限提示适配器组合测试。
+ * 验证新的 ask-only 审批边界，不再测试已删除的 HumanApprovalPlugin 状态机。
  */
 
-import { describe, it, expect, vi } from 'vitest';
-import { HumanApprovalPlugin } from '../../../../src/core/usecases/plugins/HumanApprovalPlugin.js';
-import { ApprovalPolicy } from '../../../../src/core/usecases/security/ApprovalPolicy.js';
-import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-types.js';
-import type { HookContext } from '../../../../src/core/usecases/plugins/plugin-types.js';
-import type { ToolPolicyPort } from '../../../../src/ports/shared/tool-policy.js';
-import { BuiltinToolPolicyAdapter } from '../../../../src/adapters/tools/builtin-tool-policy-adapter.js';
-import { buildNativeTools } from '../../../../src/adapters/tools/tool-factory.js';
-import { SessionContext } from '../../../../src/core/domain/context.js';
+import { describe, expect, it, vi } from 'vitest';
+import { PermissionPromptAdapter } from '../../../../src/core/usecases/plugins/PermissionPromptAdapter.js';
+import { PermissionRuleStore } from '../../../../src/core/domain/permissions/rule-store.js';
+import type { PermissionDecision } from '../../../../src/core/domain/permissions/permission-types.js';
 
-// 使用真实内建工具构造适配器
-const allTools = buildNativeTools();
-const realPolicyPort = new BuiltinToolPolicyAdapter(allTools);
-
-/** 获取一个读工具的可用名称 */
-function getReadToolName(): string | undefined {
-  return allTools.find(t => t.securityCategory === 'read')?.name;
-}
-
-/** 构造最小 HookContext */
-function createMinimalContext(
-  session: SessionContext,
-  toolCall: { id: string; name: string; arguments: Record<string, unknown> },
-  overrides?: Partial<HookContext>,
-): HookContext {
-  return {
-    sessionContext: session,
-    eventName: HookEventName.BeforeTool,
-    toolCall,
-    control: { action: 'continue' },
-    emitEvent: vi.fn(),
-    ...overrides,
-  };
-}
-
-describe('HumanApprovalPlugin — 真实 BuiltinToolPolicyAdapter 组合', () => {
-  it('6.5 pass 路径：内建工具 checkSafety 返回 pass → 直接放行', async () => {
-    const session = new SessionContext('test-composition-pass');
-    session.setWorkMode('Safe');
-    session.approvalService.setBypassMode(true);
-
-    const plugin = new HumanApprovalPlugin(realPolicyPort, new ApprovalPolicy());
-
-    const readToolName = getReadToolName();
-    if (!readToolName) return; // skip if no tools
-
-    const ctx = createMinimalContext(session, {
-      id: 'comp-pass-001',
-      name: readToolName,
-      arguments: {},
+describe('PermissionPromptAdapter', () => {
+  it('只向宿主展示 ask 的 message 和 decisionReason', async () => {
+    const ruleStore = new PermissionRuleStore();
+    const prompt = vi.fn(async (decision: PermissionDecision & { kind: 'ask' }) => {
+      expect(decision.message).toContain('需要确认');
+      expect(decision.decisionReason).toContain('规则');
+      return { approved: true, scope: 'once' as const };
     });
+    const adapter = new PermissionPromptAdapter(ruleStore, prompt);
 
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    // 读工具在安全模式下无参数调用可能返回 pass 或 suspend
-    // 关键是插件不抛异常、没有 abort，next 被调用
-    expect(ctx.control.action).not.toBe('abort');
-  });
-
-  it('6.5 deny 路径：通过 ToolPolicyPort 返回 deny → 控制 abort', async () => {
-    const session = new SessionContext('test-composition-deny');
-    session.setWorkMode('Safe');
-
-    // 使用 mock 端口直接返回 deny
-    const mockPort = { evaluate: async () => ({ status: 'deny' as const, message: '策略禁止' }) };
-    const plugin = new HumanApprovalPlugin(mockPort, new ApprovalPolicy());
-
-    const ctx = createMinimalContext(session, {
-      id: 'comp-deny-001',
-      name: 'readFile',
-      arguments: { targetPath: '/etc/passwd' },
-    });
-
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    expect(ctx.control.action).toBe('abort');
-    expect(ctx.control.reason).toContain('策略禁止');
-  });
-
-  it('6.5 suspend 路径：mock 端口返回 suspend → 通过 ApprovalPolicy 生成 choices → 用户选择 call → pendingGrant', async () => {
-    const session = new SessionContext('test-composition-suspend');
-    session.setWorkMode('Safe');
-    session.approvalService.setBypassMode(false);
-
-    // 直接让端口返回 suspend（模拟真实工具触发的挂起）
-    const mockPort: ToolPolicyPort = {
-      evaluate: async () => ({
-        status: 'suspend' as const,
-        message: '需要授权',
-        resources: [{ kind: 'path' as const, access: 'write' as const, normalizedPath: '/tmp/test.txt' }],
-      }),
+    const decision: PermissionDecision = {
+      kind: 'ask',
+      message: '工具需要确认',
+      decisionReason: '规则命中，需要确认',
     };
-    const plugin = new HumanApprovalPlugin(mockPort, new ApprovalPolicy());
+    const response = await adapter.promptForPermission(decision, 'default');
 
-    // mock wait 立即返回 call
-    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'call' });
-
-    const ctx = createMinimalContext(session, {
-      id: 'comp-suspend-001',
-      name: 'writeFile',
-      arguments: { targetPath: '/tmp/test.txt' },
-    }, {
-      toolRegistry: {
-        getTool: () => ({ securityCategory: 'write' as const, name: 'writeFile' }),
-        getTools: async () => [],
-        callTool: async () => null,
-        close: async () => {},
-      } as never,
-    });
-
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    // suspend → wait → call → pendingGrant
-    expect(ctx.pendingGrant).toBeDefined();
-    expect(ctx.pendingGrant!.type).toBe('call');
-    // pendingGrant 的 toolCallId 由插件从 context.toolCall.id 注入
-    expect(ctx.pendingGrant!.toolCallId).toBe('comp-suspend-001');
+    expect(response).toEqual({ approved: true, scope: 'once' });
+    expect(prompt).toHaveBeenCalledOnce();
   });
 
-  it('Plan 模式使用真实 listFiles 访问 C 盘时应请求只读授权', async () => {
-    const session = new SessionContext('test-plan-external-read');
-    session.setWorkMode('Plan');
-    session.approvalService.setBypassMode(false);
-    const plugin = new HumanApprovalPlugin(realPolicyPort, new ApprovalPolicy());
-    const waitSpy = vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'call' });
-    const ctx = createMinimalContext(session, {
-      id: 'plan-list-c-drive',
-      name: 'listFiles',
-      arguments: { targetPath: 'C:\\' },
-    });
-
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    expect(waitSpy).toHaveBeenCalledOnce();
-    expect(next).toHaveBeenCalledOnce();
-    expect(ctx.pendingGrant?.type).toBe('call');
-    expect(ctx.pendingGrant?.resources).toEqual([
-      expect.objectContaining({ kind: 'directory-scope', access: 'read' }),
-    ]);
+  it('allow 和 deny 不属于审批适配器处理范围', () => {
+    expect(PermissionPromptAdapter.isAskDecision({ kind: 'allow' })).toBe(false);
+    expect(PermissionPromptAdapter.isAskDecision({ kind: 'deny', decisionReason: 'blocked' })).toBe(false);
   });
 
-  it('Plan 模式使用真实 execute_command 查询磁盘时应直接放行', async () => {
-    const session = new SessionContext('test-plan-wmic-read');
-    session.setWorkMode('Plan');
-    session.approvalService.setBypassMode(false);
-    const plugin = new HumanApprovalPlugin(realPolicyPort, new ApprovalPolicy());
-    const waitSpy = vi.spyOn(session.approvalService, 'wait');
-    const ctx = createMinimalContext(session, {
-      id: 'plan-wmic-disk-query',
-      name: 'execute_command',
-      arguments: {
-        command: 'wmic logicaldisk get caption,size,freespace,description',
-        shellKind: 'cmd',
-      },
-    });
+  it('session 授权写入 session 规则来源', () => {
+    const ruleStore = new PermissionRuleStore();
+    const adapter = new PermissionPromptAdapter(ruleStore);
+    const update = adapter.buildUpdate('Bash', 'npm run *', 'session');
 
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    expect(next).toHaveBeenCalledOnce();
-    expect(waitSpy).not.toHaveBeenCalled();
-    expect(ctx.control.action).toBe('continue');
+    expect(update).toBeDefined();
+    adapter.applyUpdate(update!);
+    expect(ruleStore.getRules('session')).toHaveLength(1);
+    expect(ruleStore.getRules('session')[0].ruleValue.ruleContent).toBe('npm run *');
   });
 
-  it('6.6 未知工具 fail-closed：BuiltinToolPolicyAdapter 返回 deny', async () => {
-    const session = new SessionContext('test-unknown-tool');
-    session.setWorkMode('Safe');
+  it('persistent 授权写入 userSettings，once 不产生可复用规则', () => {
+    const ruleStore = new PermissionRuleStore();
+    const adapter = new PermissionPromptAdapter(ruleStore);
 
-    const plugin = new HumanApprovalPlugin(realPolicyPort, new ApprovalPolicy());
+    expect(adapter.buildUpdate('Write', undefined, 'once')).toBeNull();
+    const update = adapter.buildUpdate('Write', 'src/*', 'persistent');
+    adapter.applyUpdate(update!);
 
-    const ctx = createMinimalContext(session, {
-      id: 'unknown-001',
-      name: 'non-existent-tool-12345',
-      arguments: {},
-    });
+    expect(ruleStore.getRules('userSettings')).toHaveLength(1);
+    expect(ruleStore.getRules('userSettings')[0].ruleValue.toolName).toBe('Write');
+  });
 
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
+  it('未配置宿主交互时安全拒绝', async () => {
+    const adapter = new PermissionPromptAdapter(new PermissionRuleStore());
+    const response = await adapter.promptForPermission(
+      { kind: 'ask', message: '确认', decisionReason: 'test' },
+      'default',
+    );
 
-    expect(ctx.control.action).toBe('abort');
-    expect(ctx.control.reason).toContain('拒绝');
-    expect(next).not.toHaveBeenCalled();
+    expect(response).toEqual({ approved: false, scope: 'once' });
   });
 });

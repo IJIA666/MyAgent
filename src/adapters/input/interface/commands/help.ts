@@ -15,7 +15,7 @@ export class HelpCommand implements ICommand {
     console.log(`  ${theme.highlight('/resume <id>')}      - 恢复指定的历史会话上下文`);
     console.log(`  ${theme.highlight('/mcp <list|enable|disable> [name]')} - 管理与查阅 MCP 扩展服务`);
     console.log(`  ${theme.highlight('/reload-rules')}    - 重新读取并锁定最新的全局和项目局部规则`);
-    console.log(`  ${theme.highlight('/workmode [mode]')}  - 查看或切换安全执行模式 (Safe|Auto|YOLO|Plan，空参开启向导)`);
+    console.log(`  ${theme.highlight('/workmode [mode]')}  - 查看或切换权限模式 (default|acceptEdits|plan|auto|dontAsk|bypassPermissions，空参开启向导)`);
     console.log(`  ${theme.highlight('/compact')}         - 强制对当前上下文历史执行静默压缩与物理轮换`);
     console.log(`  ${theme.highlight('/tool list')}       - 查看当前已挂载的可用工具清单`);
     console.log(`  ${theme.highlight('/help')}             - 显示此帮助信息`);

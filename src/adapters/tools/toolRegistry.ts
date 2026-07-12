@@ -3,6 +3,9 @@ import type { BuildNativeToolsOptions } from './tool-factory.js';
 import { McpToolManager } from './mcp-client.js';
 import { ToolCatalog } from './ToolCatalog.js';
 import { ToolExecutor } from './ToolExecutor.js';
+import { ToolCallGateway } from './ToolCallGateway.js';
+import { PermissionRuleStore } from '../../core/domain/permissions/rule-store.js';
+import { ToolPermissionService } from '../../core/domain/permissions/tool-permission-service.js';
 import { ToolAccessMetadataProvider } from './ToolAccessMetadataProvider.js';
 import { BuiltinToolPolicyAdapter } from './builtin-tool-policy-adapter.js';
 import { ExternalToolPolicyAdapter } from './external-tool-policy-adapter.js';
@@ -16,7 +19,7 @@ import type { InteractionPort } from '../../ports/driven/session/InteractionPort
 import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
 import type { ToolAccessMetadataPort, ResourceExtractor, ToolAccessMetadata } from '../../ports/driven/tools/ToolAccessMetadataPort.js';
 import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
-import type { ToolExecutionOutcome, ToolExecutionEffect } from './tool-types.js';
+import type { ToolExecutionOutcome, ToolExecutionEffect, CallToolResult } from './tool-types.js';
 import { deriveDefaultToolExecutionEffect } from './tool-types.js';
 
 /**
@@ -31,6 +34,12 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
   private catalog: ToolCatalog;
   // 工具执行调度器（委托 callTool）
   private executor: ToolExecutor;
+  /** 所有本地工具调用的统一权限网关。 */
+  private gateway: ToolCallGateway;
+  /** 当前注册表对应的规则存储。 */
+  private permissionRuleStore: PermissionRuleStore;
+  /** 当前注册表对应的权限服务。 */
+  private permissionService: ToolPermissionService;
   // 工具访问元数据聚合器（委托资源提取器查询）
   private metadataProvider: ToolAccessMetadataProvider;
   // 工具策略评估端口（供 HumanApprovalPlugin 注入）
@@ -51,8 +60,15 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     const allTools = buildNativeTools(options);
     // 构建工具目录
     this.catalog = new ToolCatalog(allTools, mcpManager);
-    // 构建工具执行调度器
-    this.executor = new ToolExecutor(this.catalog);
+    // 构建执行器与权限网关，网关只使用本实例签发的授权上下文。
+    this.permissionRuleStore = new PermissionRuleStore();
+    this.permissionService = new ToolPermissionService({ ruleStore: this.permissionRuleStore });
+    this.executor = new ToolExecutor(
+      this.catalog,
+      (context) => this.permissionService.isIssuedContext(context),
+    );
+    this.gateway = new ToolCallGateway(this.permissionService, this.permissionRuleStore, this.executor);
+    this.gateway.registerTools(allTools);
     // 构建元数据聚合器（从工具自带 resourceExtractor 聚合）
     this.metadataProvider = new ToolAccessMetadataProvider(allTools);
     // 构建策略适配器：内建适配器使用同一批 NativeTool[]，外部适配器使用 MCP 管理端口
@@ -102,7 +118,7 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
-    toolCallId?: string
+    _toolCallId?: string
   ): Promise<ToolExecutionOutcome<unknown>> {
     // 检查目标工具是否隶属于本地内置集合
     const toolMeta = this.catalog.getToolMetadata(functionName);
@@ -116,22 +132,37 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
 
     try {
       if (isLocalTool) {
-        // 命中本地工具，委托给 ToolExecutor 执行（已包含精确 effect 解析和默认推导）
-        return await this.executor.execute(
+        // 本地工具只能由统一 Gateway 完成权限检查和执行。
+        return await this.executeLocalThroughGateway(
           functionName,
           functionArgs,
           sessionContext,
-          interactionPort,
-          signal,
-          toolCallId
         );
       } else if (this.mcpManager) {
-        // 命中外部工具：先 claim capability，再跨进程分发
-        if (toolCallId && sessionContext) {
-          const claimed = (sessionContext as CallCapabilityPort).claimCapability(toolCallId, functionName, functionArgs);
-          if (claimed === null) {
-            throw new Error(`外部工具 "${functionName}" 调用被拒绝：未找到匹配的授权令牌或令牌已使用`);
+        // MCP 也必须先经过统一权限服务，不能以外部调用为由绕过规则。
+        const mode = sessionContext?.getPermissionMode() ?? 'default';
+        let decision = await this.permissionService.checkPermissions(
+          functionName,
+          functionArgs,
+          mode,
+        );
+        if (decision.kind === 'ask') {
+          if (!sessionContext) {
+            throw new Error(`外部工具 "${functionName}" 需要权限确认，但当前没有审批会话`);
           }
+          const approval = await sessionContext.waitApproval(
+            `permission_${Date.now()}_${functionName}`,
+            { name: functionName, arguments: functionArgs },
+            undefined,
+            `${decision.message}（${decision.decisionReason}）`,
+          );
+          if (approval.action !== 'approve') {
+            throw new Error(`审批拒绝：${functionName}`);
+          }
+          decision = { kind: 'allow', decisionReason: '用户完成单次权限确认' };
+        }
+        if (decision.kind !== 'allow') {
+          throw new Error(`权限拒绝：${decision.decisionReason}`);
         }
         const mcpRaw = await this.mcpManager.callMcpTool(functionName, functionArgs, signal);
         // 外部 MCP 无法精确推导 effect，使用访问元数据安全降级
@@ -171,6 +202,66 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
   }
 
   /**
+   * 通过统一权限服务执行本地工具，并将一次性人工批准转换为内部执行上下文。
+   *
+   * @param toolName - 工具名称
+   * @param args - 工具参数
+   * @param sessionContext - 可选会话上下文
+   * @returns 工具执行结果及副作用
+   */
+  private async executeLocalThroughGateway(
+    toolName: string,
+    args: Record<string, unknown>,
+    sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
+  ): Promise<ToolExecutionOutcome<CallToolResult>> {
+    const mode = sessionContext?.getPermissionMode() ?? 'default';
+    const tool = this.catalog.getTool(toolName);
+    if (!tool) {
+      throw new Error(`未知的工具名称："${toolName}"`);
+    }
+
+    let decision = await this.permissionService.checkPermissions(
+      toolName,
+      args,
+      mode,
+      tool.checkPermissions ? { checkPermissions: (input) => tool.checkPermissions!(input.args) } : undefined,
+    );
+
+    if (decision.kind === 'ask') {
+      if (!sessionContext) {
+        throw new Error(`工具 "${toolName}" 需要权限确认，但当前没有审批会话`);
+      }
+      const approval = await sessionContext.waitApproval(
+        `permission_${Date.now()}_${toolName}`,
+        { name: toolName, arguments: args },
+        undefined,
+        `${decision.message}（${decision.decisionReason}）`,
+      );
+      if (approval.action !== 'approve') {
+        throw new Error(`审批拒绝：${toolName}`);
+      }
+      decision = { kind: 'allow', decisionReason: '用户完成单次权限确认' };
+    }
+
+    if (decision.kind !== 'allow') {
+      throw new Error(`权限拒绝：${decision.decisionReason}`);
+    }
+
+    const gatewayResult = await this.gateway.executeAuthorized(
+      this.permissionService.createAuthorizedContext(toolName, args, decision)!,
+    );
+    const effect = deriveDefaultToolExecutionEffect(
+      tool.securityCategory,
+      true,
+      true,
+    );
+    return {
+      value: { content: [{ type: 'text', text: gatewayResult }] },
+      effect,
+    };
+  }
+
+  /**
    * 获取本地内置工具的资源提取器注册表只读副本（委托给 ToolAccessMetadataProvider）。
    * 供 ApprovalPolicy 在装配阶段注入，用于交叉校验工具层报告的 SafetyOperation。
    *
@@ -198,6 +289,15 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
    */
   public getAccessMetadata(toolName: string): ToolAccessMetadata | undefined {
     return this.metadataProvider.getAccessMetadata(toolName);
+  }
+
+  /**
+   * 获取当前注册表私有的权限规则存储，供会话装配和契约测试注入规则。
+   *
+   * @returns 当前注册表的权限规则存储
+   */
+  public getPermissionRuleStore(): PermissionRuleStore {
+    return this.permissionRuleStore;
   }
 
   /**

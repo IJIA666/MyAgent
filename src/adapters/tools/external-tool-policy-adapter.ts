@@ -6,6 +6,43 @@
 
 import type { ToolPolicyCall, ToolPolicyPort, SafetyCheckResult } from '../../ports/shared/tool-policy.js';
 import type { McpManagerPort, McpToolDescriptor } from '../../ports/driven/tools/McpManagerPort.js';
+import type { ToolPermissionCheckResult } from '../../core/domain/permissions/permission-types.js';
+
+/** MCP server 规则名称前缀 */
+const MCP_SERVER_PREFIX = 'mcp__';
+
+/**
+ * 将 MCP server 名称规范化为规则名称。
+ * `server-name` → `mcp__server-name`
+ *
+ * @param serverName - MCP 服务名称
+ * @returns 规范化后的规则名称
+ */
+export function normalizeMcpServerName(serverName: string): string {
+  return `${MCP_SERVER_PREFIX}${serverName}`;
+}
+
+/**
+ * 将 MCP 工具名称规范化为规则名称。
+ * `server-name__tool-name` → `mcp__server-name__tool-name`
+ *
+ * @param serverName - MCP 服务名称
+ * @param toolName - 工具名称
+ * @returns 规范化后的规则名称
+ */
+export function normalizeMcpToolName(serverName: string, toolName: string): string {
+  return `${MCP_SERVER_PREFIX}${serverName}__${toolName}`;
+}
+
+/**
+ * 判断工具名称是否为规范化 MCP 规则。
+ *
+ * @param toolName - 工具名称
+ * @returns 是否为 MCP 规则名称
+ */
+export function isMcpRuleName(toolName: string): boolean {
+  return toolName.startsWith(MCP_SERVER_PREFIX);
+}
 
 /**
  * 外部 MCP 工具策略适配器。
@@ -87,5 +124,20 @@ export class ExternalToolPolicyAdapter implements ToolPolicyPort {
     }
 
     return hints.length > 0 ? ` (${hints.join('；')})` : '';
+  }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * MCP 工具由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(
+    call: ToolPolicyCall,
+  ): ToolPermissionCheckResult {
+    const descriptor = this.mcpManager.getToolDescriptor(call.toolName);
+    if (!descriptor) {
+      return { kind: 'deny', decisionReason: `MCP 工具 "${call.toolName}" 未注册` };
+    }
+    // MCP 工具统一走权限服务决策
+    return { kind: 'passthrough' };
   }
 }

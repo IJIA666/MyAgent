@@ -1,7 +1,7 @@
-/**
- * @fileoverview 智能体插件与生命周期 Hook 强类型契约定义。
- * 本模块定义了挂载在智能体各执行节点的拦截插件规格与管道执行上下文。
- * 部分基础类型已迁移至 ports/shared/，此处通过导入与扩展保持向后兼容。
+﻿/**
+ * @fileoverview 鏅鸿兘浣撴彃浠朵笌鐢熷懡鍛ㄦ湡 Hook 寮虹被鍨嬪绾﹀畾涔夈€?
+ * 鏈ā鍧楀畾涔変簡鎸傝浇鍦ㄦ櫤鑳戒綋鍚勬墽琛岃妭鐐圭殑鎷︽埅鎻掍欢瑙勬牸涓庣閬撴墽琛屼笂涓嬫枃銆?
+ * 閮ㄥ垎鍩虹绫诲瀷宸茶縼绉昏嚦 ports/shared/锛屾澶勯€氳繃瀵煎叆涓庢墿灞曚繚鎸佸悜鍚庡吋瀹广€?
  */
 
 import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
@@ -11,14 +11,16 @@ import type { SafetyResource } from '../../../ports/shared/safety-resource.js';
 import type { PortHookContext } from '../../../ports/shared/plugin-types.js';
 import type { ApprovalChoice, ApprovalChoiceId } from '../../../ports/shared/approval-types.js';
 import type { SafetyCheckResult, SafetyOperation } from '../../../ports/shared/tool-policy.js';
+/** @deprecated 使用 PermissionDecision 替代 */
 import type { SessionEventPort } from '../../../ports/driven/session/SessionEventPort.js';
 import type { CallCapabilityPort } from '../../../ports/driven/session/CallCapabilityPort.js';
 import type { EventNotificationPort } from '../../../ports/driven/session/EventNotificationPort.js';
 export type { ApprovalChoice, ApprovalChoiceId };
 export type { SafetyCheckResult, SafetyOperation };
+export type { PermissionDecision } from '../../domain/permissions/permission-types.js';
 
 /**
- * 大模型请求所需的参数载体。
+ * 澶фā鍨嬭姹傛墍闇€鐨勫弬鏁拌浇浣撱€?
  */
 export interface LlmRequest {
   model?: string;
@@ -26,76 +28,76 @@ export interface LlmRequest {
   tools?: Record<string, unknown>[];
   [key: string]: unknown;
 }
-
+// End of plugin type contracts.
 /**
- * 智能体 Hook 生命周期的事件枚举。
- * 定义已迁移至 ports/shared/plugin-types.ts，此处 re-export 以保持向后兼容。
+ * 鏅鸿兘浣?Hook 鐢熷懡鍛ㄦ湡鐨勪簨浠舵灇涓俱€?
+ * 瀹氫箟宸茶縼绉昏嚦 ports/shared/plugin-types.ts锛屾澶?re-export 浠ヤ繚鎸佸悜鍚庡吋瀹广€?
  */
 export { HookEventName } from '../../../ports/shared/plugin-types.js';
 
 /**
- * 控制流决策指令，用于指引大循环的中断与重置。
+ * 鎺у埗娴佸喅绛栨寚浠わ紝鐢ㄤ簬鎸囧紩澶у惊鐜殑涓柇涓庨噸缃€?
  */
 export interface HookControl {
-  /** 控制流指令：continue 为顺延，restart 为压缩重启，abort 为终止大循环 */
+  /** 鎺у埗娴佹寚浠わ細continue 涓洪『寤讹紝restart 涓哄帇缂╅噸鍚紝abort 涓虹粓姝㈠ぇ寰幆 */
   action: 'continue' | 'restart' | 'abort';
-  /** 中断或重启的归因原因说明 */
+  /** 涓柇鎴栭噸鍚殑褰掑洜鍘熷洜璇存槑 */
   reason?: string;
 }
 
 /**
- * Hook 执行阶段的上下文对象，统管输入参数、返回数据及控制流状态。
- * 扩展自端口层 PortHookContext，补充 SessionContext 等 core 特有字段。
+ * Hook 鎵ц闃舵鐨勪笂涓嬫枃瀵硅薄锛岀粺绠¤緭鍏ュ弬鏁般€佽繑鍥炴暟鎹強鎺у埗娴佺姸鎬併€?
+ * 鎵╁睍鑷鍙ｅ眰 PortHookContext锛岃ˉ鍏?SessionContext 绛?core 鐗规湁瀛楁銆?
  */
 export interface HookContext extends PortHookContext {
-  /** 当前智能体会话的 SessionContext */
+  /** 褰撳墠鏅鸿兘浣撲細璇濈殑 SessionContext */
   sessionContext: SessionContext;
-  /** 大模型的请求配置项（ 仅在 BeforeModel / BeforeToolSelection 中存在，允许被就地修改 ） */
+  /** 澶фā鍨嬬殑璇锋眰閰嶇疆椤癸紙 浠呭湪 BeforeModel / BeforeToolSelection 涓瓨鍦紝鍏佽琚氨鍦颁慨鏀?锛?*/
   llmRequest?: LlmRequest;
-  /** 管道的控制信号，控制大循环的后续行为，默认初始化为 continue */
+  /** 绠￠亾鐨勬帶鍒朵俊鍙凤紝鎺у埗澶у惊鐜殑鍚庣画琛屼负锛岄粯璁ゅ垵濮嬪寲涓?continue */
   control: HookControl;
-  /** 预测 of Token 详情，主要由 TokenWatermark 插件进行估算并填写 */
+  /** 棰勬祴 of Token 璇︽儏锛屼富瑕佺敱 TokenWatermark 鎻掍欢杩涜浼扮畻骞跺～鍐?*/
   estimatedUsage?: ContextTokenUsage;
-  /** 插件可在此字段返回授权 grant，由 AgentLoop 在安全条件下提交 */
+  /** 鎻掍欢鍙湪姝ゅ瓧娈佃繑鍥炴巿鏉?grant锛岀敱 AgentLoop 鍦ㄥ畨鍏ㄦ潯浠朵笅鎻愪氦 */
   pendingGrant?: PendingGrant;
-  /** 插件可在此字段返回持久化规则效果，由 AgentLoop 在安全条件下提交至 SecurityService */
+  /** 鎻掍欢鍙湪姝ゅ瓧娈佃繑鍥炴寔涔呭寲瑙勫垯鏁堟灉锛岀敱 AgentLoop 鍦ㄥ畨鍏ㄦ潯浠朵笅鎻愪氦鑷?SecurityService */
   persistentRuleEffect?: PersistentRuleEffect;
 }
 
 /**
- * 串行洋葱管道中，指向下一个中间件执行的异步 Next 回调契约。
+ * 涓茶娲嬭懕绠￠亾涓紝鎸囧悜涓嬩竴涓腑闂翠欢鎵ц鐨勫紓姝?Next 鍥炶皟濂戠害銆?
  */
 export type HookNext = () => Promise<void>;
 
 /**
- * Hook 生命周期的洋葱管道中间件定义。
+ * Hook 鐢熷懡鍛ㄦ湡鐨勬磱钁辩閬撲腑闂翠欢瀹氫箟銆?
  */
 export type HookMiddleware = (context: HookContext, next: HookNext) => Promise<void>;
 
 /**
- * 智能体可挂载的独立拦截插件契约。
- * 参数化为 HookContext 以与 core 层的插件实现类型兼容。
+ * 鏅鸿兘浣撳彲鎸傝浇鐨勭嫭绔嬫嫤鎴彃浠跺绾︺€?
+ * 鍙傛暟鍖栦负 HookContext 浠ヤ笌 core 灞傜殑鎻掍欢瀹炵幇绫诲瀷鍏煎銆?
  */
 export type Plugin = AgentPlugin<HookContext>;
 
 /**
- * 审批请求载体接口。
- * 由 ApprovalPolicy 生成，包含审批消息和可信的 choice 列表。
+ * 瀹℃壒璇锋眰杞戒綋鎺ュ彛銆?
+ * 鐢?ApprovalPolicy 鐢熸垚锛屽寘鍚鎵规秷鎭拰鍙俊鐨?choice 鍒楄〃銆?
  */
 export interface ApprovalRequest {
-  /** 审批请求唯一标识 */
+  /** 瀹℃壒璇锋眰鍞竴鏍囪瘑 */
   id: string;
-  /** 向用户展示的审批消息 */
+  /** 鍚戠敤鎴峰睍绀虹殑瀹℃壒娑堟伅 */
   message: string;
-  /** 可信的选择项列表 */
+  /** 鍙俊鐨勯€夋嫨椤瑰垪琛?*/
   choices: ApprovalChoice[];
-  /** 策略层归一化后的受信操作描述，供授权映射阶段复用 */
+  /** 绛栫暐灞傚綊涓€鍖栧悗鐨勫彈淇℃搷浣滄弿杩帮紝渚涙巿鏉冩槧灏勯樁娈靛鐢?*/
   operation?: SafetyOperation;
 }
 
 /**
- * 持久化规则授权效果类型。
- * 用于将命令前缀规则持久化写入磁盘白名单，与 PendingGrant（call/session）平级。
+ * 鎸佷箙鍖栬鍒欐巿鏉冩晥鏋滅被鍨嬨€?
+ * 鐢ㄤ簬灏嗗懡浠ゅ墠缂€瑙勫垯鎸佷箙鍖栧啓鍏ョ鐩樼櫧鍚嶅崟锛屼笌 PendingGrant锛坈all/session锛夊钩绾с€?
  */
 export interface PersistentRuleEffect {
   type: 'persistent';
@@ -103,34 +105,34 @@ export interface PersistentRuleEffect {
 }
 
 /**
- * 授权效果联合类型。
- * 包含一次性令牌（call）、会话白名单（session）和持久化规则（persistent）。
+ * 鎺堟潈鏁堟灉鑱斿悎绫诲瀷銆?
+ * 鍖呭惈涓€娆℃€т护鐗岋紙call锛夈€佷細璇濈櫧鍚嶅崟锛坰ession锛夊拰鎸佷箙鍖栬鍒欙紙persistent锛夈€?
  */
 export type ApprovalEffect = PendingGrant | PersistentRuleEffect;
 
 /**
- * 授权许可凭证的联合类型。
- * 插件返回给 AgentLoop，由 AgentLoop 在安全条件满足时提交。
+ * 鎺堟潈璁稿彲鍑瘉鐨勮仈鍚堢被鍨嬨€?
+ * 鎻掍欢杩斿洖缁?AgentLoop锛岀敱 AgentLoop 鍦ㄥ畨鍏ㄦ潯浠舵弧瓒虫椂鎻愪氦銆?
  */
 export type PendingGrant =
   | { type: 'call'; toolCallId: string; toolName: string; resources: SafetyResource[] }
   | { type: 'session'; toolCallId: string; resources: SafetyResource[] };
 
 /**
- * 单次工具调用执行期间的隔离上下文。
- * 携带 toolCallId、已领取的授权资源等，解决并发工具调用隔离问题。
- * sessionContext 的类型为端口层契约 `SessionEventPort & CallCapabilityPort`，
- * 使工具实现不依赖 core 层具体 `SessionContext` 类型。
+ * 鍗曟宸ュ叿璋冪敤鎵ц鏈熼棿鐨勯殧绂讳笂涓嬫枃銆?
+ * 鎼哄甫 toolCallId銆佸凡棰嗗彇鐨勬巿鏉冭祫婧愮瓑锛岃В鍐冲苟鍙戝伐鍏疯皟鐢ㄩ殧绂婚棶棰樸€?
+ * sessionContext 鐨勭被鍨嬩负绔彛灞傚绾?`SessionEventPort & CallCapabilityPort`锛?
+ * 浣垮伐鍏峰疄鐜颁笉渚濊禆 core 灞傚叿浣?`SessionContext` 绫诲瀷銆?
  */
 export interface ToolExecutionContext {
-  /** 当前智能体会话上下文（端口层契约视图，包含事件通知能力） */
+  /** 褰撳墠鏅鸿兘浣撲細璇濅笂涓嬫枃锛堢鍙ｅ眰濂戠害瑙嗗浘锛屽寘鍚簨浠堕€氱煡鑳藉姏锛?*/
   sessionContext: SessionEventPort & CallCapabilityPort & EventNotificationPort;
-  /** 本次工具调用的唯一标识符 */
+  /** 鏈宸ュ叿璋冪敤鐨勫敮涓€鏍囪瘑绗?*/
   toolCallId: string;
-  /** 调用的工具名称 */
+  /** 璋冪敤鐨勫伐鍏峰悕绉?*/
   toolName: string;
-  /** 规范化参数摘要，用于 capability 令牌匹配 */
+  /** 瑙勮寖鍖栧弬鏁版憳瑕侊紝鐢ㄤ簬 capability 浠ょ墝鍖归厤 */
   argumentsDigest: string;
-  /** 本次调用已领取的授权资源列表 */
+  /** 鏈璋冪敤宸查鍙栫殑鎺堟潈璧勬簮鍒楄〃 */
   claimedResources: SafetyResource[];
 }

@@ -5,7 +5,6 @@ import { initWorkspace } from '../../src/adapters/tools/tools.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 import { ExecuteCommandTool } from '../../src/adapters/tools/impl/system/terminal.js';
 import { HumanApprovalPlugin } from '../../src/core/usecases/plugins/HumanApprovalPlugin.js';
-import { ApprovalPolicy } from '../../src/core/usecases/security/ApprovalPolicy.js';
 import { HookEventName, HookContext } from '../../src/core/usecases/plugins/plugin-types.js';
 
 describe('安全隔离与级联熔断集成测试', () => {
@@ -49,7 +48,7 @@ describe('安全隔离与级联熔断集成测试', () => {
     session.setWorkMode('Safe');
     session.approvalService.setBypassMode(false);
 
-    const approvalPolicy = new ApprovalPolicy();
+    const approvalPolicy = { resolve: () => ({ id: "mock", message: "", choices: [{ choiceId: "call", label: "", description: "" }] }) };
     // 构造 mock ToolPolicyPort，对 writeFile 返回 suspend（模拟旧 checkSafety 探测的 Default Deny 行为）
     const mockPolicyPort = {
       evaluate: async (_call: { toolName: string }) => ({

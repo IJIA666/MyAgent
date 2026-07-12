@@ -38,6 +38,14 @@ export class GetCurrentTimeTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 时间查询是安全的只读操作。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'allow', decisionReason: '时间查询只读操作' };
+  }
+
+  /**
    * 执行原生系统时间查询。
    *
    * @returns 包含系统高精度ISO时间戳及本地格式时间的JSON字符串描述

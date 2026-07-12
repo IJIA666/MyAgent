@@ -1,8 +1,10 @@
 /**
  * @file 工具策略评估的共享数据契约。
  * 定义 ToolPolicyCall、SafetyCheckResult、SafetyOperation 等跨层复用的安全类型。
- * 本文件是 pass/suspend/deny 三分流的单一来源，各层必须消费此处定义的类型，
- * 不得创建与 status 字段语义重复的第二套决策联合类型。
+ *
+ * @deprecated 将在 10.x 删除。新权限模型使用 `src/core/domain/permissions/` 下的
+ * `ToolPermissionCheckResult`、`ToolPermissionService` 和 `ToolPermissionChecker` 接口。
+ * 现有类型保留仅用于过渡期兼容，新代码应直接使用权限域的 checkPermissions 协议。
  */
 
 import type { SafetyResource } from './safety-resource.js';
@@ -38,6 +40,10 @@ export interface ToolPolicyCall {
  *
  * 实现方（适配器）负责区分工具来源并进行对应的安全判定，
  * 消费方（如 HumanApprovalPlugin）只通过此端口获取结果，不关心来源。
+ *
+ * @deprecated 将在 10.x 由 `ToolPermissionService` + `ToolPermissionChecker` 替代。
+ *   工具不再负责最终决策，改为实现 `checkPermissions` 返回中间结果，
+ *   由统一权限服务产生最终 PermissionDecision。
  */
 export interface ToolPolicyPort {
   /**
@@ -58,6 +64,9 @@ export interface ToolPolicyPort {
 
 /**
  * 工具安全校验结果契约接口。
+ *
+ * @deprecated 将在 10.x 由 `PermissionDecision` 替代。
+ *   `status` 字段的 pass/suspend/deny 三分流将被 `allow / ask / deny` 取代。
  */
 export interface SafetyCheckResult {
   /** 安全核查状态：通过（pass）、挂起确认（suspend）或拒绝（deny） */
@@ -88,6 +97,8 @@ export type OperationCategory =
  * Plan 模式副作用分类。
  * 工具根据自身元数据和参数分析，向策略层报告本次调用的实际副作用。
  * 策略层据此决定 Plan 模式下的 pass/suspend/deny。
+ *
+ * @deprecated 将在 10.x 删除。Plan 模式的限制由 `ToolPermissionService` 的模式后处理统一实现。
  */
 export type PlanSideEffect =
   /** 可证明安全的原子只读操作，参数结构有效且不涉及敏感资源 */
@@ -104,6 +115,8 @@ export type PlanSideEffect =
 /**
  * 标准化安全操作描述契约。
  * 工具 checkSafety() 向策略层报告操作细节的统一接口。
+ *
+ * @deprecated 将在 10.x 删除。操作描述由 `ToolPermissionCheckResult` 的 decisionReason 替代。
  */
 export interface SafetyOperation {
   /** 原子资源列表 */

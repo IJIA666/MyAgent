@@ -86,6 +86,18 @@ export class ReadManyFilesTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 批量读取操作由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const targetPaths = args.targetPaths;
+    if (typeof targetPaths !== 'string') {
+      return { kind: 'deny', decisionReason: 'targetPaths 必须是字符串' };
+    }
+    return { kind: 'passthrough' };
+  }
+
+  /**
    * 执行批量文件读取操作。
    *
    * @param args - 工具调用参数字典

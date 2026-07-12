@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WorkModeCommand } from '../../../../../src/adapters/input/interface/commands/workmode.js';
 import { CommandContext } from '../../../../../src/adapters/input/interface/commands/base.js';
 import * as p from '@clack/prompts';
-import { getWorkMode as getTerminalWorkMode, setWorkMode as setTerminalWorkMode } from '../../../../../src/adapters/tools/impl/system/terminal-config.js';
+import { getPermissionMode as getTerminalPermissionMode, setPermissionMode as setTerminalPermissionMode } from '../../../../../src/adapters/tools/impl/system/terminal-config.js';
 import * as terminalConfig from '../../../../../src/adapters/tools/impl/system/terminal-config.js';
 import * as selectMenu from '../../../../../src/adapters/input/interface/select.js';
 
@@ -26,6 +26,8 @@ describe('WorkModeCommand', () => {
   let mockSession: {
     getWorkMode: ReturnType<typeof vi.fn>;
     setWorkMode: ReturnType<typeof vi.fn>;
+    getPermissionMode: ReturnType<typeof vi.fn>;
+    setPermissionMode: ReturnType<typeof vi.fn>;
   };
   let stdoutWriteSpy: ReturnType<typeof vi.spyOn>;
   let outputBuffer: string[];
@@ -41,13 +43,15 @@ describe('WorkModeCommand', () => {
       outputBuffer.push(args.join(' ') + '\n');
     });
 
-    vi.spyOn(terminalConfig, 'saveWorkMode').mockImplementation((mode) => {
-      terminalConfig.setWorkMode(mode);
+    vi.spyOn(terminalConfig, 'savePermissionMode').mockImplementation((mode) => {
+      setTerminalPermissionMode(mode);
     });
 
     mockSession = {
       getWorkMode: vi.fn().mockReturnValue('Auto'),
-      setWorkMode: vi.fn()
+      setWorkMode: vi.fn(),
+      getPermissionMode: vi.fn().mockReturnValue('default'),
+      setPermissionMode: vi.fn(),
     };
 
     mockContext = {
@@ -55,8 +59,8 @@ describe('WorkModeCommand', () => {
       rl: {}
     };
 
-    // 初始化为 Auto
-    setTerminalWorkMode('Auto');
+    // 初始化为 default
+    setTerminalPermissionMode('default');
   });
 
   afterEach(() => {
@@ -64,33 +68,33 @@ describe('WorkModeCommand', () => {
     stdoutWriteSpy.mockRestore();
   });
 
-  it('1. 显式输入合法参数 YOLO 应当静默修改 Session 模式与底层终端模式', async () => {
+  it('1. 显式输入合法参数 plan 应当静默修改 Session 模式与底层终端模式', async () => {
     const cmd = new WorkModeCommand();
-    await cmd.execute(['YOLO'], mockContext as unknown as CommandContext);
+    await cmd.execute(['plan'], mockContext as unknown as CommandContext);
 
-    expect(mockSession.setWorkMode).toHaveBeenCalledWith('YOLO');
-    expect(getTerminalWorkMode()).toBe('YOLO');
-    expect(outputBuffer.join('')).toContain('安全执行工作模式已成功切换为');
+    expect(mockSession.setPermissionMode).toHaveBeenCalledWith('plan');
+    expect(getTerminalPermissionMode()).toBe('plan');
+    expect(outputBuffer.join('')).toContain('权限模式已成功切换为');
   });
 
   it('2. 输入非法参数应当拦截报错并不修改任何模式', async () => {
     const cmd = new WorkModeCommand();
     await cmd.execute(['invalid_mode'], mockContext as unknown as CommandContext);
 
-    expect(mockSession.setWorkMode).not.toHaveBeenCalled();
-    expect(getTerminalWorkMode()).toBe('Auto');
-    expect(outputBuffer.join('')).toContain('不支持的工作模式');
+    expect(mockSession.setPermissionMode).not.toHaveBeenCalled();
+    expect(getTerminalPermissionMode()).toBe('default');
+    expect(outputBuffer.join('')).toContain('不支持的权限模式');
   });
 
-  it('3. 空参且在向导中选择 Plan 时应当成功切换', async () => {
-    vi.mocked(selectMenu.selectWithCleanCancel).mockResolvedValue('Plan');
+  it('3. 空参且在向导中选择 plan 时应当成功切换', async () => {
+    vi.mocked(selectMenu.selectWithCleanCancel).mockResolvedValue('plan');
 
     const cmd = new WorkModeCommand();
     await cmd.execute([], mockContext as unknown as CommandContext);
 
     expect(selectMenu.selectWithCleanCancel).toHaveBeenCalled();
-    expect(mockSession.setWorkMode).toHaveBeenCalledWith('Plan');
-    expect(getTerminalWorkMode()).toBe('Plan');
+    expect(mockSession.setPermissionMode).toHaveBeenCalledWith('plan');
+    expect(getTerminalPermissionMode()).toBe('plan');
   });
 
   it('4. 空参且在向导中选择取消时不修改任何状态', async () => {
@@ -101,7 +105,7 @@ describe('WorkModeCommand', () => {
 
     expect(selectMenu.selectWithCleanCancel).toHaveBeenCalled();
     expect(p.cancel).toHaveBeenCalled();
-    expect(mockSession.setWorkMode).not.toHaveBeenCalled();
-    expect(getTerminalWorkMode()).toBe('Auto');
+    expect(mockSession.setPermissionMode).not.toHaveBeenCalled();
+    expect(getTerminalPermissionMode()).toBe('default');
   });
 });

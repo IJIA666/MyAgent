@@ -119,8 +119,26 @@ export interface McpConfig {
  * - Auto: 智能根据命令白名单放行
  * - YOLO: 全自动免密放行，只受黑名单与机密分级降级拦截约束
  * - Plan: 只读计划模式，直接阻断任何写入/修改等副作用操作
+ *
+ * @deprecated 将在 10.x 删除，由 `PermissionMode` 替代。
  */
 export type WorkMode = 'Safe' | 'Auto' | 'YOLO' | 'Plan';
+
+/**
+ * Claude Code 同构的权限模式（配置层引用）。
+ * 完整类型见 `src/core/domain/permissions/permission-types.ts` 的 `PermissionMode`。
+ * 这里作为配置层的独立字面量类型以避免跨层类型依赖。
+ */
+export type ConfigPermissionMode =
+  | 'default'
+  | 'acceptEdits'
+  | 'plan'
+  | 'auto'
+  | 'dontAsk'
+  | 'bypassPermissions';
+
+/** 默认的 Claude 权限模式 */
+export const DEFAULT_PERMISSION_MODE: ConfigPermissionMode = 'default';
 
 /** 诊断制品允许使用的内容采集策略。 */
 export type DiagnosticPolicy = 'operational' | 'audit' | 'replay';
@@ -173,8 +191,13 @@ export interface AppConfig {
   workspace: string;
   /** MCP Server 连接配置（可能为空对象） */
   mcp: McpConfig;
-  /** 终端安全执行工作模式 */
+  /** 终端安全执行工作模式（即将弃用，使用 permission.defaultMode 替代） */
   workMode?: WorkMode;
+  /** Claude Code 同构权限配置 */
+  permission?: {
+    /** 默认权限模式 */
+    defaultMode: ConfigPermissionMode;
+  };
   /** 在 Plan 只读模式下是否物理裁剪写倾向工具的声明 */
   enablePlanToolStripping?: boolean;
   /** 运行资源与行为限制配置 */

@@ -26,14 +26,20 @@
 
 ### 需求: 执行时序与审批兼容
 
-`ToolExecutor` 的执行时序必须（MUST）与当前 `callTool()` 保持一致，不改变审批流程触发的顺序。
+> ❌ 已删除 — ToolExecutor 内部审批形成第二套权限模型。已在 `claude-permission-model` 变更中移除。
 
-#### 场景: BeforeTool Hook 在能力认领之前触发
+**Migration:** ToolExecutor 只执行已经通过 ToolCallGateway 的调用；直接执行必须被封装或使用不可伪造的内部调用上下文阻断。
 
-- **WHEN** 工具执行链路启动
-- **THEN** BeforeTool Hook 的审批和授权在能力认领（`claimCapability`）之前完成，该顺序在拆分后保持不变
+### 需求: Gateway-Only Tool Execution
 
-#### 场景: AfterTool Hook 在令牌消费之后触发
+ToolExecutor MUST 只接受统一权限入口生成的合法执行上下文，不得自行读取模式、调用人工审批或产生新的权限决策。
 
-- **WHEN** 工具执行完成
-- **THEN** AfterTool Hook 与令牌消费（`consumeCapability`）的相对顺序必须保持与当前调用链一致，拆分本身不得改变这一点
+#### 场景: Unauthorized direct execution is rejected
+
+- **WHEN** 调用方没有统一入口生成的内部执行上下文而直接调用 ToolExecutor
+- **THEN** ToolExecutor MUST 拒绝执行
+
+#### 场景: Authorized execution runs once
+
+- **WHEN** ToolCallGateway 已完成权限决策并生成合法执行上下文
+- **THEN** ToolExecutor MUST 执行目标工具一次，且不得再次触发人工审批

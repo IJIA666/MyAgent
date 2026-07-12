@@ -26,7 +26,7 @@ describe('AskUserQuestionTool 单元测试', () => {
   test('缺少 questions 应抛出异常', async () => {
     const tool = new AskUserQuestionTool();
     await expect(tool.execute({}))
-      .rejects.toThrow('至少需要提供 1 个问题');
+      .rejects.toThrow('questions 必须是数组');
   });
 
   test('questions 为空数组应抛出异常', async () => {

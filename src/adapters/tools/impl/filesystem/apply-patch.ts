@@ -99,6 +99,19 @@ export class ApplyPatchTool implements NativeTool {
   }
 
   /**
+   * Claude 风格的 tool-level checkPermissions。
+   * 补丁操作由 ToolPermissionService 统一决策。
+   */
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const targetPath = args.targetPath;
+    if (typeof targetPath !== 'string') {
+      return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
+    }
+    // 补丁是写操作，让 ToolPermissionService 通过规则和模式处理
+    return { kind: 'passthrough' };
+  }
+
+  /**
    * 执行补丁或块替换修补操作。
    *
    * @param args - 工具调用参数字典

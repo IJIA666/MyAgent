@@ -4,7 +4,7 @@
  * 避免 CLI 再直接依赖 SessionManager 等 core 实现细节。
  */
 
-import type { LlmConfig, WorkMode } from '../../config/index.js';
+import type { LlmConfig, WorkMode, ConfigPermissionMode } from '../../config/index.js';
 import type { ToolRegistryPort } from '../driven/tools/ToolRegistryPort.js';
 import type { ChatUseCase } from './ChatUseCase.js';
 
@@ -90,4 +90,11 @@ export interface CliSessionUseCase extends ChatUseCase {
    * @param mode - 目标工作模式
    */
   setWorkMode(mode: WorkMode): void;
+
+  /**
+   * 动态切换当前会话的权限模式。
+   *
+   * @param mode - 目标权限模式
+   */
+  setPermissionMode(mode: ConfigPermissionMode): void;
 }

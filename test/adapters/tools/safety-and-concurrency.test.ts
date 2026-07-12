@@ -9,7 +9,6 @@ import { FileLockManager } from '../../../src/core/usecases/security/FileLockMan
 import { buildNativeTools } from '../../../src/adapters/tools/tool-factory.js';
 import { ToolCatalog } from '../../../src/adapters/tools/ToolCatalog.js';
 import { ToolExecutor } from '../../../src/adapters/tools/ToolExecutor.js';
-import type { NativeTool } from '../../../src/adapters/tools/tool-types.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
 import { CompactionService } from '../../../src/core/usecases/brain/CompactionService.js';
 import { runCommandEngine } from '../../../src/adapters/tools/impl/system/terminal-engine.js';
@@ -82,39 +81,12 @@ describe('安全与并发增强特性测试', () => {
   });
 
   describe('2. 高危写操作硬拦截 ( ToolExecutor.execute )', () => {
-    it('对未定义元数据且非 read 的工具以降级防御态度执行 waitApproval 拦截', async () => {
+    it('直接调用 ToolExecutor 必须在权限网关外被拒绝', async () => {
       const runtime = createToolRuntime();
-      const sessionContext = new SessionContext('test-safety-intercept');
-      sessionContext.approvalService.setBypassMode(false);
-
-      const handler = vi.fn((id) => {
-        setTimeout(() => {
-          sessionContext.approvalService.resolve(id, { action: 'deny' });
-        }, 0);
-      });
-      sessionContext.approvalService.registerApprovalHandler(handler);
-
-      const mockTool = {
-        name: 'dangerous_custom_tool',
-        securityCategory: 'write',
-        definition: {
-          name: 'dangerous_custom_tool',
-          description: 'A tool without metadata'
-        },
-        execute: vi.fn().mockResolvedValue('success'),
-        checkSafety: vi.fn().mockReturnValue({ status: 'pass' })
-      } as unknown as NativeTool;
-      runtime.catalog.register(mockTool);
-
-      const callResult = await runtime.executor.execute(
+      await expect(runtime.executor.execute(
         'dangerous_custom_tool',
-        {},
-        sessionContext
-      );
-
-      expect(handler).toHaveBeenCalled();
-      expect(callResult.value.isError).toBe(true);
-      expect(callResult.value.content[0].text).toContain('用户拒绝了高危操作');
+        {}
+      )).rejects.toThrow('ToolCallGateway');
     });
   });
 

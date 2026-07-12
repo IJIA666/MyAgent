@@ -74,4 +74,12 @@ export class GitShowLogTool implements NativeTool {
   checkSafety(): SafetyCheckResult {
     return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'command-execute' as const, summary: '查看 Git 提交日志', resources: [] } as SafetyOperation };
   }
+
+  /**
+   * Claude 风格的 tool-level checkPermissions。
+   * Git 日志查看是安全的只读操作。
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return { kind: 'allow', decisionReason: 'Git 只读操作' };
+  }
 }

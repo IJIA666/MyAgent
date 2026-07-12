@@ -1,302 +1,53 @@
 /**
- * HumanApprovalPlugin pendingGrant 行为单元测试。
- * 验证通过 ToolPolicyPort 获取安全评估后，pass/deny/suspend 三分流正确性，
- * 以及 call/session/deny 决策的 pendingGrant 结构、资源正确性、白名单隔离。
- * 通过 mock ToolPolicyPort 与 ApprovalService.wait 绕过异步复杂度。
+ * @file 权限更新生命周期测试。
+ * once/session/persistent 均通过 PermissionUpdate 表达，不再生成 pendingGrant。
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { HumanApprovalPlugin } from '../../../../src/core/usecases/plugins/HumanApprovalPlugin.js';
-import { ApprovalPolicy } from '../../../../src/core/usecases/security/ApprovalPolicy.js';
-import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-types.js';
-import type { HookContext } from '../../../../src/core/usecases/plugins/plugin-types.js';
-import type { ToolPolicyPort, SafetyCheckResult } from '../../../../src/ports/shared/tool-policy.js';
-import { SessionContext } from '../../../../src/core/domain/context.js';
+import { describe, expect, it } from 'vitest';
+import { PermissionPromptAdapter } from '../../../../src/core/usecases/plugins/PermissionPromptAdapter.js';
+import { PermissionRuleStore } from '../../../../src/core/domain/permissions/rule-store.js';
 
-/** 构造一个 Mock ToolPolicyPort，对任何调用返回指定结果 */
-function createMockPolicyPort(result: SafetyCheckResult): ToolPolicyPort {
-  return { evaluate: async () => result };
-}
-
-/** 构造一个受控的 mock ApprovalPolicy */
-function createMockApprovalPolicy(): ApprovalPolicy {
-  const policy = new ApprovalPolicy();
-  vi.spyOn(policy, 'resolve').mockReturnValue({
-    id: 'mock-approval-001',
-    message: '测试审批请求',
-    choices: [
-      { choiceId: 'call', label: '单次放行', description: '仅本次操作放行' },
-      { choiceId: 'session', label: '会话始终放行', description: '本次会话内自动放行' },
-      { choiceId: 'deny', label: '拒绝', description: '拒绝本次操作' },
-    ],
-  });
-  return policy;
-}
-
-/** 构造带 mock ApprovalService 的 beforeTool HookContext */
-function createContext(
-  session: SessionContext,
-  toolCall: { id: string; name: string; arguments: Record<string, unknown> },
-): HookContext {
-  return {
-    sessionContext: session,
-    eventName: HookEventName.BeforeTool,
-    toolCall,
-    control: { action: 'continue' },
-    emitEvent: vi.fn(),
-  };
-}
-
-describe('HumanApprovalPlugin — pendingGrant 授权（ToolPolicyPort 路径）', () => {
-  let session: SessionContext;
-  let plugin: HumanApprovalPlugin;
-  const toolCallId = 'call-once-001';
-
-  beforeEach(() => {
-    session = new SessionContext('test-pending-grant');
-    session.setWorkMode('Safe');
-    session.approvalService.setBypassMode(false);
+describe('PermissionUpdate 授权生命周期', () => {
+  it('once 授权不创建 session 或 persistent 规则', () => {
+    const adapter = new PermissionPromptAdapter(new PermissionRuleStore());
+    expect(adapter.buildUpdate('Write', 'src/a.ts', 'once')).toBeNull();
   });
 
-  it('6.4 pass 决策 → 直接 next，无 pendingGrant，无 abort', async () => {
-    plugin = new HumanApprovalPlugin(
-      createMockPolicyPort({ status: 'pass' }),
-      createMockApprovalPolicy(),
-    );
+  it('session 授权只写入 session 来源', () => {
+    const store = new PermissionRuleStore();
+    const adapter = new PermissionPromptAdapter(store);
+    adapter.applyUpdate(adapter.buildUpdate('Edit', 'src/*', 'session')!);
 
-    const ctx = createContext(session, {
-      id: toolCallId,
-      name: 'readFile',
-      arguments: { targetPath: '/safe/file.txt' },
-    });
-
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    expect(next).toHaveBeenCalled();
-    expect(ctx.pendingGrant).toBeUndefined();
-    expect(ctx.control.action).toBe('continue');
+    expect(store.getRules('session')).toHaveLength(1);
+    expect(store.getRules('userSettings')).toHaveLength(0);
   });
 
-  it('Plan 模式工作区外普通只读 suspend 必须审批并生成 call capability', async () => {
-    session.setWorkMode('Plan');
-    const targetPath = 'C:\\';
-    const waitSpy = vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'call' });
-    plugin = new HumanApprovalPlugin(
-      createMockPolicyPort({
-        status: 'suspend',
-        message: '访问工作区外资源',
-        resources: [{ kind: 'directory-scope', access: 'read', normalizedPath: targetPath }],
-        operation: {
-          planSideEffect: 'read',
-          riskReason: '访问工作区外资源',
-          operationCategory: 'file-read',
-          summary: `列出目录 ${targetPath}`,
-          resources: [{ kind: 'directory-scope', access: 'read', normalizedPath: targetPath }],
-        },
-      }),
-      createMockApprovalPolicy(),
-    );
-    const ctx = createContext(session, {
-      id: 'plan-read-outside-workspace',
-      name: 'listFiles',
-      arguments: { targetPath },
-    });
+  it('persistent 授权写入用户设置来源', () => {
+    const store = new PermissionRuleStore();
+    const adapter = new PermissionPromptAdapter(store);
+    adapter.applyUpdate(adapter.buildUpdate('Bash', 'npm test', 'persistent')!);
 
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    expect(waitSpy).toHaveBeenCalledOnce();
-    expect(next).toHaveBeenCalledOnce();
-    expect(ctx.pendingGrant).toEqual({
-      type: 'call',
-      toolCallId: 'plan-read-outside-workspace',
-      toolName: 'listFiles',
-      resources: [{ kind: 'directory-scope', access: 'read', normalizedPath: targetPath }],
-    });
+    expect(store.getRules('userSettings')).toHaveLength(1);
+    expect(store.getMatchingRules('Bash', 'npm test')[0].ruleBehavior).toBe('allow');
   });
 
-  it('Plan 模式可证明安全的原子只读命令不应进入审批', async () => {
-    session.setWorkMode('Plan');
-    const waitSpy = vi.spyOn(session.approvalService, 'wait');
-    plugin = new HumanApprovalPlugin(
-      createMockPolicyPort({
-        status: 'suspend',
-        message: '未授权命令',
-        operation: {
-          planSideEffect: 'read',
-          riskReason: '终端命令通用挂起',
-          operationCategory: 'command-execute',
-          summary: 'wmic logicaldisk get caption,size,freespace,description',
-          resources: [{ kind: 'command-operation', shellKind: 'cmd', rootCommand: 'wmic' }],
-        },
-      }),
-      createMockApprovalPolicy(),
-    );
-    const ctx = createContext(session, {
-      id: 'plan-safe-wmic',
-      name: 'execute_command',
-      arguments: { command: 'wmic logicaldisk get caption,size,freespace,description', shellKind: 'cmd' },
-    });
+  it('session 规则在清理后不再影响后续调用', () => {
+    const store = new PermissionRuleStore();
+    const adapter = new PermissionPromptAdapter(store);
+    adapter.applyUpdate(adapter.buildUpdate('Read', 'src/*', 'session')!);
+    expect(store.getMatchingRules('Read', 'src/a.ts')).toHaveLength(1);
 
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    expect(next).toHaveBeenCalledOnce();
-    expect(waitSpy).not.toHaveBeenCalled();
-    expect(ctx.pendingGrant).toBeUndefined();
-    expect(ctx.control.action).toBe('continue');
+    store.clearSessionRules();
+    expect(store.getMatchingRules('Read', 'src/a.ts')).toHaveLength(0);
   });
 
-  it('Plan 模式普通只读 deny 不得因 planSideEffect=read 被误放行', async () => {
-    session.setWorkMode('Plan');
-    plugin = new HumanApprovalPlugin(
-      createMockPolicyPort({
-        status: 'deny',
-        message: '只读资源被安全策略拒绝',
-        operation: {
-          planSideEffect: 'read',
-          riskReason: '安全策略拒绝',
-          operationCategory: 'file-read',
-          summary: '读取受限资源',
-          resources: [],
-        },
-      }),
-      createMockApprovalPolicy(),
-    );
-    const ctx = createContext(session, {
-      id: 'plan-read-denied',
-      name: 'readFile',
-      arguments: { targetPath: 'blocked.txt' },
-    });
-
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    expect(next).not.toHaveBeenCalled();
-    expect(ctx.control.action).toBe('abort');
-    expect(ctx.control.reason).toContain('只读资源被安全策略拒绝');
-  });
-
-  it('6.4 deny 决策 → 控制 abort，无 pendingGrant，不调 next', async () => {
-    plugin = new HumanApprovalPlugin(
-      createMockPolicyPort({
-        status: 'deny',
-        message: '安全策略禁止此操作',
-      }),
-      createMockApprovalPolicy(),
-    );
-
-    const ctx = createContext(session, {
-      id: toolCallId,
-      name: 'writeFile',
-      arguments: { targetPath: '/blocked/path.txt' },
-    });
-
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    expect(ctx.control.action).toBe('abort');
-    expect(ctx.control.reason).toContain('安全策略禁止此操作');
-    expect(ctx.pendingGrant).toBeUndefined();
-    expect(next).not.toHaveBeenCalled();
-  });
-
-  it('6.4 suspend → call 决策 → pendingGrant 为 call 类型，资源正确', async () => {
-    const policy = createMockApprovalPolicy();
-    plugin = new HumanApprovalPlugin(
-      createMockPolicyPort({
-        status: 'suspend',
-        message: '需要授权',
-        resources: [{ kind: 'path', access: 'write', normalizedPath: '/tmp/test.txt' }],
-      }),
-      policy,
-    );
-
-    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'call' });
-
-    const ctx = createContext(session, {
-      id: toolCallId,
-      name: 'writeFile',
-      arguments: { targetPath: '/tmp/test.txt' },
-    });
-
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    expect(next).toHaveBeenCalled();
-    expect(ctx.pendingGrant).toBeDefined();
-    expect(ctx.pendingGrant!.type).toBe('call');
-    expect(ctx.pendingGrant!.toolCallId).toBe(toolCallId);
-    expect((ctx.pendingGrant as { toolName: string }).toolName).toBe('writeFile');
-  });
-
-  it('6.4 suspend → session 决策 → pendingGrant 为 session 类型', async () => {
-    const policy = createMockApprovalPolicy();
-    plugin = new HumanApprovalPlugin(
-      createMockPolicyPort({
-        status: 'suspend',
-        message: '需要授权',
-        resources: [{ kind: 'path', access: 'write', normalizedPath: '/tmp/config.json' }],
-      }),
-      policy,
-    );
-
-    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'session' });
-
-    const ctx = createContext(session, {
-      id: 'call-always-002',
-      name: 'writeFile',
-      arguments: { targetPath: '/tmp/config.json' },
-    });
-
-    const next = vi.fn(async () => {});
-    await plugin.hooks[HookEventName.BeforeTool](ctx, next);
-
-    expect(ctx.pendingGrant).toBeDefined();
-    expect(ctx.pendingGrant!.type).toBe('session');
-    expect(ctx.pendingGrant!.toolCallId).toBe('call-always-002');
-  });
-
-  it('6.4 suspend → deny 决策 → 插件 throw HaltedByReject', async () => {
-    const policy = createMockApprovalPolicy();
-    plugin = new HumanApprovalPlugin(
-      createMockPolicyPort({ status: 'suspend', message: '需要授权' }),
-      policy,
-    );
-
-    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'deny' });
-
-    const ctx = createContext(session, {
-      id: 'call-deny-004',
-      name: 'writeFile',
-      arguments: { targetPath: '/evil/path.txt' },
-    });
-
-    const next = vi.fn(async () => {});
-    await expect(plugin.hooks[HookEventName.BeforeTool](ctx, next)).rejects.toThrow('HaltedByReject');
-    expect(ctx.control.action).toBe('abort');
-    expect(ctx.pendingGrant).toBeUndefined();
-  });
-
-  it('6.4 非法 choiceId（不在 ApprovalRequest.choices 中）→ 视为拒绝并终止', async () => {
-    const policy = createMockApprovalPolicy();
-    plugin = new HumanApprovalPlugin(
-      createMockPolicyPort({ status: 'suspend', message: '需要授权' }),
-      policy,
-    );
-
-    vi.spyOn(session.approvalService, 'wait').mockResolvedValue({ action: 'persistent' });
-
-    const ctx = createContext(session, {
-      id: 'call-invalid-choice-005',
-      name: 'writeFile',
-      arguments: { targetPath: '/tmp/blocked.txt' },
-    });
-
-    const next = vi.fn(async () => {});
-    await expect(plugin.hooks[HookEventName.BeforeTool](ctx, next)).rejects.toThrow('Untrusted approval choice');
-    expect(ctx.control.action).toBe('abort');
-    expect(ctx.pendingGrant).toBeUndefined();
+  it('审批适配器只接受 ask 决策', () => {
+    expect(PermissionPromptAdapter.isAskDecision({ kind: 'allow' })).toBe(false);
+    expect(PermissionPromptAdapter.isAskDecision({ kind: 'deny', decisionReason: '拒绝' })).toBe(false);
+    expect(PermissionPromptAdapter.isAskDecision({
+      kind: 'ask',
+      message: '确认',
+      decisionReason: '需要确认',
+    })).toBe(true);
   });
 });
