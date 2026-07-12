@@ -11,7 +11,6 @@ import { secureResolveReadPath, secureResolveWritePath, getAuthorizedDir, getPhy
 import type { NativeTool } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SafetyResource } from '../../../../ports/shared/tool-policy.js';
-import { getWorkMode } from '../system/terminal.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import { logger, LOG_COMPONENT, LOG_EVENT } from '../../../../utils/logger.js';
@@ -551,7 +550,7 @@ export class ReadFileTool implements NativeTool {
 
   /**
    * Claude 风格的 tool-level checkPermissions。
-   * 只执行工具专属的路径安全检查，不处理 WorkMode/模式逻辑。
+   * 只执行工具专属的路径安全检查，不处理 PermissionMode 逻辑。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
     const targetPath = args.targetPath;
@@ -702,8 +701,8 @@ export class WriteFileTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    const mode = sessionContext ? sessionContext.getWorkMode() : getWorkMode();
-    if (mode === 'Plan') {
+    const mode = sessionContext?.getPermissionMode() ?? 'default';
+    if (mode === 'plan') {
       return { status: 'deny', message: '只读【Plan】模式下，严禁执行任何文件写入或修改操作。', operation: { planSideEffect: 'write', riskReason: 'Plan 模式拒绝写入', operationCategory: 'file-write', summary: `写入文件`, resources: [] } };
     }
 
@@ -728,8 +727,8 @@ export class WriteFileTool implements NativeTool {
       };
     }
 
-    // YOLO 模式下，非机密文件静默放行
-    if (mode === 'YOLO') {
+    // bypassPermissions 模式下，非机密文件静默放行。
+    if (mode === 'bypassPermissions') {
       return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-write', summary: `写入文件 ${targetPath}`, resources: [] } };
     }
 
@@ -855,8 +854,8 @@ export class EditFileTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    const mode = sessionContext ? sessionContext.getWorkMode() : getWorkMode();
-    if (mode === 'Plan') {
+    const mode = sessionContext?.getPermissionMode() ?? 'default';
+    if (mode === 'plan') {
       return { status: 'deny', message: '只读【Plan】模式下，严禁执行任何文件写入或修改操作。', operation: { planSideEffect: 'write', riskReason: 'Plan 模式拒绝编辑', operationCategory: 'file-edit', summary: `编辑文件`, resources: [] } };
     }
 
@@ -882,8 +881,8 @@ export class EditFileTool implements NativeTool {
       };
     }
 
-    // YOLO 模式下，非机密文件静默放行
-    if (mode === 'YOLO') {
+    // bypassPermissions 模式下，非机密文件静默放行。
+    if (mode === 'bypassPermissions') {
       return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-edit', summary: `编辑文件 ${targetPath}`, resources: [] } };
     }
 
@@ -1117,7 +1116,7 @@ export class ListFilesTool implements NativeTool {
 
   /**
    * Claude 风格的 tool-level checkPermissions。
-   * 只执行工具专属的路径安全检查，不处理 WorkMode/模式逻辑。
+   * 只执行工具专属的路径安全检查，不处理 PermissionMode 逻辑。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
     const targetPath = typeof args.targetPath === 'string' ? args.targetPath : '.';

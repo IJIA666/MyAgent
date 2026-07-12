@@ -26,8 +26,8 @@ vi.mock('../../../../src/adapters/input/interface/cli.js', () => {
 class MockChatUseCase extends EventEmitter {
   getIsGenerating = vi.fn().mockReturnValue(false);
   getModelName = vi.fn().mockReturnValue('mock-llama-3');
-  getWorkMode = vi.fn().mockReturnValue('Auto');
-  setWorkMode = vi.fn();
+  getPermissionMode = vi.fn().mockReturnValue('auto');
+  setPermissionMode = vi.fn();
   abort = vi.fn();
   rollback = vi.fn();
   compact = vi.fn().mockResolvedValue(true);

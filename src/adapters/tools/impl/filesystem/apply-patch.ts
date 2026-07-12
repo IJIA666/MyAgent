@@ -9,7 +9,6 @@ import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { applyReplacePatch } from './apply-patch-helper.js';
-import { getWorkMode, loadWorkMode } from '../system/terminal.js';
 
 /**
  * 局部补丁修补与特征对齐替换工具类。
@@ -72,8 +71,7 @@ export class ApplyPatchTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    loadWorkMode();
-    if (getWorkMode() === 'YOLO') {
+    if (sessionContext?.getPermissionMode() === 'bypassPermissions') {
       return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-edit' as const, summary: '应用补丁', resources: [] } as SafetyOperation };
     }
     const targetPath = args.targetPath;

@@ -6,7 +6,7 @@
 外部具体工具适配器（如 `terminal.ts` 或 `file-system.ts`）在运行时绝不允许直接访问或操作核心的 `SessionContext` 实体；工具对核心的交互应当（SHALL）被严格隔离在超薄的、职责单一的 driven ports 中，以防范敏感状态泄露。
 
 #### Scenario: Write Command Request Approval
-- **WHEN** 终端工具 ExecuteCommandTool 在 YOLO 模式之外执行具有写倾向的危险命令时
+- **WHEN** 终端工具 ExecuteCommandTool 在 bypassPermissions 模式之外执行具有写倾向的危险命令时
 - **THEN** 工具必须（MUST）调用专门的 ApprovalPort 的 waitApproval 接口挂起并申请确权，不得绕过端口直接修改 Session 状态。
 
 #### Scenario: Async System Notification Dispatch

@@ -13,9 +13,9 @@ import {
   checkWhitelist,
   saveAllowedCommands,
   loadAllowedCommands,
-  setWorkMode,
-  saveWorkMode,
-  loadWorkMode
+  setPermissionMode,
+  savePermissionMode,
+  loadPermissionMode
 } from '../../../src/adapters/tools/impl/system/terminal.js';
 import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand, detectAdvisoryWarnings } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
 import { SessionContext } from '../../../src/core/domain/context.js';
@@ -39,8 +39,8 @@ describe('Terminal Tool 单元测试', () => {
 
   beforeEach(() => {
     // 每次测试前，将工作模式重置为 YOLO，防止测试由于人工交互阻断卡死
-    setWorkMode('YOLO');
-    saveWorkMode('YOLO');
+    setPermissionMode('bypassPermissions');
+    savePermissionMode('bypassPermissions');
 
     // 清空白名单
     saveAllowedCommands([]);
@@ -83,11 +83,11 @@ describe('Terminal Tool 单元测试', () => {
 
   test('4. 工作模式与白名单持久化配置测试', () => {
     // 工作模式存取测试
-    saveWorkMode('Safe');
-    expect(loadWorkMode()).toBe('Safe');
+    savePermissionMode('default');
+    expect(loadPermissionMode()).toBe('default');
 
-    saveWorkMode('Auto');
-    expect(loadWorkMode()).toBe('Auto');
+    savePermissionMode('auto');
+    expect(loadPermissionMode()).toBe('auto');
 
     // 白名单存取测试
     const mockRules = ['npm run:*', 'git add:*'];
@@ -106,7 +106,7 @@ describe('Terminal Tool 单元测试', () => {
 
   test('5. YOLO 模式下命令的执行及首尾截断防爆测试', async () => {
     // 设置模式为 YOLO 绕过人工确认
-    setWorkMode('YOLO');
+    setPermissionMode('bypassPermissions');
 
     // 执行一个简单的 echo 指令，由于在 Windows 环境下可能没有全局 echo，
     // 我们使用 node.exe 执行一段 JS 脚本作为跨平台的执行测试，确保子进程能正常跑起来
@@ -119,7 +119,7 @@ describe('Terminal Tool 单元测试', () => {
   });
 
   test('6. 启动观察期 200ms 后台驻留捕获测试', async () => {
-    setWorkMode('YOLO');
+    setPermissionMode('bypassPermissions');
 
     // 场景 A: 在 200ms 内立即报错退出的命令，executeCommandTool 应同步返回错误结果，而不是后台 ID 提示
     // 使用确定性非零退出进程的同步路径，等待真实退出后断言失败，避免固定观察窗口受平台负载影响。
@@ -157,7 +157,7 @@ describe('Terminal Tool 单元测试', () => {
     const mockSession = new SessionContext();
 
     // A. 测试未知副作用计划的命令应返回 planSideEffect='unknown' 而非 'read'
-    mockSession.setWorkMode('Plan');
+    mockSession.setPermissionMode('plan');
     // 'npm run dev' 不在只读白名单，非危险写，应分类为 'unknown'
     const safetyDev = executeCommandToolInstance.checkSafety({ command: 'npm run dev' }, mockSession);
     expect(safetyDev.operation?.planSideEffect).toBe('unknown');
@@ -169,13 +169,13 @@ describe('Terminal Tool 单元测试', () => {
     expect(safetyLog.operation?.planSideEffect).toBe('read');
 
     // B. 测试底线拦截黑名单 rm -rf /，无论在 YOLO 还是其他模式下都应被绝对拒绝
-    mockSession.setWorkMode('YOLO');
+    mockSession.setPermissionMode('bypassPermissions');
     const safetyRm = executeCommandToolInstance.checkSafety({ command: 'rm -rf /' }, mockSession);
     expect(safetyRm.status).toBe('deny');
     expect(safetyRm.message).toContain('BLOCKED (Hardline Blocklist)');
 
     // 即使在没有 SessionContext（退化为全局配置 YOLO）时，也应绝对拦截
-    setWorkMode('YOLO');
+    setPermissionMode('bypassPermissions');
     const safetyRmGlobal = executeCommandToolInstance.checkSafety({ command: 'rm -rf /' });
     expect(safetyRmGlobal.status).toBe('deny');
     expect(safetyRmGlobal.message).toContain('BLOCKED (Hardline Blocklist)');
@@ -222,10 +222,11 @@ describe('Terminal Tool 单元测试', () => {
 
     // C. Auto 模式剥壳匹配与放行测试
     saveAllowedCommands(['git status:*', 'npm run:*']);
-    setWorkMode('Auto');
+    setPermissionMode('auto');
 
     const safetyAllowed = executeCommandToolInstance.checkSafety({ command: 'powershell -Command "npm run test"' });
-    expect(safetyAllowed.status).toBe('pass'); // 剥壳还原 npm run test 匹配白名单自动放行
+    // Auto 分类器尚未接入生产装配，当前仍保留人工审批。
+    expect(safetyAllowed.status).toBe('suspend');
 
     // D. 审批挂起时的披露信息与对比测试
     const safetyUnallowed = executeCommandToolInstance.checkSafety({ command: 'powershell -Command "npm test"' });
@@ -266,13 +267,13 @@ describe('Terminal Tool 单元测试', () => {
     const mockSession = new SessionContext();
 
     // 无论在 YOLO 模式还是其它模式下，git commit 等写操作均应在 checkSafety 中被直接 deny 拦截
-    mockSession.setWorkMode('YOLO');
+    mockSession.setPermissionMode('bypassPermissions');
     const safetyCommitYolo = executeCommandToolInstance.checkSafety({ command: 'git commit -m "update"' }, mockSession);
     expect(safetyCommitYolo.status).toBe('deny');
     expect(safetyCommitYolo.message).toContain('BLOCKED (Hardline Blocklist)');
 
     // 在 Auto 模式下也应被绝对拦截
-    mockSession.setWorkMode('Auto');
+    mockSession.setPermissionMode('auto');
     const safetyCheckoutAuto = executeCommandToolInstance.checkSafety({ command: 'git checkout main' }, mockSession);
     expect(safetyCheckoutAuto.status).toBe('deny');
     expect(safetyCheckoutAuto.message).toContain('BLOCKED (Hardline Blocklist)');
@@ -283,7 +284,7 @@ describe('Terminal Tool 单元测试', () => {
     expect(() => validateCommand('git add .')).toThrow('严禁执行除只读查看外的任何 Git 变更操作');
 
     // 只读的 Git 查看命令应该被安全放行（不属于 Hardline 黑名单，在 YOLO 模式下直接 pass，在 Auto/Plan 模式下按常规则处理）
-    mockSession.setWorkMode('YOLO');
+    mockSession.setPermissionMode('bypassPermissions');
     const safetyLogYolo = executeCommandToolInstance.checkSafety({ command: 'git log' }, mockSession);
     expect(safetyLogYolo.status).toBe('pass'); // YOLO 下只读 git 命令直接通过
   });
@@ -329,7 +330,7 @@ describe('Terminal Tool 单元测试', () => {
     const mockSession = new SessionContext();
 
     // A. 计划模式 + 安全只读命令 → planSideEffect='read'
-    mockSession.setWorkMode('Plan');
+    mockSession.setPermissionMode('plan');
     const safetyDir = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
     expect(safetyDir.operation?.planSideEffect).toBe('read');
 
@@ -375,24 +376,24 @@ describe('Terminal Tool 单元测试', () => {
     expect(safetyDel.operation?.planSideEffect).toBe('write');
 
     // E. Auto/Safe 模式回归：不受本次变更影响
-    mockSession.setWorkMode('Auto');
+    mockSession.setPermissionMode('auto');
     saveAllowedCommands([]); // 无白名单
     const safetyAuto = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
     expect(safetyAuto.status).toBe('suspend'); // Auto 下未授权命令进入审批
 
-    mockSession.setWorkMode('Safe');
+    mockSession.setPermissionMode('default');
     const safetySafe = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
     expect(safetySafe.status).toBe('suspend'); // Safe 下始终审批
 
     // YOLO 模式回归
-    mockSession.setWorkMode('YOLO');
+    mockSession.setPermissionMode('bypassPermissions');
     const safetyYolo = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
     expect(safetyYolo.status).toBe('pass'); // YOLO 下直接放行
   });
 
   test('16. 终端命令副作用分类与 Plan 同构回归测试', () => {
     const mockSession = new SessionContext();
-    mockSession.setWorkMode('Plan');
+    mockSession.setPermissionMode('plan');
 
     // A. 任何包含复合字符的命令，checkSafety 必须返回 planSideEffect='unknown' 而非 'read'
     const compositeCases = [
@@ -440,17 +441,17 @@ describe('Terminal Tool 单元测试', () => {
     }
 
     // E. Auto/Safe 模式回归：不受本次变更影响
-    mockSession.setWorkMode('Auto');
+    mockSession.setPermissionMode('auto');
     saveAllowedCommands([]); // 无白名单
     const safetyAuto = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
     expect(safetyAuto.status).toBe('suspend'); // Auto 下未授权命令进入审批
 
-    mockSession.setWorkMode('Safe');
+    mockSession.setPermissionMode('default');
     const safetySafe = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
     expect(safetySafe.status).toBe('suspend'); // Safe 下始终审批
 
     // YOLO 模式回归
-    mockSession.setWorkMode('YOLO');
+    mockSession.setPermissionMode('bypassPermissions');
     const safetyYolo = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
     expect(safetyYolo.status).toBe('pass'); // YOLO 下直接放行
 

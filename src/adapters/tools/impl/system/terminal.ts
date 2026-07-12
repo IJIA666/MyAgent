@@ -6,7 +6,7 @@
 import { validateCommand, validateCwd, isHardlineDangerous, isPlanSafeCommand, unboxNestedCommand, containsDangerousWriteToken, isSensitiveReadCommand } from './terminal-guard.js';
 import type { ToolExecutionEffect } from '../../tool-types.js';
 import { runCommandEngine } from './terminal-engine.js';
-import { getWorkMode, extractSafePrefix, loadAllowedCommands, loadDefaultShellFamily } from './terminal-config.js';
+import { extractSafePrefix, loadAllowedCommands, loadDefaultShellFamily } from './terminal-config.js';
 import { createShellExecutionPlan } from './terminal-plan.js';
 import type { ShellKind } from './terminal-types.js';
 import type { NativeTool } from '../../tool-types.js';
@@ -138,10 +138,10 @@ export class ExecuteCommandTool implements NativeTool {
     }
 
     // 优先从 Session 取得工作模式，否则回退到全局备用缺省值（用以向下兼容测试流）
-    const workMode = sessionContext ? sessionContext.getWorkMode() : getWorkMode();
+    const permissionMode = sessionContext?.getPermissionMode() ?? 'default';
 
-    // 3. YOLO 模式直接放行（由于绝对黑名单在最外层卡关，这里放行是安全的）
-    if (workMode === 'YOLO') {
+    // 3. bypassPermissions 模式直接放行；硬红线已在前置检查中拦截。
+    if (permissionMode === 'bypassPermissions') {
       return {
         status: 'pass',
         operation: { planSideEffect, riskReason: '', operationCategory: 'command-execute', summary: '', resources: [] }
@@ -153,7 +153,7 @@ export class ExecuteCommandTool implements NativeTool {
     // 4. Auto 模式且属于非高危写动作命令，进行已授权白名单的前缀校验
     // 关键改动：安全评级判定前也先解包剥壳，以防解释器外壳导致只读规则评级失效
     const isDangerous = containsDangerousWriteToken(unboxedCmd, resolvedShellKind);
-    if (!isDangerous && workMode === 'Auto') {
+    if (!isDangerous && permissionMode === 'auto') {
       // 校验命令行是否命中白名单规则
       const allowed = sessionContext ? sessionContext.getSecurityAllowlist() : loadAllowedCommands();
       const isAllowed = allowed.some((rule: string) => {
@@ -223,7 +223,7 @@ export class ExecuteCommandTool implements NativeTool {
   /**
    * Claude 风格的 tool-level checkPermissions。
    * 只执行工具专属的安全检查（硬红线、只读/写判定），
-   * 不处理 WorkMode/模式相关逻辑——这些由 ToolPermissionService 统一处理。
+   * 不处理 PermissionMode 之外的模式逻辑——统一策略由 ToolPermissionService 处理。
    *
    * @param args - 工具调用参数
    * @returns 工具内部检查结果
@@ -416,11 +416,10 @@ export class ExecuteCommandTool implements NativeTool {
 // 导出配置管理与进程引擎相关的公共类型及工具函数
 
 export {
-  type WorkMode,
-  getWorkMode,
-  setWorkMode,
-  loadWorkMode,
-  saveWorkMode,
+  getPermissionMode,
+  setPermissionMode,
+  loadPermissionMode,
+  savePermissionMode,
   loadAllowedCommands,
   saveAllowedCommands,
   extractSafePrefix,

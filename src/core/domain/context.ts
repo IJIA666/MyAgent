@@ -5,7 +5,7 @@ import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabili
 import { buildSystemPrompt } from '../usecases/brain/prompts.js';
 import type { SkillMetadata } from '../usecases/brain/contextLoader.js';
 import { ApprovalService } from '../usecases/security/ApprovalService.js';
-import { AppConfig, WorkMode, ConfigPermissionMode, getDefaultWorkMode, getDefaultPermissionMode } from '../../config/index.js';
+import { AppConfig, ConfigPermissionMode, getDefaultPermissionMode } from '../../config/index.js';
 import { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import { createSessionId } from './trace-format.js';
 import type { CallCapability, CallCapabilityState } from './call-capability.js';
@@ -42,7 +42,6 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
   private tenantId: string;
   private checkpointSummary: string | null = null;
   private recentFiles: { filePath: string; opType: 'read' | 'edit' }[] = [];
-  private workMode: WorkMode;
   private permissionMode: ConfigPermissionMode;
   /** 会话私有的统一模式管理器，避免进程级共享模式状态。 */
   private readonly permissionModeManager: PermissionModeManager;
@@ -96,7 +95,6 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
     super();
     this.sessionId = sessionId || createSessionId();
     this.tenantId = tenantId || 'default';
-    this.workMode = getDefaultWorkMode();
     this.permissionMode = getDefaultPermissionMode();
     this.permissionModeManager = new PermissionModeManager(
       this.permissionMode,
@@ -285,39 +283,11 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
   }
 
   /** 获取当前会话私有的安全工作模式 */
-  public getWorkMode(): WorkMode {
-    return this.workMode;
-  }
-
   /**
    * 设定当前会话私有的安全工作模式。
    *
    * @param mode - 目标工作安全模式
    */
-  public setWorkMode(mode: WorkMode): void {
-    if (this.isProcessing) {
-      logger.warn('[SessionContext] work_mode_change_blocked', {
-        component: 'context',
-        event: 'work_mode_change_blocked',
-        sessionId: this.sessionId,
-        oldValue: this.workMode,
-        newValue: mode,
-        reason: 'isProcessing=true'
-      });
-      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
-    }
-    const previousMode = this.workMode;
-    this.workMode = mode;
-    logger.info('[SessionContext] work_mode_changed', {
-      component: 'context',
-      event: 'work_mode_changed',
-      sessionId: this.sessionId,
-      oldValue: previousMode,
-      newValue: mode,
-      reason: 'user_request'
-    });
-  }
-
   /** 获取当前会话的权限模式（Claude Code 同构） */
   public getPermissionMode(): ConfigPermissionMode {
     return this.permissionModeManager.getMode();

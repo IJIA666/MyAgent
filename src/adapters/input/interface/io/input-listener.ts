@@ -19,7 +19,7 @@ export interface InputListenerOptions {
   /** 动态获取当前激活的模型名称以刷新提示符的 Getter */
   getModelName: () => string;
   /** 动态获取当前工作安全模式的 Getter */
-  getWorkMode: () => string;
+  getPermissionMode: () => string;
   /** 当处于生成状态双击 ESC 时的中断回调 */
   onAbort: () => void;
   /** 当处于非生成状态双击 ESC 并确认撤销时的回滚回调 */
@@ -50,7 +50,7 @@ export class InputListener {
   /** 获取当前模型名称的 Getter 回调 */
   private getModelName: () => string;
   /** 获取当前工作安全模式的 Getter 回调 */
-  private getWorkMode: () => string;
+  private getPermissionMode: () => string;
   /** 中断回调 */
   private onAbort: () => void;
   /** 回滚回调 */
@@ -84,7 +84,7 @@ export class InputListener {
   constructor(options: InputListenerOptions) {
     this.isGenerating = options.getIsGenerating;
     this.getModelName = options.getModelName;
-    this.getWorkMode = options.getWorkMode;
+    this.getPermissionMode = options.getPermissionMode;
     this.onAbort = options.onAbort;
     this.onRollback = options.onRollback;
     this.onLineSubmit = options.onLineSubmit;
@@ -185,7 +185,7 @@ export class InputListener {
    */
   public updatePrompt(): void {
     if (this.rl) {
-      this.rl.setPrompt(renderPromptPrefix(this.getModelName(), this.getWorkMode()));
+      this.rl.setPrompt(renderPromptPrefix(this.getModelName(), this.getPermissionMode()));
     }
   }
 

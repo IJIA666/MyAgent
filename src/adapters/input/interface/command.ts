@@ -10,7 +10,7 @@ import {
   McpCommand, 
   ToolCommand, 
   ModelCommand,
-  WorkModeCommand
+  PermissionModeCommand
 } from './commands/index.js';
 import * as p from '@clack/prompts';
 import { theme } from './views/theme.js';
@@ -37,7 +37,7 @@ class CommandRegistry {
     this.register(new McpCommand());
     this.register(new ToolCommand());
     this.register(new ModelCommand());
-    this.register(new WorkModeCommand());
+    this.register(new PermissionModeCommand());
   }
 
   private register(command: ICommand): void {

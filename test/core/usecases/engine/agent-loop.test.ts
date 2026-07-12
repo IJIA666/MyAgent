@@ -27,7 +27,7 @@ describe('AgentLoop 动态安全特性测试', () => {
 
   beforeEach(() => {
     context = new SessionContext('test-loop-session');
-    context.setWorkMode('Plan');
+    context.setPermissionMode('plan');
 
     const appConfig = createMockAppConfig({ enablePlanToolStripping: true });
     appConfig.runtimeLimits.modelTimeoutMs = 1000;

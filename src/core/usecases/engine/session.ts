@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { AppConfig, LlmConfig, WorkMode, ConfigPermissionMode } from '../../../config/index.js';
+import { AppConfig, LlmConfig, ConfigPermissionMode } from '../../../config/index.js';
 import { logger } from '../../../utils/logger.js'; // 导入统一日志单例 logger
 import { AgentTracer } from '../../domain/tracer.js';
 import { SessionContext, ContextTokenUsage, type PendingInteraction } from '../../domain/context.js';
@@ -849,19 +849,11 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    *
    * @returns 工作模式标识
    */
-  public getWorkMode(): WorkMode {
-    return this.context.getWorkMode();
-  }
-
   /**
    * 设置当前智能体的工作模式。
    *
    * @param mode - 目标工作模式
    */
-  public setWorkMode(mode: WorkMode): void {
-    this.context.setWorkMode(mode);
-  }
-
   /**
    * 获取当前智能体的权限模式（Claude Code 同构）。
    *

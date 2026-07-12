@@ -35,7 +35,7 @@ describe('BuiltinToolPolicyAdapter', () => {
           { toolCallId: 't-1', toolName: name, args: {} },
           // 使用最小 mock sessionContext
           { getSessionId: () => 'test', getTenantId: () => 'default',
-            getWorkMode: () => 'plan', getSecurityAllowlist: () => [],
+            getPermissionMode: () => 'plan', getSecurityAllowlist: () => [],
             hasTemporaryReadWhitelist: () => false,
             hasTemporaryWriteWhitelist: () => false } as never,
         );
@@ -59,7 +59,7 @@ describe('BuiltinToolPolicyAdapter', () => {
       const sessionContext = {
         getSessionId: () => 'test',
         getTenantId: () => 'default',
-        getWorkMode: () => 'plan',
+        getPermissionMode: () => 'plan',
         getSecurityAllowlist: () => [],
         hasTemporaryReadWhitelist: (p: string) => whitelisted.has(p),
         hasTemporaryWriteWhitelist: () => false,

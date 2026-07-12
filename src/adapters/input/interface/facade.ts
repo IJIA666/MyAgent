@@ -52,7 +52,7 @@ export class CliFacade {
     this.listener = new InputListener({
       getIsGenerating: () => this.session.getIsGenerating(),
       getModelName: () => this.session.getModelName(),
-      getWorkMode: () => this.session.getWorkMode(),
+      getPermissionMode: () => this.session.getPermissionMode(),
       onAbort: () => {
         this.session.abort();
       },
@@ -214,7 +214,7 @@ export class CliFacade {
    * 启动终端交互 REPL 主循环。
    */
   public start(): void {
-    renderSessionHeader(this.session.getModelName(), this.session.getWorkMode(), this.session.getSessionId());
+    renderSessionHeader(this.session.getModelName(), this.session.getPermissionMode(), this.session.getSessionId());
     this.listener.start();
   }
 

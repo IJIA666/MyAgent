@@ -46,7 +46,7 @@ type ApprovalResolver = (params: {
   toolName: string;
   toolArgs: Record<string, unknown>;
   operation: SafetyOperation;
-  workMode: string;
+  permissionMode: string;
 }) => ApprovalResolveResult;
 
 export class HumanApprovalPlugin implements Plugin {
@@ -107,9 +107,9 @@ export class HumanApprovalPlugin implements Plugin {
 
     // 【Plan 模式统一策略】基于 planSideEffect 决定 pass/suspend/deny
     // 仅当工具返回了可信副作用分类时生效；未设置 planSideEffect 的工具走原有流程。
-    const workMode = sessionContext.getWorkMode();
+    const permissionMode = sessionContext.getPermissionMode();
     const planSideEffect = safetyResult.operation?.planSideEffect;
-    if (workMode === 'Plan' && planSideEffect) {
+    if (permissionMode === 'plan' && planSideEffect) {
       const isTrustedPlanRead = planSideEffect === 'read' && (
         safetyResult.status === 'pass' ||
         (safetyResult.status === 'suspend' && safetyResult.operation?.operationCategory === 'command-execute')
@@ -130,7 +130,7 @@ export class HumanApprovalPlugin implements Plugin {
           toolName: toolCall.name,
           toolArgs: toolCall.arguments,
           operation,
-          workMode,
+          permissionMode,
         });
 
         // 强制覆盖为仅 call/deny（无论 ApprovalPolicy 返回什么）
@@ -226,7 +226,7 @@ export class HumanApprovalPlugin implements Plugin {
         toolName: toolCall.name,
         toolArgs: toolCall.arguments,
         operation,
-        workMode: sessionContext.getWorkMode(),
+        permissionMode: sessionContext.getPermissionMode(),
       });
 
       // 广播 suspend 事件给外部宿主，携带 ApprovalRequest.choices

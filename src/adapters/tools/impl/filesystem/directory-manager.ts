@@ -5,7 +5,6 @@ import type { NativeTool } from '../../tool-types.js';
 import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SafetyOperation, SafetyResource } from '../../../../ports/shared/tool-policy.js';
 import { copyRecursiveSync } from './directory-manager-helper.js';
-import { getWorkMode, loadWorkMode } from '../system/terminal.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 
@@ -49,8 +48,7 @@ export class CreateDirectoryTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    loadWorkMode();
-    if (getWorkMode() === 'YOLO') {
+    if (sessionContext?.getPermissionMode() === 'bypassPermissions') {
       return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-write' as const, summary: '创建目录', resources: [] } as SafetyOperation };
     }
     const directoryPath = args.directoryPath;
@@ -151,8 +149,7 @@ export class DeletePathTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    loadWorkMode();
-    if (getWorkMode() === 'YOLO') {
+    if (sessionContext?.getPermissionMode() === 'bypassPermissions') {
       return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-delete' as const, summary: '删除路径', resources: [] } as SafetyOperation };
     }
     const targetPath = args.targetPath;
@@ -254,8 +251,7 @@ export class MovePathTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    loadWorkMode();
-    if (getWorkMode() === 'YOLO') {
+    if (sessionContext?.getPermissionMode() === 'bypassPermissions') {
       return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-move' as const, summary: '移动路径', resources: [] } as SafetyOperation };
     }
     const sourcePath = args.sourcePath;
@@ -393,8 +389,7 @@ export class CopyPathTool implements NativeTool {
    * @returns 安全评估结论
    */
   checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    loadWorkMode();
-    if (getWorkMode() === 'YOLO') {
+    if (sessionContext?.getPermissionMode() === 'bypassPermissions') {
       return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-copy' as const, summary: '复制路径', resources: [] } as SafetyOperation };
     }
     const sourcePath = args.sourcePath;

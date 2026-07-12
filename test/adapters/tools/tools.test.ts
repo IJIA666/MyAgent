@@ -307,7 +307,7 @@ describe('机密环境文件分级保护审计测试', () => {
 
   test('1. 敏感机密文件读写在 YOLO 模式下强制降级 Safe 卡关与披露测试', () => {
     const mockSession = new SessionContext();
-    mockSession.setWorkMode('YOLO');
+    mockSession.setPermissionMode('bypassPermissions');
 
     // A. ReadFileTool.checkSafety 读取 .env 触发降级 suspend
     const readSafety = readFileTool.checkSafety({ targetPath: '.env' });
@@ -337,7 +337,7 @@ describe('机密环境文件分级保护审计测试', () => {
 
   test('2. 样例配置文件 .env.example 不降级 YOLO 直接放行测试', () => {
     const mockSession = new SessionContext();
-    mockSession.setWorkMode('YOLO');
+    mockSession.setPermissionMode('bypassPermissions');
 
     // A. ReadFileTool.checkSafety 读取 .env.example 应直接 pass
     const readSafety = readFileTool.checkSafety({ targetPath: '.env.example' });

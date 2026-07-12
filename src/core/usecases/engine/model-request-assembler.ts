@@ -152,7 +152,7 @@ export class ModelRequestAssembler {
 
     // Step 5: system-reminder 注入
     const finalRequestMessages = [...(actualRequest.messages || [])];
-    const currentMode = this.context.getWorkMode();
+    const currentMode = this.context.getPermissionMode();
 
     let latestUserMessageIdx = -1;
     for (let i = finalRequestMessages.length - 1; i >= 0; i--) {
@@ -168,7 +168,7 @@ export class ModelRequestAssembler {
       const cwdStr = process.cwd();
       // 根据当前模式注入行为约束（不暴露内部模式枚举名）
       // Plan：只读提示（具体限制由 ToolPermissionService 强制执行）
-      const behaviorConstraint = currentMode === 'Plan'
+      const behaviorConstraint = currentMode === 'plan'
         ? 'Behavior: 本轮仅允许读取、分析和提出建议，不得修改文件或系统状态。'
         : '';
       const reminderLines = [
@@ -199,7 +199,7 @@ export class ModelRequestAssembler {
     // Step 6: Plan 模式工具裁剪
     const enablePlanToolStripping = this.context.appConfig?.enablePlanToolStripping ?? false;
     let finalRequestTools = actualRequest.tools || [];
-    if (enablePlanToolStripping && currentMode === 'Plan') {
+    if (enablePlanToolStripping && currentMode === 'plan') {
       finalRequestTools = finalRequestTools.filter((t: unknown) => {
         return (t as { securityCategory?: string }).securityCategory !== 'write';
       });

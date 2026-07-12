@@ -114,17 +114,6 @@ export interface McpConfig {
 }
 
 /**
- * 终端安全执行工作模式：
- * - Safe: 每次执行写倾向/高危工具都必须人工审批
- * - Auto: 智能根据命令白名单放行
- * - YOLO: 全自动免密放行，只受黑名单与机密分级降级拦截约束
- * - Plan: 只读计划模式，直接阻断任何写入/修改等副作用操作
- *
- * @deprecated 将在 10.x 删除，由 `PermissionMode` 替代。
- */
-export type WorkMode = 'Safe' | 'Auto' | 'YOLO' | 'Plan';
-
-/**
  * Claude Code 同构的权限模式（配置层引用）。
  * 完整类型见 `src/core/domain/permissions/permission-types.ts` 的 `PermissionMode`。
  * 这里作为配置层的独立字面量类型以避免跨层类型依赖。
@@ -191,8 +180,6 @@ export interface AppConfig {
   workspace: string;
   /** MCP Server 连接配置（可能为空对象） */
   mcp: McpConfig;
-  /** 终端安全执行工作模式（即将弃用，使用 permission.defaultMode 替代） */
-  workMode?: WorkMode;
   /** Claude Code 同构权限配置 */
   permission?: {
     /** 默认权限模式 */

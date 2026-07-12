@@ -11,7 +11,7 @@ import type { PendingInteraction } from '../shared/pending-interaction.js';
 import type { ApprovalChoice } from '../shared/approval-types.js';
 import type { InteractionPort } from '../driven/session/InteractionPort.js';
 import type { AskUserAnswer } from '../driven/session/InteractionPort.js';
-import type { WorkMode, ConfigPermissionMode } from '../../config/index.js';
+import type { ConfigPermissionMode } from '../../config/index.js';
 
 /**
  * 驱动核心进行会话与对话交互的用例契约接口。
@@ -107,8 +107,6 @@ export interface ChatUseCase {
    *
    * @returns 工作模式标识
    */
-  getWorkMode(): WorkMode;
-
   /**
    * 获取当前智能体的权限模式。
    *

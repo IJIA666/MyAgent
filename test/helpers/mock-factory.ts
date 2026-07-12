@@ -32,7 +32,9 @@ export function createMockAppConfig(custom?: Partial<AppConfig>): AppConfig {
     mcp: {
       mcpServers: {},
     },
-    workMode: 'Auto',
+    permission: {
+      defaultMode: 'default',
+    },
     runtimeLimits: {
       maxIterations: 20,
       largeToolOutputLimit: 8000,

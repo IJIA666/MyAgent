@@ -128,10 +128,10 @@ describe('SessionContext 状态边界', () => {
     const context = new SessionContext('state-boundaries');
     context.setTenantId('tenant-a');
     context.setSessionId('state-boundaries-updated');
-    context.setWorkMode('Auto');
+    context.setPermissionMode('auto');
     expect(context.getTenantId()).toBe('tenant-a');
     expect(context.getSessionId()).toBe('state-boundaries-updated');
-    expect(context.getWorkMode()).toBe('Auto');
+    expect(context.getPermissionMode()).toBe('auto');
 
     context.addMessage(message('one'));
     context.addMessage(message('two'));
@@ -154,7 +154,7 @@ describe('SessionContext 状态边界', () => {
 
     context.isProcessing = true;
     expect(() => context.setTenantId('blocked')).toThrow('session is currently busy');
-    expect(() => context.setWorkMode('Safe')).toThrow('session is currently busy');
+    expect(() => context.setPermissionMode('default')).toThrow('session is currently busy');
     expect(() => context.rollbackHistoryToLength(0)).toThrow('session is currently busy');
     expect(() => context.truncateHistoryFromIndex(1)).toThrow('session is currently busy');
     expect(() => context.addTemporaryReadWhitelist('blocked-read')).toThrow('session is currently busy');

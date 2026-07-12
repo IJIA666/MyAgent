@@ -61,15 +61,15 @@ function compactJson(value: unknown): string {
  * 渲染 CLI 启动页头。
  *
  * @param modelName - 当前激活模型名称
- * @param workMode - 当前工作模式
+ * @param permissionMode - 当前权限模式
  * @param sessionId - 当前会话 ID
  */
-export function renderSessionHeader(modelName: string, workMode: string, sessionId: string): void {
+export function renderSessionHeader(modelName: string, permissionMode: string, sessionId: string): void {
   const width = getRenderWidth();
   const shortSessionId = truncateText(sessionId, 20);
   console.log(theme.brand(`┌${rule('─', width - 2)}┐`));
   console.log(theme.brand(frameLine('MyAgent CLI', width)));
-  console.log(theme.info(frameLine(`model: ${truncateText(modelName, 28)}  mode: ${workMode}  session: ${shortSessionId}`, width)));
+  console.log(theme.info(frameLine(`model: ${truncateText(modelName, 28)}  mode: ${permissionMode}  session: ${shortSessionId}`, width)));
   console.log(theme.brand(`└${rule('─', width - 2)}┘`));
   console.log(theme.dim('输入 / 打开命令菜单，输入 exit 或 quit 结束会话。双击 Esc 可中断或回滚。'));
   console.log();
@@ -79,11 +79,11 @@ export function renderSessionHeader(modelName: string, workMode: string, session
  * 构建动态输入提示符。
  *
  * @param modelName - 当前激活模型名称
- * @param workMode - 当前工作模式
+ * @param permissionMode - 当前权限模式
  * @returns 可直接传给 readline 的提示符文本
  */
-export function renderPromptPrefix(modelName: string, workMode: string): string {
-  return `${theme.brand('myagent')} ${theme.dim(`[${modelName} | ${workMode}]`)} ${theme.highlight('›')} `;
+export function renderPromptPrefix(modelName: string, permissionMode: string): string {
+  return `${theme.brand('myagent')} ${theme.dim(`[${modelName} | ${permissionMode}]`)} ${theme.highlight('›')} `;
 }
 
 /**

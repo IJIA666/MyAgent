@@ -10,7 +10,7 @@ import { existsSync, copyFileSync, readFileSync, writeFileSync, realpathSync } f
 import { config as dotenvConfig } from 'dotenv';
 
 
-import { AppConfig, McpConfig, WorkMode, ConfigPermissionMode, EmbeddingConfig, DiagnosticDataConfig, DEFAULT_DIAGNOSTIC_DATA_CONFIG, DEFAULT_PERMISSION_MODE } from './types.js';
+import { AppConfig, McpConfig, ConfigPermissionMode, EmbeddingConfig, DiagnosticDataConfig, DEFAULT_DIAGNOSTIC_DATA_CONFIG, DEFAULT_PERMISSION_MODE } from './types.js';
 import { getModelConfig } from './models.js';
 import { getRuntimeEnv, interpolateEnvVars } from './env.js';
 import { logger, setDiagnosticSanitizerPatterns } from '../utils/logger.js';
@@ -236,11 +236,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   // 4. 加载 MCP 配置（含环境变量插值）
   const mcp = loadMcpConfig(env);
 
-  // 5. 组装配置对象，只读加载系统默认安全工作模式，但不进行全局状态的硬回写
-  const workMode = loadDefaultWorkMode(env);
-  cachedDefaultWorkMode = workMode;
-
-  // 加载 Claude 同构权限模式（取代旧 WorkMode）
+  // 5. 组装配置对象，只读加载默认 PermissionMode。
+  // 加载 Claude 同构权限模式。
   const permissionMode = loadDefaultPermissionMode(env);
 
   const maxIterations = parseEnvInt(env.AGENT_MAX_ITERATIONS, 20);
@@ -297,7 +294,6 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
     embedding,
     workspace,
     mcp,
-    workMode,
     permission: {
       defaultMode: permissionMode,
     },
@@ -371,9 +367,6 @@ export function updateMcpServerStatus(name: string, enabled: boolean): void {
   writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
 }
 
-/** 缓存当前配置加载期计算出的默认系统安全工作模式 */
-let cachedDefaultWorkMode: WorkMode = 'Auto';
-
 /** 缓存当前配置加载期计算出的 Claude 同构默认权限模式 */
 let cachedDefaultPermissionMode: ConfigPermissionMode = 'default';
 
@@ -384,15 +377,6 @@ let cachedDefaultPermissionMode: ConfigPermissionMode = 'default';
  */
 export function getDefaultPermissionMode(): ConfigPermissionMode {
   return cachedDefaultPermissionMode;
-}
-
-/**
- * 获取当前系统加载的默认安全工作模式。
- *
- * @returns 默认安全工作模式
- */
-export function getDefaultWorkMode(): WorkMode {
-  return cachedDefaultWorkMode;
 }
 
 /**
@@ -407,33 +391,11 @@ function getAgentConfigPath(env: Record<string, string | undefined> = getRuntime
 }
 
 /**
- * 从环境变量或配置文件只读加载默认工作模式（支持 Plan 模式且废除全局硬回写）。
+ * 从环境变量或配置文件只读加载默认 PermissionMode。
  *
  * @param env - 环境配置上下文对象
- * @returns 加载出的工作安全模式
+ * @returns 加载出的 PermissionMode
  */
-export function loadDefaultWorkMode(env: Record<string, string | undefined> = getRuntimeEnv()): WorkMode {
-  try {
-    const configPath = getAgentConfigPath(env);
-    if (existsSync(configPath)) {
-      const data = readFileSync(configPath, 'utf-8');
-      const parsed = JSON.parse(data);
-      const val = parsed.workMode;
-      if (val === 'Safe' || val === 'Auto' || val === 'YOLO' || val === 'Plan') {
-        return val as WorkMode;
-      }
-    }
-  } catch {
-    // 忽略加载读取错误，由环境变量或默认值兜底
-  }
-
-  const envMode = env.AGENT_WORK_MODE;
-  if (envMode === 'Safe' || envMode === 'Auto' || envMode === 'YOLO' || envMode === 'Plan') {
-    return envMode as WorkMode;
-  }
-  return 'Auto';
-}
-
 /**
  * 从环境变量或配置文件只读加载默认权限模式。
  *

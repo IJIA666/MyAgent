@@ -28,11 +28,11 @@ describe('安全隔离与级联熔断集成测试', () => {
 
     // 创建会话 A (YOLO)
     const sessionA = new SessionContext('session-yolo');
-    sessionA.setWorkMode('YOLO');
+    sessionA.setPermissionMode('bypassPermissions');
 
     // 创建会话 B (Plan)
     const sessionB = new SessionContext('session-plan');
-    sessionB.setWorkMode('Plan');
+    sessionB.setPermissionMode('plan');
 
     // 针对非只读写倾向命令 npm run build 执行 checkSafety
     const safetyResultA = executeCommandTool.checkSafety({ command: 'npm run build' }, sessionA);
@@ -45,7 +45,7 @@ describe('安全隔离与级联熔断集成测试', () => {
 
   it('2. 应该在单会话内驳回其中任意一个待审批时，触发级联熔断并向其他并发链路抛出 HaltedByReject 错误', async () => {
     const session = new SessionContext('session-cascade');
-    session.setWorkMode('Safe');
+    session.setPermissionMode('default');
     session.approvalService.setBypassMode(false);
 
     const approvalPolicy = { resolve: () => ({ id: "mock", message: "", choices: [{ choiceId: "call", label: "", description: "" }] }) };

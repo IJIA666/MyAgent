@@ -161,7 +161,7 @@ describe('ModelRequestAssembler', () => {
   describe('assemble - Plan 模式工具裁剪', () => {
     it('应在 Plan 模式 + enablePlanToolStripping 开启时过滤 write 类工具', async () => {
       // 设置 Plan 模式与裁剪开关
-      context.setWorkMode?.('Plan');
+      context.setPermissionMode?.('plan');
       context.appConfig = {
         enablePlanToolStripping: true
       } as unknown as AppConfig;
@@ -178,7 +178,7 @@ describe('ModelRequestAssembler', () => {
     });
 
     it('应在 Plan 模式但 enablePlanToolStripping 关闭时保留所有工具', async () => {
-      context.setWorkMode?.('Plan');
+      context.setPermissionMode?.('plan');
       context.appConfig = {
         enablePlanToolStripping: false
       } as unknown as AppConfig;
@@ -189,7 +189,7 @@ describe('ModelRequestAssembler', () => {
     });
 
     it('应在非 Plan 模式下即使 enablePlanToolStripping 开启也保留所有工具', async () => {
-      context.setWorkMode('Auto');
+      context.setPermissionMode('auto');
       context.appConfig = {
         enablePlanToolStripping: true
       } as unknown as AppConfig;
@@ -212,7 +212,7 @@ describe('ModelRequestAssembler', () => {
 
   describe('assemble - 模型上下文边界', () => {
     it('Plan 模式下发送给模型的消息不得出现 SecurityMode 等内部枚举', async () => {
-      context.setWorkMode?.('Plan');
+      context.setPermissionMode?.('plan');
       context.appConfig = {
         enablePlanToolStripping: false
       } as unknown as AppConfig;
@@ -232,7 +232,7 @@ describe('ModelRequestAssembler', () => {
     });
 
     it('Auto 模式下不得出现行为约束或内部模式枚举', async () => {
-      context.setWorkMode?.('Auto');
+      context.setPermissionMode?.('auto');
       context.appConfig = {} as unknown as AppConfig;
 
       const result = await assembler.assemble(undefined, 'gpt-4');

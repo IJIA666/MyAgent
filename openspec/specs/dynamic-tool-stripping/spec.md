@@ -2,7 +2,7 @@
 
 ### 需求: Plan模式下写操作工具的动态裁剪与配置 (Dynamic Tool Stripping in Plan Mode)
 系统必须（MUST）在 `AppConfig` 全局配置中支持配置参数 `enable_plan_tool_stripping`（布尔值，默认值应为 `false`）。
-当 `enable_plan_tool_stripping === true` 且当前 `workMode === 'Plan'` 时，在 LLM 请求的 `tools` 定义字段装配阶段，系统必须（MUST）动态过滤剔除所有声明为写倾向（`securityCategory === 'write'`）的敏感 Tool 定义。
+当 `enable_plan_tool_stripping === true` 且当前 `permissionMode === 'plan'` 时，在 LLM 请求的 `tools` 定义字段装配阶段，系统必须（MUST）动态过滤剔除所有声明为写倾向（`securityCategory === 'write'`）的敏感 Tool 定义。
 
 #### 场景: 开启裁剪配置时的 Plan 模式物理过滤
 - **WHEN** 全局配置 `enable_plan_tool_stripping` 设为 `true` 且会话处于 `Plan` 模式，发起 LLM 调用时

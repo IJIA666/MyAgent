@@ -62,7 +62,7 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
 
     beforeEach(() => {
       // 故意在真实全局 process.env 中注入冲突的环境变量
-      process.env.AGENT_WORK_MODE = 'YOLO';
+      process.env.AGENT_PERMISSION_MODE = 'bypassPermissions';
       process.env.AGENT_LLM_REASONING_EFFORT = 'disabled';
       process.env.AGENT_LLM_API_KEY = 'global-real-key-must-not-use';
     });
@@ -77,7 +77,7 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
       const mockEnv = {
         AGENT_LLM_API_KEY: 'mock-isolated-api-key',
         AGENT_LLM_MODEL: 'deepseek-v4-flash',
-        AGENT_WORK_MODE: 'Safe',
+        AGENT_PERMISSION_MODE: 'plan',
         AGENT_LLM_REASONING_EFFORT: 'high'
       };
 
@@ -87,8 +87,8 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
       expect(config.llm.apiKey).toBe('mock-isolated-api-key');
       // 验证思考等级推理努力度绝对隔离，并已被正确注入 llm 配置中
       expect(config.llm.reasoningEffort).toBe('high');
-      // 验证工作安全模式绝对隔离，没有穿透读取到全局的 YOLO 模式
-      expect(config.workMode).toBe('Safe');
+      // 验证权限模式绝对隔离，没有穿透读取到全局的 bypassPermissions 模式。
+      expect(config.permission?.defaultMode).toBe('plan');
     });
   });
 
