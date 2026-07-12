@@ -9,14 +9,24 @@ import { ToolCatalog } from '../../src/adapters/tools/ToolCatalog.js';
 import { buildNativeTools } from '../../src/adapters/tools/tool-factory.js';
 import { ExecuteCommandTool } from '../../src/adapters/tools/impl/system/terminal.js';
 
+// 使用当前平台可用的 shell，确保 effect 生命周期测试不依赖 Windows 专属命令。
+const platformReadCase = process.platform === 'win32'
+  ? { command: 'dir', shellKind: 'cmd' as const }
+  : { command: 'ls', shellKind: 'posix' as const };
+
+// 使用当前平台可用 shell 下的复合命令，验证复合命令不会被识别为只读。
+const platformCompositeCase = process.platform === 'win32'
+  ? { command: 'dir | find "txt"', shellKind: 'cmd' as const }
+  : { command: 'ls | grep "txt"', shellKind: 'posix' as const };
+
 describe('运行时 effect 生命周期集成验证（8.1-8.4）', () => {
   const tool = new ExecuteCommandTool();
 
   it('8.1 Plan 模式原子只读命令 → effect=read，复合命令 → 阻断', () => {
-    const readEffect = tool.resolveExecutionEffect!({ command: 'wmic logicaldisk get size,freespace /format:value' });
+    const readEffect = tool.resolveExecutionEffect!(platformReadCase);
     expect(readEffect && readEffect.kind).toBe('read');
 
-    const planSafe = tool.resolveExecutionEffect!({ command: 'dir | find "txt"', shellKind: 'cmd' });
+    const planSafe = tool.resolveExecutionEffect!(platformCompositeCase);
     expect(planSafe && planSafe.kind).toBe('unknown');
   });
 

@@ -21,6 +21,26 @@ import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand, de
 import { SessionContext } from '../../../src/core/domain/context.js';
 import type { ToolPermissionCheckResult } from '../../../src/core/domain/permissions/permission-types.js';
 
+// 根据当前运行平台选择可用的原子只读命令，避免把 Windows shell 假设带入 Ubuntu CI。
+const platformReadCase = process.platform === 'win32'
+  ? { command: 'dir C:\\Windows\\Temp', shellKind: 'cmd' as const }
+  : { command: 'ls /tmp', shellKind: 'posix' as const };
+
+// 保留 Windows 下 WMIC 只读分类覆盖，并为非 Windows 平台提供等价的只读命令。
+const platformReadVariantCase = process.platform === 'win32'
+  ? { command: 'wmic logicaldisk where caption="C:" get caption,size,freespace /format:value', shellKind: 'cmd' as const }
+  : { command: 'cat package.json', shellKind: 'posix' as const };
+
+// 根据当前运行平台选择可用 shell 下的复合命令，验证复合命令不能被识别为只读。
+const platformCompositeCase = process.platform === 'win32'
+  ? { command: 'type a.txt | find "txt"', shellKind: 'cmd' as const }
+  : { command: 'cat a.txt | grep "txt"', shellKind: 'posix' as const };
+
+// 根据当前运行平台选择非只读命令，验证安全分类会降级为 write 或 unknown。
+const platformWriteCommands = process.platform === 'win32'
+  ? ['del file.txt', 'mkdir newdir']
+  : ['rm file.txt', 'mkdir newdir'];
+
 describe('Terminal Tool 单元测试', () => {
   const mockRootDir = mkdtempSync(join(tmpdir(), 'authorized-terminal-test-'));
   let executeCommandToolInstance: ExecuteCommandTool;
@@ -331,19 +351,26 @@ describe('Terminal Tool 单元测试', () => {
 
     // A. 计划模式 + 安全只读命令 → planSideEffect='read'
     mockSession.setPermissionMode('plan');
-    const safetyDir = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
+    const safetyDir = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
     expect(safetyDir.operation?.planSideEffect).toBe('read');
 
-    const safetyType = executeCommandToolInstance.checkSafety({ command: 'type package.json', shellKind: 'cmd' }, mockSession);
+    const safetyType = executeCommandToolInstance.checkSafety(
+      process.platform === 'win32'
+        ? { command: 'type package.json', shellKind: 'cmd' }
+        : { command: 'cat package.json', shellKind: 'posix' },
+      mockSession,
+    );
     expect(safetyType.operation?.planSideEffect).toBe('read');
 
     const safetyGitStatus = executeCommandToolInstance.checkSafety({ command: 'git status' }, mockSession);
     expect(safetyGitStatus.operation?.planSideEffect).toBe('read');
 
-    const safetyGetPsDrive = executeCommandToolInstance.checkSafety({
-      command: 'powershell Get-PSDrive C',
-      shellKind: 'powershell'
-    }, mockSession);
+    const safetyGetPsDrive = executeCommandToolInstance.checkSafety(
+      process.platform === 'win32'
+        ? { command: 'powershell Get-PSDrive C', shellKind: 'powershell' }
+        : { command: 'ls /tmp', shellKind: 'posix' },
+      mockSession,
+    );
     expect(safetyGetPsDrive.operation?.planSideEffect).toBe('read');
 
     // B. 计划模式 + 含复合字符命令 → planSideEffect='unknown'（终端不再内嵌 Plan 策略）
@@ -351,38 +378,45 @@ describe('Terminal Tool 单元测试', () => {
     expect(safetyComposite.operation?.planSideEffect).toBe('unknown');
     expect(safetyComposite.status).toBe('suspend');
 
-    const safetyRedirect = executeCommandToolInstance.checkSafety({ command: 'type a.txt > b.txt', shellKind: 'cmd' }, mockSession);
+    const safetyRedirect = executeCommandToolInstance.checkSafety(
+      process.platform === 'win32'
+        ? { command: 'type a.txt > b.txt', shellKind: 'cmd' }
+        : { command: 'cat a.txt > b.txt', shellKind: 'posix' },
+      mockSession,
+    );
     expect(safetyRedirect.operation?.planSideEffect).toBe('unknown');
     expect(safetyRedirect.status).toBe('suspend');
 
-    // C. 计划模式 + 非白名单只读命令 → planSideEffect='unknown'
-    const safetyWmic = executeCommandToolInstance.checkSafety({ command: 'wmic logicaldisk' }, mockSession);
-    expect(safetyWmic.operation?.planSideEffect).toBe('read');
-    expect(safetyWmic.status).toBe('suspend');
+    // C. 计划模式 + 平台可用只读命令 → planSideEffect='read'
+    const safetyPlatformRead = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
+    expect(safetyPlatformRead.operation?.planSideEffect).toBe('read');
+    expect(safetyPlatformRead.status).toBe('suspend');
 
-    const safetyWmicFormat = executeCommandToolInstance.checkSafety({
-      command: 'wmic logicaldisk where caption="C:" get caption,size,freespace /format:value',
-      shellKind: 'cmd'
-    }, mockSession);
-    expect(safetyWmicFormat.operation?.planSideEffect).toBe('read');
-    expect(safetyWmicFormat.status).toBe('suspend');
+    const safetyPlatformReadVariant = executeCommandToolInstance.checkSafety(platformReadVariantCase, mockSession);
+    expect(safetyPlatformReadVariant.operation?.planSideEffect).toBe('read');
+    expect(safetyPlatformReadVariant.status).toBe('suspend');
 
-    // 'wmic process' 在 CMD 白名单中不存在 → unknown
-    const safetyWmicProcess = executeCommandToolInstance.checkSafety({ command: 'wmic process', shellKind: 'cmd' }, mockSession);
-    expect(safetyWmicProcess.operation?.planSideEffect).not.toBe('read');
+    // 平台 shell 中未加入只读白名单的命令 → unknown
+    const safetyUnknownCommand = executeCommandToolInstance.checkSafety(
+      process.platform === 'win32'
+        ? { command: 'wmic process', shellKind: 'cmd' }
+        : { command: 'ps aux', shellKind: 'posix' },
+      mockSession,
+    );
+    expect(safetyUnknownCommand.operation?.planSideEffect).not.toBe('read');
 
     // D. 计划模式 + 危险写命令 → planSideEffect='write'
-    const safetyDel = executeCommandToolInstance.checkSafety({ command: 'del file.txt' }, mockSession);
-    expect(safetyDel.operation?.planSideEffect).toBe('write');
+    const safetyWrite = executeCommandToolInstance.checkSafety({ command: platformWriteCommands[0] }, mockSession);
+    expect(safetyWrite.operation?.planSideEffect).toBe('write');
 
     // E. Auto/Safe 模式回归：不受本次变更影响
     mockSession.setPermissionMode('auto');
     saveAllowedCommands([]); // 无白名单
-    const safetyAuto = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
+    const safetyAuto = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
     expect(safetyAuto.status).toBe('suspend'); // Auto 下未授权命令进入审批
 
     mockSession.setPermissionMode('default');
-    const safetySafe = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
+    const safetySafe = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
     expect(safetySafe.status).toBe('suspend'); // Safe 下始终审批
 
     // YOLO 模式回归
@@ -412,14 +446,23 @@ describe('Terminal Tool 单元测试', () => {
 
     // B. Plan 下通过的命令（safe），在审批放行后 execute 阶段的 validateCommand 不能因复合字符拒绝
     // 验证：isPlanSafeCommand 返回 true 的命令同时传递 validateCommand
-    const safeCases: Array<{ command: string; shellKind: 'powershell' | 'cmd' | 'posix' }> = [
-      { command: 'dir C:\\Windows\\Temp', shellKind: 'powershell' }, // PowerShell 只读白名单 + 无复合字符
-      { command: 'type package.json', shellKind: 'cmd' },            // CMD 只读白名单 + 无复合字符
-      { command: 'git status', shellKind: 'powershell' },            // 通用只读白名单 + 无复合字符
-      { command: 'git diff', shellKind: 'powershell' },              // 通用只读白名单 + 无复合字符
-      { command: 'git log', shellKind: 'powershell' },               // 通用只读白名单 + 无复合字符
-      { command: 'git log --grep="feat;fix"', shellKind: 'powershell' }, // 引号内分号合法
-    ];
+    const safeCases: Array<{ command: string; shellKind: 'powershell' | 'cmd' | 'posix' }> = process.platform === 'win32'
+      ? [
+        { command: 'dir C:\\Windows\\Temp', shellKind: 'powershell' },
+        { command: 'type package.json', shellKind: 'cmd' },
+        { command: 'git status', shellKind: 'powershell' },
+        { command: 'git diff', shellKind: 'powershell' },
+        { command: 'git log', shellKind: 'powershell' },
+        { command: 'git log --grep="feat;fix"', shellKind: 'powershell' },
+      ]
+      : [
+        { command: 'ls /tmp', shellKind: 'posix' },
+        { command: 'cat package.json', shellKind: 'posix' },
+        { command: 'git status', shellKind: 'posix' },
+        { command: 'git diff', shellKind: 'posix' },
+        { command: 'git log', shellKind: 'posix' },
+        { command: 'git log --grep="feat;fix"', shellKind: 'posix' },
+      ];
     for (const { command, shellKind } of safeCases) {
       // isPlanSafeCommand 断言为 true
       expect(isPlanSafeCommand(command, shellKind)).toBe(true);
@@ -434,7 +477,7 @@ describe('Terminal Tool 单元测试', () => {
     }
 
     // D. 写倾向命令返回 planSideEffect='write'
-    const writeCases = ['del file.txt', 'rm -rf node_modules', 'mkdir newdir'];
+    const writeCases = platformWriteCommands;
     for (const cmd of writeCases) {
       const safety = executeCommandToolInstance.checkSafety({ command: cmd }, mockSession);
       expect(safety.operation?.planSideEffect).toBe('write');
@@ -443,11 +486,11 @@ describe('Terminal Tool 单元测试', () => {
     // E. Auto/Safe 模式回归：不受本次变更影响
     mockSession.setPermissionMode('auto');
     saveAllowedCommands([]); // 无白名单
-    const safetyAuto = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
+    const safetyAuto = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
     expect(safetyAuto.status).toBe('suspend'); // Auto 下未授权命令进入审批
 
     mockSession.setPermissionMode('default');
-    const safetySafe = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
+    const safetySafe = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
     expect(safetySafe.status).toBe('suspend'); // Safe 下始终审批
 
     // YOLO 模式回归
@@ -485,7 +528,7 @@ describe('Terminal Tool 单元测试', () => {
 
     test('2.4 Plan 安全只读命令返回 read effect', () => {
       // isPlanSafeCommand 判定的原子只读命令
-      const effect1 = tool.resolveExecutionEffect!({ command: 'wmic logicaldisk' })!;
+      const effect1 = tool.resolveExecutionEffect!(platformReadCase)!;
       expect(effect1.kind).toBe('read');
       expect(effect1.reason).toBe('plan_safe_command');
 
@@ -501,7 +544,7 @@ describe('Terminal Tool 单元测试', () => {
     test('2.5 管道/重定向/复合命令无法被 Plan 判定，execute_command 不可达，resolveExecutionEffect 不会返回 read', () => {
       // 这些命令会被 checkSafety 在 Plan 模式下拒绝，但没有执行，resolveExecutionEffect 不会返回 pre_execution_abort
       // 验证 effect 为 unknown（因为安全判定未命中只读规则，按 legacy_fallback 保守处理）
-      const effect1 = tool.resolveExecutionEffect!({ command: 'type a.txt | find "txt"', shellKind: 'cmd' })!;
+      const effect1 = tool.resolveExecutionEffect!(platformCompositeCase)!;
       expect(effect1.kind).toBe('unknown');
       expect(effect1.reason).toBe('legacy_fallback');
     });
@@ -517,7 +560,7 @@ describe('Terminal Tool 单元测试', () => {
     });
 
     test('执行失败但仍为 Plan 安全命令时 effect 为 read', () => {
-      const effect = tool.resolveExecutionEffect!({ command: 'wmic logicaldisk' }, undefined, new Error('执行失败'))!;
+      const effect = tool.resolveExecutionEffect!(platformReadCase, undefined, new Error('执行失败'))!;
       expect(effect.kind).toBe('read');
       expect(effect.completed).toBe(false);
       expect(effect.reason).toBe('plan_safe_command');
