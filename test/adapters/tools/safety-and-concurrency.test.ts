@@ -17,6 +17,7 @@ import type { LlmPort } from '../../../src/ports/driven/llm/LlmPort.js';
 import type { ContextRepository } from '../../../src/core/usecases/brain/ContextRepository.js';
 import type { ToolRegistryPort } from '../../../src/ports/driven/tools/ToolRegistryPort.js';
 import type { AppConfig } from '../../../src/config/index.js';
+import type { AuthorizedExecutionContext } from '../../../src/core/domain/permissions/tool-permission-service.js';
 
 describe('安全与并发增强特性测试', () => {
   const testWorkspace = process.cwd();
@@ -87,6 +88,26 @@ describe('安全与并发增强特性测试', () => {
         'dangerous_custom_tool',
         {}
       )).rejects.toThrow('ToolCallGateway');
+    });
+
+    it('已授权上下文应执行已注册工具，并拒绝不存在的工具', async () => {
+      const catalog = new ToolCatalog(buildNativeTools());
+      const executor = new ToolExecutor(catalog, () => true);
+      const authorizedContext: AuthorizedExecutionContext = {
+        nonce: 'test-authorized-context',
+        toolName: 'get_current_time',
+        args: {},
+        decision: { kind: 'allow', decisionReason: '测试授权' },
+      };
+
+      const outcome = await executor.executeAuthorized(authorizedContext);
+      expect(outcome.value.content).toHaveLength(1);
+      expect(outcome.effect.kind).toBe('none');
+
+      await expect(executor.executeAuthorized({
+        ...authorizedContext,
+        toolName: 'missing_tool',
+      })).rejects.toThrow('Tool is not registered');
     });
   });
 

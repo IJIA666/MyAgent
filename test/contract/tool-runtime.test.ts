@@ -10,6 +10,7 @@ import { ToolCatalog } from '../../src/adapters/tools/ToolCatalog.js';
 import { buildNativeTools } from '../../src/adapters/tools/tool-factory.js';
 import { ToolPolicyRouter } from '../../src/adapters/tools/tool-policy-router.js';
 import { ToolRegistry } from '../../src/adapters/tools/toolRegistry.js';
+import type { McpToolManager } from '../../src/adapters/tools/mcp-client.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 import type {
   McpManagerPort,
@@ -146,11 +147,19 @@ describe('工具运行时契约', () => {
   });
 
   it('带 MCP 的 ToolRegistry 应合并工具定义并委托未知调用', async () => {
-    const registry = new ToolRegistry();
+    const manager = createFakeMcpManager();
+    const registry = new ToolRegistry(manager as unknown as McpToolManager);
 
     try {
       const tools = await registry.getTools();
       expect(tools.length).toBeGreaterThan(0);
+      expect(tools.some(tool => (tool as { function?: { name?: string } }).function?.name === 'remote_tool')).toBe(true);
+
+      const session = new SessionContext('tool-runtime-mcp');
+      session.setPermissionMode('bypassPermissions');
+      const outcome = await registry.callTool('remote_tool', {}, session);
+      expect(outcome.value).toEqual({ content: [] });
+      expect(outcome.effect.kind).toBe('write');
     } finally {
       await registry.close();
     }
