@@ -31,6 +31,11 @@ const platformReadVariantCase = process.platform === 'win32'
   ? { command: 'wmic logicaldisk where caption="C:" get caption,size,freespace /format:value', shellKind: 'cmd' as const }
   : { command: 'cat package.json', shellKind: 'posix' as const };
 
+// 为显式 PowerShell 只读用例提供非 Windows 平台上的等价 shell，避免测试依赖额外安装的 pwsh。
+const platformPowerShellReadCase = process.platform === 'win32'
+  ? { command: 'Get-PSDrive C', shellKind: 'powershell' as const }
+  : { command: 'pwd', shellKind: 'posix' as const };
+
 // 根据当前运行平台选择可用 shell 下的复合命令，验证复合命令不能被识别为只读。
 const platformCompositeCase = process.platform === 'win32'
   ? { command: 'type a.txt | find "txt"', shellKind: 'cmd' as const }
@@ -532,11 +537,11 @@ describe('Terminal Tool 单元测试', () => {
       expect(effect1.kind).toBe('read');
       expect(effect1.reason).toBe('plan_safe_command');
 
-      const effect2 = tool.resolveExecutionEffect!({ command: 'dir', shellKind: 'cmd' })!;
+      const effect2 = tool.resolveExecutionEffect!(platformReadVariantCase)!;
       expect(effect2.kind).toBe('read');
       expect(effect2.reason).toBe('plan_safe_command');
 
-      const effect3 = tool.resolveExecutionEffect!({ command: 'Get-PSDrive C', shellKind: 'powershell' })!;
+      const effect3 = tool.resolveExecutionEffect!(platformPowerShellReadCase)!;
       expect(effect3.kind).toBe('read');
       expect(effect3.reason).toBe('plan_safe_command');
     });
