@@ -40,9 +40,9 @@ describe('ToolAccessMetadataProvider 资源提取器（统一运行时版本）'
     expect(resources[1]).toMatchObject({ kind: 'path', access: 'read' });
   });
 
-  it('应为 execute_command 使用 extractSafePrefix 语义提取命令前缀', () => {
+  it('应为 Bash 使用 extractSafePrefix 语义提取命令前缀', () => {
     const provider = createProvider();
-    const extractor = provider.getResourceExtractor('execute_command');
+    const extractor = provider.getResourceExtractor('Bash');
 
     expect(extractor).toBeDefined();
     const resources = extractor!({ command: 'git status' });
@@ -52,7 +52,7 @@ describe('ToolAccessMetadataProvider 资源提取器（统一运行时版本）'
 
   it('包装命令无法提取安全前缀时，应返回空资源列表', () => {
     const provider = createProvider();
-    const extractor = provider.getResourceExtractor('execute_command');
+    const extractor = provider.getResourceExtractor('Bash');
 
     expect(extractor).toBeDefined();
     const resources = extractor!({ command: 'bash -lc "git status"' });

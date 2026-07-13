@@ -16,13 +16,105 @@ import type { SafetyOperation, ToolExecutionContext } from '../../../../core/use
 import type { PlanSideEffect } from '../../../../ports/shared/tool-policy.js';
 import type { EventNotificationPort } from '../../../../ports/driven/session/EventNotificationPort.js';
 
+/** Shell 工具构造参数。 */
+interface ShellToolOptions {
+  /** 对模型暴露的工具名称。 */
+  name: 'Bash' | 'PowerShell';
+  /** 固定的 Shell 语义。 */
+  shellKind: ShellKind;
+  /** 工具描述补充文本。 */
+  description?: string;
+}
+
+/**
+ * 创建 Shell 工具的 OpenAI Function Calling 定义。
+ * 固定 Shell 的新工具不再向模型暴露 shellKind 参数，避免一次调用混用多种语义。
+ *
+ * @param name - 工具名称
+ * @param shellKind - 固定 Shell 语义
+ * @param description - 可选的工具描述覆盖
+ * @returns 工具定义对象
+ */
+function createShellToolDefinition(
+  name: string,
+  shellKind: ShellKind,
+  description?: string,
+): Record<string, unknown> {
+  const shellLabel = shellKind === 'powershell' ? 'PowerShell' : 'Bash';
+  const properties: Record<string, unknown> = {
+    command: {
+      type: 'string',
+      description: `要执行的 ${shellLabel} 命令字符串（例如 'npm run test'）。`,
+    },
+    cwd: {
+      type: 'string',
+      description: '命令执行的子目录路径（可选，相对于工作区根目录）。',
+    },
+    isBackground: {
+      type: 'boolean',
+      description: '是否显式指示在后台运行。对于长时间运行的服务可设为 true。',
+    },
+    watch_patterns: {
+      type: 'array',
+      items: { type: 'string' },
+      description: '可选的日志行匹配触发词列表。',
+    },
+  };
+
+  return {
+    type: 'function',
+    function: {
+      name,
+      description: description ?? `在工作区内执行一条 ${shellLabel} 命令。当前执行策略可能要求额外授权。`,
+      parameters: {
+        type: 'object',
+        properties,
+        required: ['command'],
+      },
+    },
+  };
+}
+
 /**
  * 终端指令执行工具类。
- * 实现了 NativeTool 契约，支持在受限的工作区沙箱内执行原子终端命令。
+ * 实现 NativeTool 契约，并通过工作区路径校验、权限策略与 Shell 执行计划完成命令执行。
  */
-export class ExecuteCommandTool implements NativeTool {
+class BaseShellTool implements NativeTool {
   /** 工具的安全类别。 */
   readonly securityCategory = 'write';
+
+  /** 工具名称。 */
+  readonly name: string;
+
+  /** 当前工具固定使用的 Shell。 */
+  private readonly configuredShellKind: ShellKind;
+
+  /** 工具的 OpenAI Function Calling 声明定义。 */
+  readonly definition: Record<string, unknown>;
+
+  /**
+   * 创建 Shell 工具。
+   *
+   * Bash 和 PowerShell 工具通过构造参数固定 Shell 语义。
+   *
+   * @param options - 工具名称和固定 Shell 语义
+   */
+  constructor(options: ShellToolOptions) {
+    this.name = options.name;
+    this.configuredShellKind = options.shellKind;
+    this.definition = createShellToolDefinition(this.name, options.shellKind, options.description);
+  }
+
+  /**
+   * 获取本次工具调用使用的 Shell 语义。
+   * 工具使用构造时固定的 Shell，调用参数不能切换 Shell 语义。
+   *
+   * @param args - 工具调用参数
+   * @returns 本次调用的 Shell 语义
+   */
+  private getShellKind(): ShellKind {
+    return this.configuredShellKind;
+  }
 
   /**
    * 构造带配置上下文的 ShellExecutionPlan。
@@ -39,53 +131,6 @@ export class ExecuteCommandTool implements NativeTool {
   }
 
   /**
-   * 工具的名称。
-   */
-  readonly name = 'execute_command';
-
-  /**
-   * 工具的 OpenAI Function Calling 声明定义。
-   */
-  readonly definition = {
-    type: "function" as const,
-    function: {
-      name: 'execute_command',
-      description: "在工作区沙箱内执行一条原子终端命令（如 npm run build、vitest 等）。禁止使用 &、|、; 等复合拼接符；外部路径由安全策略管控。若命令执行时间较长，会自动切入后台托管并返回任务ID。",
-      parameters: {
-        type: "object",
-        properties: {
-          command: {
-            type: "string",
-            description: "要执行的原子命令字符串（例如 'npm run test'）。"
-          },
-          cwd: {
-            type: "string",
-            description: "命令执行的子目录路径（可选，相对于工作区根目录的相对路径，例如 'src'）。"
-          },
-          isBackground: {
-            type: "boolean",
-            description: "是否显式指示在后台运行。对于长时间挂起的服务，必须设为 true。"
-          },
-          shellKind: {
-            type: "string",
-            enum: ['auto', 'posix', 'powershell', 'cmd'],
-            default: 'auto',
-            description: "指定命令所需的 shell 语义族（可选）。auto 自动选择平台默认 shell；posix 用于 bash/sh 风格命令；powershell 用于 PowerShell 风格命令；cmd 用于 Windows 命令提示符。推荐使用 auto，仅在明确需要特定 shell 语义时指定。"
-          },
-          watch_patterns: {
-            type: "array",
-            items: {
-              type: "string"
-            },
-            description: "可选的日志行匹配触发词列表。一旦终端输出日志行命中其中任何一个触发词，系统将提前发出唤醒通知。"
-          }
-        },
-        required: ["command"]
-      }
-    }
-  };
-
-  /**
    * 异步或同步审查终端执行调用的安全性。
    *
    * @param args - 工具调用参数字典
@@ -98,7 +143,7 @@ export class ExecuteCommandTool implements NativeTool {
       return { status: 'deny', message: '拒绝执行：command 必须是字符串。' };
     }
 
-    const rawShellKind = (args.shellKind as ShellKind) || 'auto';
+    const rawShellKind = this.getShellKind();
     let plan;
     try {
       // 解析 shellKind 为已决议值，供 Guard 层按 shell 语义校验
@@ -236,7 +281,7 @@ export class ExecuteCommandTool implements NativeTool {
       return { kind: 'deny', decisionReason: 'command 必须是字符串' };
     }
 
-    const rawShellKind = (args.shellKind as ShellKind) || 'auto';
+    const rawShellKind = this.getShellKind();
     let plan;
     try {
       plan = this.createPlan(command, rawShellKind);
@@ -297,7 +342,7 @@ export class ExecuteCommandTool implements NativeTool {
     if (typeof command !== 'string') {
       return undefined; // 无法判定，交由默认推导器
     }
-    const rawShellKind = (args.shellKind as string) || 'auto';
+    const rawShellKind = this.getShellKind();
     let resolvedShellKind: ShellKind;
     try {
       const plan = this.createPlan(command, rawShellKind as ShellKind);
@@ -350,7 +395,7 @@ export class ExecuteCommandTool implements NativeTool {
       : undefined;
 
     // 0. 生成 ShellExecutionPlan（shellKind 在 checkSafety 阶段已决议，此处保持一致性）
-    const rawShellKind = (args.shellKind as ShellKind) || 'auto';
+    const rawShellKind = this.getShellKind();
     const plan = this.createPlan(command, rawShellKind);
     const isExplicitShell = rawShellKind !== 'auto';
     const guardShellKind = isExplicitShell ? plan.shellKind : undefined;
@@ -413,6 +458,36 @@ export class ExecuteCommandTool implements NativeTool {
   }
 }
 
+/**
+ * Bash 原生工具。
+ * 固定使用 POSIX/Bash 语义，避免模型通过参数切换到其他 Shell。
+ */
+export class BashTool extends BaseShellTool {
+  /** 创建 Bash 工具实例。 */
+  constructor() {
+    super({
+      name: 'Bash',
+      shellKind: 'posix',
+      description: '在工作区内执行 Bash 命令。命令的读写和风险属性由统一权限策略判断。',
+    });
+  }
+}
+
+/**
+ * PowerShell 原生工具。
+ * 该工具由系统工具注册表按平台和运行环境动态注入，仅在 Windows 且 PowerShell 可用时暴露。
+ */
+export class PowerShellTool extends BaseShellTool {
+  /** 创建 PowerShell 工具实例。 */
+  constructor() {
+    super({
+      name: 'PowerShell',
+      shellKind: 'powershell',
+      description: '在工作区内执行 PowerShell 命令。该工具仅在 Windows 平台且 PowerShell 可用时提供。',
+    });
+  }
+}
+
 // 导出配置管理与进程引擎相关的公共类型及工具函数
 
 export {
@@ -445,4 +520,5 @@ export {
 export {
   createShellExecutionPlan,
   resolveShellKind,
+  isShellKindSupportedOnPlatform,
 } from './terminal-plan.js';

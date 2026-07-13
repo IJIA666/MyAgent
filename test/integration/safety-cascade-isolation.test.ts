@@ -3,7 +3,7 @@ import { resolve } from 'path';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { initWorkspace } from '../../src/adapters/tools/tools.js';
 import { SessionContext } from '../../src/core/domain/context.js';
-import { ExecuteCommandTool } from '../../src/adapters/tools/impl/system/terminal.js';
+import { BashTool } from '../../src/adapters/tools/impl/system/terminal.js';
 import { HumanApprovalPlugin } from '../../src/core/usecases/plugins/HumanApprovalPlugin.js';
 import { HookEventName, HookContext } from '../../src/core/usecases/plugins/plugin-types.js';
 
@@ -24,7 +24,7 @@ describe('安全隔离与级联熔断集成测试', () => {
   });
 
   it('1. 应该在并发会话下让 YOLO 模式与 Plan 模式完全物理隔离，互不穿透', () => {
-    const executeCommandTool = new ExecuteCommandTool();
+    const bashTool = new BashTool();
 
     // 创建会话 A (YOLO)
     const sessionA = new SessionContext('session-yolo');
@@ -35,8 +35,8 @@ describe('安全隔离与级联熔断集成测试', () => {
     sessionB.setPermissionMode('plan');
 
     // 针对非只读写倾向命令 npm run build 执行 checkSafety
-    const safetyResultA = executeCommandTool.checkSafety({ command: 'npm run build' }, sessionA);
-    const safetyResultB = executeCommandTool.checkSafety({ command: 'npm run build' }, sessionB);
+    const safetyResultA = bashTool.checkSafety({ command: 'npm run build' }, sessionA);
+    const safetyResultB = bashTool.checkSafety({ command: 'npm run build' }, sessionB);
 
     // YOLO 模式放行（pass），Plan 模式返回未知副作用分类（Plan 策略由 HumanApprovalPlugin 统一决策）
     expect(safetyResultA.status).toBe('pass');

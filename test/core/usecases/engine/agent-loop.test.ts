@@ -512,7 +512,7 @@ describe('AgentLoop 动态安全特性测试', () => {
               {
                 id: 'call-query-1',
                 type: 'function',
-                function: { name: 'execute_command', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace' }) }
+                function: { name: 'Bash', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace' }) }
               }
             ],
             assistantMessage: {
@@ -522,7 +522,7 @@ describe('AgentLoop 动态安全特性测试', () => {
                 {
                   id: 'call-query-1',
                   type: 'function',
-                  function: { name: 'execute_command', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace' }) }
+                function: { name: 'Bash', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace' }) }
                 }
               ]
             }
@@ -537,7 +537,7 @@ describe('AgentLoop 动态安全特性测试', () => {
               {
                 id: 'call-query-2',
                 type: 'function',
-                function: { name: 'execute_command', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace | findstr C:' }) }
+                function: { name: 'Bash', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace | findstr C:' }) }
               }
             ],
             assistantMessage: {
@@ -547,7 +547,7 @@ describe('AgentLoop 动态安全特性测试', () => {
                 {
                   id: 'call-query-2',
                   type: 'function',
-                  function: { name: 'execute_command', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace | findstr C:' }) }
+                function: { name: 'Bash', arguments: JSON.stringify({ command: 'wmic logicaldisk get Size,FreeSpace | findstr C:' }) }
                 }
               ]
             }
@@ -566,7 +566,7 @@ describe('AgentLoop 动态安全特性测试', () => {
 
     mockToolRegistry = {
       getTools: vi.fn().mockResolvedValue([
-        { name: 'execute_command', securityCategory: 'read' }
+                { name: 'Bash', securityCategory: 'read' }
       ]),
       getTool: vi.fn().mockImplementation((name: string) => ({
         name,
@@ -675,10 +675,10 @@ describe('AgentLoop 动态安全特性测试', () => {
   it('12. 只执行 Plan 原子只读命令不应调用 QualityCheckPort', async () => {
     mockContextAdapter = { assemble: vi.fn().mockReturnValue([{ role: 'user', content: 'Show disk info' }]) };
     mockLlmDriver = { getModelName: () => 'mock-model', switchModel: () => {}, abort: () => {}, streamChat: vi.fn().mockImplementation(async function* () {
-      yield { type: 'tool_calls', toolCalls: [{ id: 'call-r', type: 'function', function: { name: 'execute_command', arguments: '{}' } }], assistantMessage: { role: 'assistant', content: null, tool_calls: [{ id: 'call-r', type: 'function', function: { name: 'execute_command', arguments: '{}' } }] } } as LlmStreamEvent;
+      yield { type: 'tool_calls', toolCalls: [{ id: 'call-r', type: 'function', function: { name: 'Bash', arguments: '{}' } }], assistantMessage: { role: 'assistant', content: null, tool_calls: [{ id: 'call-r', type: 'function', function: { name: 'Bash', arguments: '{}' } }] } } as LlmStreamEvent;
       yield { type: 'complete', content: 'done', reasoning: '', assistantMessage: { role: 'assistant', content: 'done' } } as LlmStreamEvent;
     }) };
-    mockToolRegistry = { getTools: vi.fn().mockResolvedValue([]), getTool: vi.fn().mockReturnValue({ name: 'execute_command', securityCategory: 'write' }), callTool: vi.fn().mockResolvedValue({ value: { content: [{ type: 'text', text: 'ok' }] }, effect: { kind: 'read', executionStarted: true, completed: true, resources: [], reason: 'plan_safe_command' } }) };
+      mockToolRegistry = { getTools: vi.fn().mockResolvedValue([]), getTool: vi.fn().mockReturnValue({ name: 'Bash', securityCategory: 'write' }), callTool: vi.fn().mockResolvedValue({ value: { content: [{ type: 'text', text: 'ok' }] }, effect: { kind: 'read', executionStarted: true, completed: true, resources: [], reason: 'plan_safe_command' } }) };
     const qcSpy = vi.fn().mockResolvedValue({ success: true, steps: [], durationMs: 0, summary: '' });
     const loop = new AgentLoop({ toolRegistry: mockToolRegistry as ToolRegistryPort, context, driver: mockLlmDriver as LlmPort, contextAdapter: mockContextAdapter as ContextAdapter, ruleManager: mockRuleManager as RuleManager, contextRepo: mockContextRepo as ContextRepository, toolDispatcher: mockToolDispatcher as ToolDispatcher, compactionService: mockCompactionService as CompactionService, pluginRegistry, qualityCheckPort: { runPostRunCheck: qcSpy } });
     for await (const e of loop.chat(undefined, new AgentTracer(process.cwd(), 't-qc-ro'), { model: 'mock-model' } as LlmConfig)) { void e; }

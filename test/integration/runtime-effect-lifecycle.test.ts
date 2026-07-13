@@ -7,20 +7,22 @@ import { describe, it, expect } from 'vitest';
 import { ToolRegistry } from '../../src/adapters/tools/toolRegistry.js';
 import { ToolCatalog } from '../../src/adapters/tools/ToolCatalog.js';
 import { buildNativeTools } from '../../src/adapters/tools/tool-factory.js';
-import { ExecuteCommandTool } from '../../src/adapters/tools/impl/system/terminal.js';
+import { BashTool, PowerShellTool } from '../../src/adapters/tools/impl/system/terminal.js';
 
-// 使用当前平台可用的 shell，确保 effect 生命周期测试不依赖 Windows 专属命令。
+// 使用与当前平台公开工具一致的 Shell，确保 effect 生命周期测试不依赖旧的动态 shellKind 参数。
 const platformReadCase = process.platform === 'win32'
-  ? { command: 'dir', shellKind: 'cmd' as const }
+  ? { command: 'Get-Content package.json', shellKind: 'powershell' as const }
   : { command: 'ls', shellKind: 'posix' as const };
 
-// 使用当前平台可用 shell 下的复合命令，验证复合命令不会被识别为只读。
+// 使用当前平台公开 Shell 下的复合命令，验证复合命令不会被识别为只读。
 const platformCompositeCase = process.platform === 'win32'
-  ? { command: 'dir | find "txt"', shellKind: 'cmd' as const }
+  ? { command: 'Get-Content package.json | Select-String "txt"', shellKind: 'powershell' as const }
   : { command: 'ls | grep "txt"', shellKind: 'posix' as const };
 
 describe('运行时 effect 生命周期集成验证（8.1-8.4）', () => {
-  const tool = new ExecuteCommandTool();
+  const tool = process.platform === 'win32'
+    ? new PowerShellTool()
+    : new BashTool();
 
   it('8.1 Plan 模式原子只读命令 → effect=read，复合命令 → 阻断', () => {
     const readEffect = tool.resolveExecutionEffect!(platformReadCase);
@@ -40,7 +42,7 @@ describe('运行时 effect 生命周期集成验证（8.1-8.4）', () => {
 
   it('8.3 ToolCatalog 内置工具均有 effect 解析或默认推导', () => {
     const catalog = new ToolCatalog(buildNativeTools());
-    const names = ['readFile', 'writeFile', 'editFile', 'listFiles', 'execute_command', 'grepSearch'];
+    const names = ['readFile', 'writeFile', 'editFile', 'listFiles', 'Bash', 'grepSearch'];
     for (const name of names) {
       const toolInst = catalog.getTool(name);
       expect(toolInst).toBeDefined();

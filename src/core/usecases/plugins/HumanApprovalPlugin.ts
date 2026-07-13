@@ -339,7 +339,7 @@ export class HumanApprovalPlugin implements Plugin {
 
     // 推断 operationCategory
     let operationCategory: SafetyOperation['operationCategory'];
-    if (toolName === 'execute_command') {
+    if (toolName === 'Bash' || toolName === 'PowerShell') {
       operationCategory = 'command-execute';
     } else if (toolMeta && toolMeta.securityCategory === 'read') {
       operationCategory = 'file-read';

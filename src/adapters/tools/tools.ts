@@ -7,5 +7,5 @@
 export { initWorkspace, secureResolvePath, getAuthorizedDir } from './impl/base.js';
 export { ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool } from './impl/filesystem/file-system.js';
 export { GrepSearchTool, GlobSearchTool } from './impl/filesystem/search.js';
-export { ExecuteCommandTool } from './impl/system/terminal.js';
+export { BashTool, PowerShellTool } from './impl/system/terminal.js';
 export { LoadSkillTool } from './impl/skill/skill.js';

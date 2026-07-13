@@ -17,7 +17,7 @@ describe('ApprovalService Unit Tests', () => {
 
     const decision = await service.wait(
       'task-bypass-123',
-      { name: 'execute_command', arguments: { command: 'npm run test' } }
+      { name: 'Bash', arguments: { command: 'npm run test' } }
     );
 
     // 验证：直接放行返回 call
@@ -30,7 +30,7 @@ describe('ApprovalService Unit Tests', () => {
     const handler = vi.fn();
     service.registerApprovalHandler(handler);
 
-    const toolCall = { name: 'execute_command', arguments: { command: 'rm -rf ./dist' } };
+    const toolCall = { name: 'Bash', arguments: { command: 'rm -rf ./dist' } };
 
     // 启动 wait，由于尚未被 resolve，Promise 原地异步挂起
     const waitPromise = service.wait('task-wait-456', toolCall, 'rm', '警告：敏感指令', 5000);

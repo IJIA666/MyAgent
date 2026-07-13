@@ -94,7 +94,8 @@ export class AutoPermissionClassifier implements AutoClassifier {
     'Glob',
     'Grep',
     'Dir',
-    'execute_command',
+    'Bash',
+    'PowerShell',
     'WebSearch',
     'WebFetch',
   ]);

@@ -8,7 +8,8 @@ import { ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool } from '../../
 import { CreateDirectoryTool, DeletePathTool } from '../../../src/adapters/tools/impl/filesystem/directory-manager.js';
 import { GrepSearchTool, GlobSearchTool } from '../../../src/adapters/tools/impl/filesystem/search.js';
 import { ReadManyFilesTool } from '../../../src/adapters/tools/impl/filesystem/read-many-files.js';
-import { ExecuteCommandTool } from '../../../src/adapters/tools/impl/system/terminal.js';
+import { BashTool, PowerShellTool } from '../../../src/adapters/tools/impl/system/terminal.js';
+import { systemTools } from '../../../src/adapters/tools/impl/system/index.js';
 
 describe('工具描述中性边界约束', () => {
   test('ListFilesTool 描述应包含预算参数和默认不递归说明', () => {
@@ -50,12 +51,34 @@ describe('工具描述中性边界约束', () => {
     }
   });
 
-  test('终端工具描述应保留沙箱约束但不再预判外部路径必然拒绝', () => {
-    const description = new ExecuteCommandTool().definition.function.description;
+  test('Bash 与 PowerShell 应作为独立工具暴露且不携带 shellKind 参数', () => {
+    const bashTool = new BashTool();
+    const powerShellTool = new PowerShellTool();
+    const bashDefinition = bashTool.definition.function as {
+      name: string;
+      parameters: { properties: Record<string, unknown> };
+    };
+    const powerShellDefinition = powerShellTool.definition.function as {
+      name: string;
+      parameters: { properties: Record<string, unknown> };
+    };
 
-    expect(description).toContain('在工作区沙箱内执行');
-    expect(description).toContain('外部路径由安全策略管控');
-    expect(description).not.toContain('受限的工作区沙箱');
-    expect(description).not.toContain('禁止读写工作区外部路径');
+    expect(bashTool.name).toBe('Bash');
+    expect(powerShellTool.name).toBe('PowerShell');
+    expect(bashDefinition.name).toBe('Bash');
+    expect(powerShellDefinition.name).toBe('PowerShell');
+    expect(bashDefinition.parameters.properties).not.toHaveProperty('shellKind');
+    expect(powerShellDefinition.parameters.properties).not.toHaveProperty('shellKind');
+  });
+
+  test('系统工具注册表应始终注册 Bash，并仅在 Windows 注册 PowerShell', () => {
+    const names = systemTools.map(tool => tool.name);
+
+    expect(names).toContain('Bash');
+    if (process.platform === 'win32') {
+      expect(names).toContain('PowerShell');
+    } else {
+      expect(names).not.toContain('PowerShell');
+    }
   });
 });

@@ -102,7 +102,7 @@ describe('SessionContext Token & Hash Tests', () => {
     const approvalId = 'approval-persistent-001';
     const pending = context.waitApproval(
       approvalId,
-      { name: 'execute_command', arguments: { command: 'git status' } },
+      { name: 'Bash', arguments: { command: 'git status' } },
       'git status',
       '测试持久化审批'
     );

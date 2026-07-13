@@ -75,7 +75,7 @@ export function directoryScopeExtractor(pathKey: string): ResourceExtractor {
 }
 
 /**
- * 创建命令前缀提取器（用于 execute_command 工具）。
+ * 创建命令前缀提取器（用于 Bash 和 PowerShell 工具）。
  */
 export function commandPrefixExtractor(): ResourceExtractor {
   return (args) => {

@@ -35,7 +35,7 @@ vi.mock('child_process', () => {
 import { initWorkspace } from '../../../../src/adapters/tools/tools.js';
 import { setPermissionMode } from '../../../../src/adapters/tools/impl/system/terminal.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
-import { ExecuteCommandTool } from '../../../../src/adapters/tools/impl/system/terminal.js';
+import { BashTool } from '../../../../src/adapters/tools/impl/system/terminal.js';
 import * as terminalEngine from '../../../../src/adapters/tools/impl/system/terminal-engine.js';
 import { SessionManager } from '../../../../src/core/usecases/engine/session.js';
 import { MemoryService } from '../../../../src/core/usecases/brain/MemoryService.js';
@@ -109,7 +109,7 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
 
   it('应该在 terminal 工具触发 onNotification 时，灌入正确的 XML 数据并 emit 事件', async () => {
     const context = new SessionContext('test-session');
-    const tool = new ExecuteCommandTool();
+    const tool = new BashTool();
 
     // 监听 async_event 事件
     const eventSpy = vi.fn();

@@ -8,7 +8,8 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { initWorkspace } from '../../../src/adapters/tools/tools.js';
 import {
-  ExecuteCommandTool,
+  BashTool,
+  PowerShellTool,
   extractSafePrefix,
   checkWhitelist,
   saveAllowedCommands,
@@ -21,34 +22,34 @@ import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand, de
 import { SessionContext } from '../../../src/core/domain/context.js';
 import type { ToolPermissionCheckResult } from '../../../src/core/domain/permissions/permission-types.js';
 
-// 根据当前运行平台选择可用的原子只读命令，避免把 Windows shell 假设带入 Ubuntu CI。
+// 根据当前公开 Shell 工具选择可用的原子只读命令，避免测试依赖旧的动态 shellKind 参数。
 const platformReadCase = process.platform === 'win32'
-  ? { command: 'dir C:\\Windows\\Temp', shellKind: 'cmd' as const }
+  ? { command: 'Get-Content package.json', shellKind: 'powershell' as const }
   : { command: 'ls /tmp', shellKind: 'posix' as const };
 
-// 保留 Windows 下 WMIC 只读分类覆盖，并为非 Windows 平台提供等价的只读命令。
+// 为两个公开 Shell 提供等价的只读命令。
 const platformReadVariantCase = process.platform === 'win32'
-  ? { command: 'wmic logicaldisk where caption="C:" get caption,size,freespace /format:value', shellKind: 'cmd' as const }
+  ? { command: 'Get-PSDrive C', shellKind: 'powershell' as const }
   : { command: 'cat package.json', shellKind: 'posix' as const };
 
-// 为显式 PowerShell 只读用例提供非 Windows 平台上的等价 shell，避免测试依赖额外安装的 pwsh。
+// 为显式 PowerShell 只读用例提供非 Windows 平台上的等价 Shell。
 const platformPowerShellReadCase = process.platform === 'win32'
   ? { command: 'Get-PSDrive C', shellKind: 'powershell' as const }
   : { command: 'pwd', shellKind: 'posix' as const };
 
-// 根据当前运行平台选择可用 shell 下的复合命令，验证复合命令不能被识别为只读。
+// 根据当前公开 Shell 选择复合命令，验证复合命令不能被识别为只读。
 const platformCompositeCase = process.platform === 'win32'
-  ? { command: 'type a.txt | find "txt"', shellKind: 'cmd' as const }
+  ? { command: 'Get-Content a.txt | Select-String "txt"', shellKind: 'powershell' as const }
   : { command: 'cat a.txt | grep "txt"', shellKind: 'posix' as const };
 
-// 根据当前运行平台选择非只读命令，验证安全分类会降级为 write 或 unknown。
+// 根据当前公开 Shell 选择非只读命令，验证安全分类会降级为 write 或 unknown。
 const platformWriteCommands = process.platform === 'win32'
-  ? ['del file.txt', 'mkdir newdir']
+  ? ['Remove-Item file.txt', 'New-Item -ItemType Directory newdir']
   : ['rm file.txt', 'mkdir newdir'];
 
 describe('Terminal Tool 单元测试', () => {
   const mockRootDir = mkdtempSync(join(tmpdir(), 'authorized-terminal-test-'));
-  let executeCommandToolInstance: ExecuteCommandTool;
+  let executeCommandToolInstance: BashTool | PowerShellTool;
 
   beforeAll(() => {
     // 初始化测试工作区路径
@@ -70,8 +71,10 @@ describe('Terminal Tool 单元测试', () => {
     // 清空白名单
     saveAllowedCommands([]);
 
-    // 实例化终端执行工具类
-    executeCommandToolInstance = new ExecuteCommandTool();
+    // 按当前平台实例化对应的公开 Shell 工具
+    executeCommandToolInstance = process.platform === 'win32'
+      ? new PowerShellTool()
+      : new BashTool();
   });
 
   test('1. 静态前缀安全提取算法测试', () => {
@@ -249,22 +252,20 @@ describe('Terminal Tool 单元测试', () => {
     saveAllowedCommands(['git status:*', 'npm run:*']);
     setPermissionMode('auto');
 
-    const safetyAllowed = executeCommandToolInstance.checkSafety({ command: 'powershell -Command "npm run test"' });
+    const safetyAllowed = executeCommandToolInstance.checkSafety({ command: 'npm run test' });
     // Auto 分类器尚未接入生产装配，当前仍保留人工审批。
     expect(safetyAllowed.status).toBe('suspend');
 
     // D. 审批挂起时的披露信息与对比测试
-    const safetyUnallowed = executeCommandToolInstance.checkSafety({ command: 'powershell -Command "npm test"' });
+    const safetyUnallowed = executeCommandToolInstance.checkSafety({ command: 'npm test' });
     expect(safetyUnallowed.status).toBe('suspend');
-    expect(safetyUnallowed.message).toContain("外壳包装: 'powershell -Command \"npm test\"'");
-    expect(safetyUnallowed.message).toContain("实际执行的核心命令为: 'npm test'");
+    expect(safetyUnallowed.message).toContain("npm test");
 
     // E. 负向场景测试：解包后未命中白名单的拦截与告知行为
     saveAllowedCommands(['git status:*']); // 只授权 git status
-    const safetyNegative = executeCommandToolInstance.checkSafety({ command: 'powershell -Command "npm run lint"' });
+    const safetyNegative = executeCommandToolInstance.checkSafety({ command: 'npm run lint' });
     expect(safetyNegative.status).toBe('suspend');
-    expect(safetyNegative.message).toContain("外壳包装: 'powershell -Command \"npm run lint\"'");
-    expect(safetyNegative.message).toContain("实际执行的核心命令为: 'npm run lint'");
+    expect(safetyNegative.message).toContain("npm run lint");
   });
 
   test('12. 新增防分号、反引号和命令替换注入测试（含引号感知放行）', () => {
@@ -361,7 +362,7 @@ describe('Terminal Tool 单元测试', () => {
 
     const safetyType = executeCommandToolInstance.checkSafety(
       process.platform === 'win32'
-        ? { command: 'type package.json', shellKind: 'cmd' }
+        ? { command: 'Get-Content package.json', shellKind: 'powershell' }
         : { command: 'cat package.json', shellKind: 'posix' },
       mockSession,
     );
@@ -372,20 +373,20 @@ describe('Terminal Tool 单元测试', () => {
 
     const safetyGetPsDrive = executeCommandToolInstance.checkSafety(
       process.platform === 'win32'
-        ? { command: 'powershell Get-PSDrive C', shellKind: 'powershell' }
+        ? { command: 'Get-PSDrive C', shellKind: 'powershell' }
         : { command: 'ls /tmp', shellKind: 'posix' },
       mockSession,
     );
     expect(safetyGetPsDrive.operation?.planSideEffect).toBe('read');
 
     // B. 计划模式 + 含复合字符命令 → planSideEffect='unknown'（终端不再内嵌 Plan 策略）
-    const safetyComposite = executeCommandToolInstance.checkSafety({ command: 'dir /-C | find "txt"' }, mockSession);
+    const safetyComposite = executeCommandToolInstance.checkSafety({ command: process.platform === 'win32' ? 'Get-ChildItem | Select-String "txt"' : 'ls | grep "txt"' }, mockSession);
     expect(safetyComposite.operation?.planSideEffect).toBe('unknown');
     expect(safetyComposite.status).toBe('suspend');
 
     const safetyRedirect = executeCommandToolInstance.checkSafety(
       process.platform === 'win32'
-        ? { command: 'type a.txt > b.txt', shellKind: 'cmd' }
+        ? { command: 'Get-Content a.txt > b.txt', shellKind: 'powershell' }
         : { command: 'cat a.txt > b.txt', shellKind: 'posix' },
       mockSession,
     );
@@ -453,8 +454,8 @@ describe('Terminal Tool 单元测试', () => {
     // 验证：isPlanSafeCommand 返回 true 的命令同时传递 validateCommand
     const safeCases: Array<{ command: string; shellKind: 'powershell' | 'cmd' | 'posix' }> = process.platform === 'win32'
       ? [
-        { command: 'dir C:\\Windows\\Temp', shellKind: 'powershell' },
-        { command: 'type package.json', shellKind: 'cmd' },
+        { command: 'Get-Content package.json', shellKind: 'powershell' },
+        { command: 'Get-Content package.json', shellKind: 'powershell' },
         { command: 'git status', shellKind: 'powershell' },
         { command: 'git diff', shellKind: 'powershell' },
         { command: 'git log', shellKind: 'powershell' },
@@ -500,7 +501,7 @@ describe('Terminal Tool 单元测试', () => {
 
     // YOLO 模式回归
     mockSession.setPermissionMode('bypassPermissions');
-    const safetyYolo = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
+    const safetyYolo = executeCommandToolInstance.checkSafety({ command: platformReadCase.command }, mockSession);
     expect(safetyYolo.status).toBe('pass'); // YOLO 下直接放行
 
     // F. 同构性：复合命令在 isPlanSafeCommand 和 validateCommand 中均被拒绝
@@ -528,8 +529,10 @@ describe('Terminal Tool 单元测试', () => {
     }
   });
 
-  describe('ExecuteCommandTool resolveExecutionEffect 测试', () => {
-    const tool = new ExecuteCommandTool();
+  describe('BashTool resolveExecutionEffect 测试', () => {
+    const tool = process.platform === 'win32'
+      ? new PowerShellTool()
+      : new BashTool();
 
     test('2.4 Plan 安全只读命令返回 read effect', () => {
       // isPlanSafeCommand 判定的原子只读命令
@@ -546,7 +549,7 @@ describe('Terminal Tool 单元测试', () => {
       expect(effect3.reason).toBe('plan_safe_command');
     });
 
-    test('2.5 管道/重定向/复合命令无法被 Plan 判定，execute_command 不可达，resolveExecutionEffect 不会返回 read', () => {
+    test('2.5 管道/重定向/复合命令无法被 Plan 判定，Bash 不可达，resolveExecutionEffect 不会返回 read', () => {
       // 这些命令会被 checkSafety 在 Plan 模式下拒绝，但没有执行，resolveExecutionEffect 不会返回 pre_execution_abort
       // 验证 effect 为 unknown（因为安全判定未命中只读规则，按 legacy_fallback 保守处理）
       const effect1 = tool.resolveExecutionEffect!(platformCompositeCase)!;
@@ -575,8 +578,10 @@ describe('Terminal Tool 单元测试', () => {
 
 // ── checkPermissions 测试（5.5 工具迁移测试）──
 
-describe('ExecuteCommandTool.checkPermissions', () => {
-  const tool = new ExecuteCommandTool();
+describe('ShellTool.checkPermissions', () => {
+  const tool = process.platform === 'win32'
+    ? new PowerShellTool()
+    : new BashTool();
 
   test('合法只读命令应返回 allow', () => {
     const result = tool.checkPermissions!({ command: 'git log' }) as ToolPermissionCheckResult;

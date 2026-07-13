@@ -30,8 +30,8 @@ export const RULE_MINIMAL_REFACTOR = `【最小重构与零注释污染原则】
 
 /** 规则 7：原生工具优先使用与终端工具使用场景划分 */
 export const RULE_TOOL_PRIORITY = `【专用工具优先】
-   - 凡是可用原生工具（如 readFile、listFiles、grepSearch、editFile 等）完成的操作，绝对禁止调用通用的终端 Shell 工具（execute_command）执行 cat, sed, awk, find, grep 等文件操作。通用终端工具 execute_command 绝非信息查询工具。
-   - 当只读约束生效时，智能体必须（MUST）优先使用只读原生文件工具（listFiles、readFile、grepSearch）进行诊断与状态分析。当原生工具无法覆盖特定系统查询需求时，允许调用 execute_command 发起可静态证明安全的系统只读查询审批请求，但命令示例必须与当前 shell 语义一致：例如 \`dir\` 适用于 PowerShell/CMD，\`Get-Content\` 与 \`Select-String\` 适用于 PowerShell，\`type\` 与 \`findstr\` 适用于 CMD。无论使用哪种 shell，均严禁任何复合连接（&、|、;）、重定向（>、<）、环境变量展开（%）或写倾向操作。终端工具仍被允许用于执行项目的代码编译、集成打包与运行测试等系统级管理任务。`;
+   - 凡是可用原生工具（如 readFile、listFiles、grepSearch、editFile 等）完成的操作，绝对禁止调用 Bash 或 PowerShell 工具执行 cat, sed, awk, find, grep 等文件操作。Shell 工具不是默认的信息查询工具。
+   - 当只读约束生效时，智能体必须（MUST）优先使用只读原生文件工具（listFiles、readFile、grepSearch）进行诊断与状态分析。当原生工具无法覆盖特定系统查询需求时，允许调用与当前命令语义匹配的 Bash 或 PowerShell 工具发起系统只读查询审批请求。当前阶段无论使用哪种 Shell，仍严禁任何复合连接（&、|、;）、重定向（>、<）、环境变量展开（%）或写倾向操作。终端工具仍被允许用于执行项目的代码编译、集成打包与运行测试等系统级管理任务。`;
 
 /** 规则 8：大语言模型参考 User 注入的长期记忆规约 */
 export const RULE_LONG_TERM_MEMORY = `【长期记忆参考指令】在对话过程中，您必须参考最新 User 消息中注入的 <long-term-memory> 长期记忆事实。`;
@@ -75,18 +75,17 @@ const BASE_SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT_PREFIX}\n` +
  * 显式导出以允许白盒测试直接对其各分支文本进行内容校验，免去 mock 环境变量的复杂性。
  */
 export const OS_INSTRUCTIONS_MAP: Record<string, string> = {
-  win32: `你当前运行的宿主操作系统是 Windows。当你需要使用 execute_command 工具执行命令时：
-   - 必须且仅能执行单一、原子的 Windows 原生命令（例如使用 'tasklist' 替代 'top/ps'，使用 'ipconfig' 替代 'ifconfig'）。
-   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符（如 &, &&, |, ||, ;, <, >, \\n 等）将多个独立操作拼接为单条长命令，否则将被沙箱引擎强制拦截执行。
-   - 可选的 shellKind 参数用于指定命令所需的 shell 语义族。推荐使用默认值 auto（自动选择平台默认 shell）；仅在明确需要特定 shell 语义时显式指定：posix（bash/sh 风格命令）、powershell（PowerShell 风格命令）、cmd（Windows 命令提示符）。`,
-  darwin: `你当前运行的宿主操作系统是 macOS (Darwin)。当你需要使用 execute_command 工具执行命令时：
-   - 必须且仅能执行单一、原子的 POSIX 命令。
-   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符将多个独立操作拼接为单条长命令，否则将被拦截。
-   - 可选的 shellKind 参数用于指定命令所需的 shell 语义族。推荐使用默认值 auto（自动选择 posix）；仅在明确需要特定 shell 语义时显式指定。`,
-  linux: `你当前运行的宿主操作系统是 Linux。当你需要使用 execute_command 工具执行命令时：
+  win32: `你当前运行的宿主操作系统是 Windows。当你需要使用 Bash 或 PowerShell 工具执行命令时：
+   - PowerShell 工具仅用于 PowerShell 语义；Bash 工具仅用于 Bash 语义。必须选择与命令语法匹配的工具。
+   - Windows 原生查询应优先使用 PowerShell（例如使用 'Get-Process'、'Get-NetIPConfiguration'）。
+   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符（如 &, &&, |, ||, ;, <, >, \\n 等）将多个独立操作拼接为单条长命令，否则将被沙箱引擎强制拦截执行。`,
+  darwin: `你当前运行的宿主操作系统是 macOS (Darwin)。当你需要使用 Bash 工具执行命令时：
+   - 必须且仅能执行单一、原子的 POSIX/Bash 命令。
+   - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符将多个独立操作拼接为单条长命令，否则将被拦截。`,
+  linux: `你当前运行的宿主操作系统是 Linux。当你需要使用 Bash 工具执行命令时：
    - 必须且仅能执行单一、原子的 POSIX/Linux 命令。
    - 绝对禁止使用任何复合连接符、重定向符、分号、换行或管道符将多个独立操作拼接为单条长命令，否则将被拦截。
-   - 可选的 shellKind 参数用于指定命令所需的 shell 语义族。推荐使用默认值 auto（自动选择 posix）；仅在明确需要特定 shell 语义时显式指定。`
+   - 当前阶段不提供 PowerShell 工具。`
 };
 
 // 在模块加载初始化时，一次性自适应替换占位符并固化为 RESOLVED_BASE_PROMPT，满足全局 stable 层的绝对静态性。

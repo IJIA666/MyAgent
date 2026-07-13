@@ -97,7 +97,8 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
   test('6. 跨平台安全性指令映射白盒检验与 RESOLVED_BASE_PROMPT 校验', () => {
     // 1. 验证 OS_INSTRUCTIONS_MAP 中包含了 win32, darwin, linux 的特定定义
     expect(OS_INSTRUCTIONS_MAP.win32).toContain('宿主操作系统是 Windows');
-    expect(OS_INSTRUCTIONS_MAP.win32).toContain('execute_command');
+    expect(OS_INSTRUCTIONS_MAP.win32).toContain('Bash');
+    expect(OS_INSTRUCTIONS_MAP.win32).toContain('PowerShell');
     expect(OS_INSTRUCTIONS_MAP.darwin).toContain('macOS (Darwin)');
     expect(OS_INSTRUCTIONS_MAP.linux).toContain('Linux');
 
