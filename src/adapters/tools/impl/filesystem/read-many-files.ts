@@ -2,7 +2,6 @@ import { existsSync, statSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { extractFileOutline } from './read-many-files-helper.js';
@@ -41,51 +40,6 @@ export class ReadManyFilesTool implements NativeTool {
   };
 
   /**
-   * 审查批量文件读取的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    const targetPaths = args.targetPaths;
-    if (typeof targetPaths !== 'string') {
-      return { status: 'deny', message: 'targetPaths 必须是字符串' };
-    }
-    let paths: string[];
-    const trimmed = targetPaths.trim();
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      try {
-        paths = JSON.parse(trimmed);
-      } catch {
-        paths = trimmed.split(',').map(p => p.trim()).filter(Boolean);
-      }
-    } else {
-      paths = trimmed.split(',').map(p => p.trim()).filter(Boolean);
-    }
-
-    const rootDir = getAuthorizedDir();
-    const outOfSandboxResources: Array<{ kind: 'path'; access: 'read'; normalizedPath: string }> = [];
-    for (const relPath of paths) {
-      try {
-        secureResolveReadPath(relPath, sessionContext);
-      } catch {
-        const rawPath = resolve(rootDir!, relPath);
-        const resolvedPath = getPhysicalRealPath(rawPath);
-        outOfSandboxResources.push({ kind: 'path', access: 'read' as const, normalizedPath: resolvedPath });
-      }
-    }
-    if (outOfSandboxResources.length > 0) {
-      return {
-        status: 'suspend',
-        message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。包含 ${outOfSandboxResources.length} 个越界路径`,
-        resources: outOfSandboxResources,
-        operation: { planSideEffect: 'read', riskReason: '批量访问工作区外资源', operationCategory: 'file-read', summary: `批量读取 ${outOfSandboxResources.length} 个越界路径`, resources: outOfSandboxResources }
-      };
-    }
-    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read', summary: '批量读取文件', resources: [] } };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 批量读取操作由 ToolPermissionService 统一决策。
    */
@@ -94,7 +48,44 @@ export class ReadManyFilesTool implements NativeTool {
     if (typeof targetPaths !== 'string') {
       return { kind: 'deny', decisionReason: 'targetPaths 必须是字符串' };
     }
-    return { kind: 'passthrough' };
+
+    // 与执行阶段采用相同的路径列表解析语义，避免权限证据遗漏某个目标。
+    const trimmed = targetPaths.trim();
+    let paths: string[];
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        paths = JSON.parse(trimmed) as string[];
+      } catch {
+        paths = trimmed.split(',').map(path => path.trim()).filter(Boolean);
+      }
+    } else {
+      paths = trimmed.split(',').map(path => path.trim()).filter(Boolean);
+    }
+
+    const rootDir = getAuthorizedDir();
+    const resources = paths.map(path => ({
+      kind: 'path',
+      access: 'read',
+      normalizedPath: getPhysicalRealPath(resolve(rootDir!, path)),
+    }));
+    const evidence = {
+      operationCategory: 'file-read',
+      sideEffect: 'read' as const,
+      riskReason: '批量读取文件',
+      resources,
+    };
+    const hasExternalPath = paths.some(path => {
+      try {
+        secureResolveReadPath(path);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+
+    return hasExternalPath
+      ? { kind: 'ask', message: '批量读取包含工作区外路径', decisionReason: '需要外部路径读取授权', evidence }
+      : { kind: 'allow', decisionReason: '工作区内批量只读操作', evidence };
   }
 
   /**

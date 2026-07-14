@@ -93,10 +93,8 @@ async function main() {
       vectorDbAdapter,
       embeddingAdapter,
       appConfig,
-      toolRegistry.policyPort,
       qualityCheckAdapter,
-      abortSessionTasks,
-      toolRegistry
+      abortSessionTasks
     );
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);

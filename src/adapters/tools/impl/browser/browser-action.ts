@@ -7,8 +7,7 @@ import { deleteRuntimeEnvVariable, getRuntimeEnv, setRuntimeEnvVariable } from '
 import { resolve } from 'path';
 import { existsSync, rmSync } from 'fs';
 import readline from 'readline';
-import type { NativeTool, ToolExecutionEffect } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
+import type { NativeTool } from '../../tool-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 
 /**
@@ -411,22 +410,20 @@ export class BrowserNavigateTool implements NativeTool {
   };
 
   /**
-   * 审查网页跳转操作的安全性。
-   *
-   * @param _args - 工具参数字典
-   * @returns 安全审查结论，直接放行
-   */
-  checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
-    void _args;
-    return { status: 'pass' };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+    return {
+      kind: 'allow',
+      decisionReason: '网页导航只改变浏览器会话读取位置',
+      evidence: {
+        operationCategory: 'browser-navigation',
+        sideEffect: 'read',
+        riskReason: '导航并读取网页内容',
+        resources: [],
+      },
+    };
   }
 
   /**
@@ -448,41 +445,6 @@ export class BrowserNavigateTool implements NativeTool {
     return await generateAriaSnapshot(page);
   }
 
-  /**
-   * 精化浏览器导航的实际副作用。
-   * 导航只改变浏览器会话读取位置，不修改外部系统资源；
-   * 成功与执行后失败均按只读记录（无外部写入），
-   * 避免默认推导器根据 securityCategory='write' 将失败导航升级为潜在写入。
-   *
-   * @param _args - 原始工具调用参数
-   * @param _result - 工具执行结果文本
-   * @param error - 可选的执行异常
-   * @returns 精化后的 read effect，或 undefined 表示无执行
-   */
-  resolveExecutionEffect?(
-    _args: Record<string, unknown>,
-    _result?: string,
-    error?: Error
-  ): ToolExecutionEffect | undefined {
-    // 导航失败但未改变外部资源时仍记录为失败的读取尝试
-    if (error) {
-      return {
-        kind: 'read',
-        executionStarted: true,
-        completed: false,
-        resources: [],
-        reason: 'browser_navigate'
-      };
-    }
-    // 成功导航：只改变浏览器会话读取位置
-    return {
-      kind: 'read',
-      executionStarted: true,
-      completed: true,
-      resources: [],
-      reason: 'browser_navigate'
-    };
-  }
 }
 
 /**
@@ -510,17 +472,22 @@ export class BrowserClickTool implements NativeTool {
     }
   };
 
-  checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
-    void _args;
-    return { status: 'pass' };
-  }
-
   /**
    * Claude 风格的 tool-level checkPermissions。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+    return {
+      kind: 'ask',
+      message: '点击网页元素',
+      decisionReason: '网页点击可能触发外部状态变更',
+      evidence: {
+        operationCategory: 'browser-interaction',
+        sideEffect: 'write',
+        riskReason: '点击网页元素可能提交操作',
+        resources: [],
+      },
+    };
   }
 
   /**
@@ -579,17 +546,22 @@ export class BrowserTypeTool implements NativeTool {
     }
   };
 
-  checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
-    void _args;
-    return { status: 'pass' };
-  }
-
   /**
    * Claude 风格的 tool-level checkPermissions。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+    return {
+      kind: 'ask',
+      message: '向网页输入文本',
+      decisionReason: '网页输入可能改变表单或外部状态',
+      evidence: {
+        operationCategory: 'browser-interaction',
+        sideEffect: 'write',
+        riskReason: '向网页表单输入文本',
+        resources: [],
+      },
+    };
   }
 
   /**
@@ -653,17 +625,21 @@ export class BrowserScrollTool implements NativeTool {
     }
   };
 
-  checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
-    void _args;
-    return { status: 'pass' };
-  }
-
   /**
    * Claude 风格的 tool-level checkPermissions。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+    return {
+      kind: 'allow',
+      decisionReason: '滚动只改变浏览器视口',
+      evidence: {
+        operationCategory: 'browser-navigation',
+        sideEffect: 'read',
+        riskReason: '滚动页面以读取更多内容',
+        resources: [],
+      },
+    };
   }
 
   /**
@@ -709,17 +685,21 @@ export class BrowserBackTool implements NativeTool {
     }
   };
 
-  checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
-    void _args;
-    return { status: 'pass' };
-  }
-
   /**
    * Claude 风格的 tool-level checkPermissions。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+    return {
+      kind: 'allow',
+      decisionReason: '后退只改变浏览器会话读取位置',
+      evidence: {
+        operationCategory: 'browser-navigation',
+        sideEffect: 'read',
+        riskReason: '回到上一浏览历史页面',
+        resources: [],
+      },
+    };
   }
 
   /**
@@ -761,9 +741,23 @@ export class BrowserPressTool implements NativeTool {
     }
   };
 
-  checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
-    void _args;
-    return { status: 'pass' };
+  /**
+   * 模拟按键可能提交表单，因此交由统一权限服务确认。
+   *
+   * @returns 浏览器按键交互的权限证据
+   */
+  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    return {
+      kind: 'ask',
+      message: '在网页中模拟键盘按键',
+      decisionReason: '键盘按键可能提交表单或触发外部操作',
+      evidence: {
+        operationCategory: 'browser-interaction',
+        sideEffect: 'write',
+        riskReason: '模拟网页键盘输入',
+        resources: [],
+      },
+    };
   }
 
   /**
@@ -810,17 +804,22 @@ export class BrowserVisionTool implements NativeTool {
     }
   };
 
-  checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
-    void _args;
-    return { status: 'pass' };
-  }
-
   /**
    * Claude 风格的 tool-level checkPermissions。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+    return {
+      kind: 'ask',
+      message: '保存当前网页截图',
+      decisionReason: '截图会在本地文件系统写入文件',
+      evidence: {
+        operationCategory: 'browser-screenshot',
+        sideEffect: 'write',
+        riskReason: '将网页截图写入本地目录',
+        resources: [{ kind: 'directory-scope', access: 'write', normalizedPath: resolve(process.cwd(), '.myagent/screenshots') }],
+      },
+    };
   }
 
   /**
@@ -950,17 +949,22 @@ export class BrowserEnsureLoginTool implements NativeTool {
     }
   };
 
-  checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
-    void _args;
-    return { status: 'pass' };
-  }
-
   /**
    * Claude 风格的 tool-level checkPermissions。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+    return {
+      kind: 'ask',
+      message: '打开交互式浏览器以完成登录',
+      decisionReason: '登录流程可能改变远端账户状态',
+      evidence: {
+        operationCategory: 'browser-authentication',
+        sideEffect: 'write',
+        riskReason: '人机协作登录可能修改远端会话和账户状态',
+        resources: [],
+      },
+    };
   }
 
   /**
@@ -1057,23 +1061,20 @@ export class BrowserGetTextTool implements NativeTool {
   };
 
   /**
-   * 审查网页文本提取操作的安全性。
-   * 只读工具，直接安全放行。
-   *
-   * @param _args - 工具参数字典
-   * @returns 安全审查结论
-   */
-  checkSafety(_args: Record<string, unknown>): SafetyCheckResult {
-    void _args;
-    return { status: 'pass' };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+    return {
+      kind: 'allow',
+      decisionReason: '网页文本提取是只读操作',
+      evidence: {
+        operationCategory: 'browser-read',
+        sideEffect: 'read',
+        riskReason: '提取当前网页可见文本',
+        resources: [],
+      },
+    };
   }
 
   /**

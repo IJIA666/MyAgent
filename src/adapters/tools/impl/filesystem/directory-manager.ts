@@ -2,11 +2,19 @@ import { mkdirSync, existsSync, statSync, rmSync, renameSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { secureResolveWritePath, secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
-import type { SafetyOperation, SafetyResource } from '../../../../ports/shared/tool-policy.js';
 import { copyRecursiveSync } from './directory-manager-helper.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
+
+/** 将工具参数中的路径转换为权限层使用的结构化资源证据。 */
+function createPathResource(path: string, access: 'read' | 'write'): Readonly<Record<string, unknown>> {
+  const rootDir = getAuthorizedDir();
+  return {
+    kind: 'path',
+    access,
+    normalizedPath: getPhysicalRealPath(resolve(rootDir!, path)),
+  };
+}
 
 /**
  * 目录创建工具类。
@@ -42,43 +50,25 @@ export class CreateDirectoryTool implements NativeTool {
   };
 
   /**
-   * 审查创建文件夹的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    if (sessionContext?.getPermissionMode() === 'bypassPermissions') {
-      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-write' as const, summary: '创建目录', resources: [] } as SafetyOperation };
-    }
-    const directoryPath = args.directoryPath;
-    if (typeof directoryPath !== 'string') {
-      return { status: 'deny', message: 'directoryPath 必须是字符串' };
-    }
-    let isOutOfSandbox = false;
-    let resolvedPath = '';
-    try {
-      secureResolveWritePath(directoryPath, sessionContext);
-    } catch {
-      isOutOfSandbox = true;
-      const rootDir = getAuthorizedDir();
-      resolvedPath = getPhysicalRealPath(resolve(rootDir!, directoryPath));
-    }
-    return {
-      status: 'suspend',
-      message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${directoryPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : [],
-      operation: { planSideEffect: 'write', riskReason: `创建目录: ${directoryPath}`, operationCategory: 'file-write' as const, summary: `创建目录 ${directoryPath}`, resources: isOutOfSandbox ? [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }] : [] }
-    };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 目录创建由 ToolPermissionService 统一决策。
    */
-  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const directoryPath = args.directoryPath;
+    if (typeof directoryPath !== 'string') {
+      return { kind: 'deny', decisionReason: 'directoryPath 必须是字符串' };
+    }
+    return {
+      kind: 'ask',
+      message: `创建目录 ${directoryPath}`,
+      decisionReason: '创建目录会修改文件系统',
+      evidence: {
+        operationCategory: 'file-write',
+        sideEffect: 'write',
+        riskReason: `创建目录: ${directoryPath}`,
+        resources: [createPathResource(directoryPath, 'write')],
+      },
+    };
   }
 
   /**
@@ -143,48 +133,30 @@ export class DeletePathTool implements NativeTool {
   };
 
   /**
-   * 审查安全删除路径的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @returns 安全评估结论
+   * Claude 风格的 tool-level checkPermissions。
+   * 路径删除由 ToolPermissionService 统一决策。
    */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    if (sessionContext?.getPermissionMode() === 'bypassPermissions') {
-      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-delete' as const, summary: '删除路径', resources: [] } as SafetyOperation };
-    }
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
     const targetPath = args.targetPath;
     if (typeof targetPath !== 'string') {
-      return { status: 'deny', message: 'targetPath 必须是字符串' };
-    }
-    let isOutOfSandbox = false;
-    let resolvedPath = '';
-    try {
-      secureResolveWritePath(targetPath, sessionContext);
-    } catch {
-      isOutOfSandbox = true;
-      const rootDir = getAuthorizedDir();
-      resolvedPath = getPhysicalRealPath(resolve(rootDir!, targetPath));
+      return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
     }
     return {
-      status: 'suspend',
-      message: `智能体试图安全删除以下路径: "${targetPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : [],
-      operation: { planSideEffect: 'write', riskReason: `删除路径: ${targetPath}`, operationCategory: 'file-delete' as const, summary: `删除 ${targetPath}`, resources: isOutOfSandbox ? [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }] : [] }
+      kind: 'ask',
+      message: `删除路径 ${targetPath}`,
+      decisionReason: '删除路径是破坏性文件系统操作',
+      evidence: {
+        operationCategory: 'file-delete',
+        sideEffect: 'write',
+        riskReason: `删除路径: ${targetPath}`,
+        resources: [createPathResource(targetPath, 'write')],
+      },
     };
   }
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
-   * 路径删除由 ToolPermissionService 统一决策。
-   */
-  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
-  }
-
-  /**
    * 异步执行删除路径。
-   * 审批已由 checkSafety + HumanApprovalPlugin 前置处理，此处不再内部调用 waitApproval。
+   * 审批已由统一权限服务与工具调用网关前置处理，此处不再内部请求授权。
    *
    * @param args - 工具调用参数字典
    * @param _context - 工具调用执行上下文（ToolExecutionContext 或向后兼容的 SessionEventPort）
@@ -245,58 +217,26 @@ export class MovePathTool implements NativeTool {
   };
 
   /**
-   * 审查移动路径的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    if (sessionContext?.getPermissionMode() === 'bypassPermissions') {
-      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-move' as const, summary: '移动路径', resources: [] } as SafetyOperation };
-    }
-    const sourcePath = args.sourcePath;
-    const destinationPath = args.destinationPath;
-    if (typeof sourcePath !== 'string' || typeof destinationPath !== 'string') {
-      return { status: 'deny', message: 'sourcePath 和 destinationPath 必须是字符串' };
-    }
-    let isOutOfSandbox = false;
-    let resolvedPath = '';
-    try {
-      secureResolveWritePath(sourcePath, sessionContext);
-      secureResolveWritePath(destinationPath, sessionContext);
-    } catch {
-      isOutOfSandbox = true;
-      const rootDir = getAuthorizedDir();
-      try {
-        secureResolveWritePath(sourcePath, sessionContext);
-        resolvedPath = getPhysicalRealPath(resolve(rootDir!, destinationPath));
-      } catch {
-        resolvedPath = getPhysicalRealPath(resolve(rootDir!, sourcePath));
-      }
-    }
-    // 双 write 资源：移动删除源路径
-    const rootDir = getAuthorizedDir();
-    const srcResolved = getPhysicalRealPath(resolve(rootDir!, sourcePath));
-    const destResolved = getPhysicalRealPath(resolve(rootDir!, destinationPath));
-    const resources: SafetyResource[] = [
-      { kind: 'path', access: 'write', normalizedPath: srcResolved },
-      { kind: 'path', access: 'write', normalizedPath: destResolved }
-    ];
-    return {
-      status: 'suspend',
-      message: `智能体试图将 "${sourcePath}" 移动至 "${destinationPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources,
-      operation: { planSideEffect: 'write', riskReason: `移动: ${sourcePath} → ${destinationPath}`, operationCategory: 'file-move' as const, summary: `移动 ${sourcePath} 到 ${destinationPath}`, resources }
-    };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 路径移动由 ToolPermissionService 统一决策。
    */
-  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const sourcePath = args.sourcePath;
+    const destinationPath = args.destinationPath;
+    if (typeof sourcePath !== 'string' || typeof destinationPath !== 'string') {
+      return { kind: 'deny', decisionReason: 'sourcePath 和 destinationPath 必须是字符串' };
+    }
+    return {
+      kind: 'ask',
+      message: `移动 ${sourcePath} 到 ${destinationPath}`,
+      decisionReason: '移动路径会同时修改源位置和目标位置',
+      evidence: {
+        operationCategory: 'file-move',
+        sideEffect: 'write',
+        riskReason: `移动: ${sourcePath} → ${destinationPath}`,
+        resources: [createPathResource(sourcePath, 'write'), createPathResource(destinationPath, 'write')],
+      },
+    };
   }
 
   /**
@@ -383,57 +323,26 @@ export class CopyPathTool implements NativeTool {
   };
 
   /**
-   * 审查复制路径的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    if (sessionContext?.getPermissionMode() === 'bypassPermissions') {
-      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-copy' as const, summary: '复制路径', resources: [] } as SafetyOperation };
-    }
-    const sourcePath = args.sourcePath;
-    const destinationPath = args.destinationPath;
-    if (typeof sourcePath !== 'string' || typeof destinationPath !== 'string') {
-      return { status: 'deny', message: 'sourcePath 和 destinationPath 必须是字符串' };
-    }
-    let isOutOfSandbox = false;
-    let resolvedPath = '';
-    try {
-      secureResolveReadPath(sourcePath, sessionContext);
-      secureResolveWritePath(destinationPath, sessionContext);
-    } catch {
-      isOutOfSandbox = true;
-      const rootDir = getAuthorizedDir();
-      try {
-        secureResolveReadPath(sourcePath, sessionContext);
-        resolvedPath = getPhysicalRealPath(resolve(rootDir!, destinationPath));
-      } catch {
-        resolvedPath = getPhysicalRealPath(resolve(rootDir!, sourcePath));
-      }
-    }
-    const rootDir = getAuthorizedDir();
-    const srcResolved = getPhysicalRealPath(resolve(rootDir!, sourcePath));
-    const destResolved = getPhysicalRealPath(resolve(rootDir!, destinationPath));
-    const resources: SafetyResource[] = [
-      { kind: 'path', access: 'read', normalizedPath: srcResolved },
-      { kind: 'path', access: 'write', normalizedPath: destResolved }
-    ];
-    return {
-      status: 'suspend',
-      message: `智能体试图将 "${sourcePath}" 复制至 "${destinationPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources,
-      operation: { planSideEffect: 'write', riskReason: `复制: ${sourcePath} → ${destinationPath}`, operationCategory: 'file-copy' as const, summary: `复制 ${sourcePath} 到 ${destinationPath}`, resources }
-    };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 路径复制由 ToolPermissionService 统一决策。
    */
-  checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'passthrough' };
+  checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+    const sourcePath = args.sourcePath;
+    const destinationPath = args.destinationPath;
+    if (typeof sourcePath !== 'string' || typeof destinationPath !== 'string') {
+      return { kind: 'deny', decisionReason: 'sourcePath 和 destinationPath 必须是字符串' };
+    }
+    return {
+      kind: 'ask',
+      message: `复制 ${sourcePath} 到 ${destinationPath}`,
+      decisionReason: '复制路径会写入目标位置',
+      evidence: {
+        operationCategory: 'file-copy',
+        sideEffect: 'write',
+        riskReason: `复制: ${sourcePath} → ${destinationPath}`,
+        resources: [createPathResource(sourcePath, 'read'), createPathResource(destinationPath, 'write')],
+      },
+    };
   }
 
   /**

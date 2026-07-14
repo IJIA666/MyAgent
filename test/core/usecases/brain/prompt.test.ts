@@ -151,11 +151,42 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
   });
 
   test('9. 证据约束应跨领域持续生效，不依赖场景意图识别', () => {
-    expect(RULE_EVIDENCE_DISCIPLINE).toContain('任何任务');
     expect(RULE_EVIDENCE_DISCIPLINE).toContain('事实');
     expect(RULE_EVIDENCE_DISCIPLINE).toContain('推断');
     expect(RULE_EVIDENCE_DISCIPLINE).toContain('建议');
+    expect(RULE_EVIDENCE_DISCIPLINE).toContain('文件名、状态摘要');
+    expect(RULE_EVIDENCE_DISCIPLINE).toContain('diff、正文或对应原始记录');
+    expect(RULE_EVIDENCE_DISCIPLINE).toContain('不得为了减少调用次数而省略');
     expect(RULE_EVIDENCE_DISCIPLINE).not.toContain('C 盘');
     expect(RULE_EVIDENCE_DISCIPLINE).not.toContain('缓存目录');
+  });
+
+  test('10. Shell 提示词应与阶段 3 的复合命令边界一致', () => {
+    expect(RULE_TOOL_PRIORITY).toContain('用户明确指定 Shell');
+    expect(RULE_TOOL_PRIORITY).toContain('终端命令的连接符与禁用结构仅以“终端命令安全性约束”为准');
+    expect(RULE_TOOL_PRIORITY).not.toContain('Bash 仅支持顶层');
+    expect(RULE_TOOL_PRIORITY).not.toContain('PowerShell 仅支持顶层');
+
+    expect(OS_INSTRUCTIONS_MAP.win32).toContain('PowerShell 仅支持顶层分号（;）');
+    expect(OS_INSTRUCTIONS_MAP.win32).toContain('Bash 支持顶层 ;、&&、||');
+    expect(OS_INSTRUCTIONS_MAP.win32).toContain('Cmd 复合语法当前不受支持');
+    expect(OS_INSTRUCTIONS_MAP.darwin).toContain('顶层 ;、&&、||');
+    expect(OS_INSTRUCTIONS_MAP.linux).toContain('顶层 ;、&&、||');
+
+    for (const instruction of Object.values(OS_INSTRUCTIONS_MAP)) {
+      expect(instruction).toContain('管道');
+      expect(instruction).toContain('重定向');
+      expect(instruction).toContain('嵌套 Shell');
+      expect(instruction).toContain('命令替换');
+    }
+  });
+
+  test('11. 系统提示词不应制造工具选择、记忆和错误恢复冲突', () => {
+    expect(RULE_TOOL_PRIORITY).not.toContain('绝对禁止调用 Bash 或 PowerShell');
+    expect(RULE_LONG_TERM_MEMORY).toContain('仅当最新 User 消息实际包含');
+    expect(RULE_LONG_TERM_MEMORY).toContain('标签不存在时不得假设');
+    expect(RULE_ERROR_HANDLING).toContain('仅当原因与修正方式都有明确证据时');
+    expect(RULE_ERROR_ATTRIBUTION).toContain('修正方式唯一且明确时可以直接修正');
+    expect(RESOLVED_BASE_PROMPT).not.toContain('你严格在授权的工作区根目录下运行');
   });
 });

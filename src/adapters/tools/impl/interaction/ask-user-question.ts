@@ -1,6 +1,4 @@
 import type { NativeTool } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
-import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 import { InteractionRequestError } from '../../../../ports/driven/session/InteractionPort.js';
 import type { AskUserPayload, UserQuestion } from '../../../../ports/driven/session/InteractionPort.js';
 
@@ -199,15 +197,20 @@ export class AskUserQuestionTool implements NativeTool {
    *
    * @returns 安全评估结论
    */
-  checkSafety(): SafetyCheckResult {
-    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read' as const, summary: '向用户提问', resources: [] } as SafetyOperation };
-  }
-
   /**
    * Claude 风格的 tool-level checkPermissions。
    * 用户提问是安全的交互操作。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'allow', decisionReason: '用户交互操作' };
+    return {
+      kind: 'allow',
+      decisionReason: '用户交互操作',
+      evidence: {
+        operationCategory: 'user-interaction',
+        sideEffect: 'read',
+        riskReason: '向用户收集结构化输入',
+        resources: [],
+      },
+    };
   }
 }

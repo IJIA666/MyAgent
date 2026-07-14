@@ -98,11 +98,18 @@ describe('安全与并发增强特性测试', () => {
         toolName: 'get_current_time',
         args: {},
         decision: { kind: 'allow', decisionReason: '测试授权' },
+        evidence: {
+          operationCategory: 'time-read',
+          sideEffect: 'read',
+          riskReason: '仅读取当前系统时间',
+          resources: [],
+        },
       };
 
       const outcome = await executor.executeAuthorized(authorizedContext);
       expect(outcome.value.content).toHaveLength(1);
-      expect(outcome.effect.kind).toBe('none');
+      expect(outcome.effect.kind).toBe('read');
+      expect(outcome.effect.reason).toBe('permission_evidence');
 
       await expect(executor.executeAuthorized({
         ...authorizedContext,

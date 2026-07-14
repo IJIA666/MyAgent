@@ -1,5 +1,5 @@
 /**
- * @fileoverview ToolCallOrchestrator 的单元测试，验证工具调用生命周期关键路径
+ * @file ToolCallOrchestrator 的单元测试，验证工具调用生命周期关键路径
  * （参数解析 → BeforeTool abort → 正常执行路径 → InteractionRequestError 挂起）。
  *
  * 注：由于 ToolCallOrchestrator 深度依赖 runHookPipeline（Immer draft）、
@@ -12,7 +12,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { ToolCallOrchestrator } from '../../../../src/core/usecases/engine/tool-call-orchestrator.js';
-import { ApprovalEffectApplier } from '../../../../src/core/usecases/engine/approval-effect-applier.js';
 import { ToolDispatcher } from '../../../../src/core/usecases/engine/ToolDispatcher.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 import { SecurityService } from '../../../../src/core/usecases/security/SecurityService.js';
@@ -23,7 +22,6 @@ import type { AgentEvent } from '../../../../src/core/usecases/engine/agent-loop
 describe('ToolCallOrchestrator', () => {
   let orchestrator: ToolCallOrchestrator;
   let context: SessionContext;
-  let applier: ApprovalEffectApplier;
   let dispatcher: ToolDispatcher;
   let suspendEvents: AgentEvent[];
   let tempDir: string;
@@ -34,7 +32,6 @@ describe('ToolCallOrchestrator', () => {
     context = new SessionContext('test-tco-session');
     context.isProcessing = false;
 
-    applier = new ApprovalEffectApplier();
     dispatcher = new ToolDispatcher(context);
     suspendEvents = [];
 
@@ -66,7 +63,7 @@ describe('ToolCallOrchestrator', () => {
 
     orchestrator = new ToolCallOrchestrator(
       mockToolRegistry, dispatcher, mockPluginRegistry,
-      context, applier
+      context
     );
 
     // 保存 pushSuspendEvent 引用备用
@@ -165,7 +162,7 @@ describe('ToolCallOrchestrator', () => {
       const writeOrchestrator = new ToolCallOrchestrator(
         mockToolRegistryWithWrite, dispatcher,
         { getPluginsForEvent: () => [] } as unknown as PluginRegistry,
-        context, applier
+        context
       );
 
       const toolCall = makeToolCall('writeFile', { filePath: '/test/output.txt' });
@@ -216,7 +213,7 @@ describe('ToolCallOrchestrator', () => {
       const writeOrchestrator = new ToolCallOrchestrator(
         mockToolRegistryWithWrite, dispatcher,
         { getPluginsForEvent: () => [] } as unknown as PluginRegistry,
-        context, applier
+        context
       );
 
       const toolCall = makeToolCall('writeFile', { filePath: '/test/output.txt' });
@@ -271,8 +268,7 @@ describe('ToolCallOrchestrator', () => {
         registryWithCapture,
         dispatcher,
         { getPluginsForEvent: () => [] } as unknown as PluginRegistry,
-        context,
-        applier
+        context
       );
 
       orchestratorWithPort.setInteractionPort(fakeInteractionPort as never);

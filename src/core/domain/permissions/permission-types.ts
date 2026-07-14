@@ -93,6 +93,48 @@ export interface PermissionRule {
   };
 }
 
+// ── ToolPermissionEvidence（工具权限证据）──
+
+/** 权限证据使用的副作用分类。 */
+export type ToolPermissionSideEffect = 'read' | 'sensitive-read' | 'write' | 'unknown' | 'hardline';
+
+/** 单个子操作的通用权限证据。 */
+export interface ToolPermissionSubcommandEvidence {
+  /** 子操作原始文本。 */
+  readonly command: string;
+  /** 前置连接关系。 */
+  readonly connectorBefore?: string;
+  /** 子操作副作用。 */
+  readonly sideEffect: ToolPermissionSideEffect;
+  /** 子操作权限建议。 */
+  readonly permission: PermissionBehavior;
+  /** 风险说明。 */
+  readonly reason: string;
+  /** 可选的细粒度规则建议。 */
+  readonly ruleSuggestion?: string;
+}
+
+/**
+ * 工具权限检查产生的通用只读证据。
+ * 核心权限层只理解副作用、资源和子操作，不依赖具体工具的分析类型。
+ */
+export interface ToolPermissionEvidence {
+  /** 操作类别。 */
+  readonly operationCategory: string;
+  /** 聚合后的副作用。 */
+  readonly sideEffect: ToolPermissionSideEffect;
+  /** 面向日志和提示的风险说明。 */
+  readonly riskReason: string;
+  /** 可选的已决议 Shell family。 */
+  readonly shellKind?: string;
+  /** 可选的工具内部解析状态。 */
+  readonly parseStatus?: string;
+  /** 有序子操作证据。 */
+  readonly subcommands?: readonly ToolPermissionSubcommandEvidence[];
+  /** 可选的结构化资源证据。 */
+  readonly resources?: readonly Readonly<Record<string, unknown>>[];
+}
+
 // ── ToolPermissionCheckResult（工具内部检查结果）──
 
 /**
@@ -106,10 +148,10 @@ export interface PermissionRule {
  * - `passthrough`：工具不做最终判断，交由统一权限流程继续处理。
  */
 export type ToolPermissionCheckResult =
-  | { kind: 'allow'; decisionReason?: string; updatedInput?: Record<string, unknown> }
-  | { kind: 'ask'; message?: string; decisionReason?: string }
-  | { kind: 'deny'; decisionReason: string }
-  | { kind: 'passthrough' };
+  | { kind: 'allow'; decisionReason?: string; updatedInput?: Record<string, unknown>; evidence?: ToolPermissionEvidence }
+  | { kind: 'ask'; message?: string; decisionReason?: string; evidence?: ToolPermissionEvidence }
+  | { kind: 'deny'; decisionReason: string; evidence?: ToolPermissionEvidence }
+  | { kind: 'passthrough'; evidence?: ToolPermissionEvidence };
 
 // ── PermissionDecision ──
 
@@ -125,6 +167,8 @@ export type PermissionDecision =
       decisionReason?: string;
       /** 允许执行前可能被工具修改过的输入参数 */
       updatedInput?: Record<string, unknown>;
+      /** 工具检查产生的只读证据 */
+      evidence?: ToolPermissionEvidence;
     }
   | {
       kind: 'ask';
@@ -134,11 +178,15 @@ export type PermissionDecision =
       decisionReason: string;
       /** 可选的规则更新建议，用于 once/session/persistent 复用 */
       suggestedUpdate?: PermissionUpdate;
+      /** 工具检查产生的只读证据 */
+      evidence?: ToolPermissionEvidence;
     }
   | {
       kind: 'deny';
       /** 拒绝原因描述 */
       decisionReason: string;
+      /** 工具检查产生的只读证据 */
+      evidence?: ToolPermissionEvidence;
     };
 
 // ── PermissionUpdate ──

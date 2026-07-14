@@ -8,8 +8,6 @@ import type { AskUserAnswer } from '../../../ports/driven/session/InteractionPor
 import type { TokenEstimatorPort, ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
-import type { ToolPolicyPort } from '../../../ports/shared/tool-policy.js';
-import type { ToolAccessMetadataPort } from '../../../ports/driven/tools/ToolAccessMetadataPort.js';
 import { AgentLoop } from './agent-loop.js';
 import type { CliSessionUseCase, CliSkillSummary } from '../../../ports/driving/CliSessionUseCase.js';
 import { TaskAborterPort } from '../../../ports/driven/tools/TaskAborterPort.js';
@@ -97,7 +95,6 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    * @param embedding - 文本嵌入生成契约
    * @param appConfig - 应用程序系统配置项
    * @param taskAborter - 任务中止服务端口
-   * @param toolAccessMetadata - 工具访问元数据查询端口契约
    */
   constructor(
     llmConfig: LlmConfig,
@@ -108,14 +105,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     vectorDb: VectorDbPort,
     embedding: EmbeddingPort,
     appConfig: AppConfig,
-    _toolPolicyPort: ToolPolicyPort,
     qualityCheckPort?: QualityCheckPort,
     taskAborter?: TaskAborterPort,
-    _toolAccessMetadata: ToolAccessMetadataPort = {
-      getResourceExtractor: () => undefined,
-      getAccessMetadata: () => undefined,
-      getResourceExtractors: () => new Map()
-    }
   ) {
     super();
     this.llmConfig = llmConfig;

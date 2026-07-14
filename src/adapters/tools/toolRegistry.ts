@@ -6,11 +6,9 @@ import { ToolExecutor } from './ToolExecutor.js';
 import { ToolCallGateway } from './ToolCallGateway.js';
 import { PermissionRuleStore } from '../../core/domain/permissions/rule-store.js';
 import { ToolPermissionService } from '../../core/domain/permissions/tool-permission-service.js';
+import { PermissionPromptAdapter } from '../../core/usecases/plugins/PermissionPromptAdapter.js';
+import type { ToolPermissionCheckResult, ToolPermissionEvidence } from '../../core/domain/permissions/permission-types.js';
 import { ToolAccessMetadataProvider } from './ToolAccessMetadataProvider.js';
-import { BuiltinToolPolicyAdapter } from './builtin-tool-policy-adapter.js';
-import { ExternalToolPolicyAdapter } from './external-tool-policy-adapter.js';
-import { ToolPolicyRouter } from './tool-policy-router.js';
-import type { ToolPolicyPort } from '../../ports/shared/tool-policy.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabilityPort.js';
 import type { EventNotificationPort } from '../../ports/driven/session/EventNotificationPort.js';
@@ -19,8 +17,7 @@ import type { InteractionPort } from '../../ports/driven/session/InteractionPort
 import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
 import type { ToolAccessMetadataPort, ResourceExtractor, ToolAccessMetadata } from '../../ports/driven/tools/ToolAccessMetadataPort.js';
 import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
-import type { ToolExecutionOutcome, ToolExecutionEffect, CallToolResult } from './tool-types.js';
-import { deriveDefaultToolExecutionEffect } from './tool-types.js';
+import type { ToolExecutionOutcome, ToolExecutionEffect } from './tool-types.js';
 
 /**
  * 工具注册表管理类。
@@ -42,8 +39,6 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
   private permissionService: ToolPermissionService;
   // 工具访问元数据聚合器（委托资源提取器查询）
   private metadataProvider: ToolAccessMetadataProvider;
-  // 工具策略评估端口（供 HumanApprovalPlugin 注入）
-  public readonly policyPort: ToolPolicyPort;
   // 可选的外部 MCP 工具管理器实例
   public readonly mcpManager?: McpManagerPort;
 
@@ -71,16 +66,6 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     this.gateway.registerTools(allTools);
     // 构建元数据聚合器（从工具自带 resourceExtractor 聚合）
     this.metadataProvider = new ToolAccessMetadataProvider(allTools);
-    // 构建策略适配器：内建适配器使用同一批 NativeTool[]，外部适配器使用 MCP 管理端口
-    if (mcpManager) {
-      this.policyPort = new ToolPolicyRouter(
-        new BuiltinToolPolicyAdapter(allTools),
-        new ExternalToolPolicyAdapter(mcpManager),
-      );
-    } else {
-      // 无 MCP 时仅使用内建适配器
-      this.policyPort = new BuiltinToolPolicyAdapter(allTools);
-    }
   }
 
   /**
@@ -109,6 +94,7 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
    *
    * @param functionName - 要调用的目标工具名称
    * @param functionArgs - 传递给目标工具的动态参数键值对
+   * @param timeoutMs - 获得权限后开始计算的工具执行超时
    * @returns 工具执行完毕后返回的序列化/结构化数据
    * @throws 当指定的工具在本地和外部均未找到时，抛出未知工具异常
    */
@@ -118,7 +104,8 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
-    _toolCallId?: string
+    _toolCallId?: string,
+    timeoutMs: number = 30000,
   ): Promise<ToolExecutionOutcome<unknown>> {
     // 检查目标工具是否隶属于本地内置集合
     const toolMeta = this.catalog.getToolMetadata(functionName);
@@ -131,55 +118,62 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     }
 
     try {
+      const mode = sessionContext?.getPermissionMode() ?? 'default';
+      const promptAdapter = this.createPromptAdapter(functionName, functionArgs, sessionContext);
       if (isLocalTool) {
-        // 本地工具只能由统一 Gateway 完成权限检查和执行。
-        return await this.executeLocalThroughGateway(
-          functionName,
-          functionArgs,
-          sessionContext,
-        );
-      } else if (this.mcpManager) {
-        // MCP 也必须先经过统一权限服务，不能以外部调用为由绕过规则。
-        const mode = sessionContext?.getPermissionMode() ?? 'default';
-        let decision = await this.permissionService.checkPermissions(
+        const gatewayResult = await this.gateway.execute(
           functionName,
           functionArgs,
           mode,
+          {
+            promptAdapter,
+            runtime: {
+              context: sessionContext,
+              signal,
+              timeoutMs,
+              interactionPort,
+            },
+          },
         );
-        if (decision.kind === 'ask') {
-          if (!sessionContext) {
-            throw new Error(`外部工具 "${functionName}" 需要权限确认，但当前没有审批会话`);
-          }
-          const approval = await sessionContext.waitApproval(
-            `permission_${Date.now()}_${functionName}`,
-            { name: functionName, arguments: functionArgs },
-            undefined,
-            `${decision.message}（${decision.decisionReason}）`,
-          );
-          if (approval.action !== 'approve') {
-            throw new Error(`审批拒绝：${functionName}`);
-          }
-          decision = { kind: 'allow', decisionReason: '用户完成单次权限确认' };
-        }
-        if (decision.kind !== 'allow') {
-          throw new Error(`权限拒绝：${decision.decisionReason}`);
-        }
-        const mcpRaw = await this.mcpManager.callMcpTool(functionName, functionArgs, signal);
-        // 外部 MCP 无法精确推导 effect，使用访问元数据安全降级
-        const accessMeta = this.getAccessMetadata(functionName);
-        const mcpSecurityCategory: 'read' | 'write' = accessMeta?.accessMode === 'read' ? 'read' : 'write';
-        const mcpEffect = deriveDefaultToolExecutionEffect(
-          mcpSecurityCategory,
-          true,
-          true
+        return gatewayResult.outcome;
+      } else if (this.mcpManager) {
+        const evidence = this.createExternalEvidence(functionName);
+        const checker = {
+          checkPermissions: (): ToolPermissionCheckResult => evidence.sideEffect === 'read'
+            ? { kind: 'allow', decisionReason: '外部工具声明为只读', evidence }
+            : {
+                kind: 'ask',
+                message: `外部工具 "${functionName}" 需要权限确认`,
+                decisionReason: evidence.riskReason,
+                evidence,
+              },
+        };
+        const gatewayResult = await this.gateway.executeExternal(
+          functionName,
+          functionArgs,
+          mode,
+          {
+            checker,
+            execute: (authorizedArgs, executionSignal) => this.mcpManager!.callMcpTool(
+              functionName,
+              authorizedArgs,
+              executionSignal,
+            ),
+          },
+          { promptAdapter, runtime: { signal, timeoutMs } },
         );
-        return { value: mcpRaw, effect: mcpEffect };
+        return gatewayResult.outcome;
       } else {
         throw new Error(`未知的工具名称："${functionName}"`);
       }
     } catch (error: unknown) {
+      // 执行超时必须交给编排器统一转换为用户可见的超时阻断事件。
+      if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+        throw error;
+      }
       if (error instanceof Error && (
         error.name === 'InteractionRequestError' ||
+        error.message.includes('权限拒绝') ||
         error.message.includes('审批拒绝') ||
         error.message.includes('被拒绝') ||
         error.message.includes('找不到提供工具')
@@ -201,69 +195,53 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     }
   }
 
-  /**
-   * 通过统一权限服务执行本地工具，并将一次性人工批准转换为内部执行上下文。
-   *
-   * @param toolName - 工具名称
-   * @param args - 工具参数
-   * @param sessionContext - 可选会话上下文
-   * @returns 工具执行结果及副作用
-   */
-  private async executeLocalThroughGateway(
+  /** 为当前调用创建只负责 ask 交互的权限提示适配器。 */
+  private createPromptAdapter(
     toolName: string,
     args: Record<string, unknown>,
     sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
-  ): Promise<ToolExecutionOutcome<CallToolResult>> {
-    const mode = sessionContext?.getPermissionMode() ?? 'default';
-    const tool = this.catalog.getTool(toolName);
-    if (!tool) {
-      throw new Error(`未知的工具名称："${toolName}"`);
+  ): PermissionPromptAdapter | undefined {
+    if (!sessionContext) {
+      return undefined;
     }
-
-    let decision = await this.permissionService.checkPermissions(
-      toolName,
-      args,
-      mode,
-      tool.checkPermissions ? { checkPermissions: (input) => tool.checkPermissions!(input.args) } : undefined,
+    return new PermissionPromptAdapter(
+      this.permissionRuleStore,
+      async (decision) => {
+        const approval = await sessionContext.waitApproval(
+          `permission_${Date.now()}_${toolName}`,
+          { name: toolName, arguments: args },
+          undefined,
+          `${decision.message}（${decision.decisionReason}）`,
+        );
+        return { approved: approval.action === 'approve', scope: 'once' };
+      },
     );
+  }
 
-    if (decision.kind === 'ask') {
-      if (!sessionContext) {
-        throw new Error(`工具 "${toolName}" 需要权限确认，但当前没有审批会话`);
-      }
-      const approval = await sessionContext.waitApproval(
-        `permission_${Date.now()}_${toolName}`,
-        { name: toolName, arguments: args },
-        undefined,
-        `${decision.message}（${decision.decisionReason}）`,
-      );
-      if (approval.action !== 'approve') {
-        throw new Error(`审批拒绝：${toolName}`);
-      }
-      decision = { kind: 'allow', decisionReason: '用户完成单次权限确认' };
-    }
-
-    if (decision.kind !== 'allow') {
-      throw new Error(`权限拒绝：${decision.decisionReason}`);
-    }
-
-    const gatewayResult = await this.gateway.executeAuthorized(
-      this.permissionService.createAuthorizedContext(toolName, args, decision)!,
-    );
-    const effect = deriveDefaultToolExecutionEffect(
-      tool.securityCategory,
-      true,
-      true,
-    );
+  /** 根据外部工具访问声明生成保守权限证据。 */
+  private createExternalEvidence(toolName: string): ToolPermissionEvidence {
+    const accessMetadata = this.getAccessMetadata(toolName);
+    const descriptor = this.mcpManager?.getToolDescriptor(toolName);
+    const sideEffect = accessMetadata?.accessMode === 'read'
+      ? 'read'
+      : accessMetadata?.accessMode === 'write' || descriptor?.annotations?.destructiveHint === true
+        ? 'write'
+        : 'unknown';
     return {
-      value: { content: [{ type: 'text', text: gatewayResult }] },
-      effect,
+      operationCategory: 'external-tool-call',
+      sideEffect,
+      riskReason: sideEffect === 'read'
+        ? '外部工具声明为只读'
+        : sideEffect === 'write'
+          ? '外部工具声明可能产生破坏性写入'
+          : '外部工具缺少可自动允许的只读证据',
+      resources: [],
     };
   }
 
   /**
    * 获取本地内置工具的资源提取器注册表只读副本（委托给 ToolAccessMetadataProvider）。
-   * 供 ApprovalPolicy 在装配阶段注入，用于交叉校验工具层报告的 SafetyOperation。
+   * 供统一权限服务生成外部工具的结构化资源证据。
    *
    * @returns 工具名 → 资源提取器的 Map
    */

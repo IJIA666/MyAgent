@@ -51,6 +51,8 @@ export interface ToolRegistryPort {
    * @param functionArgs - 工具参数
    * @param sessionContext - 可选的会话事件契约上下文
    * @param signal - 可选的 AbortSignal，用于物理取消工具执行
+   * @param toolCallId - 可选的工具调用标识
+   * @param timeoutMs - 获得权限后开始计算的工具执行超时
    * @returns 携带实际副作用的工具执行结果
    */
   callTool(
@@ -59,7 +61,8 @@ export interface ToolRegistryPort {
     sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
-    toolCallId?: string
+    toolCallId?: string,
+    timeoutMs?: number,
   ): Promise<ToolExecutionOutcome<unknown>>;
 
   /**

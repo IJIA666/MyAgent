@@ -17,7 +17,6 @@ import { RuleManager } from '../brain/RuleManager.js';
 import { ContextRepository } from '../brain/ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import { CompactionService } from '../brain/CompactionService.js';
-import { ApprovalEffectApplier } from './approval-effect-applier.js';
 import { ModelRequestAssembler } from './model-request-assembler.js';
 import { ToolCallOrchestrator } from './tool-call-orchestrator.js';
 import {
@@ -134,8 +133,6 @@ export class AgentLoop {
   private compactionService: CompactionService;
   /** 插件注册管理器 */
   private pluginRegistry: PluginRegistry;
-  /** 审批效果提交协作者 */
-  private approvalEffectApplier: ApprovalEffectApplier;
   /** 模型请求组装协作者 */
   private modelRequestAssembler: ModelRequestAssembler;
   /** 工具调用编排协作者 */
@@ -178,14 +175,13 @@ export class AgentLoop {
     this.toolDispatcher = options.toolDispatcher;
     this.compactionService = options.compactionService;
     this.pluginRegistry = options.pluginRegistry;
-    this.approvalEffectApplier = new ApprovalEffectApplier();
     this.modelRequestAssembler = new ModelRequestAssembler(
       this.toolRegistry, this.contextAdapter, this.ruleManager,
       this.pluginRegistry, this.context
     );
     this.toolCallOrchestrator = new ToolCallOrchestrator(
       this.toolRegistry, this.toolDispatcher, this.pluginRegistry,
-      this.context, this.approvalEffectApplier, this._interactionPort
+      this.context, this._interactionPort
     );
     // 若构造期已提供交互端口，则通过访问器统一写入并同步给协作者。
     this.interactionPort = options.interactionPort;
@@ -448,12 +444,8 @@ export class AgentLoop {
               arguments: tc.function.arguments
             }));
 
-            // 构造并发控制超时 Abort 信号（超时限制从 runtimeLimits 提取，默认 30 秒）
-            const timeoutMs = this.context.appConfig?.runtimeLimits?.toolTimeoutMs ?? 30000;
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => {
-              controller.abort();
-            }, timeoutMs);
+            // 此处只保留上游取消信号；工具执行超时在权限审批完成后由 Gateway 启动。
+            const toolCallSignal = new AbortController().signal;
 
             // 实时事件队列挂载机制，桥接 Promise 并行调度与 Generator 异步流式 yield 抛出，防止审批挂起死锁
             let resolveNextEvent: (() => void) | null = null;
@@ -467,7 +459,7 @@ export class AgentLoop {
 
             // 委托 ToolCallOrchestrator 执行每个工具调用的完整生命周期
             const toolTasks = event.toolCalls.map((tc, idx) =>
-              this.toolCallOrchestrator.execute(idx, tc, controller.signal, pushSuspendEvent)
+              this.toolCallOrchestrator.execute(idx, tc, toolCallSignal, pushSuspendEvent)
             );
 
             // 实时消费并 yield 并行工具执行流中抛出的 suspend 事件
@@ -491,7 +483,6 @@ export class AgentLoop {
             }
 
             const settledResults = await allTasksPromise;
-            clearTimeout(timeoutId);
 
             // 按原本的工具调用顺序，依次结算并触发 UI 事件流和数据链追加
             let pausedForInteraction = false;

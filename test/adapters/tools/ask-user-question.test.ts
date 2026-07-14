@@ -189,12 +189,13 @@ describe('AskUserQuestionTool 单元测试', () => {
   });
 
   // ==========================================
-  // 4. checkSafety
+  // 4. checkPermissions
   // ==========================================
-  test('checkSafety 始终返回 pass', () => {
+  test('checkPermissions 返回 allow 和只读交互证据', () => {
     const tool = new AskUserQuestionTool();
-    const result = tool.checkSafety();
-    expect(result.status).toBe('pass');
+    const result = tool.checkPermissions();
+    expect(result.kind).toBe('allow');
+    expect(result.evidence?.sideEffect).toBe('read');
   });
 
   // ==========================================

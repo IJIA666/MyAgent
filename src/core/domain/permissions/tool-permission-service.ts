@@ -8,6 +8,7 @@
 import type {
   PermissionMode,
   PermissionDecision,
+  ToolPermissionEvidence,
   ToolPermissionCheckResult,
 } from './permission-types.js';
 import { PermissionRuleStore } from './rule-store.js';
@@ -67,6 +68,8 @@ export interface AuthorizedExecutionContext {
   readonly args: Record<string, unknown>;
   /** 权限决策信息 */
   readonly decision: Pick<PermissionDecision, 'kind'> & { decisionReason?: string };
+  /** 权限阶段生成的只读证据。 */
+  readonly evidence?: ToolPermissionEvidence;
 }
 
 // ── ToolPermissionService ──
@@ -128,16 +131,11 @@ export class ToolPermissionService {
     toolChecker?: ToolPermissionChecker,
     context?: { cwd?: string },
   ): Promise<PermissionDecision> {
-    // 步骤 1：全局 deny / ask 规则匹配
-    const globalRuleDecision = this.evaluateGlobalRules(toolName, args);
-    if (globalRuleDecision) {
-      if (this.enforceBypassBoundary(globalRuleDecision, mode)) {
-        return globalRuleDecision;
-      }
-      return this.handleModePostProcessing(globalRuleDecision, mode, toolName, args);
-    }
+    // 步骤 1：收集规则结果，但不因 ask/deny 提前跳过工具 hardline 检查。
+    const ruleDecision = this.evaluateGlobalRules(toolName, args)
+      ?? this.evaluateAllowRules(toolName, args);
 
-    // 步骤 2：工具 checkPermissions
+    // 步骤 2：每次权限评估恰好执行一次工具检查。
     let toolResult: ToolPermissionCheckResult = { kind: 'passthrough' };
     if (toolChecker) {
       toolResult = await toolChecker.checkPermissions(
@@ -146,48 +144,54 @@ export class ToolPermissionService {
       );
     }
 
-    // 步骤 3：工具级结果处理
-    if (toolResult.kind !== 'passthrough') {
-      // 工具返回 deny 直接终止
-      if (toolResult.kind === 'deny') {
-        return { kind: 'deny', decisionReason: toolResult.decisionReason };
-      }
-      // 工具返回 ask
-      if (toolResult.kind === 'ask') {
-        return this.handleModePostProcessing(
-          { kind: 'ask', message: toolResult.message ?? '', decisionReason: toolResult.decisionReason ?? '' },
-          mode,
-          toolName,
-          args,
-        );
-      }
-      // 工具返回 allow — 检查是否有全局 ask 规则阻挡
-      if (globalRuleDecision) {
-        return this.handleModePostProcessing(globalRuleDecision, mode, toolName, args);
-      }
-      // 工具允许，且无全局 ask/deny 规则阻挡
-      return {
+    // 步骤 3：按 deny > ask > allow > passthrough 聚合规则和工具结果。
+    let decision: PermissionDecision;
+    if (toolResult.kind === 'deny') {
+      decision = {
+        kind: 'deny',
+        decisionReason: toolResult.decisionReason,
+        evidence: toolResult.evidence,
+      };
+    } else if (ruleDecision?.kind === 'deny') {
+      decision = {
+        ...ruleDecision,
+        evidence: toolResult.evidence,
+      };
+    } else if (toolResult.kind === 'ask') {
+      decision = {
+        kind: 'ask',
+        message: toolResult.message ?? `工具 "${toolName}" 需要权限确认`,
+        decisionReason: toolResult.decisionReason ?? '工具检查要求权限确认',
+        evidence: toolResult.evidence,
+      };
+    } else if (ruleDecision?.kind === 'ask') {
+      decision = {
+        ...ruleDecision,
+        evidence: toolResult.evidence,
+      };
+    } else if (toolResult.kind === 'allow') {
+      decision = {
         kind: 'allow',
         decisionReason: toolResult.decisionReason || '工具安全检查通过',
         updatedInput: toolResult.updatedInput,
+        evidence: toolResult.evidence,
+      };
+    } else if (ruleDecision?.kind === 'allow') {
+      decision = {
+        ...ruleDecision,
+        evidence: toolResult.evidence,
+      };
+    } else {
+      decision = {
+        kind: 'ask',
+        message: `工具 "${toolName}" 需要权限确认`,
+        decisionReason: '未配置 allow 规则，且工具检查结果为 passthrough',
+        evidence: toolResult.evidence,
       };
     }
 
-    // 步骤 5：allow 规则匹配
-    const allowResult = this.evaluateAllowRules(toolName, args);
-    if (allowResult) {
-      return allowResult;
-    }
-
-    // 步骤 6：passthrough → 转为 ask
-    const askDecision: PermissionDecision = {
-      kind: 'ask',
-      message: `工具 "${toolName}" 需要权限确认`,
-      decisionReason: '未配置 allow 规则，且工具检查结果为 passthrough',
-    };
-
-    // 步骤 7：模式后处理
-    return this.handleModePostProcessing(askDecision, mode, toolName, args);
+    // 步骤 4：只有聚合后的 ask 进入模式后处理，deny 永不降级。
+    return this.handleModePostProcessing(decision, mode, toolName, args);
   }
 
   /**
@@ -212,6 +216,7 @@ export class ToolPermissionService {
       toolName,
       args,
       decision: { kind: 'allow', decisionReason: decision.decisionReason },
+      evidence: decision.evidence,
     };
     this.issuedContexts.add(context);
     return context;
@@ -270,7 +275,7 @@ export class ToolPermissionService {
         return {
           kind: 'ask',
           message: `规则 (${rule.source}): ${rule.ruleValue.toolName} 需要确认`,
-          decisionReason: `规则 (${rule.source}): ${rule.ruleValue.toolName} 需要权限确认`,
+          decisionReason: `显式 ask 规则 (${rule.source}): ${rule.ruleValue.toolName} 需要权限确认`,
         };
       }
     }
@@ -293,24 +298,6 @@ export class ToolPermissionService {
       return { kind: 'allow', decisionReason: `规则 (${allowRule.source}): ${allowRule.ruleValue.toolName} 已允许` };
     }
     return undefined;
-  }
-
-  // ── bypass 边界判断 ──
-
-  /**
-   * 强制执行 bypass 模式的不可绕过边界。
-   * 显式 ask 规则和显式 deny 规则在 bypass 模式下仍必须生效。
-   *
-   * @param decision - 规则层级决策
-   * @param mode - 当前模式
-   * @returns true 直接返回该决策，false 继续模式后处理
-   */
-  private enforceBypassBoundary(decision: PermissionDecision, mode: PermissionMode): boolean {
-    if (decision.kind === 'deny') return true;
-    if (decision.kind === 'ask' && mode !== 'bypassPermissions') return true;
-    // bypass 模式下，显式 ask 规则仍触发询问
-    if (decision.kind === 'ask' && mode === 'bypassPermissions') return true;
-    return false;
   }
 
   // ── 模式后处理 ──
@@ -368,19 +355,24 @@ export class ToolPermissionService {
       case 'acceptEdits': {
         // acceptEdits 只对文件编辑/文件系统操作自动 allow
         if (isEditOperation(toolName, args)) {
-          return { kind: 'allow', decisionReason: 'acceptEdits: 编辑操作自动允许' };
+          return {
+            kind: 'allow',
+            decisionReason: 'acceptEdits: 编辑操作自动允许',
+            evidence: decision.evidence,
+          };
         }
         return decision;
       }
 
       case 'plan': {
         // plan 模式只允许只读操作
-        if (this.isPlanSafeCall(toolName, args)) {
+        if (this.isPlanSafeCall(toolName, args, decision.evidence)) {
           return decision; // 保留 ask，让审批流程决定
         }
         return {
           kind: 'deny',
           decisionReason: `plan 模式不允许 "${toolName}" 操作`,
+          evidence: decision.evidence,
         };
       }
 
@@ -389,6 +381,7 @@ export class ToolPermissionService {
         return {
           kind: 'deny',
           decisionReason: `dontAsk 模式: "${toolName}" 需要权限但未预先允许`,
+          evidence: decision.evidence,
         };
       }
 
@@ -400,6 +393,7 @@ export class ToolPermissionService {
         return {
           kind: 'allow',
           decisionReason: `bypassPermissions 模式: "${toolName}" 已绕过询问`,
+          evidence: decision.evidence,
         };
       }
 
@@ -434,6 +428,7 @@ export class ToolPermissionService {
         return {
           kind: 'deny',
           decisionReason: `auto 模式: 分类器不可用且为 headless 模式，拒绝 "${toolName}"`,
+          evidence: decision.evidence,
         };
       }
       // 有交互环境：保留 ask 让用户判断
@@ -446,11 +441,13 @@ export class ToolPermissionService {
         return {
           kind: 'allow',
           decisionReason: `auto 分类器: ${result.reason}`,
+          evidence: decision.evidence,
         };
       }
       return {
         kind: 'deny',
         decisionReason: `auto 分类器: ${result.reason}`,
+        evidence: decision.evidence,
       };
     } catch {
       // 分类器异常
@@ -458,6 +455,7 @@ export class ToolPermissionService {
         return {
           kind: 'deny',
           decisionReason: `auto 模式: 分类器异常且为 headless 模式，拒绝 "${toolName}"`,
+          evidence: decision.evidence,
         };
       }
       return decision;
@@ -469,9 +467,14 @@ export class ToolPermissionService {
    *
    * @param toolName - 工具名称
    * @param args - 工具参数
+   * @param evidence - 工具权限证据
    * @returns 是否被允许在 plan 模式下执行
    */
-  private isPlanSafeCall(toolName: string, _args: Record<string, unknown>): boolean {
+  private isPlanSafeCall(
+    toolName: string,
+    _args: Record<string, unknown>,
+    evidence?: ToolPermissionEvidence,
+  ): boolean {
     const planSafeTools = new Set([
       'Read',
       'ReadManyFiles',
@@ -490,7 +493,7 @@ export class ToolPermissionService {
 
     // Bash/PowerShell 需要额外检查是否为只读命令
     if (toolName === 'Bash' || toolName === 'PowerShell') {
-      return true; // 具体只读检查由工具的 checkPermissions 完成
+      return evidence?.sideEffect === 'read' || evidence?.sideEffect === 'sensitive-read';
     }
 
     return true;

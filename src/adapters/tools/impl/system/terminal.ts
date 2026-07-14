@@ -3,18 +3,20 @@
  * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
  */
 
-import { validateCommand, validateCwd, isHardlineDangerous, isPlanSafeCommand, unboxNestedCommand, containsDangerousWriteToken, isSensitiveReadCommand } from './terminal-guard.js';
-import type { ToolExecutionEffect } from '../../tool-types.js';
+import { analyzeShellCommand, type ShellCommandAnalysis } from './command-analysis/index.js';
+import { validateCommand, validateCwd } from './terminal-guard.js';
 import { runCommandEngine } from './terminal-engine.js';
-import { extractSafePrefix, loadAllowedCommands, loadDefaultShellFamily } from './terminal-config.js';
+import { loadDefaultShellFamily } from './terminal-config.js';
 import { createShellExecutionPlan } from './terminal-plan.js';
 import type { ShellKind } from './terminal-types.js';
 import type { NativeTool } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
-import type { SafetyOperation, ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
-import type { PlanSideEffect } from '../../../../ports/shared/tool-policy.js';
+import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { EventNotificationPort } from '../../../../ports/driven/session/EventNotificationPort.js';
+import type {
+  ToolPermissionCheckResult,
+  ToolPermissionEvidence,
+} from '../../../../core/domain/permissions/permission-types.js';
 
 /** Shell 工具构造参数。 */
 interface ShellToolOptions {
@@ -75,6 +77,26 @@ function createShellToolDefinition(
   };
 }
 
+/** 将 Shell 专用分析结果投影为核心权限层可消费的通用证据。 */
+function createPermissionEvidence(analysis: ShellCommandAnalysis): ToolPermissionEvidence {
+  return {
+    operationCategory: 'command-execute',
+    sideEffect: analysis.sideEffect,
+    riskReason: analysis.riskReason,
+    shellKind: analysis.shellKind,
+    parseStatus: analysis.parseStatus,
+    subcommands: analysis.subcommands.map(segment => ({
+      command: segment.command,
+      connectorBefore: segment.connectorBefore,
+      sideEffect: segment.sideEffect,
+      permission: segment.permission,
+      reason: segment.reason,
+      ruleSuggestion: segment.ruleSuggestion,
+    })),
+    resources: [],
+  };
+}
+
 /**
  * 终端指令执行工具类。
  * 实现 NativeTool 契约，并通过工作区路径校验、权限策略与 Shell 执行计划完成命令执行。
@@ -118,7 +140,7 @@ class BaseShellTool implements NativeTool {
 
   /**
    * 构造带配置上下文的 ShellExecutionPlan。
-   * 统一注入当前默认 shell family，避免 checkSafety 与 execute 各自漂移。
+   * 统一注入当前默认 shell family，避免权限判断与执行阶段各自漂移。
    *
    * @param command - 原始命令文本
    * @param rawShellKind - 调用方传入的 shellKind
@@ -131,141 +153,6 @@ class BaseShellTool implements NativeTool {
   }
 
   /**
-   * 异步或同步审查终端执行调用的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @param sessionContext - 可选的会话上下文
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    const command = args.command;
-    if (typeof command !== 'string') {
-      return { status: 'deny', message: '拒绝执行：command 必须是字符串。' };
-    }
-
-    const rawShellKind = this.getShellKind();
-    let plan;
-    try {
-      // 解析 shellKind 为已决议值，供 Guard 层按 shell 语义校验
-      plan = this.createPlan(command, rawShellKind);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '无法解析 shell 执行计划。';
-      return { status: 'deny', message };
-    }
-    const resolvedShellKind = plan.shellKind;
-
-    // shellKind 是否由模型显式指定（非 auto 解析）：显式指定时不进行自动剥壳
-    const isExplicitShell = rawShellKind !== 'auto';
-    const unboxShellKind = isExplicitShell ? resolvedShellKind : undefined;
-
-    // 优先解包，供后续副作用分类使用
-    const unboxedCmd = unboxNestedCommand(command, unboxShellKind).trim();
-
-    // 0a. 硬红线检查优先级最高
-    if (isHardlineDangerous(command, resolvedShellKind)) {
-      return { status: 'deny', message: 'BLOCKED (Hardline Blocklist): 拒绝执行毁灭性系统破坏命令。', operation: { planSideEffect: 'hardline', riskReason: '', operationCategory: 'command-execute', summary: '', resources: [] } };
-    }
-
-    // 0b. 构建可信副作用分类（planSideEffect），供策略层统一决策
-    let planSideEffect: PlanSideEffect;
-
-    // 可证明安全的原子只读命令
-    if (isPlanSafeCommand(command, resolvedShellKind)) {
-      planSideEffect = isSensitiveReadCommand(unboxedCmd, resolvedShellKind)
-        ? 'sensitive-read'
-        : 'read';
-    } else if (containsDangerousWriteToken(unboxedCmd, resolvedShellKind)) {
-      // 0c. 危险写倾向命令
-      planSideEffect = 'write';
-    } else {
-      // 0d. 无法确定副作用的命令（复合命令、未知结构等）
-      planSideEffect = 'unknown';
-    }
-
-    // 优先从 Session 取得工作模式，否则回退到全局备用缺省值（用以向下兼容测试流）
-    const permissionMode = sessionContext?.getPermissionMode() ?? 'default';
-
-    // 3. bypassPermissions 模式直接放行；硬红线已在前置检查中拦截。
-    if (permissionMode === 'bypassPermissions') {
-      return {
-        status: 'pass',
-        operation: { planSideEffect, riskReason: '', operationCategory: 'command-execute', summary: '', resources: [] }
-      };
-    }
-
-    let needApproval = true;
-
-    // 4. Auto 模式且属于非高危写动作命令，进行已授权白名单的前缀校验
-    // 关键改动：安全评级判定前也先解包剥壳，以防解释器外壳导致只读规则评级失效
-    const isDangerous = containsDangerousWriteToken(unboxedCmd, resolvedShellKind);
-    if (!isDangerous && permissionMode === 'auto') {
-      // 校验命令行是否命中白名单规则
-      const allowed = sessionContext ? sessionContext.getSecurityAllowlist() : loadAllowedCommands();
-      const isAllowed = allowed.some((rule: string) => {
-        if (rule.endsWith(':*')) {
-          const prefix = rule.slice(0, -2);
-          return unboxedCmd.startsWith(prefix);
-        }
-        return unboxedCmd === rule;
-      });
-
-      if (isAllowed) {
-        needApproval = false;
-      }
-    }
-
-    if (needApproval) {
-      const safePrefix = extractSafePrefix(command) ?? undefined;
-
-      // shell family 审批知情展示
-      const shellFamilyLabel =
-        resolvedShellKind === 'posix' ? 'POSIX (bash/sh)' :
-        resolvedShellKind === 'powershell' ? 'PowerShell' :
-        resolvedShellKind === 'cmd' ? 'CMD' : resolvedShellKind;
-      const shellFamilyHint = rawShellKind === 'auto'
-        ? `（已自动选择 ${shellFamilyLabel} 语义）`
-        : `（已显式指定 ${shellFamilyLabel} 语义）`;
-
-      // 从解包命令中提取根命令（第一个非选项 token），构建结构化操作族资源
-      const rootCommand = unboxedCmd.split(/\s+/).find(p => p.length > 0 && !p.startsWith('-')) || '';
-      const commandResources: import('../../../../ports/shared/safety-resource.js').SafetyResource[] = [];
-      if (rootCommand) {
-        commandResources.push({
-          kind: 'command-operation',
-          shellKind: resolvedShellKind,
-          rootCommand,
-          paramPattern: safePrefix ?? undefined,
-        });
-      }
-      if (safePrefix) {
-        commandResources.push({ kind: 'command-prefix', prefix: safePrefix });
-      }
-
-      // 知情告知融合：当解包内核与原始外壳命令不一致时，展示披露比对信息（改用单引号包裹防止引号嵌套的视觉混乱）
-      const message = unboxedCmd !== command.trim()
-        ? `智能体试图在终端执行未授权命令。外壳包装: '${command.trim()}'，实际执行的核心命令为: '${unboxedCmd}'。Shell 语义: ${shellFamilyLabel}`
-        : `智能体试图在终端执行写倾向或未识别命令: '${command}'。${shellFamilyHint}`;
-
-      const operation: SafetyOperation = {
-        resources: commandResources,
-        riskReason: message,
-        operationCategory: 'command-execute',
-        summary: message,
-        planSideEffect
-      };
-
-      return {
-        status: 'suspend',
-        message,
-        safePrefix,
-        operation
-      };
-    }
-
-    return { status: 'pass', operation: { planSideEffect, riskReason: '', operationCategory: 'command-execute', summary: '', resources: [] } };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 只执行工具专属的安全检查（硬红线、只读/写判定），
    * 不处理 PermissionMode 之外的模式逻辑——统一策略由 ToolPermissionService 处理。
@@ -275,7 +162,7 @@ class BaseShellTool implements NativeTool {
    */
   checkPermissions(
     args: Record<string, unknown>,
-  ): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
+  ): ToolPermissionCheckResult {
     const command = args.command;
     if (typeof command !== 'string') {
       return { kind: 'deny', decisionReason: 'command 必须是字符串' };
@@ -293,82 +180,57 @@ class BaseShellTool implements NativeTool {
     }
 
     const resolvedShellKind = plan.shellKind;
-    const isExplicitShell = rawShellKind !== 'auto';
-    const unboxShellKind = isExplicitShell ? resolvedShellKind : undefined;
-    const unboxedCmd = unboxNestedCommand(command, unboxShellKind).trim();
+
+    // 统一分析命令，确保权限决策与执行阶段使用相同的子命令结果。
+    const commandAnalysis = analyzeShellCommand(command, resolvedShellKind);
+    const planSideEffect = commandAnalysis.sideEffect;
+    const evidence = createPermissionEvidence(commandAnalysis);
 
     // 硬红线检查（工具级 deny）
-    if (isHardlineDangerous(command, resolvedShellKind)) {
-      return { kind: 'deny', decisionReason: '拒绝执行毁灭性系统破坏命令' };
-    }
-
-    // 可证明安全的只读命令 → allow
-    const isReadSafe = isPlanSafeCommand(command, resolvedShellKind)
-      && !isSensitiveReadCommand(unboxedCmd, resolvedShellKind);
-    if (isReadSafe) {
-      return { kind: 'allow', decisionReason: '安全的只读命令' };
-    }
-
-    // 敏感读取 → ask
-    if (isPlanSafeCommand(command, resolvedShellKind) && isSensitiveReadCommand(unboxedCmd, resolvedShellKind)) {
-      return { kind: 'ask', message: '该命令可能读取敏感信息', decisionReason: '敏感只读命令' };
-    }
-
-    // 写倾向命令 → ask
-    if (containsDangerousWriteToken(unboxedCmd, resolvedShellKind)) {
-      return { kind: 'ask', message: `执行写操作命令: ${command}`, decisionReason: '写倾向命令' };
-    }
-
-    // 无法确定副作用的命令 → passthrough，由 ToolPermissionService 处理
-    return { kind: 'passthrough' };
-  }
-
-  /**
-   * 精化终端命令的实际副作用。
-   * 复用 checkSafety 阶段的同构 Plan 安全判定，避免审批判定与 effect 判定漂移。
-   * 已通过 Plan 安全判定的原子只读命令返回 read；其他获准执行的命令返回 unknown。
-   *
-   * @param args - 原始工具调用参数
-   * @param result - 工具执行结果文本
-   * @param error - 可选的执行异常
-   * @returns 精化后的 effect，或 undefined 表示由默认推导器决定
-   */
-  resolveExecutionEffect?(
-    args: Record<string, unknown>,
-    result?: string,
-    error?: Error
-  ): ToolExecutionEffect | undefined {
-    const command = args.command;
-    if (typeof command !== 'string') {
-      return undefined; // 无法判定，交由默认推导器
-    }
-    const rawShellKind = this.getShellKind();
-    let resolvedShellKind: ShellKind;
-    try {
-      const plan = this.createPlan(command, rawShellKind as ShellKind);
-      resolvedShellKind = plan.shellKind;
-    } catch {
-      return undefined;
-    }
-
-    // 复用同一套 isPlanSafeCommand 判定，防止正则漂移
-    if (isPlanSafeCommand(command, resolvedShellKind)) {
+    if (planSideEffect === 'hardline') {
       return {
-        kind: 'read',
-        executionStarted: true,
-        completed: !error,
-        resources: [],
-        reason: 'plan_safe_command'
+        kind: 'deny',
+        decisionReason: commandAnalysis.riskReason || '拒绝执行毁灭性系统破坏命令',
+        evidence,
       };
     }
 
-    // 非 Plan 安全但已获准执行的命令，保守返回 unknown
+    // 当前阶段无法可靠分析的结构一律拒绝执行。
+    if (commandAnalysis.parseStatus !== 'parsed') {
+      return { kind: 'deny', decisionReason: commandAnalysis.riskReason, evidence };
+    }
+
+    // 所有子命令均为普通只读时 → allow
+    if (planSideEffect === 'read') {
+      return { kind: 'allow', decisionReason: '安全的只读命令', evidence };
+    }
+
+    // 敏感读取 → ask
+    if (planSideEffect === 'sensitive-read') {
+      return {
+        kind: 'ask',
+        message: '该命令可能读取敏感信息',
+        decisionReason: '敏感只读命令',
+        evidence,
+      };
+    }
+
+    // 写倾向命令 → ask
+    if (planSideEffect === 'write') {
+      return {
+        kind: 'ask',
+        message: `执行写操作命令: ${command}`,
+        decisionReason: commandAnalysis.riskReason || '写倾向命令',
+        evidence,
+      };
+    }
+
+    // 无法确定副作用的原子命令明确进入 ask，不允许其他层重新分析。
     return {
-      kind: 'unknown',
-      executionStarted: true,
-      completed: !error,
-      resources: [],
-      reason: 'legacy_fallback'
+      kind: 'ask',
+      message: `无法确定命令副作用: ${command}`,
+      decisionReason: commandAnalysis.riskReason || '未知命令副作用',
+      evidence,
     };
   }
 
@@ -394,14 +256,11 @@ class BaseShellTool implements NativeTool {
       ? args.watch_patterns.filter((x): x is string => typeof x === 'string')
       : undefined;
 
-    // 0. 生成 ShellExecutionPlan（shellKind 在 checkSafety 阶段已决议，此处保持一致性）
+    // 0. 生成 ShellExecutionPlan；固定 Shell 语义必须与权限证据保持一致。
     const rawShellKind = this.getShellKind();
     const plan = this.createPlan(command, rawShellKind);
-    const isExplicitShell = rawShellKind !== 'auto';
-    const guardShellKind = isExplicitShell ? plan.shellKind : undefined;
-
-    // 1. 安全网关：校验复合拼接符与命令注入风险（仅模型显式指定 shell 时按该 shell 语义校验）
-    validateCommand(command, guardShellKind);
+    // 1. 安全网关：使用已决议 Shell 语义验证统一分析结论。
+    validateCommand(command, plan.shellKind);
 
     // 2. 沙箱隔离：校验 cwd 范围并获取规范绝对路径
     const targetCwd = validateCwd(cwd);

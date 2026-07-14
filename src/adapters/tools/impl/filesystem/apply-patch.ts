@@ -1,11 +1,8 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { applyPatch, createPatch } from 'diff';
-import { resolve } from 'path';
-import { secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import { secureResolveWritePath } from '../base.js';
 import { ReadFileTool } from './file-system.js';
 import type { NativeTool } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
-import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { applyReplacePatch } from './apply-patch-helper.js';
@@ -65,38 +62,6 @@ export class ApplyPatchTool implements NativeTool {
   };
 
   /**
-   * 审查补丁修补调性的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    if (sessionContext?.getPermissionMode() === 'bypassPermissions') {
-      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-edit' as const, summary: '应用补丁', resources: [] } as SafetyOperation };
-    }
-    const targetPath = args.targetPath;
-    if (typeof targetPath !== 'string') {
-      return { status: 'deny', message: 'targetPath 必须是字符串' };
-    }
-    let isOutOfSandbox = false;
-    let resolvedPath = '';
-    try {
-      secureResolveWritePath(targetPath, sessionContext);
-    } catch {
-      isOutOfSandbox = true;
-      const rootDir = getAuthorizedDir();
-      resolvedPath = getPhysicalRealPath(resolve(rootDir!, targetPath));
-    }
-    return {
-      status: 'suspend',
-      message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${targetPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : [],
-      operation: { planSideEffect: 'write', riskReason: `补丁操作: ${targetPath}`, operationCategory: 'file-edit' as const, summary: `应用补丁 ${targetPath}`, resources: isOutOfSandbox ? [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }] : [] }
-    };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 补丁操作由 ToolPermissionService 统一决策。
    */
@@ -105,8 +70,18 @@ export class ApplyPatchTool implements NativeTool {
     if (typeof targetPath !== 'string') {
       return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
     }
-    // 补丁是写操作，让 ToolPermissionService 通过规则和模式处理
-    return { kind: 'passthrough' };
+    // 补丁始终会修改目标文件，工具层提供完整写证据并请求统一权限服务裁决。
+    return {
+      kind: 'ask',
+      message: `应用补丁到 ${targetPath}`,
+      decisionReason: '补丁工具会修改文件内容',
+      evidence: {
+        operationCategory: 'file-edit',
+        sideEffect: 'write',
+        riskReason: `补丁操作: ${targetPath}`,
+        resources: [{ kind: 'path', access: 'write', normalizedPath: targetPath }],
+      },
+    };
   }
 
   /**

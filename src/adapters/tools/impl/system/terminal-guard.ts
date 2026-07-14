@@ -8,113 +8,33 @@
 
 import { resolve, sep, isAbsolute } from 'path';
 import { getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import { analyzeShellCommand } from './command-analysis/index.js';
 import type { ResolvedShellKind } from './terminal-types.js';
 
-/**
- * 基于硬编码的正则表达式，防止复合命令（反重定向、反命令拼接注入等）
- * 只允许原子的终端命令执行
- */
+/** 复合命令分析使用的历史结构特征正则，保留导出供旧调用方诊断。 */
 export const COMPOSITE_REGEX = /[;&|<>^%`\r\n]|\$\(|\\\(/;
 
-/** 安全网关检测的单字符拼接与重定向元字符集合 */
+/** 复合命令分析使用的单字符操作符集合。 */
 export const COMPOSITE_CHARS = [';', '&', '|', '<', '>', '^', '%', '\r', '\n'];
 
 /**
- * 校验待执行命令的结构安全性
- * 内部首先自动调用 unboxNestedCommand 进行防御性解包，并进行引号感知的拼接注入扫描。
- * 当显式传入 shellKind 时，基于已决议的 shell 语义执行校验，不再由 Guard 自行猜壳。
+ * 校验待执行命令的结构安全性。
+ * 校验只消费统一命令分析结果，不重复推断复合结构和副作用。
  * @param command - 待校验的原始命令行文本
  * @param shellKind - 可选的已决议 shell family，传入后按对应 shell 语义校验
  */
 export function validateCommand(command: string, shellKind?: ResolvedShellKind): void {
-  const unboxedCmd = unboxNestedCommand(command, shellKind).trim();
-  
-  // 0. Git 变更写操作绝对阻断检验
-  if (isDangerousGitCommand(unboxedCmd)) {
-    throw new Error('拒绝执行：严禁执行除只读查看外的任何 Git 变更操作。');
-  }
-  
-  // 1. 引号平衡性前置检验（防不平衡单/双引号闭合逃逸）
-  let doubleQuoteCount = 0;
-  let singleQuoteCount = 0;
-  let escaped = false;
-  
-  for (let i = 0; i < unboxedCmd.length; i++) {
-    const char = unboxedCmd[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (char === '"') {
-      doubleQuoteCount++;
-    } else if (char === "'") {
-      singleQuoteCount++;
-    }
-  }
-  
-  if (doubleQuoteCount % 2 !== 0 || singleQuoteCount % 2 !== 0) {
-    throw new Error('拒绝执行：检测到不平衡的引号结构，可能存在注入绕过风险。');
+  const analysis = analyzeShellCommand(command, shellKind ?? 'powershell');
+
+  if (analysis.sideEffect === 'hardline') {
+    const gitWrite = analysis.riskSignals.some(signal => signal.code === 'hardline.git-write');
+    throw new Error(gitWrite
+      ? '拒绝执行：严禁执行除只读查看外的任何 Git 变更操作。'
+      : `拒绝执行：${analysis.riskReason}`);
   }
 
-  // 2. 逐字符状态机遍历
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
-  escaped = false;
-
-  for (let i = 0; i < unboxedCmd.length; i++) {
-    const char = unboxedCmd[i];
-
-    // 处理转义字符
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-
-    if (char === '\\') {
-      if (!inSingleQuote) {
-        // 如果在 unquoted 下，且下一个字符是 '('，则属于被禁止的命令替换转义 '\('
-        if (!inDoubleQuote && i + 1 < unboxedCmd.length && unboxedCmd[i + 1] === '(') {
-          throw new Error('拒绝执行：检测到非法的转义命令替换符 \\(。');
-        }
-        escaped = true;
-        continue;
-      }
-    }
-
-    // 处理引号状态切换
-    if (char === "'" && !inDoubleQuote) {
-      inSingleQuote = !inSingleQuote;
-      continue;
-    }
-    if (char === '"' && !inSingleQuote) {
-      inDoubleQuote = !inDoubleQuote;
-      continue;
-    }
-
-    // 安全设计决策：反引号在双引号内（如 "echo `whoami`"）在 Bash/PowerShell 中仍然会被当作命令替换执行，
-    // 因此只有在单引号内反引号才是安全字面量。此处只要不在单引号内，遇到反引号一律强制阻断拦截。
-    if (char === '`' && !inSingleQuote) {
-      throw new Error("拒绝执行：检测到非法的反引号命令替换符 '`'。");
-    }
-
-    // 若当前处于任何引号包裹中，其内的拼接符均安全避让
-    if (inSingleQuote || inDoubleQuote) {
-      continue;
-    }
-
-    // 处于 unquoted 状态下，拦截命令替换 $(
-    if (char === '$' && i + 1 < unboxedCmd.length && unboxedCmd[i + 1] === '(') {
-      throw new Error('拒绝执行：检测到非法的命令替换符 $(。');
-    }
-
-    // 检测单字符拼接/重定向符：; & | < > ^ % \r \n (使用模块常量 COMPOSITE_CHARS 以消除迭代内存分配)
-    if (COMPOSITE_CHARS.includes(char)) {
-      throw new Error(`拒绝执行：检测到非法的复合连接符或重定向符 '${char}'。终端工具仅支持原子命令。`);
-    }
+  if (analysis.parseStatus !== 'parsed') {
+    throw new Error(`拒绝执行：${analysis.riskReason}`);
   }
 }
 
@@ -406,28 +326,21 @@ export function isHardlineDangerous(command: string, shellKind?: ResolvedShellKi
  * @param shellKind - 可选的已决议 shell family；未提供时默认按 PowerShell 语义判定
  * @returns 若命令可静态证明为安全的只读查询则返回 true，否则返回 false
  */
-export function isPlanSafeCommand(command: string, shellKind?: ResolvedShellKind): boolean {
-  const effectiveShellKind = shellKind ?? 'powershell';
-  const commandForSafetyCheck = command.trim();
-
-  // 1. 只允许当前已决议 shell family 下真实可执行的只读命令进入审批
-  if (checkCommandSafetyLevel(commandForSafetyCheck, effectiveShellKind) !== 'allow') {
-    return false;
-  }
-
-  // 2. 排除毁灭级命令（isHardlineDangerous 内部已跨所有 shell family 检查）
-  if (isHardlineDangerous(command, effectiveShellKind)) {
-    return false;
-  }
-
-  // 3. 复用执行期结构校验，确保引号感知与原子命令约束完全同构
-  try {
-    validateCommand(commandForSafetyCheck, effectiveShellKind);
-  } catch {
-    return false;
-  }
-
-  return true;
+/**
+ * 判断完整命令是否属于安全只读操作。
+ * 复合命令只有在所有子命令均为安全读取时才会返回 true。
+ *
+ * @param command - 待判定的原始命令行文本
+ * @param shellKind - 可选的已决议 shell family；未提供时按 PowerShell 语义判定
+ * @returns 是否可静态证明为只读操作
+ */
+export function isPlanSafeCommand(
+  command: string,
+  shellKind?: ResolvedShellKind,
+): boolean {
+  const analysis = analyzeShellCommand(command, shellKind ?? 'powershell');
+  return analysis.parseStatus === 'parsed'
+    && (analysis.sideEffect === 'read' || analysis.sideEffect === 'sensitive-read');
 }
 
 /**

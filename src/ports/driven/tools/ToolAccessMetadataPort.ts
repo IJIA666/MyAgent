@@ -21,7 +21,7 @@ export interface ToolAccessMetadata {
 /**
  * 资源提取器类型定义。
  * 从工具调用的原始参数中重新计算原子资源列表，
- * 用于 ApprovalPolicy 交叉校验工具层报告的 SafetyOperation.resources。
+ * 用于统一权限服务生成并校验外部工具的资源 evidence。
  */
 export type ResourceExtractor = (args: Record<string, unknown>) => SafetyResource[];
 
@@ -48,7 +48,7 @@ export interface ToolAccessMetadataPort {
 
   /**
    * 获取资源提取器注册表的只读副本。
-   * 供 ApprovalPolicy 在装配阶段注入使用。
+   * 供统一权限服务在装配阶段注入使用。
    *
    * @returns 工具名 → 提取器的 Map 副本
    */

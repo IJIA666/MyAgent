@@ -19,9 +19,10 @@ describe('GetCurrentTimeTool 单元测试', () => {
     expect(toolInstance.definition.function.name).toBe('get_current_time');
   });
 
-  test('2. 工具安全审查测试', () => {
-    const safetyResult = toolInstance.checkSafety();
-    expect(safetyResult.status).toBe('pass');
+  test('2. 工具权限证据测试', () => {
+    const permissionResult = toolInstance.checkPermissions();
+    expect(permissionResult.kind).toBe('allow');
+    expect(permissionResult.evidence?.sideEffect).toBe('read');
   });
 
   test('3. 工具执行逻辑与返回结构测试', () => {

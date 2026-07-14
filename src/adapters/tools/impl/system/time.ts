@@ -1,6 +1,4 @@
 import type { NativeTool } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
-import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 
 /**
  * 原生高精度当前系统时间获取工具。
@@ -28,21 +26,20 @@ export class GetCurrentTimeTool implements NativeTool {
   };
 
   /**
-   * 审查工具调用的安全性。
-   * 由于是无副作用的只读时间查询工具，安全检查直接放行。
-   *
-   * @returns 安全评估结论
-   */
-  checkSafety(): SafetyCheckResult {
-    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'command-execute' as const, summary: '获取当前时间', resources: [] } as SafetyOperation };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 时间查询是安全的只读操作。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'allow', decisionReason: '时间查询只读操作' };
+    return {
+      kind: 'allow',
+      decisionReason: '时间查询只读操作',
+      evidence: {
+        operationCategory: 'time-read',
+        sideEffect: 'read',
+        riskReason: '仅读取当前系统时间',
+        resources: [],
+      },
+    };
   }
 
   /**

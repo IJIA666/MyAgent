@@ -4,7 +4,6 @@ import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { HookEventName } from '../plugins/plugin-types.js';
 import { FileLockManager } from '../security/FileLockManager.js';
 import { FileBackupManager } from '../security/FileBackupManager.js';
-import { ApprovalEffectApplier } from './approval-effect-applier.js';
 import { InteractionRequestError, type InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
 import type { SessionContext, StoredChatMessage } from '../../domain/context.js';
@@ -54,7 +53,7 @@ export interface ToolCallDescriptor {
 /**
  * 工具调用编排协作者。
  *
- * 封装单次工具调用的完整生命周期：参数解析 → BeforeTool 管线 → 审批效果提交 →
+ * 封装单次工具调用的完整生命周期：参数解析 → BeforeTool 管线 →
  * 文件锁/备份 → 实际执行 → AfterTool 管线 → tail call 级联 → capability 消费 → 错误恢复。
  *
  * 当前仅支持一级 tail call 级联（即 AfterTool 插件注入的单个 `tailToolCallRequest`）。
@@ -66,14 +65,12 @@ export class ToolCallOrchestrator {
   private pluginRegistry: PluginRegistry;
   private context: SessionContext;
   private interactionPort?: InteractionPort;
-  private approvalEffectApplier: ApprovalEffectApplier;
 
   /**
    * @param toolRegistry - 工具注册端口，用于获取工具元数据与执行工具
    * @param toolDispatcher - 工具调度器，用于大输出截断与 JIT 规则注入
    * @param pluginRegistry - 插件注册管理器，用于获取 BeforeTool/AfterTool 管线插件
    * @param context - 当前会话上下文
-   * @param approvalEffectApplier - 审批效果提交协作者
    * @param interactionPort - 可选的人机对话交互端口
    */
   constructor(
@@ -81,14 +78,12 @@ export class ToolCallOrchestrator {
     toolDispatcher: ToolDispatcher,
     pluginRegistry: PluginRegistry,
     context: SessionContext,
-    approvalEffectApplier: ApprovalEffectApplier,
     interactionPort?: InteractionPort
   ) {
     this.toolRegistry = toolRegistry;
     this.toolDispatcher = toolDispatcher;
     this.pluginRegistry = pluginRegistry;
     this.context = context;
-    this.approvalEffectApplier = approvalEffectApplier;
     this.interactionPort = interactionPort;
   }
 
@@ -109,7 +104,7 @@ export class ToolCallOrchestrator {
    *
    * @param index - 工具在并发数组中的原始索引，用于结果排序
    * @param toolCall - LLM 返回的工具调用描述符
-   * @param signal - 并发控制超时 AbortSignal
+   * @param signal - 上游主动取消信号；执行超时由 Gateway 在审批完成后启动
    * @param pushSuspendEvent - 实时广播 suspend 事件的回调（由 AgentLoop 的事件队列桥接）
    * @returns 工具执行结果，包含事件列表、工具消息、写操作标记等
    */
@@ -215,26 +210,6 @@ export class ToolCallOrchestrator {
         };
       }
 
-      // 提交审批效果（委托 ApprovalEffectApplier）
-      if (
-        beforeToolResult.control.action === 'continue' &&
-        beforeToolResult.pendingGrant &&
-        beforeToolResult.pendingGrant.toolCallId === toolCall.id
-      ) {
-        this.approvalEffectApplier.applyPendingGrant(
-          beforeToolResult.pendingGrant, this.context, functionArgs
-        );
-      }
-
-      if (
-        beforeToolResult.control.action === 'continue' &&
-        beforeToolResult.persistentRuleEffect
-      ) {
-        this.approvalEffectApplier.applyPersistentRuleEffect(
-          beforeToolResult.persistentRuleEffect
-        );
-      }
-
       const actualArgs = beforeToolResult.toolCall?.arguments ?? functionArgs;
       taskEvents.push({ type: 'tool_call_start', functionName, functionArgs: actualArgs });
 
@@ -269,6 +244,8 @@ export class ToolCallOrchestrator {
 
       let toolResult = '';
       let outputResult: { content: string; originalPath?: string; isTruncated: boolean; } | null = null;
+      // 超时值只向 Gateway 传递，Gateway 在权限审批完成后才创建计时信号。
+      const executionTimeoutMs = this.context.appConfig?.runtimeLimits?.toolTimeoutMs ?? 30000;
       try {
         for (const p of pathsToLock) {
           const release = await FileLockManager.getInstance().acquireLock(p, lockType);
@@ -280,7 +257,7 @@ export class ToolCallOrchestrator {
         }
 
         const outcome = await this.toolRegistry.callTool(
-          functionName, actualArgs, this.context, this.interactionPort, signal, toolCall.id
+          functionName, actualArgs, this.context, this.interactionPort, signal, toolCall.id, executionTimeoutMs
         );
         // 使用 outcome 中的 effect（工具可能已精化），供后续质量门禁消费
         if (outcome.effect) {
@@ -322,7 +299,7 @@ export class ToolCallOrchestrator {
 
       if (afterToolResult.control.action === 'abort') {
         // AfterTool abort 不得抹去已发生的 write/unknown effect——工具已经执行完毕
-        // 仅当之前没有更精确的 effect（来自 tool.resolveExecutionEffect）时才回退默认推导
+        // 仅当权限 evidence 未产生有效 effect 时才回退到保守默认推导。
         if (resolvedEffect.kind === 'none' || resolvedEffect.reason === 'no_execution') {
           resolvedEffect = deriveDefaultToolExecutionEffect(toolSecurityCategory, executionStarted, true);
         }
@@ -374,30 +351,10 @@ export class ToolCallOrchestrator {
           throw new Error(`尾随工具调用被插件拦截：${tailBeforeToolResult.control.reason ?? '安全策略限制'}`);
         }
 
-        // 提交 tail call 审批效果（委托 ApprovalEffectApplier）
-        if (
-          tailBeforeToolResult.control.action === 'continue' &&
-          tailBeforeToolResult.pendingGrant &&
-          tailBeforeToolResult.pendingGrant.toolCallId === tailCallId
-        ) {
-          this.approvalEffectApplier.applyPendingGrant(
-            tailBeforeToolResult.pendingGrant, this.context, tailCall.args
-          );
-        }
-
-        if (
-          tailBeforeToolResult.control.action === 'continue' &&
-          tailBeforeToolResult.persistentRuleEffect
-        ) {
-          this.approvalEffectApplier.applyPersistentRuleEffect(
-            tailBeforeToolResult.persistentRuleEffect
-          );
-        }
-
         let tailResultRaw: unknown;
         try {
           const tailOutcome = await this.toolRegistry.callTool(
-            tailCall.name, tailCall.args, this.context, this.interactionPort, signal, tailCallId
+            tailCall.name, tailCall.args, this.context, this.interactionPort, signal, tailCallId, executionTimeoutMs
           );
           tailResultRaw = tailOutcome.value;
         } finally {

@@ -8,6 +8,8 @@ import { PermissionRuleStore } from '../../src/core/domain/permissions/rule-stor
 import { ToolPermissionService } from '../../src/core/domain/permissions/tool-permission-service.js';
 import { adaptOpenAiToolCall, batchCheckOpenAiToolCalls } from '../../src/core/domain/permissions/openai-adapter.js';
 import type { OpenAiToolCall } from '../../src/core/domain/permissions/openai-adapter.js';
+import { BashTool } from '../../src/adapters/tools/impl/system/terminal.js';
+import type { ToolExecutionContext } from '../../src/core/domain/permissions/tool-permission-service.js';
 
 describe('MCP 权限规则', () => {
   it('mcp__server 级规则应匹配该 server 的所有工具', () => {
@@ -112,5 +114,51 @@ describe('tail call 权限验证', () => {
     const results = await batchCheckOpenAiToolCalls(calls, service, 'default');
     expect(results.get('c1')?.kind).toBe('allow');
     expect(results.get('c2')?.kind).toBe('deny');
+  });
+});
+
+describe('Terminal 权限证据', () => {
+  it('应将复合命令的有序子命令证据传入最终决策', async () => {
+    const store = new PermissionRuleStore();
+    const service = new ToolPermissionService({ ruleStore: store });
+    const tool = new BashTool();
+    const checker = {
+      checkPermissions(input: ToolExecutionContext) {
+        return tool.checkPermissions(input.args);
+      },
+    };
+
+    const result = await service.checkPermissions(
+      'Bash',
+      { command: 'cat package.json; pwd' },
+      'default',
+      checker,
+    );
+
+    expect(result.kind).toBe('allow');
+    expect(result.evidence?.parseStatus).toBe('parsed');
+    expect(result.evidence?.subcommands?.map(item => item.connectorBefore)).toEqual([undefined, ';']);
+    expect(result.evidence?.sideEffect).toBe('read');
+  });
+
+  it('任一写子命令应使整体进入 ask', async () => {
+    const store = new PermissionRuleStore();
+    const service = new ToolPermissionService({ ruleStore: store });
+    const tool = new BashTool();
+    const checker = {
+      checkPermissions(input: ToolExecutionContext) {
+        return tool.checkPermissions(input.args);
+      },
+    };
+
+    const result = await service.checkPermissions(
+      'Bash',
+      { command: 'cat package.json; touch marker.txt' },
+      'default',
+      checker,
+    );
+
+    expect(result.kind).toBe('ask');
+    expect(result.evidence?.sideEffect).toBe('write');
   });
 });

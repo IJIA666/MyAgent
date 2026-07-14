@@ -67,23 +67,17 @@ describe('新增原生内置工具单元测试', () => {
     // 1. 越权拦截（execute 内 secureResolveWritePath 拒绝越界路径）
     await expect(tool.execute({ targetPath: '../../outside.txt' })).rejects.toThrow('拒绝访问');
 
-    // 2. checkSafety 识别越界路径并返回 resources（审批已收敛到插件层）
-    const safetyResult = tool.checkSafety({ targetPath: 'delete_me.txt' });
-    // 沙箱内路径在 Auto 模式下应挂起（非 YOLO 模式）
-    expect(safetyResult.status).toBe('suspend');
-    if (safetyResult.resources && safetyResult.resources.length > 0) {
-      const r = safetyResult.resources[0] as { kind: 'path'; access: 'read' | 'write'; normalizedPath: string };
-      expect(r.kind).toBe('path');
-      expect(r.access).toBe('write');
-    }
+    // 2. 删除操作必须请求授权并携带目标路径写证据。
+    const permissionResult = tool.checkPermissions({ targetPath: 'delete_me.txt' });
+    expect(permissionResult.kind).toBe('ask');
+    expect(permissionResult.evidence?.sideEffect).toBe('write');
+    expect(permissionResult.evidence?.resources?.[0]).toMatchObject({ kind: 'path', access: 'write' });
 
-    // 3. 直接执行（不再内部调用 waitApproval，审批由插件管线前置完成）
+    // 3. 工具执行本身不重复请求授权，统一网关负责前置权限流程。
     expect(existsSync(filePath)).toBe(true);
     const deleteRes = await tool.execute({ targetPath: 'delete_me.txt' });
     expect(deleteRes).toContain('路径删除成功');
     expect(existsSync(filePath)).toBe(false);
-
-    // 3. 拒绝（deny）已收敛到 HumanApprovalPlugin 前置管线，此处不再内联测试
   });
 
   // ==========================================

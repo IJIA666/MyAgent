@@ -18,34 +18,9 @@ import {
   savePermissionMode,
   loadPermissionMode
 } from '../../../src/adapters/tools/impl/system/terminal.js';
+import { analyzeShellCommand } from '../../../src/adapters/tools/impl/system/command-analysis/index.js';
 import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand, detectAdvisoryWarnings } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
-import { SessionContext } from '../../../src/core/domain/context.js';
 import type { ToolPermissionCheckResult } from '../../../src/core/domain/permissions/permission-types.js';
-
-// 根据当前公开 Shell 工具选择可用的原子只读命令，避免测试依赖旧的动态 shellKind 参数。
-const platformReadCase = process.platform === 'win32'
-  ? { command: 'Get-Content package.json', shellKind: 'powershell' as const }
-  : { command: 'ls /tmp', shellKind: 'posix' as const };
-
-// 为两个公开 Shell 提供等价的只读命令。
-const platformReadVariantCase = process.platform === 'win32'
-  ? { command: 'Get-PSDrive C', shellKind: 'powershell' as const }
-  : { command: 'cat package.json', shellKind: 'posix' as const };
-
-// 为显式 PowerShell 只读用例提供非 Windows 平台上的等价 Shell。
-const platformPowerShellReadCase = process.platform === 'win32'
-  ? { command: 'Get-PSDrive C', shellKind: 'powershell' as const }
-  : { command: 'pwd', shellKind: 'posix' as const };
-
-// 根据当前公开 Shell 选择复合命令，验证复合命令不能被识别为只读。
-const platformCompositeCase = process.platform === 'win32'
-  ? { command: 'Get-Content a.txt | Select-String "txt"', shellKind: 'powershell' as const }
-  : { command: 'cat a.txt | grep "txt"', shellKind: 'posix' as const };
-
-// 根据当前公开 Shell 选择非只读命令，验证安全分类会降级为 write 或 unknown。
-const platformWriteCommands = process.platform === 'win32'
-  ? ['Remove-Item file.txt', 'New-Item -ItemType Directory newdir']
-  : ['rm file.txt', 'mkdir newdir'];
 
 describe('Terminal Tool 单元测试', () => {
   const mockRootDir = mkdtempSync(join(tmpdir(), 'authorized-terminal-test-'));
@@ -88,18 +63,27 @@ describe('Terminal Tool 单元测试', () => {
     expect(extractSafePrefix('ls')).toBeNull(); // 仅有 Root，无 Subcommand
   });
 
-  test('2. 安全硬编码正则阻断拦截复合指令', async () => {
-    // 带拼接符 & 的命令
-    await expect(executeCommandToolInstance.execute({ command: 'echo 1 & echo 2' })).rejects.toThrow('拒绝执行');
+  test('2. 只放开阶段 3 已支持的基础复合命令', () => {
+    const supportedCases = [
+      { command: 'cat a.txt; pwd', shellKind: 'posix' as const },
+      { command: 'cat a.txt && pwd', shellKind: 'posix' as const },
+      { command: 'cat a.txt || pwd', shellKind: 'posix' as const },
+      { command: 'Get-Content a.txt; Get-Process', shellKind: 'powershell' as const },
+    ];
+    for (const { command, shellKind } of supportedCases) {
+      expect(() => validateCommand(command, shellKind)).not.toThrow();
+      expect(analyzeShellCommand(command, shellKind).parseStatus).toBe('parsed');
+    }
 
-    // 带管道符 | 的命令
-    await expect(executeCommandToolInstance.execute({ command: 'cat file | grep text' })).rejects.toThrow('拒绝执行');
-
-    // 带重定向符 > 的命令
-    await expect(executeCommandToolInstance.execute({ command: 'echo hello > output.txt' })).rejects.toThrow('拒绝执行');
-
-    // 带换行符的命令
-    await expect(executeCommandToolInstance.execute({ command: 'echo hello\necho world' })).rejects.toThrow('拒绝执行');
+    const unsupportedCases = [
+      { command: 'cat a.txt | grep txt', shellKind: 'posix' as const },
+      { command: 'echo hello > output.txt', shellKind: 'posix' as const },
+      { command: 'Get-Content a.txt | Select-String txt', shellKind: 'powershell' as const },
+    ];
+    for (const { command, shellKind } of unsupportedCases) {
+      expect(() => validateCommand(command, shellKind)).toThrow('拒绝执行');
+      expect(analyzeShellCommand(command, shellKind).parseStatus).toBe('unsupported');
+    }
   });
 
   test('3. 沙箱隔离边界路径校验', async () => {
@@ -166,9 +150,9 @@ describe('Terminal Tool 单元测试', () => {
   });
 
   test('7. 独立安全网关 terminal-guard.ts 细粒度校验测试', () => {
-    // 独立测试正则拦截
-    expect(() => validateCommand('echo 1 & echo 2')).toThrow('拒绝执行');
-    expect(() => validateCommand('cat file | grep text')).toThrow('拒绝执行');
+    // 已支持连接符进入统一分析，未支持复杂结构继续拒绝。
+    expect(() => validateCommand('echo 1; echo 2', 'posix')).not.toThrow();
+    expect(() => validateCommand('cat file | grep text', 'posix')).toThrow('拒绝执行');
     expect(() => validateCommand('ls')).not.toThrow();
 
     // 独立测试 cwd 沙箱边界
@@ -179,34 +163,6 @@ describe('Terminal Tool 单元测试', () => {
     // 正确路径不报错
     const correctPath = validateCwd('src');
     expect(correctPath).toBe(join(mockRootDir, 'src'));
-  });
-
-  test('8. 终端命令副作用分类与底线黑名单拦截测试', () => {
-    const mockSession = new SessionContext();
-
-    // A. 测试未知副作用计划的命令应返回 planSideEffect='unknown' 而非 'read'
-    mockSession.setPermissionMode('plan');
-    // 'npm run dev' 不在只读白名单，非危险写，应分类为 'unknown'
-    const safetyDev = executeCommandToolInstance.checkSafety({ command: 'npm run dev' }, mockSession);
-    expect(safetyDev.operation?.planSideEffect).toBe('unknown');
-    // Plan 策略由 HumanApprovalPlugin 统一决策，终端只报告分类
-    expect(safetyDev.status).toBe('suspend');
-
-    // 只读白名单指令（如 git log），应返回 planSideEffect='read'
-    const safetyLog = executeCommandToolInstance.checkSafety({ command: 'git log' }, mockSession);
-    expect(safetyLog.operation?.planSideEffect).toBe('read');
-
-    // B. 测试底线拦截黑名单 rm -rf /，无论在 YOLO 还是其他模式下都应被绝对拒绝
-    mockSession.setPermissionMode('bypassPermissions');
-    const safetyRm = executeCommandToolInstance.checkSafety({ command: 'rm -rf /' }, mockSession);
-    expect(safetyRm.status).toBe('deny');
-    expect(safetyRm.message).toContain('BLOCKED (Hardline Blocklist)');
-
-    // 即使在没有 SessionContext（退化为全局配置 YOLO）时，也应绝对拦截
-    setPermissionMode('bypassPermissions');
-    const safetyRmGlobal = executeCommandToolInstance.checkSafety({ command: 'rm -rf /' });
-    expect(safetyRmGlobal.status).toBe('deny');
-    expect(safetyRmGlobal.message).toContain('BLOCKED (Hardline Blocklist)');
   });
 
   test('9. unboxNestedCommand 核心功能及 flags 容忍单元测试', () => {
@@ -237,7 +193,7 @@ describe('Terminal Tool 单元测试', () => {
     expect(unboxNestedCommand(withBraceParamsCmd)).toBe(withBraceParamsCmd);
   });
 
-  test('11. 自动初始化、剥壳前缀提取、Auto匹配与挂起弹窗披露测试', () => {
+  test('11. 自动初始化与剥壳前缀提取测试', () => {
     // A. 自动配置初始化测试：因为 beforeEach 把允许命令清空为空数组，
     // 调用 loadAllowedCommands 应自动触发配置初始化，写入并返回默认常用规则
     const defaultLoaded = loadAllowedCommands();
@@ -248,32 +204,14 @@ describe('Terminal Tool 单元测试', () => {
     expect(extractSafePrefix('powershell -Command "npm run build"')).toBe('npm run');
     expect(extractSafePrefix('powershell -ExecutionPolicy Bypass -Command "git add src/index.ts"')).toBe('git add');
 
-    // C. Auto 模式剥壳匹配与放行测试
-    saveAllowedCommands(['git status:*', 'npm run:*']);
-    setPermissionMode('auto');
-
-    const safetyAllowed = executeCommandToolInstance.checkSafety({ command: 'npm run test' });
-    // Auto 分类器尚未接入生产装配，当前仍保留人工审批。
-    expect(safetyAllowed.status).toBe('suspend');
-
-    // D. 审批挂起时的披露信息与对比测试
-    const safetyUnallowed = executeCommandToolInstance.checkSafety({ command: 'npm test' });
-    expect(safetyUnallowed.status).toBe('suspend');
-    expect(safetyUnallowed.message).toContain("npm test");
-
-    // E. 负向场景测试：解包后未命中白名单的拦截与告知行为
-    saveAllowedCommands(['git status:*']); // 只授权 git status
-    const safetyNegative = executeCommandToolInstance.checkSafety({ command: 'npm run lint' });
-    expect(safetyNegative.status).toBe('suspend');
-    expect(safetyNegative.message).toContain("npm run lint");
   });
 
   test('12. 新增防分号、反引号和命令替换注入测试（含引号感知放行）', () => {
-    // A. 基础分号与反引号拼接及命令替换注入拦截（反引号在非单引号下视为命令替换强力阻断）
-    expect(() => validateCommand('echo 1; echo 2')).toThrow('拒绝执行');
-    expect(() => validateCommand('echo 1 `whoami`')).toThrow('拒绝执行');
-    expect(() => validateCommand('echo `feat;fix`')).toThrow('检测到非法的反引号命令替换符');
-    expect(() => validateCommand('echo $(whoami)')).toThrow('拒绝执行');
+    // A. 分号允许进入命令分析；反引号和命令替换仍保持注入阻断。
+    expect(() => validateCommand('echo 1; echo 2', 'posix')).not.toThrow();
+    expect(() => validateCommand('echo 1 `whoami`', 'posix')).toThrow('拒绝执行');
+    expect(() => validateCommand('echo `feat;fix`', 'posix')).toThrow('拒绝执行');
+    expect(() => validateCommand('echo $(whoami)', 'posix')).toThrow('拒绝执行');
     expect(() => validateCommand('echo \\(whoami)')).toThrow('拒绝执行');
 
     // B. 引号感知安全避让放行（只放行单引号与双引号包裹内的分号/安全元字符）
@@ -284,35 +222,30 @@ describe('Terminal Tool 单元测试', () => {
     expect(() => validateCommand('grep "a;b')).toThrow('不平衡的引号结构');
     expect(() => validateCommand("grep 'a;b")).toThrow('不平衡的引号结构');
 
-    // D. 外壳包装下的分号注入（解包后发现 unquoted 分号，应当抛错）
-    expect(() => validateCommand('powershell -Command "dir; whoami"')).toThrow('拒绝执行');
-    expect(() => validateCommand('cmd /c "dir; whoami"')).toThrow('拒绝执行');
+    // D. 嵌套 Shell 会重新解释引号内命令，当前阶段明确拒绝。
+    expect(() => validateCommand('powershell -Command "dir; whoami"', 'powershell')).toThrow('拒绝执行');
+    expect(() => validateCommand('cmd /c "dir & whoami"', 'cmd')).toThrow('拒绝执行');
   });
 
   test('13. 终端 Git 写变更操作绝对硬阻断测试', () => {
-    const mockSession = new SessionContext();
+    // 工具级权限证据必须把 Git 写操作标记为不可降级的 hardline deny。
+    const commitDecision = executeCommandToolInstance.checkPermissions({ command: 'git commit -m "update"' });
+    expect(commitDecision.kind).toBe('deny');
+    expect(commitDecision.evidence?.sideEffect).toBe('hardline');
 
-    // 无论在 YOLO 模式还是其它模式下，git commit 等写操作均应在 checkSafety 中被直接 deny 拦截
-    mockSession.setPermissionMode('bypassPermissions');
-    const safetyCommitYolo = executeCommandToolInstance.checkSafety({ command: 'git commit -m "update"' }, mockSession);
-    expect(safetyCommitYolo.status).toBe('deny');
-    expect(safetyCommitYolo.message).toContain('BLOCKED (Hardline Blocklist)');
-
-    // 在 Auto 模式下也应被绝对拦截
-    mockSession.setPermissionMode('auto');
-    const safetyCheckoutAuto = executeCommandToolInstance.checkSafety({ command: 'git checkout main' }, mockSession);
-    expect(safetyCheckoutAuto.status).toBe('deny');
-    expect(safetyCheckoutAuto.message).toContain('BLOCKED (Hardline Blocklist)');
+    const checkoutDecision = executeCommandToolInstance.checkPermissions({ command: 'git checkout main' });
+    expect(checkoutDecision.kind).toBe('deny');
+    expect(checkoutDecision.evidence?.sideEffect).toBe('hardline');
 
     // validateCommand 物理执行阶段同样直接抛错阻断
     expect(() => validateCommand('git commit -m "update"')).toThrow('严禁执行除只读查看外的任何 Git 变更操作');
     expect(() => validateCommand('git checkout -b branch')).toThrow('严禁执行除只读查看外的任何 Git 变更操作');
     expect(() => validateCommand('git add .')).toThrow('严禁执行除只读查看外的任何 Git 变更操作');
 
-    // 只读的 Git 查看命令应该被安全放行（不属于 Hardline 黑名单，在 YOLO 模式下直接 pass，在 Auto/Plan 模式下按常规则处理）
-    mockSession.setPermissionMode('bypassPermissions');
-    const safetyLogYolo = executeCommandToolInstance.checkSafety({ command: 'git log' }, mockSession);
-    expect(safetyLogYolo.status).toBe('pass'); // YOLO 下只读 git 命令直接通过
+    // 只读 Git 查看命令不属于 hardline，并携带 read evidence。
+    const logDecision = executeCommandToolInstance.checkPermissions({ command: 'git log' });
+    expect(logDecision.kind).toBe('allow');
+    expect(logDecision.evidence?.sideEffect).toBe('read');
   });
 
   test('14. isPlanSafeCommand 统一安全判定函数测试', () => {
@@ -321,19 +254,23 @@ describe('Terminal Tool 单元测试', () => {
     expect(isPlanSafeCommand('type package.json', 'cmd')).toBe(true);
     expect(isPlanSafeCommand('wmic logicaldisk where caption="C:" get caption,size,freespace /format:value', 'cmd')).toBe(true);
     expect(isPlanSafeCommand('Get-PSDrive C', 'powershell')).toBe(true);
-    expect(isPlanSafeCommand('powershell Get-PSDrive C', 'powershell')).toBe(true);
+    expect(isPlanSafeCommand('powershell Get-PSDrive C', 'powershell')).toBe(false);
     expect(isPlanSafeCommand('git status', 'powershell')).toBe(true);
     expect(isPlanSafeCommand('git diff', 'powershell')).toBe(true);
     expect(isPlanSafeCommand('git log', 'powershell')).toBe(true);
     expect(isPlanSafeCommand('ls', 'powershell')).toBe(true);
     expect(isPlanSafeCommand('cat file.txt', 'posix')).toBe(true);
     expect(isPlanSafeCommand('git log --grep="feat;fix"', 'powershell')).toBe(true);
+    expect(isPlanSafeCommand('echo ">"', 'posix')).toBe(true);
 
-    // B. 只读白名单命令含复合字符 → 返回 false
-    expect(isPlanSafeCommand('dir /-C | find "txt"', 'cmd')).toBe(false); // 管道符 |
-    expect(isPlanSafeCommand('type a.txt > b.txt', 'cmd')).toBe(false); // 重定向 >
-    expect(isPlanSafeCommand('git log; whoami', 'powershell')).toBe(false);    // 分号 ;
-    expect(isPlanSafeCommand('cat file & echo done', 'posix')).toBe(false); // 拼接符 &
+    // B. 复合命令按子命令聚合：纯读取可安全判定，重定向和未知命令不能放行
+    expect(isPlanSafeCommand('dir /-C | findstr "txt"', 'cmd')).toBe(false); // Cmd 复合语法未开放
+    expect(isPlanSafeCommand('type a.txt > b.txt', 'cmd')).toBe(false); // 文件重定向
+    expect(isPlanSafeCommand('git log; whoami', 'powershell')).toBe(false); // 未知子命令
+    expect(isPlanSafeCommand('cat file; echo done', 'posix')).toBe(true); // 两个只读子命令
+    expect(isPlanSafeCommand('cat file && echo done', 'posix')).toBe(true); // 支持短路连接符
+    expect(isPlanSafeCommand('cat file & echo done', 'posix')).toBe(false); // 单 & 未开放
+    expect(isPlanSafeCommand('cat file; rm output.txt', 'posix')).toBe(false); // 写子命令
 
     // C. 非白名单命令 → 返回 false
     expect(isPlanSafeCommand('wmic logicaldisk', 'cmd')).toBe(true);
@@ -352,174 +289,6 @@ describe('Terminal Tool 单元测试', () => {
     expect(isPlanSafeCommand('cat file.txt', 'cmd')).toBe(false);
   });
 
-  test('15. 终端 checkSafety 副作用分类测试（planSideEffect 驱动）', () => {
-    const mockSession = new SessionContext();
-
-    // A. 计划模式 + 安全只读命令 → planSideEffect='read'
-    mockSession.setPermissionMode('plan');
-    const safetyDir = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
-    expect(safetyDir.operation?.planSideEffect).toBe('read');
-
-    const safetyType = executeCommandToolInstance.checkSafety(
-      process.platform === 'win32'
-        ? { command: 'Get-Content package.json', shellKind: 'powershell' }
-        : { command: 'cat package.json', shellKind: 'posix' },
-      mockSession,
-    );
-    expect(safetyType.operation?.planSideEffect).toBe('read');
-
-    const safetyGitStatus = executeCommandToolInstance.checkSafety({ command: 'git status' }, mockSession);
-    expect(safetyGitStatus.operation?.planSideEffect).toBe('read');
-
-    const safetyGetPsDrive = executeCommandToolInstance.checkSafety(
-      process.platform === 'win32'
-        ? { command: 'Get-PSDrive C', shellKind: 'powershell' }
-        : { command: 'ls /tmp', shellKind: 'posix' },
-      mockSession,
-    );
-    expect(safetyGetPsDrive.operation?.planSideEffect).toBe('read');
-
-    // B. 计划模式 + 含复合字符命令 → planSideEffect='unknown'（终端不再内嵌 Plan 策略）
-    const safetyComposite = executeCommandToolInstance.checkSafety({ command: process.platform === 'win32' ? 'Get-ChildItem | Select-String "txt"' : 'ls | grep "txt"' }, mockSession);
-    expect(safetyComposite.operation?.planSideEffect).toBe('unknown');
-    expect(safetyComposite.status).toBe('suspend');
-
-    const safetyRedirect = executeCommandToolInstance.checkSafety(
-      process.platform === 'win32'
-        ? { command: 'Get-Content a.txt > b.txt', shellKind: 'powershell' }
-        : { command: 'cat a.txt > b.txt', shellKind: 'posix' },
-      mockSession,
-    );
-    expect(safetyRedirect.operation?.planSideEffect).toBe('unknown');
-    expect(safetyRedirect.status).toBe('suspend');
-
-    // C. 计划模式 + 平台可用只读命令 → planSideEffect='read'
-    const safetyPlatformRead = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
-    expect(safetyPlatformRead.operation?.planSideEffect).toBe('read');
-    expect(safetyPlatformRead.status).toBe('suspend');
-
-    const safetyPlatformReadVariant = executeCommandToolInstance.checkSafety(platformReadVariantCase, mockSession);
-    expect(safetyPlatformReadVariant.operation?.planSideEffect).toBe('read');
-    expect(safetyPlatformReadVariant.status).toBe('suspend');
-
-    // 平台 shell 中未加入只读白名单的命令 → unknown
-    const safetyUnknownCommand = executeCommandToolInstance.checkSafety(
-      process.platform === 'win32'
-        ? { command: 'wmic process', shellKind: 'cmd' }
-        : { command: 'ps aux', shellKind: 'posix' },
-      mockSession,
-    );
-    expect(safetyUnknownCommand.operation?.planSideEffect).not.toBe('read');
-
-    // D. 计划模式 + 危险写命令 → planSideEffect='write'
-    const safetyWrite = executeCommandToolInstance.checkSafety({ command: platformWriteCommands[0] }, mockSession);
-    expect(safetyWrite.operation?.planSideEffect).toBe('write');
-
-    // E. Auto/Safe 模式回归：不受本次变更影响
-    mockSession.setPermissionMode('auto');
-    saveAllowedCommands([]); // 无白名单
-    const safetyAuto = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
-    expect(safetyAuto.status).toBe('suspend'); // Auto 下未授权命令进入审批
-
-    mockSession.setPermissionMode('default');
-    const safetySafe = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
-    expect(safetySafe.status).toBe('suspend'); // Safe 下始终审批
-
-    // YOLO 模式回归
-    mockSession.setPermissionMode('bypassPermissions');
-    const safetyYolo = executeCommandToolInstance.checkSafety({ command: 'dir C:\\Windows\\Temp' }, mockSession);
-    expect(safetyYolo.status).toBe('pass'); // YOLO 下直接放行
-  });
-
-  test('16. 终端命令副作用分类与 Plan 同构回归测试', () => {
-    const mockSession = new SessionContext();
-    mockSession.setPermissionMode('plan');
-
-    // A. 任何包含复合字符的命令，checkSafety 必须返回 planSideEffect='unknown' 而非 'read'
-    const compositeCases = [
-      'dir C:\\ | find "txt"',    // 白名单命中但有管道
-      'type a.txt > b.txt',       // 白名单命中但有重定向
-      'git status; whoami',       // 白名单命中但有分号
-      'cat file | grep text',     // 白名单命中但有管道
-      'echo hello & echo world',  // 非白名单且有拼接
-    ];
-    for (const cmd of compositeCases) {
-      const safety = executeCommandToolInstance.checkSafety({ command: cmd }, mockSession);
-      // 终端不再内嵌 Plan 拒绝逻辑；由 HumanApprovalPlugin 中央策略基于 planSideEffect 决策
-      expect(safety.operation?.planSideEffect).toBe('unknown');
-      expect(safety.status).toBe('suspend');
-    }
-
-    // B. Plan 下通过的命令（safe），在审批放行后 execute 阶段的 validateCommand 不能因复合字符拒绝
-    // 验证：isPlanSafeCommand 返回 true 的命令同时传递 validateCommand
-    const safeCases: Array<{ command: string; shellKind: 'powershell' | 'cmd' | 'posix' }> = process.platform === 'win32'
-      ? [
-        { command: 'Get-Content package.json', shellKind: 'powershell' },
-        { command: 'Get-Content package.json', shellKind: 'powershell' },
-        { command: 'git status', shellKind: 'powershell' },
-        { command: 'git diff', shellKind: 'powershell' },
-        { command: 'git log', shellKind: 'powershell' },
-        { command: 'git log --grep="feat;fix"', shellKind: 'powershell' },
-      ]
-      : [
-        { command: 'ls /tmp', shellKind: 'posix' },
-        { command: 'cat package.json', shellKind: 'posix' },
-        { command: 'git status', shellKind: 'posix' },
-        { command: 'git diff', shellKind: 'posix' },
-        { command: 'git log', shellKind: 'posix' },
-        { command: 'git log --grep="feat;fix"', shellKind: 'posix' },
-      ];
-    for (const { command, shellKind } of safeCases) {
-      // isPlanSafeCommand 断言为 true
-      expect(isPlanSafeCommand(command, shellKind)).toBe(true);
-      // validateCommand 断言不抛错（同构保证）
-      expect(() => validateCommand(command, shellKind)).not.toThrow();
-    }
-
-    // C. 安全的只读命令返回 planSideEffect='read'
-    for (const { command, shellKind } of safeCases) {
-      const safety = executeCommandToolInstance.checkSafety({ command, shellKind }, mockSession);
-      expect(safety.operation?.planSideEffect).toBe('read');
-    }
-
-    // D. 写倾向命令返回 planSideEffect='write'
-    const writeCases = platformWriteCommands;
-    for (const cmd of writeCases) {
-      const safety = executeCommandToolInstance.checkSafety({ command: cmd }, mockSession);
-      expect(safety.operation?.planSideEffect).toBe('write');
-    }
-
-    // E. Auto/Safe 模式回归：不受本次变更影响
-    mockSession.setPermissionMode('auto');
-    saveAllowedCommands([]); // 无白名单
-    const safetyAuto = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
-    expect(safetyAuto.status).toBe('suspend'); // Auto 下未授权命令进入审批
-
-    mockSession.setPermissionMode('default');
-    const safetySafe = executeCommandToolInstance.checkSafety(platformReadCase, mockSession);
-    expect(safetySafe.status).toBe('suspend'); // Safe 下始终审批
-
-    // YOLO 模式回归
-    mockSession.setPermissionMode('bypassPermissions');
-    const safetyYolo = executeCommandToolInstance.checkSafety({ command: platformReadCase.command }, mockSession);
-    expect(safetyYolo.status).toBe('pass'); // YOLO 下直接放行
-
-    // F. 同构性：复合命令在 isPlanSafeCommand 和 validateCommand 中均被拒绝
-    const denyCases = [
-      'dir /-C | find "txt"',
-      'type a.txt > b.txt',
-      'git log; whoami',
-    ];
-    for (const cmd of denyCases) {
-      expect(isPlanSafeCommand(cmd, 'powershell')).toBe(false);
-      expect(() => validateCommand(cmd, 'powershell')).toThrow('拒绝执行');
-    }
-
-    // G. shell family 错配：isPlanSafeCommand 不得跨壳放行
-    expect(isPlanSafeCommand('cat file.txt', 'cmd')).toBe(false);
-    expect(isPlanSafeCommand('dir C:\\Windows\\Temp', 'posix')).toBe(false);
-  });
-
   test('17. advisory warning 解析应跳过当前 shell 的命令开关', () => {
     expect(detectAdvisoryWarnings('dir /A:H /W', 'cmd')).toHaveLength(0);
 
@@ -529,51 +298,6 @@ describe('Terminal Tool 单元测试', () => {
     }
   });
 
-  describe('BashTool resolveExecutionEffect 测试', () => {
-    const tool = process.platform === 'win32'
-      ? new PowerShellTool()
-      : new BashTool();
-
-    test('2.4 Plan 安全只读命令返回 read effect', () => {
-      // isPlanSafeCommand 判定的原子只读命令
-      const effect1 = tool.resolveExecutionEffect!(platformReadCase)!;
-      expect(effect1.kind).toBe('read');
-      expect(effect1.reason).toBe('plan_safe_command');
-
-      const effect2 = tool.resolveExecutionEffect!(platformReadVariantCase)!;
-      expect(effect2.kind).toBe('read');
-      expect(effect2.reason).toBe('plan_safe_command');
-
-      const effect3 = tool.resolveExecutionEffect!(platformPowerShellReadCase)!;
-      expect(effect3.kind).toBe('read');
-      expect(effect3.reason).toBe('plan_safe_command');
-    });
-
-    test('2.5 管道/重定向/复合命令无法被 Plan 判定，Bash 不可达，resolveExecutionEffect 不会返回 read', () => {
-      // 这些命令会被 checkSafety 在 Plan 模式下拒绝，但没有执行，resolveExecutionEffect 不会返回 pre_execution_abort
-      // 验证 effect 为 unknown（因为安全判定未命中只读规则，按 legacy_fallback 保守处理）
-      const effect1 = tool.resolveExecutionEffect!(platformCompositeCase)!;
-      expect(effect1.kind).toBe('unknown');
-      expect(effect1.reason).toBe('legacy_fallback');
-    });
-
-    test('2.6 非只读但获准执行的命令返回 unknown', () => {
-      const effect1 = tool.resolveExecutionEffect!({ command: 'npm run build' })!;
-      expect(effect1.kind).toBe('unknown');
-      expect(effect1.reason).toBe('legacy_fallback');
-
-      const effect2 = tool.resolveExecutionEffect!({ command: 'node scripts/build.js' })!;
-      expect(effect2.kind).toBe('unknown');
-      expect(effect2.reason).toBe('legacy_fallback');
-    });
-
-    test('执行失败但仍为 Plan 安全命令时 effect 为 read', () => {
-      const effect = tool.resolveExecutionEffect!(platformReadCase, undefined, new Error('执行失败'))!;
-      expect(effect.kind).toBe('read');
-      expect(effect.completed).toBe(false);
-      expect(effect.reason).toBe('plan_safe_command');
-    });
-  });
 });
 
 // ── checkPermissions 测试（5.5 工具迁移测试）──
@@ -586,21 +310,25 @@ describe('ShellTool.checkPermissions', () => {
   test('合法只读命令应返回 allow', () => {
     const result = tool.checkPermissions!({ command: 'git log' }) as ToolPermissionCheckResult;
     expect(result.kind).toBe('allow');
+    expect(result.evidence?.sideEffect).toBe('read');
   });
 
-  test('未识别的写倾向命令应返回 passthrough（由 ToolPermissionService 决策）', () => {
+  test('未分类命令应返回 ask 并携带 unknown evidence', () => {
     const result = tool.checkPermissions!({ command: 'npm run build' }) as ToolPermissionCheckResult;
-    expect(result.kind).toBe('passthrough');
+    expect(result.kind).toBe('ask');
+    expect(result.evidence?.sideEffect).toBe('unknown');
   });
 
-  test('未识别的命令应返回 passthrough（由 ToolPermissionService 决策）', () => {
+  test('未分类环境命令也应保守返回 ask', () => {
     const result = tool.checkPermissions!({ command: 'env' }) as ToolPermissionCheckResult;
-    expect(result.kind).toBe('passthrough');
+    expect(result.kind).toBe('ask');
+    expect(result.evidence?.sideEffect).toBe('unknown');
   });
 
   test('危险命令应返回 deny', () => {
     const result = tool.checkPermissions!({ command: 'rm -rf /' }) as ToolPermissionCheckResult;
     expect(result.kind).toBe('deny');
+    expect(result.evidence?.sideEffect).toBe('hardline');
   });
 
   test('空 command 应返回 deny', () => {
@@ -608,8 +336,8 @@ describe('ShellTool.checkPermissions', () => {
     expect(result.kind).toBe('deny');
   });
 
-  test('checkPermissions 不应读取 WorkMode（无 sessionContext 参数）', () => {
-    // checkPermissions 的签名不包含 sessionContext，证明其不依赖 WorkMode
+  test('checkPermissions 不应读取 PermissionMode（无 sessionContext 参数）', () => {
+    // checkPermissions 的签名不包含 sessionContext，证明工具检查与模式转换相互独立。
     expect(tool.checkPermissions!.length).toBeLessThanOrEqual(1);
   });
 });

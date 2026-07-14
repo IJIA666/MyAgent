@@ -6,12 +6,11 @@
  */
 
 import type { ResourceExtractor, ToolAccessMetadata } from '../../ports/driven/tools/ToolAccessMetadataPort.js';
-import type { SafetyCheckResult, ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
+import type { ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import type { ToolPermissionCheckResult } from '../../core/domain/permissions/permission-types.js';
 
-export type { SafetyCheckResult };
 export type { ResourceExtractor };
 
 /**
@@ -70,27 +69,9 @@ export interface NativeTool {
   ): Promise<string> | string;
 
   /**
-   * 异步或同步审查该工具执行调用的安全性。
-   * 为安全控制决策提供统一的多态评估 Ports 接口。
-   *
-   * @param args - 调用工具时传入的参数字典
-   * @param sessionContext - 可选的会话上下文，用于获取安全状态服务
-   * @param signal - 可选的 AbortSignal，用于物理取消安全校验
-   * @returns 安全评估结论
-   */
-  checkSafety(
-    args: Record<string, unknown>,
-    sessionContext?: SessionEventPort,
-    signal?: AbortSignal
-  ): Promise<SafetyCheckResult> | SafetyCheckResult;
-
-  /**
-   * Claude 风格的 checkPermissions 检查（可选的迁移过渡接口）。
-   * 优先于 checkSafety，供 ToolPermissionService 调用。
+   * Claude 风格的工具权限检查。
    * 工具通过此方法返回 allow/ask/deny/passthrough，
    * 由统一权限服务产生最终 PermissionDecision。
-   *
-   * 若未实现，ToolPermissionService 会继续调用 checkSafety 并适配结果。
    *
    * @param args - 调用工具时传入的参数字典
    * @returns 工具内部检查结果
@@ -112,21 +93,6 @@ export interface NativeTool {
    */
   accessMetadata?: ToolAccessMetadata;
 
-  /**
-   * 可选的精确 effect 解析入口。
-   * 工具可根据参数、执行上下文、成功结果或执行错误精化 effect；
-   * 未实现该入口的工具必须走统一默认推导器，不得在调用方按工具名称分支。
-   *
-   * @param args - 原始工具调用参数
-   * @param result - 工具执行结果（成功时为文本，失败时含错误）
-   * @param error - 可选的工具执行异常
-   * @returns 精化后的 effect 实例，或 undefined 表示由默认推导器决定
-   */
-  resolveExecutionEffect?(
-    args: Record<string, unknown>,
-    result?: string,
-    error?: Error
-  ): ToolExecutionEffect | undefined;
 }
 
 /**
@@ -140,7 +106,7 @@ export interface CallToolRequest {
 
 /**
  * 默认 effect 推导器。
- * 当工具未实现 resolveExecutionEffect 时使用统一规则推导：
+ * 当权限证据缺失时使用保守的统一规则推导：
  * - 未进入执行 → none
  * - 静态 read 工具（成功或失败）→ read
  * - 静态 write 工具成功 → write
@@ -216,6 +182,7 @@ export type ToolExecutionEffectReason =
   | 'plan_safe_command'
   | 'execution_failed_after_start'
   | 'browser_navigate'
+  | 'permission_evidence'
   | 'legacy_fallback';
 
 /**

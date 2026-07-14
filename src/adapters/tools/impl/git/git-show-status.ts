@@ -1,8 +1,6 @@
 import { execSync } from 'child_process';
 import { getAuthorizedDir } from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
-import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 
 /**
  * Git 状态查看工具类。
@@ -89,10 +87,6 @@ export class GitShowStatusTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 安全评估结论
    */
-  checkSafety(): SafetyCheckResult {
-    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'command-execute' as const, summary: '查看 Git 工作区状态', resources: [] } as SafetyOperation };
-  }
-
   /**
    * Claude 风格的 tool-level checkPermissions。
    * Git 状态查看是安全的只读操作。

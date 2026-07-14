@@ -1,6 +1,4 @@
 import type { NativeTool } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
-import type { SafetyOperation } from '../../../../ports/shared/tool-policy.js';
 
 /**
  * 扩展技能拉取工具类。
@@ -80,10 +78,6 @@ export class LoadSkillTool implements NativeTool {
    * @param args - 工具调用参数字典
    * @returns 安全评估结论
    */
-  checkSafety(): SafetyCheckResult {
-    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read' as const, summary: '加载技能规范', resources: [] } as SafetyOperation };
-  }
-
   /**
    * Claude 风格的 tool-level checkPermissions。
    * 技能加载是安全的只读操作。

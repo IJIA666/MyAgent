@@ -10,13 +10,11 @@ import type { AgentPlugin } from '../../../ports/driven/tools/AgentPlugin.js';
 import type { SafetyResource } from '../../../ports/shared/safety-resource.js';
 import type { PortHookContext } from '../../../ports/shared/plugin-types.js';
 import type { ApprovalChoice, ApprovalChoiceId } from '../../../ports/shared/approval-types.js';
-import type { SafetyCheckResult, SafetyOperation } from '../../../ports/shared/tool-policy.js';
 /** @deprecated 使用 PermissionDecision 替代 */
 import type { SessionEventPort } from '../../../ports/driven/session/SessionEventPort.js';
 import type { CallCapabilityPort } from '../../../ports/driven/session/CallCapabilityPort.js';
 import type { EventNotificationPort } from '../../../ports/driven/session/EventNotificationPort.js';
 export type { ApprovalChoice, ApprovalChoiceId };
-export type { SafetyCheckResult, SafetyOperation };
 export type { PermissionDecision } from '../../domain/permissions/permission-types.js';
 
 /**
@@ -58,10 +56,6 @@ export interface HookContext extends PortHookContext {
   control: HookControl;
   /** 棰勬祴 of Token 璇︽儏锛屼富瑕佺敱 TokenWatermark 鎻掍欢杩涜浼扮畻骞跺～鍐?*/
   estimatedUsage?: ContextTokenUsage;
-  /** 鎻掍欢鍙湪姝ゅ瓧娈佃繑鍥炴巿鏉?grant锛岀敱 AgentLoop 鍦ㄥ畨鍏ㄦ潯浠朵笅鎻愪氦 */
-  pendingGrant?: PendingGrant;
-  /** 鎻掍欢鍙湪姝ゅ瓧娈佃繑鍥炴寔涔呭寲瑙勫垯鏁堟灉锛岀敱 AgentLoop 鍦ㄥ畨鍏ㄦ潯浠朵笅鎻愪氦鑷?SecurityService */
-  persistentRuleEffect?: PersistentRuleEffect;
 }
 
 /**
@@ -79,44 +73,6 @@ export type HookMiddleware = (context: HookContext, next: HookNext) => Promise<v
  * 鍙傛暟鍖栦负 HookContext 浠ヤ笌 core 灞傜殑鎻掍欢瀹炵幇绫诲瀷鍏煎銆?
  */
 export type Plugin = AgentPlugin<HookContext>;
-
-/**
- * 瀹℃壒璇锋眰杞戒綋鎺ュ彛銆?
- * 鐢?ApprovalPolicy 鐢熸垚锛屽寘鍚鎵规秷鎭拰鍙俊鐨?choice 鍒楄〃銆?
- */
-export interface ApprovalRequest {
-  /** 瀹℃壒璇锋眰鍞竴鏍囪瘑 */
-  id: string;
-  /** 鍚戠敤鎴峰睍绀虹殑瀹℃壒娑堟伅 */
-  message: string;
-  /** 鍙俊鐨勯€夋嫨椤瑰垪琛?*/
-  choices: ApprovalChoice[];
-  /** 绛栫暐灞傚綊涓€鍖栧悗鐨勫彈淇℃搷浣滄弿杩帮紝渚涙巿鏉冩槧灏勯樁娈靛鐢?*/
-  operation?: SafetyOperation;
-}
-
-/**
- * 鎸佷箙鍖栬鍒欐巿鏉冩晥鏋滅被鍨嬨€?
- * 鐢ㄤ簬灏嗗懡浠ゅ墠缂€瑙勫垯鎸佷箙鍖栧啓鍏ョ鐩樼櫧鍚嶅崟锛屼笌 PendingGrant锛坈all/session锛夊钩绾с€?
- */
-export interface PersistentRuleEffect {
-  type: 'persistent';
-  prefix: string;
-}
-
-/**
- * 鎺堟潈鏁堟灉鑱斿悎绫诲瀷銆?
- * 鍖呭惈涓€娆℃€т护鐗岋紙call锛夈€佷細璇濈櫧鍚嶅崟锛坰ession锛夊拰鎸佷箙鍖栬鍒欙紙persistent锛夈€?
- */
-export type ApprovalEffect = PendingGrant | PersistentRuleEffect;
-
-/**
- * 鎺堟潈璁稿彲鍑瘉鐨勮仈鍚堢被鍨嬨€?
- * 鎻掍欢杩斿洖缁?AgentLoop锛岀敱 AgentLoop 鍦ㄥ畨鍏ㄦ潯浠舵弧瓒虫椂鎻愪氦銆?
- */
-export type PendingGrant =
-  | { type: 'call'; toolCallId: string; toolName: string; resources: SafetyResource[] }
-  | { type: 'session'; toolCallId: string; resources: SafetyResource[] };
 
 /**
  * 鍗曟宸ュ叿璋冪敤鎵ц鏈熼棿鐨勯殧绂讳笂涓嬫枃銆?

@@ -1,7 +1,7 @@
 /**
- * @fileoverview 工具调用编排合约测试。
- * 使用真实 ToolRegistry、PluginRegistry、ToolDispatcher、ApprovalEffectApplier
- * 和 ToolCallOrchestrator 装配完整工具编排管线，验证 allow/deny/ask 路径。
+ * @file 工具调用编排合约测试。
+ * 使用真实 ToolRegistry、PluginRegistry、ToolDispatcher 和 ToolCallOrchestrator
+ * 装配完整工具编排管线，验证统一权限网关的 allow 与 deny 路径。
  */
 
 import { describe, it, expect } from 'vitest';
@@ -14,7 +14,6 @@ import { TracerLogPlugin } from '../../src/core/usecases/plugins/TracerLogPlugin
 
 import { ToolCallOrchestrator } from '../../src/core/usecases/engine/tool-call-orchestrator.js';
 import { ToolDispatcher } from '../../src/core/usecases/engine/ToolDispatcher.js';
-import { ApprovalEffectApplier } from '../../src/core/usecases/engine/approval-effect-applier.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 import { AgentTracer } from '../../src/core/domain/tracer.js';
 /** 构造装配完整的编排器 */
@@ -31,14 +30,12 @@ function createOrchestrator(tracer?: AgentTracer): {
   const session = new SessionContext('contract-orchestrator');
 
   const toolDispatcher = new ToolDispatcher(session, registry);
-  const effectApplier = new ApprovalEffectApplier();
 
   const orchestrator = new ToolCallOrchestrator(
     registry,
     toolDispatcher,
     pluginRegistry,
     session,
-    effectApplier,
   );
 
   return { orchestrator, session, registry };
@@ -107,7 +104,7 @@ describe('工具编排合约测试 — 真实装配', () => {
     }
   });
 
-  it('pass 路径：ToolPolicyPort 返回 pass → 工具正常执行', async () => {
+  it('allow 路径：统一权限网关允许后工具正常执行', async () => {
     const { orchestrator, session } = createOrchestrator();
     session.setPermissionMode('bypassPermissions');
     const abortController = new AbortController();
@@ -126,12 +123,9 @@ describe('工具编排合约测试 — 真实装配', () => {
     expect(result.finalCallUpdate.result).toBeDefined();
   });
 
-  it('suspend/allow 路径：审批服务自动选择 call 后工具正常执行', async () => {
+  it('默认模式下只读工具应直接执行', async () => {
     const { orchestrator, session } = createOrchestrator();
     session.setPermissionMode('default');
-    session.approvalService.registerApprovalHandler((id) => {
-      setTimeout(() => session.approvalService.resolve(id, { action: 'call' }), 0);
-    });
 
     const result = await orchestrator.execute(
       0,

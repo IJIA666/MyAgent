@@ -2,8 +2,6 @@ import { resolve, basename, relative } from 'path';
 import { existsSync, statSync, openSync, readSync, closeSync, promises as fsPromises } from 'fs';
 import { secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
-import type { SafetyOperation, SafetyResource } from '../../../../ports/shared/tool-policy.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 
@@ -177,42 +175,29 @@ export class GrepSearchTool implements NativeTool {
   };
 
   /**
-   * 审查正则全文检索的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    const searchPath = typeof args.searchPath === 'string' ? args.searchPath : '.';
-    try {
-      secureResolveReadPath(searchPath, sessionContext);
-      return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read', summary: `搜索: ${searchPath}`, resources: [] } as SafetyOperation };
-    } catch {
-      const rootDir = getAuthorizedDir();
-      const rawPath = resolve(rootDir!, searchPath);
-      const resolvedPath = getPhysicalRealPath(rawPath);
-      const resources: SafetyResource[] = [{ kind: 'path', access: 'read', normalizedPath: resolvedPath }];
-      return {
-        status: 'suspend',
-        message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
-        targetPath: resolvedPath,
-        resources,
-        operation: { planSideEffect: 'read', riskReason: '访问工作区外资源', operationCategory: 'file-read', summary: `搜索: ${resolvedPath}`, resources }
-      };
-    }
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 只执行工具专属的路径安全检查。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
     const searchPath = typeof args.searchPath === 'string' ? args.searchPath : '.';
+    const rootDir = getAuthorizedDir();
+    const resolvedPath = getPhysicalRealPath(resolve(rootDir!, searchPath));
+    const evidence = {
+      operationCategory: 'file-read',
+      sideEffect: 'read' as const,
+      riskReason: `全文搜索: ${searchPath}`,
+      resources: [{ kind: 'path', access: 'read', normalizedPath: resolvedPath }],
+    };
     try {
       secureResolveReadPath(searchPath);
-      return { kind: 'allow', decisionReason: '路径安全通过' };
+      return { kind: 'allow', decisionReason: '工作区内全文搜索', evidence };
     } catch {
-      return { kind: 'ask', message: `搜索越界路径: ${searchPath}`, decisionReason: '越界路径' };
+      return {
+        kind: 'ask',
+        message: `搜索越界路径: ${searchPath}`,
+        decisionReason: '需要工作区外路径读取授权',
+        evidence,
+      };
     }
   }
 
@@ -388,20 +373,20 @@ export class GlobSearchTool implements NativeTool {
   };
 
   /**
-   * 审查通配符定位检索的安全性。
-   *
-   * @returns 安全评估结论
-   */
-  checkSafety(): SafetyCheckResult {
-    return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read', summary: '通配符搜索', resources: [] } as SafetyOperation };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 通配符搜索始终是安全的只读操作。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
-    return { kind: 'allow', decisionReason: '通配符搜索始终是安全的只读操作' };
+    return {
+      kind: 'allow',
+      decisionReason: '通配符搜索始终是安全的只读操作',
+      evidence: {
+        operationCategory: 'file-read',
+        sideEffect: 'read',
+        riskReason: '在工作区内按通配符检索路径',
+        resources: [{ kind: 'path', access: 'read', normalizedPath: getAuthorizedDir() ?? '.' }],
+      },
+    };
   }
 
   /**

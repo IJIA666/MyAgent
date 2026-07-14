@@ -152,10 +152,6 @@ async function runHookPipelineInternal(
     tailToolCallRequest: undefined
   };
 
-  // pendingGrant 不经过 Immer draft。使用可写闭包捕获，中间件写入时自动回传：
-  // sandboxContext 上定义 getter/setter 代理到闭包变量
-  let pendingGrantSlot: HookContext['pendingGrant'] = context.pendingGrant;
-
   // 3. 启用忙锁并创建沙箱隔离 Draft
   const processingStart = Date.now();
   const oldProcessingValue = sessionContext.isProcessing;
@@ -208,13 +204,6 @@ async function runHookPipelineInternal(
     toolRegistry: context.toolRegistry,
     control: context.control, // 共享同一个控制信号引用
     emitEvent: context.emitEvent,
-    // pendingGrant 通过闭包 getter/setter 代理，保证中间件写入后可在外部读取
-    get pendingGrant(): HookContext['pendingGrant'] {
-      return pendingGrantSlot;
-    },
-    set pendingGrant(v: HookContext['pendingGrant']) {
-      pendingGrantSlot = v;
-    }
   } as HookContext;
 
   // 洋葱模型串行递归分发
@@ -278,7 +267,6 @@ async function runHookPipelineInternal(
   context.toolCall = finalState.toolCall;
   context.toolResult = finalState.toolResult;
   context.tailToolCallRequest = finalState.tailToolCallRequest;
-  context.pendingGrant = pendingGrantSlot; // 同步 pendingGrant 回外部 context，供 AgentLoop 提交
 
   // 5. 可观测性追踪：如果产生上下文改动，输出差异 Patch 审计日志
   if (patches.length > 0) {

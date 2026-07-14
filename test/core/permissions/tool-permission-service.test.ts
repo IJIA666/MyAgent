@@ -183,6 +183,39 @@ describe('ToolPermissionService', () => {
       const result = await service.checkPermissions('Bash', { command: 'ls' }, 'default', toolChecker);
       expect(result.kind).toBe('deny');
     });
+
+    it('显式 ask 不能跳过工具 deny，且工具检查只执行一次', async () => {
+      const store = new PermissionRuleStore();
+      store.addRule('userSettings', {
+        source: 'userSettings',
+        ruleBehavior: 'ask',
+        ruleValue: { toolName: 'Bash' },
+      });
+      const service = new ToolPermissionService({ ruleStore: store });
+      let checkCount = 0;
+      const evidence = {
+        operationCategory: 'command-execute',
+        sideEffect: 'hardline' as const,
+        riskReason: 'Git 写操作',
+      };
+      const toolChecker = {
+        checkPermissions(_input: ToolExecutionContext): ToolPermissionCheckResult {
+          checkCount += 1;
+          return { kind: 'deny', decisionReason: '工具 hardline', evidence };
+        },
+      };
+
+      const result = await service.checkPermissions(
+        'Bash',
+        { command: 'git commit -m blocked' },
+        'default',
+        toolChecker,
+      );
+
+      expect(result.kind).toBe('deny');
+      expect(result.evidence).toBe(evidence);
+      expect(checkCount).toBe(1);
+    });
   });
 
   // ── dontAsk 模式 ──
@@ -337,6 +370,27 @@ describe('ToolPermissionService', () => {
 
       const ctx = service.createAuthorizedContext('Bash', { command: 'ls' }, { kind: 'deny', decisionReason: '拒绝' });
       expect(ctx).toBeNull();
+    });
+
+    it('模式转换和授权上下文应保留同一份 evidence', async () => {
+      const store = new PermissionRuleStore();
+      const service = new ToolPermissionService({ ruleStore: store });
+      const evidence = {
+        operationCategory: 'command-execute',
+        sideEffect: 'write' as const,
+        riskReason: '写操作',
+      };
+      const toolChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return { kind: 'ask', message: '确认写入', decisionReason: '写操作', evidence };
+        },
+      };
+
+      const decision = await service.checkPermissions('Bash', { command: 'touch a' }, 'bypassPermissions', toolChecker);
+      expect(decision).toMatchObject({ kind: 'allow', evidence });
+
+      const context = service.createAuthorizedContext('Bash', { command: 'touch a' }, decision);
+      expect(context?.evidence).toBe(evidence);
     });
   });
 

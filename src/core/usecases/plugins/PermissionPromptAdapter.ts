@@ -109,6 +109,60 @@ export class PermissionPromptAdapter {
   }
 
   /**
+   * 根据最终 ask 决策构建细粒度规则更新。
+   * 复合命令只保存需要批准的原子子命令，最多生成五条规则。
+   *
+   * @param toolName - 工具名称
+   * @param args - 原始工具参数
+   * @param decision - 最终 ask 决策
+   * @param scope - 用户选择的授权范围
+   * @returns 可应用的权限更新；once 或缺少安全建议时返回 null
+   */
+  buildUpdateFromDecision(
+    toolName: string,
+    args: Record<string, unknown>,
+    decision: PermissionDecision & { kind: 'ask' },
+    scope: 'once' | 'session' | 'persistent',
+  ): PermissionUpdate | null {
+    if (scope === 'once') {
+      return null;
+    }
+
+    const subcommands = decision.evidence?.subcommands ?? [];
+    const isCompound = subcommands.length > 1;
+    const suggestedContents = Array.from(new Set(
+      subcommands
+        .filter(subcommand => subcommand.permission === 'ask')
+        .map(subcommand => subcommand.ruleSuggestion)
+        .filter((content): content is string => typeof content === 'string' && content.length > 0),
+    )).slice(0, 5);
+
+    if (isCompound && suggestedContents.length === 0) {
+      return null;
+    }
+
+    const fallbackContent = typeof args.command === 'string'
+      ? args.command
+      : typeof args.path === 'string'
+        ? args.path
+        : undefined;
+    const ruleContents = suggestedContents.length > 0
+      ? suggestedContents
+      : [fallbackContent];
+    const source = scope === 'session' ? 'session' : 'userSettings';
+
+    return {
+      operation: 'add',
+      targetSource: scope === 'persistent' ? 'userSettings' : undefined,
+      rules: ruleContents.map(ruleContent => ({
+        source,
+        ruleBehavior: 'allow',
+        ruleValue: { toolName, ruleContent },
+      })),
+    };
+  }
+
+  /**
    * 检查决策是否为 `ask` 类型。
    *
    * @param decision - 权限决策

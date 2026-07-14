@@ -8,19 +8,40 @@ import type { ToolPermissionService, AuthorizedExecutionContext } from '../../co
 import type { PermissionMode, PermissionDecision } from '../../core/domain/permissions/permission-types.js';
 import type { ToolPermissionChecker } from '../../core/domain/permissions/tool-permission-service.js';
 import type { NativeTool } from './tool-types.js';
+import type { CallToolResult, ToolExecutionOutcome } from './tool-types.js';
 import { PermissionRuleStore } from '../../core/domain/permissions/rule-store.js';
-import type { ToolExecutor } from './ToolExecutor.js';
+import type { AuthorizedToolRuntime, ToolExecutor } from './ToolExecutor.js';
+import { createAuthorizedExecutionSignal, createExecutionEffectFromEvidence } from './ToolExecutor.js';
+import { PermissionPromptAdapter } from '../../core/usecases/plugins/PermissionPromptAdapter.js';
+
+/** Gateway 执行时的交互与运行时参数。 */
+export interface GatewayExecuteOptions {
+  /** 当前调用使用的权限提示适配器。 */
+  readonly promptAdapter?: PermissionPromptAdapter;
+  /** 本地工具执行所需的非权限运行时参数。 */
+  readonly runtime?: AuthorizedToolRuntime;
+}
+
+/** 外部工具目标。 */
+export interface ExternalGatewayTarget<T> {
+  /** 外部工具的权限检查器。 */
+  readonly checker?: ToolPermissionChecker;
+  /** 已授权后的实际执行函数。 */
+  readonly execute: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<T>;
+}
 
 /**
  * 网关执行结果。
  */
-export interface GatewayExecutionResult {
+export interface GatewayExecutionResult<T = CallToolResult> {
   /** 执行结果文本 */
   result: string;
   /** 该次调用的权限决策 */
   decision: PermissionDecision;
   /** 已授权的执行上下文（仅 allow 时存在） */
   authorizedContext: AuthorizedExecutionContext | null;
+  /** 携带实际 effect 的执行结果。 */
+  outcome: ToolExecutionOutcome<T>;
 }
 
 /**
@@ -82,7 +103,8 @@ export class ToolCallGateway {
     toolName: string,
     args: Record<string, unknown>,
     mode: PermissionMode,
-  ): Promise<GatewayExecutionResult> {
+    options: GatewayExecuteOptions = {},
+  ): Promise<GatewayExecutionResult<CallToolResult>> {
     const tool = this.toolExecutors.get(toolName);
     if (!tool) {
       throw new Error(`工具 "${toolName}" 未注册到 Gateway`);
@@ -93,41 +115,83 @@ export class ToolCallGateway {
       ? { checkPermissions: (input) => tool.checkPermissions!(input.args)  }
       : undefined;
 
-    // 通过统一权限服务进行权限决策
-    const decision = await this.permissionService.checkPermissions(
+    const decision = await this.authorize(
       toolName,
       args,
       mode,
       toolChecker,
+      options.promptAdapter,
     );
 
-    // 仅 allow 时继续执行
-    if (decision.kind !== 'allow') {
-      throw new Error(`权限拒绝: ${decision.decisionReason}`);
-    }
+    const executableArgs = decision.updatedInput ?? args;
 
     // 生成已授权的执行上下文
     const authorizedContext = this.permissionService.createAuthorizedContext(
       toolName,
-      args,
+      executableArgs,
       decision,
     );
     if (!authorizedContext) {
       throw new Error('无法创建已授权执行上下文');
     }
 
-    // 统一交由执行器执行；Gateway 不直接持有第二套执行逻辑。
-    const executorResult = this.executor
-      ? await this.executor.executeAuthorized(authorizedContext)
-      : undefined;
-    const result = executorResult
-      ? executorResult.value.content.map((item) => item.text).join('\n')
-      : await tool.execute(args);
+    const outcome = await this.executeAuthorizedOutcome(authorizedContext, options.runtime);
+    const result = outcome.value.content.map((item) => item.text).join('\n');
 
     return {
       result,
       decision,
       authorizedContext,
+      outcome,
+    };
+  }
+
+  /**
+   * 通过统一权限链执行外部工具。
+   *
+   * @param toolName - 外部工具名称
+   * @param args - 工具参数
+   * @param mode - 当前权限模式
+   * @param target - 外部权限检查与执行目标
+   * @param options - 权限提示与运行时参数
+   * @returns 外部工具执行结果
+   */
+  async executeExternal<T>(
+    toolName: string,
+    args: Record<string, unknown>,
+    mode: PermissionMode,
+    target: ExternalGatewayTarget<T>,
+    options: GatewayExecuteOptions = {},
+  ): Promise<GatewayExecutionResult<T>> {
+    const decision = await this.authorize(
+      toolName,
+      args,
+      mode,
+      target.checker,
+      options.promptAdapter,
+    );
+    const executableArgs = decision.updatedInput ?? args;
+    const authorizedContext = this.permissionService.createAuthorizedContext(
+      toolName,
+      executableArgs,
+      decision,
+    );
+    if (!authorizedContext || !this.permissionService.consumeAuthorizedContext(authorizedContext)) {
+      throw new Error('无法创建或消费外部工具授权上下文');
+    }
+
+    // 外部工具与本地工具一致：仅在授权完成后启动执行超时。
+    const executionSignal = createAuthorizedExecutionSignal(options.runtime ?? {});
+    const value = await target.execute(executableArgs, executionSignal);
+    const outcome: ToolExecutionOutcome<T> = {
+      value,
+      effect: createExecutionEffectFromEvidence(authorizedContext.evidence, true),
+    };
+    return {
+      result: typeof value === 'string' ? value : JSON.stringify(value),
+      decision,
+      authorizedContext,
+      outcome,
     };
   }
 
@@ -141,7 +205,59 @@ export class ToolCallGateway {
    */
   async executeAuthorized(
     authorizedContext: AuthorizedExecutionContext,
+    runtime: AuthorizedToolRuntime = {},
   ): Promise<string> {
+    const outcome = await this.executeAuthorizedOutcome(authorizedContext, runtime);
+    return outcome.value.content.map((item) => item.text).join('\n');
+  }
+
+  /** 完成统一权限评估和一次 ask 交互。 */
+  private async authorize(
+    toolName: string,
+    args: Record<string, unknown>,
+    mode: PermissionMode,
+    checker: ToolPermissionChecker | undefined,
+    promptAdapter: PermissionPromptAdapter | undefined,
+  ): Promise<PermissionDecision & { kind: 'allow' }> {
+    let decision = await this.permissionService.checkPermissions(
+      toolName,
+      args,
+      mode,
+      checker,
+    );
+
+    if (decision.kind === 'deny') {
+      throw new Error(`权限拒绝: ${decision.decisionReason}`);
+    }
+
+    if (decision.kind === 'ask') {
+      if (!promptAdapter) {
+        throw new Error(`工具 "${toolName}" 需要权限确认，但当前没有审批会话`);
+      }
+      const response = await promptAdapter.promptForPermission(decision, mode);
+      if (!response?.approved) {
+        throw new Error(`审批拒绝：${toolName}`);
+      }
+      const update = decision.suggestedUpdate
+        ?? promptAdapter.buildUpdateFromDecision(toolName, args, decision, response.scope);
+      if (update) {
+        promptAdapter.applyUpdate(update);
+      }
+      decision = {
+        kind: 'allow',
+        decisionReason: '用户完成权限确认',
+        evidence: decision.evidence,
+      };
+    }
+
+    return decision;
+  }
+
+  /** 使用一次性授权上下文执行本地工具并返回 effect。 */
+  private async executeAuthorizedOutcome(
+    authorizedContext: AuthorizedExecutionContext,
+    runtime: AuthorizedToolRuntime = {},
+  ): Promise<ToolExecutionOutcome<CallToolResult>> {
     const tool = this.toolExecutors.get(authorizedContext.toolName);
     if (!tool) {
       throw new Error(`工具 "${authorizedContext.toolName}" 未注册到 Gateway`);
@@ -153,9 +269,18 @@ export class ToolCallGateway {
     }
 
     if (this.executor) {
-      const outcome = await this.executor.executeAuthorized(authorizedContext);
-      return outcome.value.content.map((item) => item.text).join('\n');
+      return this.executor.executeAuthorized(authorizedContext, runtime);
     }
-    return await tool.execute(authorizedContext.args);
+    const executionSignal = createAuthorizedExecutionSignal(runtime);
+    const result = await tool.execute(
+      authorizedContext.args,
+      runtime.context,
+      executionSignal,
+      runtime.interactionPort,
+    );
+    return {
+      value: { content: [{ type: 'text', text: result }] },
+      effect: createExecutionEffectFromEvidence(authorizedContext.evidence, true),
+    };
   }
 }

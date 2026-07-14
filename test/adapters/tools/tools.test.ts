@@ -3,7 +3,6 @@ import { resolve, join } from 'path';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { initWorkspace, secureResolvePath, ReadFileTool } from '../../../src/adapters/tools/tools.js';
 import { WriteFileTool, EditFileTool, ListFilesTool } from '../../../src/adapters/tools/impl/filesystem/file-system.js';
-import { SessionContext } from '../../../src/core/domain/context.js';
 import type { ToolPermissionCheckResult } from '../../../src/core/domain/permissions/permission-types.js';
 
 describe('安全沙箱 tools.ts 单元测试', () => {
@@ -279,87 +278,6 @@ describe('ListFilesTool 通用只读目录能力测试', () => {
   });
 });
 
-describe('机密环境文件分级保护审计测试', () => {
-  const testDir = resolve(__dirname, 'temp_env_test_dir');
-  let readFileTool: ReadFileTool;
-  let writeFileTool: WriteFileTool;
-  let editFileTool: EditFileTool;
-
-  beforeAll(() => {
-    if (!existsSync(testDir)) {
-      mkdirSync(testDir, { recursive: true });
-    }
-    initWorkspace(testDir);
-  });
-
-  afterAll(() => {
-    if (existsSync(testDir)) {
-      rmSync(testDir, { recursive: true, force: true });
-    }
-  });
-
-  beforeEach(() => {
-    ReadFileTool.readFileState.clear();
-    readFileTool = new ReadFileTool();
-    writeFileTool = new WriteFileTool();
-    editFileTool = new EditFileTool();
-  });
-
-  test('1. 敏感机密文件读写在 YOLO 模式下强制降级 Safe 卡关与披露测试', () => {
-    const mockSession = new SessionContext();
-    mockSession.setPermissionMode('bypassPermissions');
-
-    // A. ReadFileTool.checkSafety 读取 .env 触发降级 suspend
-    const readSafety = readFileTool.checkSafety({ targetPath: '.env' });
-    expect(readSafety.status).toBe('suspend');
-    expect(readSafety.message).toContain('【机密文件审计】');
-
-    // B. WriteFileTool.checkSafety 写入 .env 触发降级 suspend，并明文披露内容
-    const writeSafety = writeFileTool.checkSafety({ targetPath: '.env', content: 'SECRET_KEY=12345' }, mockSession);
-    expect(writeSafety.status).toBe('suspend');
-    expect(writeSafety.message).toContain('【机密文件修改审计】');
-    expect(writeSafety.message).toContain('SECRET_KEY=12345');
-
-    // C. EditFileTool.checkSafety 修改 .env 触发降级 suspend，并披露 Diff 差分
-    const editSafety = editFileTool.checkSafety(
-      {
-        targetPath: '.env',
-        old_string: 'SECRET_KEY=12345',
-        new_string: 'SECRET_KEY=abcde'
-      },
-      mockSession
-    );
-    expect(editSafety.status).toBe('suspend');
-    expect(editSafety.message).toContain('【机密文件编辑审计】');
-    expect(editSafety.message).toContain('SECRET_KEY=12345');
-    expect(editSafety.message).toContain('SECRET_KEY=abcde');
-  });
-
-  test('2. 样例配置文件 .env.example 不降级 YOLO 直接放行测试', () => {
-    const mockSession = new SessionContext();
-    mockSession.setPermissionMode('bypassPermissions');
-
-    // A. ReadFileTool.checkSafety 读取 .env.example 应直接 pass
-    const readSafety = readFileTool.checkSafety({ targetPath: '.env.example' });
-    expect(readSafety.status).toBe('pass');
-
-    // B. WriteFileTool.checkSafety 写入 .env.example 应直接 pass
-    const writeSafety = writeFileTool.checkSafety({ targetPath: '.env.example', content: 'KEY=' }, mockSession);
-    expect(writeSafety.status).toBe('pass');
-
-    // C. EditFileTool.checkSafety 修改 .env.example 应直接 pass
-    const editSafety = editFileTool.checkSafety(
-      {
-        targetPath: '.env.example',
-        old_string: 'KEY=',
-        new_string: 'KEY=val'
-      },
-      mockSession
-    );
-    expect(editSafety.status).toBe('pass');
-  });
-});
-
 // ── checkPermissions 测试（5.5 工具迁移测试）──
 
 describe('ReadFileTool.checkPermissions', () => {
@@ -368,6 +286,19 @@ describe('ReadFileTool.checkPermissions', () => {
   test('合法路径应返回 allow', () => {
     const result = tool.checkPermissions!({ targetPath: 'src/index.ts' }) as ToolPermissionCheckResult;
     expect(result.kind).toBe('allow');
+    expect(result.evidence?.sideEffect).toBe('read');
+  });
+
+  test('敏感环境文件应返回 ask 和 sensitive-read evidence', () => {
+    const result = tool.checkPermissions!({ targetPath: '.env' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('ask');
+    expect(result.evidence?.sideEffect).toBe('sensitive-read');
+  });
+
+  test('.env.example 应按普通只读文件处理', () => {
+    const result = tool.checkPermissions!({ targetPath: '.env.example' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('allow');
+    expect(result.evidence?.sideEffect).toBe('read');
   });
 
   test('空 targetPath 应返回 deny', () => {
@@ -379,9 +310,16 @@ describe('ReadFileTool.checkPermissions', () => {
 describe('WriteFileTool.checkPermissions', () => {
   const tool = new WriteFileTool();
 
-  test('写入操作应返回 passthrough（由 ToolPermissionService 决策）', () => {
+  test('写入操作应返回 ask 和 write evidence', () => {
     const result = tool.checkPermissions!({ targetPath: 'src/test.ts' }) as ToolPermissionCheckResult;
-    expect(result.kind).toBe('passthrough');
+    expect(result.kind).toBe('ask');
+    expect(result.evidence?.sideEffect).toBe('write');
+  });
+
+  test('写入敏感文件应在风险原因中明确标识', () => {
+    const result = tool.checkPermissions!({ targetPath: '.env', content: 'SECRET_KEY=12345' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('ask');
+    expect(result.evidence?.riskReason).toContain('敏感文件');
   });
 
   test('空 targetPath 应返回 deny', () => {
@@ -393,9 +331,16 @@ describe('WriteFileTool.checkPermissions', () => {
 describe('EditFileTool.checkPermissions', () => {
   const tool = new EditFileTool();
 
-  test('编辑操作应返回 passthrough（由 ToolPermissionService 决策）', () => {
+  test('编辑操作应返回 ask 和 write evidence', () => {
     const result = tool.checkPermissions!({ targetPath: 'src/index.ts' }) as ToolPermissionCheckResult;
-    expect(result.kind).toBe('passthrough');
+    expect(result.kind).toBe('ask');
+    expect(result.evidence?.sideEffect).toBe('write');
+  });
+
+  test('编辑敏感文件应在风险原因中明确标识', () => {
+    const result = tool.checkPermissions!({ targetPath: '.env' }) as ToolPermissionCheckResult;
+    expect(result.kind).toBe('ask');
+    expect(result.evidence?.riskReason).toContain('敏感文件');
   });
 
   test('空 targetPath 应返回 deny', () => {
@@ -410,5 +355,6 @@ describe('ListFilesTool.checkPermissions', () => {
   test('目录列举应返回 allow', () => {
     const result = tool.checkPermissions!({}) as ToolPermissionCheckResult;
     expect(result.kind).toBe('allow');
+    expect(result.evidence?.sideEffect).toBe('read');
   });
 });

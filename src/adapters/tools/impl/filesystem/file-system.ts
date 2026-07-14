@@ -9,8 +9,6 @@ import { dirname, resolve, basename } from 'path';
 import { createPatch } from 'diff';
 import { secureResolveReadPath, secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
-import type { SafetyCheckResult } from '../../../../core/usecases/plugins/plugin-types.js';
-import type { SafetyResource } from '../../../../ports/shared/tool-policy.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import { logger, LOG_COMPONENT, LOG_EVENT } from '../../../../utils/logger.js';
@@ -22,6 +20,21 @@ function isSensitiveEnvFile(filePath: string): boolean {
     return false;
   }
   return name === '.env' || name.startsWith('.env.');
+}
+
+/** 将文件参数转换为权限层使用的规范化路径资源。 */
+function createFilePathResource(
+  targetPath: string,
+  access: 'read' | 'write',
+  kind: 'path' | 'directory-scope' = 'path',
+): Readonly<Record<string, unknown>> {
+  const rootDir = getAuthorizedDir() ?? process.cwd();
+  const rawPath = resolve(rootDir, targetPath);
+  return {
+    kind,
+    access,
+    normalizedPath: existsSync(rawPath) ? getPhysicalRealPath(rawPath) : rawPath,
+  };
 }
 
 /** 读取布尔型开关参数。 */
@@ -505,50 +518,6 @@ export class ReadFileTool implements NativeTool {
   };
 
   /**
-   * 审查文件读取调用的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @param sessionContext - 可选的会话上下文
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    const targetPath = args.targetPath;
-    if (typeof targetPath !== 'string') {
-      return { status: 'deny', message: 'targetPath 必须是字符串' };
-    }
-    // 机密文件特殊卡关审计
-    if (isSensitiveEnvFile(targetPath)) {
-      const rootDir = getAuthorizedDir() || process.cwd();
-      const rawPath = resolve(rootDir, targetPath);
-      const resolvedPath = existsSync(rawPath) ? getPhysicalRealPath(rawPath) : rawPath;
-      const resources: SafetyResource[] = [{ kind: 'path', access: 'read', normalizedPath: resolvedPath }];
-      return {
-        status: 'suspend',
-        message: `【机密文件审计】智能体试图读取敏感的环境变量机密文件 "${targetPath}"，该操作在任何工作模式下均需人工审批。`,
-        targetPath: resolvedPath,
-        resources,
-        operation: { planSideEffect: 'sensitive-read', riskReason: `读取敏感文件 ${targetPath}`, operationCategory: 'file-read', summary: `读取敏感文件: ${basename(targetPath)}`, resources }
-      };
-    }
-    try {
-      secureResolveReadPath(targetPath, sessionContext);
-      return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read', summary: `读取文件 ${targetPath}`, resources: [] } };
-    } catch {
-      const rootDir = getAuthorizedDir();
-      const rawPath = resolve(rootDir!, targetPath);
-      const resolvedPath = getPhysicalRealPath(rawPath);
-      const resources: SafetyResource[] = [{ kind: 'path', access: 'read', normalizedPath: resolvedPath }];
-      return {
-        status: 'suspend',
-        message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
-        targetPath: resolvedPath,
-        resources,
-        operation: { planSideEffect: 'read', riskReason: '访问工作区外资源', operationCategory: 'file-read', summary: `读取工作区外文件: ${resolvedPath}`, resources }
-      };
-    }
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 只执行工具专属的路径安全检查，不处理 PermissionMode 逻辑。
    */
@@ -557,14 +526,36 @@ export class ReadFileTool implements NativeTool {
     if (typeof targetPath !== 'string') {
       return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
     }
+    const resource = createFilePathResource(targetPath, 'read');
     if (isSensitiveEnvFile(targetPath)) {
-      return { kind: 'ask', message: `读取敏感文件: ${targetPath}`, decisionReason: '敏感文件' };
+      return {
+        kind: 'ask',
+        message: `读取敏感文件: ${targetPath}`,
+        decisionReason: '敏感文件读取需要显式授权',
+        evidence: {
+          operationCategory: 'file-read',
+          sideEffect: 'sensitive-read',
+          riskReason: `读取敏感文件 ${targetPath}`,
+          resources: [resource],
+        },
+      };
     }
+    const evidence = {
+      operationCategory: 'file-read',
+      sideEffect: 'read' as const,
+      riskReason: `读取文件 ${targetPath}`,
+      resources: [resource],
+    };
     try {
       secureResolveReadPath(targetPath);
-      return { kind: 'allow', decisionReason: '路径安全通过' };
+      return { kind: 'allow', decisionReason: '工作区内文件读取', evidence };
     } catch {
-      return { kind: 'ask', message: `访问工作区外路径: ${targetPath}`, decisionReason: '越界路径' };
+      return {
+        kind: 'ask',
+        message: `访问工作区外路径: ${targetPath}`,
+        decisionReason: '需要工作区外路径读取授权',
+        evidence,
+      };
     }
   }
 
@@ -694,63 +685,6 @@ export class WriteFileTool implements NativeTool {
   };
 
   /**
-   * 审查文件写入调用的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @param sessionContext - 可选的会话上下文
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    const mode = sessionContext?.getPermissionMode() ?? 'default';
-    if (mode === 'plan') {
-      return { status: 'deny', message: '只读【Plan】模式下，严禁执行任何文件写入或修改操作。', operation: { planSideEffect: 'write', riskReason: 'Plan 模式拒绝写入', operationCategory: 'file-write', summary: `写入文件`, resources: [] } };
-    }
-
-    const targetPath = args.targetPath;
-    if (typeof targetPath !== 'string') {
-      return { status: 'deny', message: 'targetPath 必须是字符串' };
-    }
-
-    // 机密文件特殊卡关审计
-    if (isSensitiveEnvFile(targetPath)) {
-      const rootDir = getAuthorizedDir() || process.cwd();
-      const rawPath = resolve(rootDir, targetPath);
-      const resolvedPath = existsSync(rawPath) ? getPhysicalRealPath(rawPath) : rawPath;
-      const content = typeof args.content === 'string' ? args.content : '';
-      const resources: SafetyResource[] = [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }];
-      return {
-        status: 'suspend',
-        message: `【机密文件修改审计】智能体试图写入/覆盖敏感的机密配置文件 "${targetPath}"，该操作在任何工作模式下均需人工审批。\n待写入的明文内容如下：\n----------------------------------------\n${content}\n----------------------------------------`,
-        targetPath: resolvedPath,
-        resources,
-        operation: { planSideEffect: 'sensitive-read', riskReason: `写入敏感文件 ${targetPath}`, operationCategory: 'file-write', summary: `写入敏感文件: ${basename(targetPath)}`, resources }
-      };
-    }
-
-    // bypassPermissions 模式下，非机密文件静默放行。
-    if (mode === 'bypassPermissions') {
-      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-write', summary: `写入文件 ${targetPath}`, resources: [] } };
-    }
-
-    let isOutOfSandbox = false;
-    let resolvedPath = '';
-    try {
-      secureResolveWritePath(targetPath, sessionContext);
-    } catch {
-      isOutOfSandbox = true;
-      const rootDir = getAuthorizedDir();
-      resolvedPath = getPhysicalRealPath(resolve(rootDir!, targetPath));
-    }
-    return {
-      status: 'suspend',
-      message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${targetPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : [],
-      operation: { planSideEffect: 'write', riskReason: `写入操作: ${targetPath}`, operationCategory: 'file-write', summary: `写入文件 ${targetPath}`, resources: isOutOfSandbox ? [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }] : [] }
-    };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 写入操作由 ToolPermissionService 统一决策，工具只做敏感文件检测。
    */
@@ -759,10 +693,18 @@ export class WriteFileTool implements NativeTool {
     if (typeof targetPath !== 'string') {
       return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
     }
-    if (isSensitiveEnvFile(targetPath)) {
-      return { kind: 'ask', message: `写入敏感文件: ${targetPath}`, decisionReason: '敏感文件' };
-    }
-    return { kind: 'passthrough' };
+    const sensitive = isSensitiveEnvFile(targetPath);
+    return {
+      kind: 'ask',
+      message: sensitive ? `写入敏感文件: ${targetPath}` : `写入文件: ${targetPath}`,
+      decisionReason: sensitive ? '敏感文件写入需要显式授权' : '文件写入需要授权',
+      evidence: {
+        operationCategory: 'file-write',
+        sideEffect: 'write',
+        riskReason: sensitive ? `写入敏感文件 ${targetPath}` : `写入文件 ${targetPath}`,
+        resources: [createFilePathResource(targetPath, 'write')],
+      },
+    };
   }
 
   /**
@@ -847,64 +789,6 @@ export class EditFileTool implements NativeTool {
   };
 
   /**
-   * 审查文件局部增量修改调性的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @param sessionContext - 可选的会话上下文
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    const mode = sessionContext?.getPermissionMode() ?? 'default';
-    if (mode === 'plan') {
-      return { status: 'deny', message: '只读【Plan】模式下，严禁执行任何文件写入或修改操作。', operation: { planSideEffect: 'write', riskReason: 'Plan 模式拒绝编辑', operationCategory: 'file-edit', summary: `编辑文件`, resources: [] } };
-    }
-
-    const targetPath = args.targetPath;
-    if (typeof targetPath !== 'string') {
-      return { status: 'deny', message: 'targetPath 必须是字符串' };
-    }
-
-    // 机密文件特殊卡关审计
-    if (isSensitiveEnvFile(targetPath)) {
-      const rootDir = getAuthorizedDir() || process.cwd();
-      const rawPath = resolve(rootDir, targetPath);
-      const resolvedPath = existsSync(rawPath) ? getPhysicalRealPath(rawPath) : rawPath;
-      const oldString = typeof args.old_string === 'string' ? args.old_string : '';
-      const newString = typeof args.new_string === 'string' ? args.new_string : '';
-      const resources: SafetyResource[] = [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }];
-      return {
-        status: 'suspend',
-        message: `【机密文件编辑审计】智能体试图修改敏感的环境变量机密文件 "${targetPath}"，该操作在任何工作模式下均需人工审批。\n修改 Diff 差分细节如下：\n- 替换原文：\n"""\n${oldString}\n"""\n+ 替换新文：\n"""\n${newString}\n"""`,
-        targetPath: resolvedPath,
-        resources,
-        operation: { planSideEffect: 'sensitive-read', riskReason: `编辑敏感文件 ${targetPath}`, operationCategory: 'file-edit', summary: `编辑敏感文件: ${basename(targetPath)}`, resources }
-      };
-    }
-
-    // bypassPermissions 模式下，非机密文件静默放行。
-    if (mode === 'bypassPermissions') {
-      return { status: 'pass', operation: { planSideEffect: 'write', riskReason: '', operationCategory: 'file-edit', summary: `编辑文件 ${targetPath}`, resources: [] } };
-    }
-
-    let isOutOfSandbox = false;
-    let resolvedPath = '';
-    try {
-      secureResolveWritePath(targetPath, sessionContext);
-    } catch {
-      isOutOfSandbox = true;
-      const rootDir = getAuthorizedDir();
-      resolvedPath = getPhysicalRealPath(resolve(rootDir!, targetPath));
-    }
-    return {
-      status: 'suspend',
-      message: `智能体试图执行修改或写入操作。工具: "${this.name}"，目标路径: "${targetPath}"`,
-      targetPath: isOutOfSandbox ? resolvedPath : undefined,
-      resources: isOutOfSandbox ? [{ kind: 'path', access: 'write' as const, normalizedPath: resolvedPath }] : [],
-      operation: { planSideEffect: 'write', riskReason: `编辑操作: ${targetPath}`, operationCategory: 'file-edit', summary: `编辑文件 ${targetPath}`, resources: isOutOfSandbox ? [{ kind: 'path', access: 'write', normalizedPath: resolvedPath }] : [] }
-    };
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 编辑操作由 ToolPermissionService 统一决策，工具只做敏感文件检测。
    */
@@ -913,10 +797,18 @@ export class EditFileTool implements NativeTool {
     if (typeof targetPath !== 'string') {
       return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
     }
-    if (isSensitiveEnvFile(targetPath)) {
-      return { kind: 'ask', message: `编辑敏感文件: ${targetPath}`, decisionReason: '敏感文件' };
-    }
-    return { kind: 'passthrough' };
+    const sensitive = isSensitiveEnvFile(targetPath);
+    return {
+      kind: 'ask',
+      message: sensitive ? `编辑敏感文件: ${targetPath}` : `编辑文件: ${targetPath}`,
+      decisionReason: sensitive ? '敏感文件编辑需要显式授权' : '文件编辑需要授权',
+      evidence: {
+        operationCategory: 'file-edit',
+        sideEffect: 'write',
+        riskReason: sensitive ? `编辑敏感文件 ${targetPath}` : `编辑文件 ${targetPath}`,
+        resources: [createFilePathResource(targetPath, 'write')],
+      },
+    };
   }
 
   /**
@@ -1089,42 +981,27 @@ export class ListFilesTool implements NativeTool {
   };
 
   /**
-   * 审查目录清单列举的安全性。
-   *
-   * @param args - 工具调用参数字典
-   * @returns 安全评估结论
-   */
-  checkSafety(args: Record<string, unknown>, sessionContext?: SessionEventPort): SafetyCheckResult {
-    const targetPath = typeof args.targetPath === 'string' ? args.targetPath : '.';
-    try {
-      secureResolveReadPath(targetPath, sessionContext);
-      return { status: 'pass', operation: { planSideEffect: 'read', riskReason: '', operationCategory: 'file-read', summary: `列出目录 ${targetPath}`, resources: [] } };
-    } catch {
-      const rootDir = getAuthorizedDir();
-      const rawPath = resolve(rootDir!, targetPath);
-      const resolvedPath = getPhysicalRealPath(rawPath);
-      const resources: SafetyResource[] = [{ kind: 'directory-scope', access: 'read', normalizedPath: resolvedPath }];
-      return {
-        status: 'suspend',
-        message: `智能体试图访问工作区外部的安全区，需要执行【只读】授权。目标路径: "${resolvedPath}"`,
-        targetPath: resolvedPath,
-        resources,
-        operation: { planSideEffect: 'read', riskReason: '访问工作区外资源', operationCategory: 'file-read', summary: `列出目录 ${resolvedPath}`, resources }
-      };
-    }
-  }
-
-  /**
    * Claude 风格的 tool-level checkPermissions。
    * 只执行工具专属的路径安全检查，不处理 PermissionMode 逻辑。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
     const targetPath = typeof args.targetPath === 'string' ? args.targetPath : '.';
+    const evidence = {
+      operationCategory: 'file-read',
+      sideEffect: 'read' as const,
+      riskReason: `列出目录 ${targetPath}`,
+      resources: [createFilePathResource(targetPath, 'read', 'directory-scope')],
+    };
     try {
       secureResolveReadPath(targetPath);
-      return { kind: 'allow', decisionReason: '路径安全通过' };
+      return { kind: 'allow', decisionReason: '工作区内目录读取', evidence };
     } catch {
-      return { kind: 'ask', message: `访问工作区外路径: ${targetPath}`, decisionReason: '越界路径' };
+      return {
+        kind: 'ask',
+        message: `访问工作区外路径: ${targetPath}`,
+        decisionReason: '需要工作区外目录读取授权',
+        evidence,
+      };
     }
   }
 
