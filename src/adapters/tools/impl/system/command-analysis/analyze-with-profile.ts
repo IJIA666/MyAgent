@@ -12,6 +12,7 @@ import type {
   CommandPermissionSuggestion,
   CommandSideEffect,
   ShellCommandAnalysis,
+  ShellStructureParseResult,
 } from './types.js';
 
 const SIDE_EFFECT_RANK: Record<CommandSideEffect, number> = {
@@ -57,10 +58,18 @@ export function analyzeWithProfile(
 ): ShellCommandAnalysis {
   const hardlineRisks = scanHardlineCommand(command, shellKind);
   const structure = scanShellCommandStructure(command, { shellKind, allowedConnectors });
-  const subcommands = structure.segments.map(segment => ({
-    ...analyzeAtomicCommand(segment.command, shellKind),
-    connectorBefore: segment.connectorBefore,
-  }));
+  let pipelineIndex = 0;
+  const subcommands = structure.segments.map(segment => {
+    pipelineIndex = segment.connectorBefore === '|' || segment.connectorBefore === '|&'
+      ? pipelineIndex + 1
+      : 0;
+    return {
+      ...analyzeAtomicCommand(segment.command, shellKind),
+      connectorBefore: segment.connectorBefore,
+      pipelineIndex,
+      background: segment.connectorBefore === '&' ? true : undefined,
+    };
+  });
   const hasHardline = hardlineRisks.length > 0 || subcommands.some(segment => segment.sideEffect === 'hardline');
   const sideEffect = hasHardline
     ? 'hardline'
@@ -90,3 +99,78 @@ export function analyzeWithProfile(
   };
 }
 
+/**
+ * 将 Shell 专用解析器证据合并到统一命令分析结果。
+ *
+ * @param analysis - 旧扫描器和原子分类器生成的基础结果
+ * @param structure - Shell 专用解析器生成的结构结果
+ * @returns 带节点路径、重定向和解析失败语义的统一证据
+ */
+export function mergeStructureEvidence(
+  analysis: ShellCommandAnalysis,
+  structure: ShellStructureParseResult,
+): ShellCommandAnalysis {
+  const subcommands = analysis.subcommands.map((segment, index) => {
+    const node = structure.nodes[index];
+    if (!node) {
+      return segment;
+    }
+    const merged = {
+      ...segment,
+      nodePath: node.nodePath,
+      redirections: node.redirections,
+      pipelineIndex: node.pipelineIndex ?? segment.pipelineIndex,
+      background: node.background ?? segment.background,
+    };
+    // 重定向副作用高于命令自身时提升段级别评估（防止 cat > file 被误判为纯只读）
+    if (node.redirections.length > 0) {
+      const redirSideEffect = aggregateSideEffect(node.redirections.map(r => r.sideEffect));
+      const redirPermission = aggregatePermission(node.redirections.map(r => r.permission));
+      const upgradedSideEffect = SIDE_EFFECT_RANK[redirSideEffect] > SIDE_EFFECT_RANK[merged.sideEffect]
+        ? redirSideEffect
+        : merged.sideEffect;
+      const upgradedPermission = redirPermission === 'deny'
+        ? 'deny'
+        : (redirPermission === 'ask' && merged.permission !== 'deny') ? 'ask' : merged.permission;
+      const upgradedReason = [...node.redirections.map(r => r.reason), segment.reason].join('；');
+      // 重写为升级后的对象
+      return { ...merged, sideEffect: upgradedSideEffect, permission: upgradedPermission, reason: upgradedReason };
+    }
+    return merged;
+  });
+
+  // 任一前置语法扫描已确认 invalid 时，后续词法 parser 不得将其提升为 parsed。
+  if (analysis.parseStatus === 'invalid') {
+    return { ...analysis, subcommands };
+  }
+
+  if (structure.parseStatus === 'parsed') {
+    const hasHardline = subcommands.some(s => s.sideEffect === 'hardline');
+    const sideEffect = hasHardline
+      ? 'hardline'
+      : aggregateSideEffect(subcommands.map(s => s.sideEffect));
+    const permission = hasHardline
+      ? 'deny'
+      : aggregatePermission(subcommands.map(s => s.permission));
+    return {
+      ...analysis,
+      parseStatus: 'parsed',
+      subcommands,
+      sideEffect,
+      permission,
+      riskReason: subcommands.map(s => s.reason).join('；'),
+    };
+  }
+
+  const riskSignals = [...analysis.riskSignals, ...structure.riskSignals];
+  const hasHardline = analysis.sideEffect === 'hardline';
+  return {
+    ...analysis,
+    parseStatus: structure.parseStatus,
+    subcommands,
+    sideEffect: hasHardline ? 'hardline' : 'unknown',
+    permission: hasHardline ? 'deny' : 'deny',
+    riskSignals,
+    riskReason: riskSignals.map(risk => risk.reason).join('；'),
+  };
+}

@@ -25,14 +25,14 @@ describe('运行时 effect 生命周期集成验证（8.1-8.4）', () => {
     ? new PowerShellTool()
     : new BashTool();
 
-  it('8.1 原子和纯只读复合命令的 evidence 均映射为 read effect', () => {
-    const atomicDecision = tool.checkPermissions(platformReadCase);
+  it('8.1 原子和纯只读复合命令的 evidence 均映射为 read effect', async () => {
+    const atomicDecision = await tool.checkPermissions(platformReadCase);
     expect(atomicDecision.kind).toBe('allow');
     const readEffect = createExecutionEffectFromEvidence(atomicDecision.evidence, true);
     expect(readEffect.kind).toBe('read');
     expect(readEffect.reason).toBe('permission_evidence');
 
-    const compoundDecision = tool.checkPermissions(platformCompositeCase);
+    const compoundDecision = await tool.checkPermissions(platformCompositeCase);
     expect(compoundDecision.kind).toBe('allow');
     expect(compoundDecision.evidence?.subcommands).toHaveLength(2);
     const compoundEffect = createExecutionEffectFromEvidence(compoundDecision.evidence, true);

@@ -10,34 +10,41 @@ import { BashTool, PowerShellTool } from './terminal.js';
 import { isShellKindSupportedOnPlatform } from './terminal-plan.js';
 import { GetCurrentTimeTool } from './time.js';
 import { commandPrefixExtractor, emptyExtractor } from '../resource-extractors.js';
+import { DEFAULT_SHELL_COMPOUND_FEATURES, type ShellCompoundFeatureConfig } from './command-analysis/index.js';
 
 /**
  * 创建并装配 Bash 工具。
  * Bash 是跨平台的模型可见 Shell 工具；具体平台是否具备 bash 可执行文件由执行计划阶段校验。
  */
-const bashTool: NativeTool = new BashTool();
-bashTool.resourceExtractor = commandPrefixExtractor();
-bashTool.accessMetadata = { resourceKinds: ['command-prefix'], accessMode: 'write' };
-
 /**
- * 按平台动态创建 PowerShell 工具。
- * PowerShell 仅在 Windows 且运行环境中能够解析到 PowerShell 时注册，避免非 Windows 模型看到不可用工具。
+ * 创建系统工具并注入不可变 Shell 能力配置。
+ *
+ * @param features - Shell 复合命令能力开关
+ * @returns 当前平台可用的系统工具
  */
-const powerShellTool: NativeTool | undefined = process.platform === 'win32' &&
-  isShellKindSupportedOnPlatform('powershell', 'win32')
-  ? new PowerShellTool()
-  : undefined;
+export function buildSystemTools(
+  features: Readonly<ShellCompoundFeatureConfig> = DEFAULT_SHELL_COMPOUND_FEATURES,
+): NativeTool[] {
+  const bashTool: NativeTool = new BashTool(features);
+  bashTool.resourceExtractor = commandPrefixExtractor();
+  bashTool.accessMetadata = { resourceKinds: ['command-prefix'], accessMode: 'write' };
 
-if (powerShellTool) {
-  powerShellTool.resourceExtractor = commandPrefixExtractor();
-  powerShellTool.accessMetadata = { resourceKinds: ['command-prefix'], accessMode: 'write' };
+  // PowerShell 仅在 Windows 且可解析到可执行文件时注册。
+  const powerShellTool: NativeTool | undefined = process.platform === 'win32' &&
+    isShellKindSupportedOnPlatform('powershell', 'win32')
+    ? new PowerShellTool(features)
+    : undefined;
+  if (powerShellTool) {
+    powerShellTool.resourceExtractor = commandPrefixExtractor();
+    powerShellTool.accessMetadata = { resourceKinds: ['command-prefix'], accessMode: 'write' };
+  }
+
+  const getCurrentTimeTool: NativeTool = new GetCurrentTimeTool();
+  getCurrentTimeTool.resourceExtractor = emptyExtractor();
+
+  return [
+    bashTool,
+    ...(powerShellTool ? [powerShellTool] : []),
+    getCurrentTimeTool,
+  ];
 }
-
-const getCurrentTimeTool: NativeTool = new GetCurrentTimeTool();
-getCurrentTimeTool.resourceExtractor = emptyExtractor();
-
-export const systemTools: NativeTool[] = [
-  bashTool,
-  ...(powerShellTool ? [powerShellTool] : []),
-  getCurrentTimeTool,
-];

@@ -24,14 +24,9 @@
 - **WHEN** 用户读取历史完整 trace 或默认 metadata-only trace
 - **THEN** reader 必须兼容历史记录格式，并根据记录声明的 capture mode 区分可完整 hydration 的 trace 与只能用于元数据诊断的 trace；metadata-only trace 不得被错误当作完整回放数据或因缺少正文而导致 reader 崩溃
 
-### Requirement: 质量门禁与诊断阶段必须形成可关联 trace span
+### Requirement: 诊断阶段必须形成可关联 trace span
 
-系统必须（MUST）在 trace 中记录实际 effect、质量门禁、目录测量和技能缓存刷新阶段，使开发者无需通过时间空洞推断延迟来源。记录内容必须遵守当前 capture mode 与脱敏规则。
-
-#### Scenario: metadata-only 质量门禁 trace
-
-- **WHEN** 默认 metadata-only 会话运行质量门禁
-- **THEN** trace 必须记录阶段、关联调用、步骤状态、耗时、触发 effect 类型和结果摘要，但不得记录原始命令输出或文件内容
+系统必须（MUST）在 trace 中记录实际 effect、目录测量和技能缓存刷新阶段，使开发者无需通过时间空洞推断延迟来源。记录内容必须遵守当前 capture mode 与脱敏规则。
 
 #### Scenario: metadata-only 目录测量 trace
 

@@ -5,14 +5,37 @@
 
 import type { ResolvedShellKind } from '../terminal-types.js';
 
+/** Shell 复合命令分析器的内部能力覆盖配置。 */
+export interface ShellCompoundFeatureConfig {
+  /** 是否分析管道结构。 */
+  readonly pipelines: boolean;
+  /** 是否分析条件链结构。 */
+  readonly conditionals: boolean;
+  /** 是否分析输入输出重定向。 */
+  readonly redirections: boolean;
+  /** 是否分析 Shell 后台操作符。 */
+  readonly background: boolean;
+  /** 是否分析嵌套命令结构。 */
+  readonly nested: boolean;
+}
+
+/** 正常运行时启用全部已验收复合命令能力。 */
+export const DEFAULT_SHELL_COMPOUND_FEATURES: Readonly<ShellCompoundFeatureConfig> = Object.freeze({
+  pipelines: true,
+  conditionals: true,
+  redirections: true,
+  background: true,
+  nested: true,
+});
+
 /** 命令解析状态。 */
 export type ShellCommandParseStatus = 'parsed' | 'unsupported' | 'invalid';
 
 /** 命令结构形态。 */
 export type ShellCommandShape = 'atomic' | 'compound' | 'nested';
 
-/** 阶段 3 支持的顶层连接符。 */
-export type CommandConnector = ';' | '&&' | '||';
+/** Shell 结构解析器可识别的命令连接符。 */
+export type CommandConnector = ';' | '&&' | '||' | '|' | '|&' | '&' | 'newline';
 
 /** 命令副作用等级。 */
 export type CommandSideEffect = 'read' | 'sensitive-read' | 'write' | 'unknown' | 'hardline';
@@ -30,12 +53,60 @@ export interface CommandRiskSignal {
   readonly segmentIndex?: number;
 }
 
+/** 单条重定向的结构化分析结果。 */
+export interface CommandRedirectionAnalysis {
+  /** Shell 重定向操作符。 */
+  readonly operator: string;
+  /** 静态目标；动态目标无法可靠提取时不设置。 */
+  readonly target?: string;
+  /** 重定向自身的副作用。 */
+  readonly sideEffect: CommandSideEffect;
+  /** 重定向自身的权限建议。 */
+  readonly permission: CommandPermissionSuggestion;
+  /** 重定向风险说明。 */
+  readonly reason: string;
+}
+
+/** 解析依赖提取出的单个命令语法节点。 */
+export interface ShellCommandSyntaxNode {
+  /** 节点对应的原始命令片段。 */
+  readonly command: string;
+  /** 节点在解析树中的稳定下标路径。 */
+  readonly nodePath: readonly number[];
+  /** 节点前的控制或管道连接符。 */
+  readonly connectorBefore?: CommandConnector;
+  /** 节点所属管道中的顺序下标。 */
+  readonly pipelineIndex?: number;
+  /** 节点是否由后台操作符启动。 */
+  readonly background?: boolean;
+  /** 节点关联的重定向语法证据。 */
+  readonly redirections: readonly CommandRedirectionAnalysis[];
+}
+
+/** Shell 专用解析依赖返回的结构化结果。 */
+export interface ShellStructureParseResult {
+  /** 语法解析状态。 */
+  readonly parseStatus: ShellCommandParseStatus;
+  /** 按执行顺序排列的命令节点。 */
+  readonly nodes: readonly ShellCommandSyntaxNode[];
+  /** 解析阶段产生的结构风险。 */
+  readonly riskSignals: readonly CommandRiskSignal[];
+}
+
 /** 单个原子子命令的分析结果。 */
 export interface CommandSegmentAnalysis {
   /** 原始子命令文本。 */
   readonly command: string;
   /** 前置连接符；首个子命令不设置。 */
   readonly connectorBefore?: CommandConnector;
+  /** 命令在嵌套语法树中的稳定下标路径。 */
+  readonly nodePath?: readonly number[];
+  /** 当前命令关联的重定向证据。 */
+  readonly redirections?: readonly CommandRedirectionAnalysis[];
+  /** 当前命令在所属管道中的顺序下标。 */
+  readonly pipelineIndex?: number;
+  /** 当前命令是否由后台操作符启动。 */
+  readonly background?: boolean;
   /** 规范化后的可执行命令名。 */
   readonly executable: string;
   /** 命令参数。 */
@@ -80,6 +151,8 @@ export interface ShellCommandAnalyzer {
    * @param command - 原始 Shell 命令
    * @returns 命令分析结果
    */
-  analyze(command: string): ShellCommandAnalysis;
+  analyze(
+    command: string,
+    features: Readonly<ShellCompoundFeatureConfig>,
+  ): Promise<ShellCommandAnalysis>;
 }
-

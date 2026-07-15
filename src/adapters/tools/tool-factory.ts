@@ -7,16 +7,19 @@
 
 import { gitTools } from './impl/git/index.js';
 import { fileSystemTools } from './impl/filesystem/index.js';
-import { systemTools } from './impl/system/index.js';
+import { buildSystemTools } from './impl/system/index.js';
 import { getSkillTools } from './impl/skill/index.js';
 import { getInteractionTools } from './impl/interaction/index.js';
 import { getBrowserTools } from './impl/browser/browser-tool-registry.js';
 import type { NativeTool } from './tool-types.js';
+import type { ShellCompoundFeatureConfig } from './impl/system/command-analysis/index.js';
 
 /** buildNativeTools 的选项参数 */
 export interface BuildNativeToolsOptions {
   /** 技能加载函数，按名称解析技能内容 */
   loadSkill?: (name: string) => string | null;
+  /** Shell 复合命令能力开关。 */
+  shellCompoundFeatures?: Readonly<ShellCompoundFeatureConfig>;
 }
 
 /**
@@ -31,7 +34,7 @@ export function buildNativeTools(options?: BuildNativeToolsOptions): NativeTool[
   return [
     ...gitTools,
     ...fileSystemTools,
-    ...systemTools,
+    ...buildSystemTools(options?.shellCompoundFeatures),
     ...getSkillTools(options?.loadSkill),
     ...getInteractionTools(),
     ...getBrowserTools(),

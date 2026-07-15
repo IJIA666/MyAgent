@@ -539,9 +539,6 @@ describe('Plugins Lifecycle & Action Tests', () => {
         generateEmbeddings: vi.fn().mockResolvedValue([])
       } as unknown as EmbeddingPort;
 
-      /** 模拟 ToolPolicyPort，返回 pass 以避免影响测试逻辑流程 */
-      const mockToolPolicyPort = { evaluate: async () => ({ status: 'pass' as const }) };
-
       // 使用自定义的记忆文件路径初始化 SessionManager
       const session = new SessionManager(
         mockLlmConfig,
@@ -551,8 +548,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         mockContextAdapter,
         mockVectorDb,
         mockEmbedding,
-        createMockAppConfig(),
-        mockToolPolicyPort
+        createMockAppConfig()
       );
 
       // 覆盖 MemoryService 实例内的 memoryFilePath 物理路径以使用测试临时路径
@@ -658,8 +654,6 @@ describe('Plugins Lifecycle & Action Tests', () => {
       } as unknown as ToolRegistryPort;
       const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
-      const mockToolPolicyPort = { evaluate: async () => ({ status: 'pass' as const }) };
-
       const session = new SessionManager(
         { model: 'mock' } as unknown as LlmConfig,
         mockDriver,
@@ -668,8 +662,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
         mockContextAdapter,
         mockVectorDb,
         mockEmbedding,
-        createMockAppConfig(),
-        mockToolPolicyPort
+        createMockAppConfig()
       );
 
       // 覆盖 MemoryService 实例内的 memoryFilePath 物理路径以使用测试临时路径

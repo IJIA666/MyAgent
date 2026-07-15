@@ -210,6 +210,8 @@ export function scanShellCommandStructure(
           addRisk(risks, 'structure.and-connector', '当前 Shell 暂不支持 && 连接符');
         }
         index += 1;
+      } else if (isAllowedConnector('&', profile)) {
+        acceptConnector('&');
       } else {
         current += char;
         addRisk(risks, 'structure.background', '当前阶段不支持后台执行或单 & 连接符');
@@ -226,6 +228,16 @@ export function scanShellCommandStructure(
           addRisk(risks, 'structure.or-connector', '当前 Shell 暂不支持 || 连接符');
         }
         index += 1;
+      } else if (next === '&') {
+        if (isAllowedConnector('|&', profile)) {
+          acceptConnector('|&');
+        } else {
+          current += '|&';
+          addRisk(risks, 'structure.pipeline', '当前阶段不支持标准错误管道');
+        }
+        index += 1;
+      } else if (isAllowedConnector('|', profile)) {
+        acceptConnector('|');
       } else {
         current += char;
         addRisk(risks, 'structure.pipeline', '当前阶段不支持管道');

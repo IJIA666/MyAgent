@@ -132,9 +132,9 @@ describe('日志管道合约测试 — 真实 initLogger / file sink', () => {
         resourceCount: 0,
       });
 
-      logger.info('[Test] quality_check_finished', {
-        component: LOG_COMPONENT.QUALITY_CHECK,
-        event: 'quality_check_finished',
+      logger.info('[Test] runtime_event_finished', {
+        component: 'runtime',
+        event: 'runtime_event_finished',
         sessionId: 'test-session-001',
         success: true,
         durationMs: 1234,
@@ -154,12 +154,12 @@ describe('日志管道合约测试 — 真实 initLogger / file sink', () => {
       expect(toolEffectObj.sessionId).toBe('test-session-001');
       expect(toolEffectObj.kind).toBe('read');
 
-      const qualityLine = lines.find(l => l.includes('quality_check_finished'));
-      expect(qualityLine).toBeDefined();
-      const qualityObj = JSON.parse(qualityLine!);
-      expect(qualityObj.component).toBe('quality_check');
-      expect(qualityObj.success).toBe(true);
-      expect(qualityObj.durationMs).toBe(1234);
+      const runtimeLine = lines.find(l => l.includes('runtime_event_finished'));
+      expect(runtimeLine).toBeDefined();
+      const runtimeObj = JSON.parse(runtimeLine!);
+      expect(runtimeObj.component).toBe('runtime');
+      expect(runtimeObj.success).toBe(true);
+      expect(runtimeObj.durationMs).toBe(1234);
     } finally {
       process.chdir(originalCwd);
       if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });

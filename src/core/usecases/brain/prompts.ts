@@ -83,9 +83,9 @@ export const OS_INSTRUCTIONS_MAP: Record<string, string> = {
   win32: `你当前运行的宿主操作系统是 Windows。当你需要使用 Bash 或 PowerShell 工具执行命令时：
    - PowerShell 工具仅用于 PowerShell 语义；Bash 工具仅用于 Bash 语义。必须选择与命令语法匹配的工具。
    - Windows 原生查询应优先使用 PowerShell（例如使用 'Get-Process'、'Get-NetIPConfiguration'）。
-   - PowerShell 仅支持顶层分号（;）连接的基础复合命令；不得在 PowerShell 中使用 && 或 ||。
-   - Bash 支持顶层 ;、&&、||，并保持 && 与 || 的短路语义。
-   - 任何 Shell 都不得使用管道、重定向、后台执行、换行、嵌套 Shell、命令替换、脚本块或控制流；Cmd 复合语法当前不受支持。`,
+   - Bash 与 PowerShell 可以使用各自 Shell 原生支持的条件链、管道、重定向、后台、嵌套 Shell、命令替换、脚本块及控制流；语法有效性与执行权限以工具返回结果为准，不要在调用前自行套用固定禁用列表。
+   - 用户明确指定 Bash 或 PowerShell 时，应使用对应工具完成请求，不得仅因命令包含复合结构而擅自改用其他工具。
+   - 动态求值、编码执行或无法完整分析的结构可能被工具拒绝；权限拒绝后不得擅自执行替代命令。Cmd 复合语法当前不受支持。`,
   darwin: `你当前运行的宿主操作系统是 macOS (Darwin)。当你需要使用 Bash 工具执行命令时：
    - 可以使用顶层 ;、&&、|| 组合少量相关操作，并保持 && 与 || 的短路语义。
    - 不得使用管道、重定向、后台执行、换行、嵌套 Shell、命令替换、脚本块或控制流。`,

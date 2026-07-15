@@ -200,6 +200,22 @@ export function scanHardlineCommand(
     }
     if (patterns.some(pattern => pattern.test(candidate.trim()))) {
       risks.push({ code: 'hardline.destructive-command', reason: '命中毁灭性系统命令规则' });
+      continue;
+    }
+
+    // 动态执行结构无法静态分析其真实执行命令，一律 deny
+    const executable = tokens[findExecutableIndex(tokens)]?.replace(/^.*[/\\]/, '').toLowerCase();
+    if (executable === 'eval') {
+      risks.push({ code: 'hardline.dynamic-execution', reason: 'eval 执行动态构造的代码，无法静态分析' });
+      continue;
+    }
+    if (executable === 'invoke-expression' || executable === 'iex') {
+      risks.push({ code: 'hardline.dynamic-execution', reason: 'Invoke-Expression 执行动态构造的代码，无法静态分析' });
+      continue;
+    }
+    // EncodedCommand 传递 Base64 编码命令，完全绕过静态分析
+    if (/encodedcommand/i.test(candidate) && shellKind === 'powershell') {
+      risks.push({ code: 'hardline.encoded-command', reason: 'PowerShell EncodedCommand 绕过静态分析' });
     }
   }
 

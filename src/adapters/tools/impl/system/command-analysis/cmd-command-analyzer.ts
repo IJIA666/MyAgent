@@ -4,12 +4,14 @@
  */
 
 import { analyzeWithProfile } from './analyze-with-profile.js';
-import type { ShellCommandAnalysis, ShellCommandAnalyzer } from './types.js';
+import type { ShellCommandAnalysis, ShellCommandAnalyzer, ShellCompoundFeatureConfig } from './types.js';
 
 /** Cmd 分析器。 */
 export const cmdCommandAnalyzer: ShellCommandAnalyzer = {
-  analyze(command: string): ShellCommandAnalysis {
+  async analyze(
+    command: string,
+    _features: Readonly<ShellCompoundFeatureConfig>,
+  ): Promise<ShellCommandAnalysis> {
     return analyzeWithProfile(command, 'cmd', []);
   },
 };
-

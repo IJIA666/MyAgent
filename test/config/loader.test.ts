@@ -225,4 +225,5 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
       expect(config.diagnostics.auditRetentionSessions).toBe(20);
     });
   });
+
 });

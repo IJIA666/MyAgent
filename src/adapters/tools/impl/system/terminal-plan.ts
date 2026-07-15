@@ -29,9 +29,11 @@ const PLATFORM_DEFAULT_SHELL: Record<string, ResolvedShellKind> = {
   sunos: 'posix',
 };
 
-/** shell 包装程序及其固定前置参数 */
-interface ShellLauncher {
+/** Shell 包装程序及其固定前置参数。 */
+export interface ShellLauncher {
+  /** 可执行文件路径或名称。 */
   executable: string;
+  /** 执行用户命令前追加的固定参数。 */
   argsPrefix: string[];
 }
 
@@ -93,8 +95,13 @@ function findExecutableInPath(
 /**
  * 为已决议 shell family 选择实际 shell 包装程序。
  * 返回 null 表示当前策略不需要额外 shell 包装。
+ *
+ * @param kind - 已决议的 Shell family
+ * @param platform - 当前运行平台
+ * @param env - 启动期环境变量快照
+ * @returns 可用的 Shell launcher；当前平台无法解析时返回 null
  */
-function resolveShellLauncher(
+export function resolveShellLauncher(
   kind: ResolvedShellKind,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = getRuntimeEnv(),

@@ -161,14 +161,15 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     expect(RULE_EVIDENCE_DISCIPLINE).not.toContain('缓存目录');
   });
 
-  test('10. Shell 提示词应与阶段 3 的复合命令边界一致', () => {
+  test('10. Shell 提示词应与阶段 4 的复合命令能力一致', () => {
     expect(RULE_TOOL_PRIORITY).toContain('用户明确指定 Shell');
     expect(RULE_TOOL_PRIORITY).toContain('终端命令的连接符与禁用结构仅以“终端命令安全性约束”为准');
     expect(RULE_TOOL_PRIORITY).not.toContain('Bash 仅支持顶层');
     expect(RULE_TOOL_PRIORITY).not.toContain('PowerShell 仅支持顶层');
 
-    expect(OS_INSTRUCTIONS_MAP.win32).toContain('PowerShell 仅支持顶层分号（;）');
-    expect(OS_INSTRUCTIONS_MAP.win32).toContain('Bash 支持顶层 ;、&&、||');
+    expect(OS_INSTRUCTIONS_MAP.win32).toContain('Shell 原生支持的条件链、管道、重定向、后台、嵌套 Shell、命令替换、脚本块及控制流');
+    expect(OS_INSTRUCTIONS_MAP.win32).toContain('不得仅因命令包含复合结构而擅自改用其他工具');
+    expect(OS_INSTRUCTIONS_MAP.win32).toContain('权限拒绝后不得擅自执行替代命令');
     expect(OS_INSTRUCTIONS_MAP.win32).toContain('Cmd 复合语法当前不受支持');
     expect(OS_INSTRUCTIONS_MAP.darwin).toContain('顶层 ;、&&、||');
     expect(OS_INSTRUCTIONS_MAP.linux).toContain('顶层 ;、&&、||');

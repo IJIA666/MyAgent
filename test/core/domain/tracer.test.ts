@@ -131,7 +131,7 @@ describe('AgentTracer diagnostic capture modes', () => {
   it('logEventSpan 在 replay 模式下保留完整元数据并脱敏', () => {
     const diagnostics = createDiagnostics({ replayEnabled: true });
     const tracer = new AgentTracer(tempDir, 'event-span-replay', diagnostics);
-    tracer.logEventSpan('quality_check_finished', {
+    tracer.logEventSpan('runtime_event_finished', {
       status: 'failed',
       durationMs: 1234,
       count: 3,
@@ -143,7 +143,7 @@ describe('AgentTracer diagnostic capture modes', () => {
     const parsed = JSON.parse(content.trim());
 
     expect(parsed.type).toBe('event_span');
-    expect(parsed.event).toBe('quality_check_finished');
+    expect(parsed.event).toBe('runtime_event_finished');
     expect(parsed.correlationId).toBe('corr-002');
     // replay 模式保留完整元数据
     expect(parsed.metadata).toBeDefined();

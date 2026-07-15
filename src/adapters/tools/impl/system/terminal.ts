@@ -3,7 +3,12 @@
  * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
  */
 
-import { analyzeShellCommand, type ShellCommandAnalysis } from './command-analysis/index.js';
+import {
+  analyzeShellCommand,
+  DEFAULT_SHELL_COMPOUND_FEATURES,
+  type ShellCommandAnalysis,
+  type ShellCompoundFeatureConfig,
+} from './command-analysis/index.js';
 import { validateCommand, validateCwd } from './terminal-guard.js';
 import { runCommandEngine } from './terminal-engine.js';
 import { loadDefaultShellFamily } from './terminal-config.js';
@@ -26,6 +31,8 @@ interface ShellToolOptions {
   shellKind: ShellKind;
   /** 工具描述补充文本。 */
   description?: string;
+  /** 启用的 Shell 复合命令能力。 */
+  features: Readonly<ShellCompoundFeatureConfig>;
 }
 
 /**
@@ -111,6 +118,9 @@ class BaseShellTool implements NativeTool {
   /** 当前工具固定使用的 Shell。 */
   private readonly configuredShellKind: ShellKind;
 
+  /** 当前工具实例冻结使用的复合命令能力。 */
+  private readonly compoundFeatures: Readonly<ShellCompoundFeatureConfig>;
+
   /** 工具的 OpenAI Function Calling 声明定义。 */
   readonly definition: Record<string, unknown>;
 
@@ -124,6 +134,7 @@ class BaseShellTool implements NativeTool {
   constructor(options: ShellToolOptions) {
     this.name = options.name;
     this.configuredShellKind = options.shellKind;
+    this.compoundFeatures = Object.freeze({ ...options.features });
     this.definition = createShellToolDefinition(this.name, options.shellKind, options.description);
   }
 
@@ -160,9 +171,9 @@ class BaseShellTool implements NativeTool {
    * @param args - 工具调用参数
    * @returns 工具内部检查结果
    */
-  checkPermissions(
+  async checkPermissions(
     args: Record<string, unknown>,
-  ): ToolPermissionCheckResult {
+  ): Promise<ToolPermissionCheckResult> {
     const command = args.command;
     if (typeof command !== 'string') {
       return { kind: 'deny', decisionReason: 'command 必须是字符串' };
@@ -182,7 +193,7 @@ class BaseShellTool implements NativeTool {
     const resolvedShellKind = plan.shellKind;
 
     // 统一分析命令，确保权限决策与执行阶段使用相同的子命令结果。
-    const commandAnalysis = analyzeShellCommand(command, resolvedShellKind);
+    const commandAnalysis = await analyzeShellCommand(command, resolvedShellKind, this.compoundFeatures);
     const planSideEffect = commandAnalysis.sideEffect;
     const evidence = createPermissionEvidence(commandAnalysis);
 
@@ -195,8 +206,8 @@ class BaseShellTool implements NativeTool {
       };
     }
 
-    // 当前阶段无法可靠分析的结构一律拒绝执行。
-    if (commandAnalysis.parseStatus !== 'parsed') {
+    // 语法无效的一律 deny；unsupported 结构放行到下级 ask 路径，由权限服务决定是否授权。
+    if (commandAnalysis.parseStatus === 'invalid') {
       return { kind: 'deny', decisionReason: commandAnalysis.riskReason, evidence };
     }
 
@@ -260,7 +271,7 @@ class BaseShellTool implements NativeTool {
     const rawShellKind = this.getShellKind();
     const plan = this.createPlan(command, rawShellKind);
     // 1. 安全网关：使用已决议 Shell 语义验证统一分析结论。
-    validateCommand(command, plan.shellKind);
+    await validateCommand(command, plan.shellKind);
 
     // 2. 沙箱隔离：校验 cwd 范围并获取规范绝对路径
     const targetCwd = validateCwd(cwd);
@@ -322,12 +333,17 @@ class BaseShellTool implements NativeTool {
  * 固定使用 POSIX/Bash 语义，避免模型通过参数切换到其他 Shell。
  */
 export class BashTool extends BaseShellTool {
-  /** 创建 Bash 工具实例。 */
-  constructor() {
+  /**
+   * 创建 Bash 工具实例。
+   *
+   * @param features - 复合命令能力开关
+   */
+  constructor(features: Readonly<ShellCompoundFeatureConfig> = DEFAULT_SHELL_COMPOUND_FEATURES) {
     super({
       name: 'Bash',
       shellKind: 'posix',
       description: '在工作区内执行 Bash 命令。命令的读写和风险属性由统一权限策略判断。',
+      features,
     });
   }
 }
@@ -337,12 +353,17 @@ export class BashTool extends BaseShellTool {
  * 该工具由系统工具注册表按平台和运行环境动态注入，仅在 Windows 且 PowerShell 可用时暴露。
  */
 export class PowerShellTool extends BaseShellTool {
-  /** 创建 PowerShell 工具实例。 */
-  constructor() {
+  /**
+   * 创建 PowerShell 工具实例。
+   *
+   * @param features - 复合命令能力开关
+   */
+  constructor(features: Readonly<ShellCompoundFeatureConfig> = DEFAULT_SHELL_COMPOUND_FEATURES) {
     super({
       name: 'PowerShell',
       shellKind: 'powershell',
       description: '在工作区内执行 PowerShell 命令。该工具仅在 Windows 平台且 PowerShell 可用时提供。',
+      features,
     });
   }
 }

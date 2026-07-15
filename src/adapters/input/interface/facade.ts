@@ -366,20 +366,6 @@ export class CliFacade {
         void this.handlePendingInteraction(event.interaction);
         break;
 
-      case 'quality_check_status': {
-        const qcPhase = event.phase;
-        if (qcPhase === 'started') {
-          process.stdout.write(`\n${theme.info('[验证中] 正在运行修改后代码验证...')}\n`);
-        } else if (qcPhase === 'passed') {
-          process.stdout.write(`${theme.success('[验证通过] 代码验证已通过。')}\n`);
-        } else if (qcPhase === 'failed') {
-          process.stdout.write(`${theme.error('[验证失败] 代码验证未通过，正在尝试修复。')}\n`);
-        } else if (qcPhase === 'cancelled') {
-          process.stdout.write(`${theme.warning('[验证已取消]')}\n`);
-        }
-        break;
-      }
-
       case 'suspend':
         // 挂起事件，不需要处理（ApprovalHandler 会处理）
         break;

@@ -16,35 +16,6 @@ import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-type
 import type { VectorDbPort } from '../../../../src/ports/driven/db/VectorDbPort.js';
 import type { EmbeddingPort } from '../../../../src/ports/driven/llm/EmbeddingPort.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
-import { ShellQualityCheckAdapter } from '../../../../src/adapters/tools/ShellQualityCheckAdapter.js';
-import type { ToolPolicyPort } from '../../../../src/ports/shared/tool-policy.js';
-
-/** 所有测试共享的 mock ToolPolicyPort — 直接放行所有工具 */
-const mockPolicyPort: ToolPolicyPort = {
-  evaluate: async () => ({ status: 'pass' as const }),
-};
-
-// 使用 vi.hoisted 提前在加载阶段劫持并 mock 掉 child_process.exec 行为，隔离物理执行
-const { mockExecPromisified, execMockFunc } = vi.hoisted(() => {
-  const mExecPromisified = vi.fn();
-  const mockFunc = () => {
-    return { stdout: '', stderr: '' };
-  };
-  Object.defineProperty(mockFunc, Symbol.for('nodejs.util.promisify.custom'), {
-    value: (cmd: string, options: unknown) => {
-      return mExecPromisified(cmd, options);
-    },
-    configurable: true,
-    writable: true
-  });
-  return { mockExecPromisified: mExecPromisified, execMockFunc: mockFunc };
-});
-
-vi.mock('child_process', () => {
-  return {
-    exec: execMockFunc
-  };
-});
 
 interface VirtualAgentLoop {
   checkCacheAndCalibrate: (usage: unknown) => Generator<AgentEvent, void, unknown>;
@@ -52,7 +23,6 @@ interface VirtualAgentLoop {
   isFirstCall: boolean;
   pendingChanges: string[];
   lastInteractionTime: number | null;
-  runPostRunCheck: () => Promise<{ success: boolean; output: string }>;
 }
 
 describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
@@ -75,12 +45,10 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       MemoryService.prototype,
       'rebuildVectorDbIfEmpty'
     ).mockResolvedValue(undefined);
-    mockExecPromisified.mockResolvedValue({ stdout: 'lint/tsc mock passed\n', stderr: '' });
     vi.clearAllMocks();
   });
 
   afterEach(() => {
-    mockExecPromisified.mockReset();
     vi.restoreAllMocks();
   });
 
@@ -109,7 +77,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockVectorDb,
       mockEmbedding,
       createMockAppConfig(),
-      mockPolicyPort,
     );
 
     expect(session.getIsGenerating()).toBe(false);
@@ -156,7 +123,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockVectorDb,
       mockEmbedding,
       createMockAppConfig(),
-      mockPolicyPort,
     );
 
     const profile = { id: 'deepseek-v4-flash', defaultModel: 'deepseek-v4-flash', contextWindow: 1000000 };
@@ -230,7 +196,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockVectorDb,
       mockEmbedding,
       createMockAppConfig(),
-      mockPolicyPort,
     );
 
     // 等待事件 complete
@@ -330,7 +295,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockVectorDb,
       mockEmbedding,
       createMockAppConfig(),
-      mockPolicyPort,
     );
 
     await new Promise<void>((resolve, reject) => {
@@ -363,7 +327,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockVectorDb,
       mockEmbedding,
       createMockAppConfig(),
-      mockPolicyPort,
     );
 
     const loop = session['agentLoop'] as unknown as VirtualAgentLoop;
@@ -419,83 +382,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     expect((res4[0] as { message: string }).message).toContain('TTL 超时淘汰');
   });
 
-  it('应该能够运行后置质量强校验 runPostRunCheck', async () => {
-    const qualityCheckAdapter = new ShellQualityCheckAdapter();
-    const mockContext = { sessionId: 'test', triggerEffects: [], changedResources: [], signal: undefined };
-
-    // 1. 成功测试
-    mockExecPromisified.mockResolvedValue({
-      stdout: 'lint/tsc mock passed',
-      stderr: ''
-    });
-
-    const successResult = await qualityCheckAdapter.runPostRunCheck(mockContext);
-    expect(successResult.success).toBe(true);
-    expect(successResult.steps.length).toBeGreaterThanOrEqual(1);
-    expect(successResult.summary).toBeDefined();
-
-    // 2. 失败测试 (验证 catch 分支)
-    mockExecPromisified.mockRejectedValue({
-      stdout: 'stdout error snippet',
-      stderr: 'stderr error snippet',
-      message: 'Mock lint tsc exception'
-    });
-
-    const failResult = await qualityCheckAdapter.runPostRunCheck(mockContext);
-    expect(failResult.success).toBe(false);
-    expect(failResult.steps.length).toBeGreaterThanOrEqual(1);
-    expect(failResult.steps[0].summary).toBeDefined();
-  });
-
-  it('ShellQualityCheckAdapter 注入式执行器测试：步骤耗时、第一步失败不启动第二步、取消和输出截断（3.13）', async () => {
-    // 使用注入式 executor 替代真实 exec
-    let stepCommands: string[] = [];
-    const mockExecutor = async (cmd: string) => {
-      stepCommands.push(cmd);
-      if (cmd.includes('lint')) {
-        // eslint 成功
-        return { stdout: 'ESLint passed', stderr: '' };
-      }
-      // tsc
-      return { stdout: 'TSC passed', stderr: '' };
-    };
-    const adapter = new ShellQualityCheckAdapter(mockExecutor);
-    const mockCtx = { sessionId: 'test', triggerEffects: [], changedResources: [], signal: undefined };
-
-    // 1. 两步都成功
-    const successResult = await adapter.runPostRunCheck(mockCtx);
-    expect(successResult.success).toBe(true);
-    expect(successResult.steps.length).toBe(2);
-    expect(successResult.steps[0].name).toBe('eslint');
-    expect(successResult.steps[1].name).toBe('tsc');
-    expect(typeof successResult.steps[0].durationMs).toBe('number');
-
-    // 2. 第一步失败不启动第二步
-    stepCommands = [];
-    const failExecutor = async (cmd: string) => {
-      stepCommands.push(cmd);
-      if (cmd.includes('lint')) {
-        throw { stdout: '', stderr: 'lint error', message: 'ESLint failed' };
-      }
-      return { stdout: '', stderr: '' };
-    };
-    const failAdapter = new ShellQualityCheckAdapter(failExecutor);
-    const failResult = await failAdapter.runPostRunCheck(mockCtx);
-    expect(failResult.success).toBe(false);
-    expect(failResult.steps.length).toBe(1);
-    expect(stepCommands.length).toBe(1); // 只有 eslint 被调用
-
-    // 3. AbortSignal 取消
-    const controller = new AbortController();
-    const abortCtx = { sessionId: 'test', triggerEffects: [], changedResources: [], signal: controller.signal };
-    const abortAdapter = new ShellQualityCheckAdapter(async (_cmd) => {
-      controller.abort();
-      return { stdout: '', stderr: '' };
-    });
-    const abortResult = await abortAdapter.runPostRunCheck(abortCtx);
-    expect(abortResult.steps.length).toBeGreaterThanOrEqual(1);
-  });
-
   it('open() 应该派发 SessionOpened 事件并允许插件执行初始化', async () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
@@ -505,7 +391,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig(), mockPolicyPort
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
     );
 
     // SessionOpened 应正常完成（无插件 abort）
@@ -521,7 +407,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig(), mockPolicyPort
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
     );
 
     await session.close();
@@ -542,7 +428,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig(), mockPolicyPort
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
     );
 
     await session.close();
@@ -563,7 +449,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig(), mockPolicyPort
+      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
     );
 
     const firstClosedSpy = vi.fn();

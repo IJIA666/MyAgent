@@ -21,7 +21,6 @@ import { LoopPreventionPlugin } from '../plugins/LoopPreventionPlugin.js';
 import { LongTermMemoryPlugin } from '../plugins/LongTermMemoryPlugin.js';
 import type { EmbeddingPort } from '../../../ports/driven/llm/EmbeddingPort.js';
 import type { VectorDbPort } from '../../../ports/driven/db/VectorDbPort.js';
-import { QualityCheckPort } from '../../../ports/driven/security/QualityCheckPort.js';
 import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 import { LifecycleManager } from './LifecycleManager.js';
 import { FileBackupManager } from '../security/FileBackupManager.js';
@@ -75,9 +74,6 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   private compactionService: CompactionService;
   /** 插件注册中心 */
   private pluginRegistry: PluginRegistry;
-  /** 后置质量校验端口 */
-  private qualityCheckPort?: QualityCheckPort;
-
   /** 独立的智能体执行循环引擎 */
   private agentLoop: AgentLoop;
   /** 独立的长期记忆管理服务 */
@@ -105,14 +101,12 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     vectorDb: VectorDbPort,
     embedding: EmbeddingPort,
     appConfig: AppConfig,
-    qualityCheckPort?: QualityCheckPort,
     taskAborter?: TaskAborterPort,
   ) {
     super();
     this.llmConfig = llmConfig;
     this.toolRegistry = toolRegistry;
     this.taskAborter = taskAborter;
-    this.qualityCheckPort = qualityCheckPort;
     this.context = new SessionContext();
     this.context.appConfig = appConfig;
     this.maxIterations = appConfig.runtimeLimits.maxIterations;
@@ -180,7 +174,6 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       toolDispatcher: this.toolDispatcher,
       compactionService: this.compactionService,
       pluginRegistry: this.pluginRegistry,
-      qualityCheckPort: this.qualityCheckPort,
       maxIterations: this.maxIterations
     });
 

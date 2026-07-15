@@ -9,7 +9,6 @@
  */
 export const LOG_COMPONENT = {
   TOOL_EFFECT: 'tool_effect',
-  QUALITY_CHECK: 'quality_check',
   DIRECTORY_MEASUREMENT: 'directory_measurement',
   SKILL_RELOAD: 'skill_reload',
   PLUGIN_RUNNER: 'plugin_runner',
@@ -21,10 +20,6 @@ export const LOG_COMPONENT = {
 export const LOG_EVENT = {
   // tool_effect
   TOOL_EFFECT_RESOLVED: 'tool_effect_resolved',
-  // quality_check
-  QUALITY_CHECK_STARTED: 'quality_check_started',
-  QUALITY_CHECK_STEP_FINISHED: 'quality_check_step_finished',
-  QUALITY_CHECK_FINISHED: 'quality_check_finished',
   // directory_measurement
   DIRECTORY_MEASUREMENT_STARTED: 'directory_measurement_started',
   DIRECTORY_MEASUREMENT_FINISHED: 'directory_measurement_finished',

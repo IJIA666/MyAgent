@@ -11,30 +11,24 @@ import { getAuthorizedDir, getPhysicalRealPath } from '../base.js';
 import { analyzeShellCommand } from './command-analysis/index.js';
 import type { ResolvedShellKind } from './terminal-types.js';
 
-/** 复合命令分析使用的历史结构特征正则，保留导出供旧调用方诊断。 */
-export const COMPOSITE_REGEX = /[;&|<>^%`\r\n]|\$\(|\\\(/;
-
-/** 复合命令分析使用的单字符操作符集合。 */
-export const COMPOSITE_CHARS = [';', '&', '|', '<', '>', '^', '%', '\r', '\n'];
-
 /**
  * 校验待执行命令的结构安全性。
- * 校验只消费统一命令分析结果，不重复推断复合结构和副作用。
+ * 执行阶段的轻量硬红线检查——权限决策由 checkPermissions 在授权阶段完成，
+ * 此处不再重复分析命令结构，仅做运行时 hardline 安全兜底。
  * @param command - 待校验的原始命令行文本
  * @param shellKind - 可选的已决议 shell family，传入后按对应 shell 语义校验
+ * @returns 校验完成后的 Promise
  */
-export function validateCommand(command: string, shellKind?: ResolvedShellKind): void {
-  const analysis = analyzeShellCommand(command, shellKind ?? 'powershell');
-
-  if (analysis.sideEffect === 'hardline') {
-    const gitWrite = analysis.riskSignals.some(signal => signal.code === 'hardline.git-write');
-    throw new Error(gitWrite
-      ? '拒绝执行：严禁执行除只读查看外的任何 Git 变更操作。'
-      : `拒绝执行：${analysis.riskReason}`);
+export async function validateCommand(
+  command: string,
+  shellKind?: ResolvedShellKind,
+): Promise<void> {
+  const unboxed = unboxNestedCommand(command, shellKind).trim();
+  if (isDangerousGitCommand(unboxed)) {
+    throw new Error('拒绝执行：严禁执行除只读查看外的任何 Git 变更操作。');
   }
-
-  if (analysis.parseStatus !== 'parsed') {
-    throw new Error(`拒绝执行：${analysis.riskReason}`);
+  if (isHardlineDangerous(command, shellKind)) {
+    throw new Error('拒绝执行：命令命中硬红线安全规则。');
   }
 }
 
@@ -334,11 +328,11 @@ export function isHardlineDangerous(command: string, shellKind?: ResolvedShellKi
  * @param shellKind - 可选的已决议 shell family；未提供时按 PowerShell 语义判定
  * @returns 是否可静态证明为只读操作
  */
-export function isPlanSafeCommand(
+export async function isPlanSafeCommand(
   command: string,
   shellKind?: ResolvedShellKind,
-): boolean {
-  const analysis = analyzeShellCommand(command, shellKind ?? 'powershell');
+): Promise<boolean> {
+  const analysis = await analyzeShellCommand(command, shellKind ?? 'powershell');
   return analysis.parseStatus === 'parsed'
     && (analysis.sideEffect === 'read' || analysis.sideEffect === 'sensitive-read');
 }

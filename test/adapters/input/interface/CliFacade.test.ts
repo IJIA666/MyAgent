@@ -330,34 +330,6 @@ describe('CliFacade', () => {
       expect(output).toBe('');
     });
 
-    it('quality_check_status 所有 phase 均不应恢复输入，complete 只恢复一次（3.12）', () => {
-      const resumeSpy = vi.spyOn(facade['listener'], 'resume');
-
-      // started/passed/failed/cancelled 均不应恢复输入
-      mockSession.emit('agent_event', { type: 'quality_check_status', phase: 'started', summary: '验证中', durationMs: 0 });
-      expect(resumeSpy).not.toHaveBeenCalled();
-
-      mockSession.emit('agent_event', { type: 'quality_check_status', phase: 'passed', summary: '通过', durationMs: 100 });
-      expect(resumeSpy).not.toHaveBeenCalled();
-
-      mockSession.emit('agent_event', { type: 'quality_check_status', phase: 'failed', summary: '失败', durationMs: 200 });
-      expect(resumeSpy).not.toHaveBeenCalled();
-
-      mockSession.emit('agent_event', { type: 'quality_check_status', phase: 'cancelled', summary: '取消', durationMs: 50 });
-      expect(resumeSpy).not.toHaveBeenCalled();
-
-      // 只有 complete 恢复输入
-      mockSession.emit('agent_event', { type: 'complete' });
-      expect(resumeSpy).toHaveBeenCalledTimes(1);
-
-      const output = getCleanedOutput();
-      expect(output).toContain('[验证中]');
-      expect(output).toContain('[验证通过]');
-      expect(output).toContain('[验证失败]');
-      expect(output).toContain('[验证已取消]');
-      expect(output).toContain('完毕。');
-    });
-
     it('收到 interaction_request 时，应当拉起提问并在回答后恢复挂起交互', async () => {
       // 拦截 InteractionHandler.askUser，避免触发真实的 @clack/prompts 交互
       const askUserSpy = vi.spyOn(facade['interactionHandler'], 'askUser')

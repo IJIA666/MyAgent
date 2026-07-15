@@ -4,15 +4,19 @@
  */
 
 export { analyzeShellCommand } from './analyze-shell-command.js';
+export { DEFAULT_SHELL_COMPOUND_FEATURES } from './types.js';
 export type {
   CommandConnector,
   CommandPermissionSuggestion,
   CommandRiskSignal,
+  CommandRedirectionAnalysis,
   CommandSegmentAnalysis,
   CommandSideEffect,
   ShellCommandAnalysis,
   ShellCommandAnalyzer,
   ShellCommandParseStatus,
   ShellCommandShape,
+  ShellCompoundFeatureConfig,
+  ShellCommandSyntaxNode,
+  ShellStructureParseResult,
 } from './types.js';
-
