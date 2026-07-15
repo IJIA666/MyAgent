@@ -3,20 +3,13 @@
  * @description 验证统一本地工具运行时的审批拦截、文件锁与终端中断行为。
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { resolve } from 'path';
 import { FileLockManager } from '../../../src/core/usecases/security/FileLockManager.js';
 import { buildNativeTools } from '../../../src/adapters/tools/tool-factory.js';
 import { ToolCatalog } from '../../../src/adapters/tools/ToolCatalog.js';
 import { ToolExecutor } from '../../../src/adapters/tools/ToolExecutor.js';
-import { SessionContext } from '../../../src/core/domain/context.js';
-import { CompactionService } from '../../../src/core/usecases/brain/CompactionService.js';
 import { runCommandEngine } from '../../../src/adapters/tools/impl/system/terminal-engine.js';
-import type { ChatMessage } from '../../../src/ports/driven/llm/LlmPort.js';
-import type { LlmPort } from '../../../src/ports/driven/llm/LlmPort.js';
-import type { ContextRepository } from '../../../src/core/usecases/brain/ContextRepository.js';
-import type { ToolRegistryPort } from '../../../src/ports/driven/tools/ToolRegistryPort.js';
-import type { AppConfig } from '../../../src/config/index.js';
 import type { AuthorizedExecutionContext } from '../../../src/core/domain/permissions/tool-permission-service.js';
 
 describe('安全与并发增强特性测试', () => {
@@ -31,57 +24,7 @@ describe('安全与并发增强特性测试', () => {
     };
   }
 
-  describe('1. 元数据追踪收集 ( collectRecentFileOperations )', () => {
-    it('应根据工具声明的 filePathParamKey 提取物理相对路径，并支持启发式提取', () => {
-      const context = new SessionContext('test-compaction');
-      context.appConfig = { workspace: testWorkspace } as unknown as AppConfig;
-
-      const mockLlm = {} as unknown as LlmPort;
-      const mockRepo = {} as unknown as ContextRepository;
-
-      const mockRegistry = {
-        getTool: vi.fn((name) => {
-          if (name === 'readFile') {
-            return { name: 'readFile', securityCategory: 'read', filePathParamKey: 'targetPath' };
-          }
-          return undefined;
-        })
-      } as unknown as ToolRegistryPort;
-
-      const compaction = new CompactionService(context, mockLlm, mockRepo, mockRegistry);
-
-      const messages: ChatMessage[] = [
-        {
-          role: 'assistant',
-          content: null,
-          tool_calls: [
-            {
-              id: 'c1',
-              type: 'function',
-              function: {
-                name: 'readFile',
-                arguments: JSON.stringify({ targetPath: 'src/main.ts' })
-              }
-            },
-            {
-              id: 'c2',
-              type: 'function',
-              function: {
-                name: 'unknown_tool',
-                arguments: JSON.stringify({ filePath: 'src/utils.ts' })
-              }
-            }
-          ]
-        }
-      ];
-
-      const collected = compaction.collectRecentFileOperations(messages);
-      expect(collected).toContainEqual({ filePath: 'src/main.ts', opType: 'read' });
-      expect(collected).toContainEqual({ filePath: 'src/utils.ts', opType: 'read' });
-    });
-  });
-
-  describe('2. 高危写操作硬拦截 ( ToolExecutor.execute )', () => {
+  describe('1. 高危写操作硬拦截 ( ToolExecutor.execute )', () => {
     it('直接调用 ToolExecutor 必须在权限网关外被拒绝', async () => {
       const runtime = createToolRuntime();
       await expect(runtime.executor.execute(
@@ -118,7 +61,7 @@ describe('安全与并发增强特性测试', () => {
     });
   });
 
-  describe('3. 并发冲突锁机制 ( FileLockManager )', () => {
+  describe('2. 并发冲突锁机制 ( FileLockManager )', () => {
     it('对同一文件发生写写竞态冲突时，能够串行锁定排队', async () => {
       const lockManager = FileLockManager.getInstance();
       const testPath = resolve(testWorkspace, 'temp_concurrency.txt');
@@ -172,7 +115,7 @@ describe('安全与并发增强特性测试', () => {
     });
   });
 
-  describe('4. 工具执行超时 Abort 物理强杀', () => {
+  describe('3. 工具执行超时 Abort 物理强杀', () => {
     it('同步快速命令完成时不应注入 completed notification', async () => {
       const notifications: Array<{ type: string }> = [];
 

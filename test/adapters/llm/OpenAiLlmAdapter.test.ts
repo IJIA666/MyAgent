@@ -38,6 +38,8 @@ describe('OpenAiLlmAdapter 单元测试', () => {
   let config: LlmConfig;
 
   beforeEach(() => {
+    // 隔离每个用例对 OpenAI 请求 mock 的调用记录。
+    mockCreate.mockClear();
     config = {
       apiKey: 'test-api-key',
       baseUrl: 'http://localhost:3000',
@@ -83,5 +85,29 @@ describe('OpenAiLlmAdapter 单元测试', () => {
     // 两个并发请求都应当由于全局 abort 被取消并抛出 AbortError
     await expect(promise1).rejects.toThrow('AbortError');
     await expect(promise2).rejects.toThrow('AbortError');
+  });
+
+  test('摘要调用应采用更小的调用级输出预算', async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: 'summary' } }] });
+    const adapter = new OpenAiLlmAdapter(config);
+
+    await adapter.generateSummaryAsync([{ role: 'user', content: 'history' }], { maxTokens: 60 });
+
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ max_tokens: 60 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
+  test('摘要调用级输出预算不能超过模型配置上限', async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: 'summary' } }] });
+    const adapter = new OpenAiLlmAdapter(config);
+
+    await adapter.generateSummaryAsync([{ role: 'user', content: 'history' }], { maxTokens: 200 });
+
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ max_tokens: 100 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
   });
 });

@@ -36,6 +36,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     mockLlmDriver = {
       getModelName: () => 'mock-model',
       switchModel: () => {},
+      generateSummaryAsync: vi.fn(),
       streamChat: vi.fn().mockImplementation(async function* () {
         yield { type: 'content', content: 'hello' } as LlmStreamEvent;
         yield {
@@ -119,6 +120,9 @@ describe('AgentLoop 动态安全特性测试', () => {
     if (physLastMsg) {
       expect(physLastMsg.content).not.toContain('<system-reminder>');
     }
+    // 普通回合结束后不再启动独立的完整历史摘要请求。
+    expect((mockLlmDriver as { generateSummaryAsync: ReturnType<typeof vi.fn> }).generateSummaryAsync)
+      .not.toHaveBeenCalled();
   });
 
   it('2. Plan 模式且开启剥离时，应只保留 read 工具', async () => {

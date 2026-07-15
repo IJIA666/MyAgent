@@ -7,6 +7,7 @@ import { AppConfig, LlmConfig } from '../../../../src/config/index.js';
 import type { VectorDbPort } from '../../../../src/ports/driven/db/VectorDbPort.js';
 import type { EmbeddingPort } from '../../../../src/ports/driven/llm/EmbeddingPort.js';
 import type { LlmPort, ChatMessage, LlmStreamEvent } from '../../../../src/ports/driven/llm/LlmPort.js';
+import type { TokenEstimatorPort } from '../../../../src/ports/driven/llm/TokenEstimatorPort.js';
 import type { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdapter.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 
@@ -17,6 +18,7 @@ describe('MemoryService 单元测试', () => {
   let mockEmbedding: EmbeddingPort;
   let mockDriver: LlmPort;
   let mockContextAdapter: ContextAdapter;
+  let mockTokenEstimator: TokenEstimatorPort;
 
   beforeEach(() => {
     // 建立临时测试目录，防脏物理写入
@@ -93,6 +95,20 @@ describe('MemoryService 单元测试', () => {
     mockContextAdapter = {
       assemble: (baseHistory: ChatMessage[]) => baseHistory
     } as unknown as ContextAdapter;
+
+    mockTokenEstimator = {
+      countTokens: vi.fn().mockReturnValue(0),
+      estimateMessageTokens: vi.fn().mockReturnValue(0),
+      estimateSnapshotTokens: vi.fn().mockReturnValue({
+        total: 0,
+        system: 0,
+        rules: 0,
+        transient: 0,
+        history: 0,
+        isEstimated: true,
+      }),
+      getCompactionThreshold: vi.fn().mockReturnValue(100000),
+    };
   });
 
   afterEach(() => {
@@ -104,7 +120,7 @@ describe('MemoryService 单元测试', () => {
 
   describe('chunkMemoryText', () => {
     it('应该仅将以 - ** 开头的行提取为独立要点，过滤普通杂乱文本', () => {
-      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter);
+      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter, mockTokenEstimator);
       const text = `
 # 记忆文件
 - **开发偏好**：用户推荐使用 HSL 调色体系。
@@ -119,7 +135,7 @@ describe('MemoryService 单元测试', () => {
     });
 
     it('如果输入为空则返回空数组', () => {
-      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter);
+      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter, mockTokenEstimator);
       expect(service.chunkMemoryText('')).toEqual([]);
     });
   });
@@ -127,7 +143,7 @@ describe('MemoryService 单元测试', () => {
   describe('rebuildVectorDbIfEmpty', () => {
     it('当向量库非空时，即使记忆文件存在也不做重建', async () => {
       vi.mocked(mockVectorDb.count).mockResolvedValue(5);
-      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter);
+      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter, mockTokenEstimator);
       
       const memoryDir = path.join(tempDir, '.agent');
       fs.mkdirSync(memoryDir, { recursive: true });
@@ -139,7 +155,7 @@ describe('MemoryService 单元测试', () => {
 
     it('当数据库为空且记忆文件存在时，应正常重建向量库', async () => {
       vi.mocked(mockVectorDb.count).mockResolvedValue(0);
-      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter);
+      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter, mockTokenEstimator);
       
       const memoryDir = path.join(tempDir, '.agent');
       fs.mkdirSync(memoryDir, { recursive: true });
@@ -152,7 +168,7 @@ describe('MemoryService 单元测试', () => {
 
   describe('queueWrite', () => {
     it('写入应该能物理落盘并触发向量同步', async () => {
-      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter);
+      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter, mockTokenEstimator);
       const textToWrite = '\n\n- **开发偏好**：使用 TypeScript 5 规范。\n';
       
       await service.queueWrite(textToWrite);
@@ -169,7 +185,7 @@ describe('MemoryService 单元测试', () => {
 
   describe('triggerMemoryRefinementAsync', () => {
     it('应该成功异步启动隔离的子智能体进行记忆自省提炼', async () => {
-      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter);
+      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, mockDriver, mockContextAdapter, mockTokenEstimator);
       const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
       
       const history: ChatMessage[] = [
@@ -203,9 +219,8 @@ describe('MemoryService 单元测试', () => {
         ragRefinementThreshold: 2,
         loopPreventionLimit: 5,
         compactionRetainCount: 4,
-        compactionTriggerDelta: 1000,
-        compactionFailureLimit: 3,
-        compactionRecentFilesLimit: 5,
+        compactionRetainTokens: 8000,
+        compactionSummaryMaxTokens: 4096,
         toolTimeoutMs: 1000,
         modelTimeoutMs: 60000,
         subAgentTimeoutMs: 50 // 仅有 50 毫秒超时
@@ -237,7 +252,7 @@ describe('MemoryService 单元测试', () => {
         }
       } as unknown as LlmPort;
 
-      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, longPendingDriver, mockContextAdapter);
+      const service = new MemoryService(mockVectorDb, mockEmbedding, appConfig, longPendingDriver, mockContextAdapter, mockTokenEstimator);
       const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
       const history: ChatMessage[] = [
         { role: 'user', content: 'hello' }

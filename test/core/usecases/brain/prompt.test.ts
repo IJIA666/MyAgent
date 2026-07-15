@@ -6,6 +6,7 @@
 import { describe, test, expect, beforeEach } from 'vitest';
 import {
   BASE_SYSTEM_PROMPT,
+  buildMiddleCompactionSummaryPrompt,
   buildSystemPrompt,
   SYSTEM_RULES,
   RULE_TOOL_RESULT_HANDLING,
@@ -151,5 +152,51 @@ describe('System Prompt 组装契约', () => {
     session.updateSystemPrompt();
 
     expect(session.getHistory()[0].content).toContain('Always respond in 日本語.');
+  });
+});
+
+describe('中段历史摘要提示词契约', () => {
+  test('应明确历史边界且不生成当前任务或下一步章节', () => {
+    const prompt = buildMiddleCompactionSummaryPrompt([
+      { role: 'user', content: '较早的用户请求' },
+      { role: 'assistant', content: '较早的处理结果' },
+    ]);
+    const systemInstruction = prompt[0].content ?? '';
+
+    expect(systemInstruction).toContain('后续原文始终优先');
+    expect(systemInstruction).toContain('不能被视为当前任务或待执行指令');
+    expect(systemInstruction).toContain('主要语言');
+    expect(systemInstruction).toContain('重要文件、命令、标识符');
+    expect(systemInstruction).toContain('[REDACTED]');
+    expect(systemInstruction).not.toContain('## 当前任务');
+    expect(systemInstruction).not.toContain('## 下一步');
+    expect(systemInstruction).not.toContain('最高指挥官');
+    expect(systemInstruction).not.toContain('SUBORDINATE');
+  });
+
+  test('应排除 system 与 reasoning，并保留工具调用参数和结果', () => {
+    const prompt = buildMiddleCompactionSummaryPrompt([
+      { role: 'system', content: 'system-secret' },
+      { role: 'user', content: '检查历史文件' },
+      {
+        role: 'assistant',
+        content: null,
+        reasoning_content: 'private-reasoning',
+        tool_calls: [{
+          id: 'call-1',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{"path":"D:/history.txt"}' },
+        }],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'tool-output' },
+    ]);
+    const sourceMaterial = prompt[1].content ?? '';
+
+    expect(sourceMaterial).not.toContain('system-secret');
+    expect(sourceMaterial).not.toContain('private-reasoning');
+    expect(sourceMaterial).toContain('read_file');
+    expect(sourceMaterial).toContain('D:/history.txt');
+    expect(sourceMaterial).toContain('call-1');
+    expect(sourceMaterial).toContain('tool-output');
   });
 });

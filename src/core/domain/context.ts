@@ -40,8 +40,6 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
   // ── 会话元数据（保留在 façade）──
   private sessionId: string;
   private tenantId: string;
-  private checkpointSummary: string | null = null;
-  private recentFiles: { filePath: string; opType: 'read' | 'edit' }[] = [];
   private permissionMode: ConfigPermissionMode;
   /** 会话私有的统一模式管理器，避免进程级共享模式状态。 */
   private readonly permissionModeManager: PermissionModeManager;
@@ -173,26 +171,6 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
     this.tenantId = tenantId;
-  }
-
-  /** 获取当前物理会话所关联的 Checkpoint 提炼摘要 */
-  public getCheckpointSummary(): string | null {
-    return this.checkpointSummary;
-  }
-
-  /** 设定当前物理会话所关联的 Checkpoint 提炼摘要 */
-  public setCheckpointSummary(summary: string | null): void {
-    this.checkpointSummary = summary;
-  }
-
-  /** 获取最近读写的文件操作记忆列表 */
-  public getRecentFiles(): { filePath: string; opType: 'read' | 'edit' }[] {
-    return this.recentFiles;
-  }
-
-  /** 设定最近读写的文件操作记忆列表 */
-  public setRecentFiles(files: { filePath: string; opType: 'read' | 'edit' }[]): void {
-    this.recentFiles = files;
   }
 
   /** 获取当前 System Prompt 的哈希值（委托给 ConversationState） */

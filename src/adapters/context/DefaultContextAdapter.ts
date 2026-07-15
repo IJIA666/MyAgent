@@ -1,12 +1,11 @@
 import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
 import type { TokenEstimatorPort } from '../../ports/driven/llm/TokenEstimatorPort.js';
 import type { ContextAdapter } from '../../ports/driven/session/ContextAdapter.js';
-import { HANDOFF_INSTRUCTION } from '../../core/usecases/brain/prompts.js';
 import type { StoredChatMessage } from '../../core/domain/context.js';
 
 /**
  * 默认上下文适配器实现类。
- * 负责在最新一条用户消息前挂载临时技能指令，并在会话头部注入历史摘要 Checkpoint 及核心文件记忆。
+ * 负责在最新一条用户消息中挂载局部规则与临时技能指令。
  */
 export class DefaultContextAdapter implements ContextAdapter {
   private tokenEstimator: TokenEstimatorPort;
@@ -21,64 +20,21 @@ export class DefaultContextAdapter implements ContextAdapter {
   }
 
   /**
-   * 组装会话历史、临时技能规范、局部项目规则、历史摘要与最近读写的文件。
+   * 组装会话历史、临时技能规范与局部项目规则。
    * 采用不可变原则，返回拷贝后的新消息数组，防止污染原始会话内存。
    *
    * @param baseHistory - 会话的基础消息历史记录
    * @param transientContext - 临时注入的技能规范内容
    * @param localRules - 局部项目规则内容
-   * @param summary - 物理轮换产生的历史提炼摘要
-   * @param recentFiles - 剔除历史中大模型读写过的核心代码文件路径
    * @returns 拼接后的完整消息参数数组
    */
   public assemble(
     baseHistory: ChatMessage[],
     transientContext?: string,
-    localRules?: string,
-    summary?: string | null,
-    recentFiles?: { filePath: string; opType: 'read' | 'edit' }[]
+    localRules?: string
   ): ChatMessage[] {
     // 1. 浅拷贝基础消息数组，防止对数组的增删插操作污染原始引用
     const historySnapshot = [...baseHistory];
-
-    // 1.1 组装并前置注入物理会话轮换的 Checkpoint 摘要与文件记忆附件
-    const headInjections: ChatMessage[] = [];
-    
-    // 构造 recentFiles 文本内容
-    let inventoryText = '';
-    if (recentFiles && recentFiles.length > 0) {
-      const lines = recentFiles.map(fileItem => {
-        const prefix = fileItem.opType === 'edit' ? '[EDITED]' : '[READ]';
-        return `${prefix} ${fileItem.filePath}`;
-      });
-      inventoryText = `<recent_files_inventory>\n${lines.join('\n')}\n</recent_files_inventory>`;
-    }
-
-    if (summary) {
-      let content = `<conversation-checkpoint>\n${summary}\n</conversation-checkpoint>\n\n${HANDOFF_INSTRUCTION}`;
-      if (inventoryText) {
-        content += `\n\n${inventoryText}`;
-      }
-      headInjections.push({
-        role: 'user',
-        content
-      });
-    } else if (inventoryText) {
-      // 边界对齐：摘要不存在，但最近读写文件列表存在，为防 API 400，以独立 user 消息角色追加
-      headInjections.push({
-        role: 'user',
-        content: inventoryText
-      });
-    }
-
-    // 时序追加至首条 System Prompt 之后以锁定头部前缀
-    if (headInjections.length > 0) {
-      if (historySnapshot.length > 0) {
-        historySnapshot.splice(1, 0, ...headInjections);
-      } else {
-        historySnapshot.push(...headInjections);
-      }
-    }
 
     // 2. 组装局部规则与临时技能，内嵌拼接在最新一条 user 消息的 content 中
     if (localRules || transientContext) {

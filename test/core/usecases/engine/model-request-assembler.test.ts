@@ -3,7 +3,7 @@
  * （工具获取 → BeforeToolSelection → 上下文装配 → BeforeModel → system-reminder 注入 → Plan 模式裁剪）。
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ModelRequestAssembler } from '../../../../src/core/usecases/engine/model-request-assembler.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 import type { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
@@ -48,7 +48,7 @@ describe('ModelRequestAssembler', () => {
 
     // Mock ContextAdapter
     mockContextAdapter = {
-      assemble: () => makeMockHistory()
+      assemble: vi.fn(() => makeMockHistory())
     } as unknown as ContextAdapter;
 
     // Mock PluginRegistry（无插件挂载，管线直通）
@@ -75,6 +75,11 @@ describe('ModelRequestAssembler', () => {
       expect(result.messages.length).toBe(2);
       expect(result.messages[0].role).toBe('system');
       expect(result.tools.length).toBe(3); // 普通模式不过滤 write 工具
+      expect(mockContextAdapter.assemble).toHaveBeenCalledWith(
+        context.getHistory(),
+        undefined,
+        undefined
+      );
     });
 
     it('应在消息中注入 system-reminder（日期/CWD/安全模式）', async () => {

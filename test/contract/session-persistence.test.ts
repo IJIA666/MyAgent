@@ -1,7 +1,7 @@
 /**
  * @fileoverview 会话持久化合约测试。
  * 使用真实 ContextRepository 验证 saveState() → JSON 快照 → loadState() 的完整性，
- * 覆盖 messages、checkpointSummary、recentFiles 和合法 pendingInteraction 字段。
+ * 覆盖 messages、历史中段摘要消息和合法 pendingInteraction 字段。
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -51,7 +51,7 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
     expect(loadedHistory[2].content).toBe('world');
   });
 
-  it('含 checkpointSummary 和 recentFiles 的会话完整恢复', async () => {
+  it('含历史中段摘要与 pendingInteraction 的会话完整恢复', async () => {
     const session = new SessionContext('contract-persistence-full');
 
     // SessionContext 构造自动注入一条 system prompt。再加 4 条 = 共 5 条
@@ -63,13 +63,12 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
       tool_call_id: 'tc-001',
       name: 'readFile',
     });
-
-    // 设置 checkpoint 摘要
-    session.setCheckpointSummary('历史提炼摘要内容');
-    session.setRecentFiles([
-      { filePath: '/tmp/test.ts', opType: 'read' },
-      { filePath: '/tmp/output.ts', opType: 'edit' },
-    ]);
+    // 中段摘要作为普通历史消息持久化，不再维护第二份 Checkpoint 状态。
+    session.addMessage({
+      role: 'user',
+      content: '[Summary of Earlier Conversation]\n历史提炼摘要内容',
+    });
+    session.addMessage({ role: 'user', content: 'latest request' });
 
     session.setPendingInteraction({
       id: 'pending-001',
@@ -97,23 +96,17 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
 
     expect(found).toBe(true);
 
-    // 验证消息无损（共 4 条：auto system + user + assistant + tool）
+    // 验证消息无损（auto system + user + assistant + tool + summary + latest）
     const history = loadedSession.getHistory();
-    expect(history).toHaveLength(4);
+    expect(history).toHaveLength(6);
     // history[0] 为 auto system prompt（动态生成，不校验具体内容）
     expect(history[0].role).toBe('system');
     expect(history[1].content).toBe('first message');
     expect(history[2].content).toBe('reply');
     expect(history[3].content).toBe('tool result');
     expect(history[3].tool_call_id).toBe('tc-001');
-
-    // 验证 checkpoint 摘要
-    expect(loadedSession.getCheckpointSummary()).toBe('历史提炼摘要内容');
-
-    // 验证 recentFiles
-    expect(loadedSession.getRecentFiles()).toHaveLength(2);
-    expect(loadedSession.getRecentFiles()[0].filePath).toBe('/tmp/test.ts');
-    expect(loadedSession.getRecentFiles()[0].opType).toBe('read');
+    expect(history[4].content).toContain('历史提炼摘要内容');
+    expect(history[5].content).toBe('latest request');
 
     expect(loadedSession.pendingInteraction).toMatchObject({
       id: 'pending-001',

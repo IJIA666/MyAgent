@@ -124,8 +124,6 @@ export class ContextRepository {
       version: 3,
       sessionId: this.context.getSessionId(),
       messages: this.context.getHistory(),
-      checkpointSummary: this.context.getCheckpointSummary(),
-      recentFiles: this.context.getRecentFiles(),
       pendingInteraction: this.context.pendingInteraction
     };
 
@@ -219,8 +217,6 @@ export class ContextRepository {
     const state = parsed as {
       sessionId?: unknown;
       messages?: unknown;
-      checkpointSummary?: unknown;
-      recentFiles?: unknown;
     };
 
     if (!Array.isArray(state.messages)) {
@@ -230,8 +226,6 @@ export class ContextRepository {
     const sessionId = typeof state.sessionId === 'string' && state.sessionId ? state.sessionId : targetSessionId;
     this.context.updateHistory(state.messages as ChatMessage[]);
     this.context.setSessionId(sessionId);
-    this.context.setCheckpointSummary(typeof state.checkpointSummary === 'string' ? state.checkpointSummary : null);
-    this.context.setRecentFiles(this.normalizeRecentFiles(state.recentFiles));
 
     // 恢复待回答的人机中断交互（仅当快照结构合法且处于 pending 状态时）
     const pending = this.normalizePendingInteraction((parsed as Record<string, unknown>).pendingInteraction);
@@ -321,39 +315,6 @@ export class ContextRepository {
     }).filter(q => q.id.length > 0 && q.question.length > 0);
 
     return questions.length > 0 ? questions : null;
-  }
-
-  /**
-   * 规范化 recentFiles 字段。
-   *
-   * @param value - 原始字段值。
-   * @returns 统一后的 recentFiles 列表。
-   */
-  private normalizeRecentFiles(value: unknown): { filePath: string; opType: 'read' | 'edit' }[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return value
-      .map((item) => {
-        if (typeof item === 'string') {
-          return { filePath: item, opType: 'read' as const };
-        }
-        if (!item || typeof item !== 'object') {
-          return null;
-        }
-
-        const file = item as { filePath?: unknown; opType?: unknown };
-        if (typeof file.filePath !== 'string' || !file.filePath) {
-          return null;
-        }
-
-        return {
-          filePath: file.filePath,
-          opType: file.opType === 'edit' ? 'edit' : 'read'
-        };
-      })
-      .filter((item): item is { filePath: string; opType: 'read' | 'edit' } => item !== null);
   }
 
   /**

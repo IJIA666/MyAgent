@@ -26,6 +26,22 @@ describe('DefaultContextAdapter 单元测试', () => {
     expect(result).not.toBe(history);
   });
 
+  test('已持久化在历史中的中段摘要应保持原位且不追加 Checkpoint 头部', () => {
+    const history: ChatMessage[] = [
+      { role: 'system', content: 'system prompt' },
+      { role: 'user', content: '[Summary of Earlier Conversation]\nhistorical summary' },
+      { role: 'user', content: 'latest request' },
+    ];
+
+    const result = adapter.assemble(history);
+
+    expect(result).toEqual(history);
+    expect(result).toHaveLength(3);
+    expect(result.some((message) => message.content?.includes('conversation-checkpoint'))).toBe(false);
+    expect(result.some((message) => message.content?.includes('recent_files_inventory'))).toBe(false);
+    expect(result.some((message) => message.content?.includes('最高指挥官'))).toBe(false);
+  });
+
   test('局部规则与临时技能正确内嵌拼接在最后一条 user 消息尾部', () => {
     const history: ChatMessage[] = [
       { role: 'system', content: 'system prompt' },

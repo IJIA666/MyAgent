@@ -574,8 +574,7 @@ export class AgentLoop {
         // 如果是系统或用户主动下发的中断打断信号，进行安全脱离而不当一致性崩溃处理
         if (errorMsg.includes('APIUserAbortError') || errorMsg.includes('abort') || (apiError instanceof Error && apiError.name === 'AbortError')) {
           yield { type: 'error', message: '已收到中断指令，强行终止推理生成。' };
-          // 意外终止时同样要触发后台提炼检查与物理落盘
-          this.compactionService.triggerAsyncCompactionIfNeeded(this.lastEstimatedUsage?.total || 0).catch(() => { });
+          // 中断后的会话状态由下方 finally 统一完成物理落盘。
           return;
         }
 

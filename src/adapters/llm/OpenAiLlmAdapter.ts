@@ -1,7 +1,7 @@
 import { OpenAI, type ClientOptions } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { LlmConfig } from '../../config/index.js';
-import type { ChatMessage, LlmPort, LlmStreamEvent, LlmPortOptions } from '../../ports/driven/llm/LlmPort.js';
+import type { ChatMessage, LlmPort, LlmStreamEvent, LlmPortOptions, SummaryGenerationOptions } from '../../ports/driven/llm/LlmPort.js';
 import type { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
 
 /**
@@ -298,19 +298,25 @@ export class OpenAiLlmAdapter implements LlmPort {
   }
 
   /**
-   * 非阻塞的异步摘要生成方法，挂载至后台任务执行。
+   * 生成历史上下文摘要，并将调用级上限限制在模型配置范围内。
    * 
    * @param messages - 提炼提示词上下文
+   * @param options - 本次摘要生成的可选限制
    * @returns 大模型生成的提炼文本
    */
-  public async generateSummaryAsync(messages: ChatMessage[]): Promise<string> {
+  public async generateSummaryAsync(
+    messages: ChatMessage[],
+    options?: SummaryGenerationOptions
+  ): Promise<string> {
     const openAiMessages = messages.map(toOpenAiMessage);
     const timeoutMs = this.llmConfig.timeout ?? 60000;
+    // 调用级摘要预算不能突破模型自身的最大输出限制。
+    const maxTokens = Math.min(options?.maxTokens ?? this.llmConfig.maxTokens, this.llmConfig.maxTokens);
     const response = await this.client.chat.completions.create(
       {
         model: this.modelName,
         messages: openAiMessages,
-        max_tokens: this.llmConfig.maxTokens,
+        max_tokens: maxTokens,
         stream: false,
         ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
         ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions, this.llmConfig) : {})

@@ -116,9 +116,7 @@ export class ModelRequestAssembler {
     const snapshotContext = this.contextAdapter.assemble(
       this.context.getHistory(),
       transientSkillContent,
-      this.ruleManager.getLocalRules() || undefined,
-      this.context.getCheckpointSummary(),
-      this.context.getRecentFiles()
+      this.ruleManager.getLocalRules() || undefined
     );
 
     // Step 4: 触发 BeforeModel 拦截并重写大模型入参

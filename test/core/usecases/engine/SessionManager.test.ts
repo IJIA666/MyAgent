@@ -88,7 +88,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     session.reloadRules();
     expect(session.getSystemPromptHash()).toBeDefined();
 
-    await session.compact();
+    expect(await session.compact()).toBe(false);
     session.rollback(0);
     session.switchModel({ model: 'new-model' } as unknown as LlmConfig);
     expect(mockDriver.switchModel).toHaveBeenCalled();

@@ -219,14 +219,12 @@ export interface RuntimeLimitsConfig {
   ragRefinementThreshold: number;
   /** 防死循环熔断中同一工具完全相同参数允许的最大调用次数 */
   loopPreventionLimit: number;
-  /** 发生紧急 Token 硬截断时保留的最新的多轮对话消息轮数 */
+  /** 中段压缩时最多原样保留的最新完整对话轮数 */
   compactionRetainCount: number;
-  /** 触发异步 Summary 提炼所需的增量累计 Token 数 */
-  compactionTriggerDelta: number;
-  /** 异步提炼连续失败时，退回到防爆兜底静态摘要的次数上限 */
-  compactionFailureLimit: number;
-  /** 上下文提炼后最近被读写并挂在上下文头部的关联文件路径上限数 */
-  compactionRecentFilesLimit: number;
+  /** 中段压缩时原样保留最新完整对话轮次的 Token 预算 */
+  compactionRetainTokens: number;
+  /** 中段历史摘要允许生成的最大 Token 数 */
+  compactionSummaryMaxTokens: number;
   /** 工具调用超时的时限（毫秒） */
   toolTimeoutMs: number;
   /** 大模型请求单次超时的时限（毫秒） */

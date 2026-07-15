@@ -28,11 +28,6 @@ describe('ContextRepository', () => {
 
   describe('saveState and loadState', () => {
     it('should save session state to temp files and load it back correctly', async () => {
-      context.setCheckpointSummary('Last summary context');
-      context.setRecentFiles([
-        { filePath: 'src/main.ts', opType: 'read' },
-        { filePath: 'src/utils.ts', opType: 'read' }
-      ]);
       context.addMessage({ role: 'user', content: 'hello' });
       context.addMessage({ role: 'assistant', content: 'world' });
 
@@ -43,11 +38,8 @@ describe('ContextRepository', () => {
       expect(fs.existsSync(path.join(tempDir, '.myagent/sessions/test-repo-session.json'))).toBe(false);
 
       const content = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
-      expect(content.checkpointSummary).toBe('Last summary context');
-      expect(content.recentFiles).toEqual([
-        { filePath: 'src/main.ts', opType: 'read' },
-        { filePath: 'src/utils.ts', opType: 'read' }
-      ]);
+      expect(content).not.toHaveProperty('checkpointSummary');
+      expect(content).not.toHaveProperty('recentFiles');
       expect(content.messages.length).toBe(3);
 
       const newContext = new SessionContext('empty-session');
@@ -56,16 +48,10 @@ describe('ContextRepository', () => {
       const loadSuccess = await newRepo.loadState('test-repo-session');
       expect(loadSuccess).toBe(true);
       expect(newContext.getSessionId()).toBe('test-repo-session');
-      expect(newContext.getCheckpointSummary()).toBe('Last summary context');
-      expect(newContext.getRecentFiles()).toEqual([
-        { filePath: 'src/main.ts', opType: 'read' },
-        { filePath: 'src/utils.ts', opType: 'read' }
-      ]);
       expect(newContext.getHistory().length).toBe(3);
     });
 
     it('should serialize concurrent saveState calls and keep the snapshot valid', async () => {
-      context.setCheckpointSummary('Concurrent summary');
       context.addMessage({ role: 'user', content: 'hello' });
       context.addMessage({ role: 'assistant', content: 'world' });
 
@@ -74,7 +60,7 @@ describe('ContextRepository', () => {
       const sessionFile = path.join(tempDir, '.myagent/sessions/session_test-repo-session.json');
       const content = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
       expect(content.messages).toHaveLength(3);
-      expect(content.checkpointSummary).toBe('Concurrent summary');
+      expect(content).not.toHaveProperty('checkpointSummary');
     });
 
     it('should restore from the newest backup file when the main snapshot is missing', async () => {
@@ -98,7 +84,6 @@ describe('ContextRepository', () => {
       const loadSuccess = await restoredRepo.loadState('backup-session');
       expect(loadSuccess).toBe(true);
       expect(restoredContext.getSessionId()).toBe('backup-session');
-      expect(restoredContext.getCheckpointSummary()).toBe('Backup summary');
       expect(restoredContext.getHistory()[1].content).toBe('recover me');
     });
 
@@ -142,7 +127,7 @@ describe('ContextRepository', () => {
       expect(context.getHistory()[1].content).toBe('hi');
     });
 
-    it('should support loading legacy session data with string array recentFiles', async () => {
+    it('should ignore removed checkpoint fields when loading and clear them on the next save', async () => {
       const sessionDir = path.join(tempDir, '.myagent/sessions');
       fs.mkdirSync(sessionDir, { recursive: true });
       const sessionFile = path.join(sessionDir, 'legacy-session-recent.json');
@@ -160,11 +145,13 @@ describe('ContextRepository', () => {
       const success = await contextRepo.loadState('legacy-session-recent');
       expect(success).toBe(true);
       expect(context.getSessionId()).toBe('legacy-session-recent');
-      expect(context.getCheckpointSummary()).toBe('Legacy Summary');
-      expect(context.getRecentFiles()).toEqual([
-        { filePath: 'src/main.ts', opType: 'read' },
-        { filePath: 'src/utils.ts', opType: 'read' }
-      ]);
+      expect(context.getHistory()[1].content).toBe('hi');
+
+      await contextRepo.saveState();
+      const migratedFile = path.join(sessionDir, 'session_legacy-session-recent.json');
+      const migratedState = JSON.parse(fs.readFileSync(migratedFile, 'utf-8'));
+      expect(migratedState).not.toHaveProperty('checkpointSummary');
+      expect(migratedState).not.toHaveProperty('recentFiles');
     });
 
     it('should return false gracefully if the target session file does not exist or has invalid JSON', async () => {
@@ -189,7 +176,6 @@ describe('ContextRepository', () => {
       const transientContext = new SessionContext('transient-repo-session');
       const transientRepo = new ContextRepository(transientContext, tempDir, true);
 
-      transientContext.setCheckpointSummary('Transient summary');
       transientContext.addMessage({ role: 'user', content: 'transient query' });
 
       await transientRepo.saveState();

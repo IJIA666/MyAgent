@@ -1040,6 +1040,24 @@ MyAgent 当前 `OS_INSTRUCTIONS_MAP` 在基础提示词中按 `process.platform`
 
 因此应删除 `RULE_TERMINAL_SAFETY`、`OS_INSTRUCTIONS_MAP` 及冷启动占位符替换，只保留 `<os>` 作为当前平台事实。Shell 名称、参数和可用性由当次实际工具 Schema/描述表达，语法失败与权限结果以运行时返回为准。分析器内部遗留的“当前阶段不支持”错误文案属于独立运行时清理项，不应继续通过 system prompt 维护另一份能力矩阵。
 
+#### G.1.6 压缩提示词应优先保证续接，而不是追求固定字符数
+
+Claude Code、OpenCode、OpenClaw 与 Hermes 都把上下文压缩视为独立的单任务协议，而不是主 Agent 人设的一部分。Claude Code 的 `src/services/compact/prompt.ts` 使用完整与部分压缩两套模板，要求保留用户意图、技术决定、文件与代码、错误与修复、当前工作、待办和下一步；它不设置固定字符上限，而是在运行时为摘要预留输出 token。其“禁止工具”和 `<analysis>/<summary>` 协议来自自身会继承工具集、单回合生成并在写回前剥离分析区的调用边界，MyAgent 当前不具备这些条件，不应照搬。
+
+OpenCode 的 `packages/core/src/session/compaction.ts` 和 `packages/opencode/src/agent/prompt/compaction.txt` 采用较短的固定结构：目标、重要细节、已完成/进行中/阻塞状态、下一步和相关文件。它保留最近历史原文，把旧摘要与新增历史做增量合并，并显式序列化工具参数、截断后的工具结果与错误。摘要输出由 4096 token 上限控制，而不是字符数；摘要语言跟随会话。
+
+OpenClaw 的 `packages/agent-core/src/harness/compaction/compaction.ts` 使用 Goal、Constraints & Preferences、Progress、Key Decisions、Next Steps 与 Critical Context 六类状态，并为已有摘要提供独立更新模板。它按 `reserveTokens` 计算摘要输出预算、保留近期上下文，并在代码层单独提取文件读写记录。`src/agents/agent-hooks/compaction-instructions.ts` 只补充会话语言和精确代码、路径、标识符、错误信息不得翻译，说明可靠路径保留不能只依赖一段夸张的提示词。
+
+Hermes 的 `agent/context_compressor.py` 面向通用 Agent，按被压缩内容的约 20% 动态分配摘要预算，并限制在 2000–10000 token。它保留目标、偏好、完成动作、当前状态、阻塞、决定、已解决问题、待处理用户请求、相关文件与关键上下文，还会增量更新旧摘要。其突出问题是防止历史摘要劫持最新请求：压缩结果被明确标记为参考事实，最新用户消息始终优先，已完成事项使用过去式；同时摘要会剔除凭据，而不是无条件复制所有不透明字符串。
+
+MyAgent 当前 `buildCompactionSummaryPrompt()` 的方向基本正确，但 `1000 字符`硬限制、固定简体中文、笼统删除“无用死胡同”和对所有标识符的绝对保留都缺乏竞品依据。更实际的模板应保留当前目标与用户约束、已完成工作和验证结果、关键决定、当前状态、阻塞与下一步，并只精确保留继续任务所需的文件、命令、错误和标识符。失败尝试若会影响后续判断或防止重复，应保留结论；摘要语言跟随会话；长度由运行时 token 预算控制。当前历史序列化还只记录工具名称而丢弃工具参数，这会让“保留文件路径”在部分会话中没有可用输入，应与提示词一起修正。
+
+还需区分当前共用同一 builder 的两种语义。`compact()` 会保护首轮交互，并按有效默认配置保留最近 4 个 `user` 轮次及其后续 assistant/tool 消息，只将中段历史交给摘要模型；这类摘要是位于原文尾部之前的历史参考，不应生成“当前请求”或“下一步”，否则可能把旧任务重新激活。`triggerAsyncCompactionIfNeeded()` 则从 system 消息之后汇总整个当前历史，用于检查点恢复，才需要保留最新请求、当前工作与下一步。后续实现应像 Claude Code 的完整/部分压缩一样显式传入摘要范围，分别使用“历史中段摘要”和“完整检查点摘要”模板，而不是继续让同一提示词猜测输入语义。类内字面量 `8`仅是缺少 `runtimeLimits` 时的兜底，正常配置加载路径的默认值仍为 `4`。
+
+各项目的物理裁剪策略并不相同。Claude Code 默认 `compactConversation()` 将整个活动历史交给完整摘要模型，写回时以摘要、能力附件和状态附件替换原历史，不保留最近对话原文；REPL 另有选定消息触发的 `partialCompactConversation()`，`from` 方向保留选中点之前并摘要之后，`up_to` 方向摘要之前并保留之后，因此“完整/部分”是不同入口，部分压缩还包含两个方向，并非统一的中段压缩。OpenCode 与 OpenClaw 都主要摘要旧前缀并按 token 预算保留近期尾部原文；Hermes 才是明确保护头尾、摘要中段。MyAgent 当前 `compact()` 同样属于头尾保护的中段压缩，但后台检查点摘要属于完整历史摘要。
+
+Claude Code 的自动压缩还带有分层回退：达到阈值后先尝试 `trySessionMemoryCompaction()`，用已经生成的 Session Memory 作为摘要并从计算出的边界保留近期尾部消息；该快路径不可用或无法确定边界时，才调用 `compactConversation()` 对完整活动历史生成九段式摘要。完整回退会设置“自动压缩不追问”，摘要写回后直接从当前任务继续，并重新注入文件状态、计划模式、skills、延迟工具与 MCP 指令。因此 Claude Code 并非所有自动压缩都丢弃近期原文，但它仍没有 Hermes/MyAgent 式固定保护头尾的中段摘要入口。
+
 ### G.2 已形成的跨项目共识
 
 五个项目实现方式不同，但核心方向高度一致：

@@ -39,6 +39,12 @@ export interface LlmPortOptions {
   signal?: AbortSignal;
 }
 
+/** 摘要生成请求的可选限制。 */
+export interface SummaryGenerationOptions {
+  /** 本次摘要允许生成的最大 Token 数 */
+  maxTokens?: number;
+}
+
 /**
  * 大语言模型通用交互 Port 契约接口。
  * 定义推理核心（Domain）对底层模型驱动（Infrastructure）的抽象依赖。
@@ -88,10 +94,11 @@ export interface LlmPort {
   chat(messages: ChatMessage[], options?: LlmPortOptions): Promise<string>;
 
   /**
-   * 非阻塞的异步摘要生成。
+   * 生成历史上下文摘要。
    *
    * @param messages - 提炼上下文序列
+   * @param options - 本次摘要生成的可选限制
    * @returns 生成的提炼文本
    */
-  generateSummaryAsync(messages: ChatMessage[]): Promise<string>;
+  generateSummaryAsync(messages: ChatMessage[], options?: SummaryGenerationOptions): Promise<string>;
 }

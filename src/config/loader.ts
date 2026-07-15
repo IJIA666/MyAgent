@@ -204,6 +204,12 @@ function loadDiagnosticConfig(env: Record<string, string | undefined>): Diagnost
   return diagnostics;
 }
 
+/** 解析正整数环境变量，非正数或非法值回退到默认值。 */
+function parseEnvPositiveInt(val: string | undefined, defaultValue: number): number {
+  const parsed = parseEnvInt(val, defaultValue);
+  return parsed > 0 ? parsed : defaultValue;
+}
+
 /**
  * 应用配置加载主入口。
  * 支持环境变量的依赖注入，隔离物理 dotenv 读写文件副作用。
@@ -254,10 +260,9 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   const ragRecallLimit = parseEnvInt(env.AGENT_RAG_RECALL_LIMIT, 5);
   const ragRefinementThreshold = parseEnvInt(env.AGENT_RAG_REFINEMENT_THRESHOLD, 2);
   const loopPreventionLimit = parseEnvInt(env.AGENT_LOOP_PREVENTION_LIMIT, 3);
-  const compactionRetainCount = parseEnvInt(env.AGENT_COMPACTION_RETAIN_COUNT, 4);
-  const compactionTriggerDelta = parseEnvInt(env.AGENT_COMPACTION_TRIGGER_DELTA, 5000);
-  const compactionFailureLimit = parseEnvInt(env.AGENT_COMPACTION_FAILURE_LIMIT, 3);
-  const compactionRecentFilesLimit = parseEnvInt(env.AGENT_COMPACTION_RECENT_FILES_LIMIT, 5);
+  const compactionRetainCount = parseEnvPositiveInt(env.AGENT_COMPACTION_RETAIN_COUNT, 4);
+  const compactionRetainTokens = parseEnvPositiveInt(env.AGENT_COMPACTION_RETAIN_TOKENS, 8000);
+  const compactionSummaryMaxTokens = parseEnvPositiveInt(env.AGENT_COMPACTION_SUMMARY_MAX_TOKENS, 4096);
   const toolTimeoutMs = parseEnvInt(env.AGENT_TOOL_TIMEOUT_MS, 30000);
   const modelTimeoutMs = parseEnvTimeoutMs(env.AGENT_MODEL_TIMEOUT_MS, 60000);
   const subAgentTimeoutMs = parseEnvTimeoutMs(env.AGENT_SUB_AGENT_TIMEOUT_MS, 60000);
@@ -313,9 +318,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
       ragRefinementThreshold,
       loopPreventionLimit,
       compactionRetainCount,
-      compactionTriggerDelta,
-      compactionFailureLimit,
-      compactionRecentFilesLimit,
+      compactionRetainTokens,
+      compactionSummaryMaxTokens,
       toolTimeoutMs,
       modelTimeoutMs,
       subAgentTimeoutMs,

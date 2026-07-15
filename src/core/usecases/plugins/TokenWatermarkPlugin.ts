@@ -71,7 +71,8 @@ export class TokenWatermarkPlugin implements Plugin {
         content: `[系统检测] 当前上下文 Token 估算数 (${estimatedTokens.total}) 已超出模型安全阈值 (${threshold})，正在执行静默压缩与物理会话轮换...`
       });
 
-      const compactSuccess = await this.compactionService.compact();
+      // 自动压缩必须写入 Hook 沙箱，由插件运行器在释放 busy 锁后统一提交。
+      const compactSuccess = await this.compactionService.compactInHook(context.sessionContext);
       if (compactSuccess) {
         context.control = {
           action: 'restart',

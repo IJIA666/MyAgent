@@ -12,6 +12,7 @@ import { ContextRepository } from './ContextRepository.js';
 import { ToolDispatcher } from '../engine/ToolDispatcher.js';
 import { CompactionService } from './CompactionService.js';
 import type { ChatMessage, LlmPort } from '../../../ports/driven/llm/LlmPort.js';
+import type { TokenEstimatorPort } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import type { EmbeddingPort } from '../../../ports/driven/llm/EmbeddingPort.js';
 import type { VectorDbPort } from '../../../ports/driven/db/VectorDbPort.js';
 import type { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
@@ -36,6 +37,8 @@ export class MemoryService {
   private driver: LlmPort;
   /** 上下文管理与组装适配器 */
   private contextAdapter: ContextAdapter;
+  /** 子会话压缩复用的 Token 估算契约 */
+  private tokenEstimator: TokenEstimatorPort;
   /** 长期记忆提炼自省任务的物理追加写入队列 */
   private writeQueue: Promise<void> = Promise.resolve();
 
@@ -47,19 +50,22 @@ export class MemoryService {
    * @param appConfig - 应用程序系统配置项
    * @param driver - 大语言模型驱动接口适配器实例
    * @param contextAdapter - 上下文适配器契约
+   * @param tokenEstimator - Token 估算契约
    */
   constructor(
     vectorDb: VectorDbPort,
     embedding: EmbeddingPort,
     appConfig: AppConfig,
     driver: LlmPort,
-    contextAdapter: ContextAdapter
+    contextAdapter: ContextAdapter,
+    tokenEstimator: TokenEstimatorPort
   ) {
     this.vectorDb = vectorDb;
     this.embedding = embedding;
     this.appConfig = appConfig;
     this.driver = driver;
     this.contextAdapter = contextAdapter;
+    this.tokenEstimator = tokenEstimator;
     this.memoryFilePath = path.resolve(appConfig.workspace, '.agent/MEMORY.md');
   }
 
@@ -261,7 +267,12 @@ ${historyText}
     const subRuleManager = new RuleManager(subContext);
     const subContextRepo = new ContextRepository(subContext, undefined, true);
     const subToolDispatcher = new ToolDispatcher(subContext, subToolRegistry);
-    const subCompactionService = new CompactionService(subContext, this.driver, subContextRepo);
+    const subCompactionService = new CompactionService(
+      subContext,
+      this.driver,
+      subContextRepo,
+      this.tokenEstimator
+    );
 
     // 6. 实例化隔离的子 AgentLoop，限制最大步数为 3 轮
     const forkedAgent = new AgentLoop({

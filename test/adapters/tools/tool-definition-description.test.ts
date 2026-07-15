@@ -9,7 +9,8 @@ import { CreateDirectoryTool, DeletePathTool } from '../../../src/adapters/tools
 import { GrepSearchTool, GlobSearchTool } from '../../../src/adapters/tools/impl/filesystem/search.js';
 import { ReadManyFilesTool } from '../../../src/adapters/tools/impl/filesystem/read-many-files.js';
 import { BashTool, PowerShellTool } from '../../../src/adapters/tools/impl/system/terminal.js';
-import { systemTools } from '../../../src/adapters/tools/impl/system/index.js';
+import { buildSystemTools } from '../../../src/adapters/tools/impl/system/index.js';
+import { isShellKindSupportedOnPlatform } from '../../../src/adapters/tools/impl/system/terminal-plan.js';
 
 describe('工具描述中性边界约束', () => {
   test('ListFilesTool 描述应包含预算参数和默认不递归说明', () => {
@@ -71,14 +72,12 @@ describe('工具描述中性边界约束', () => {
     expect(powerShellDefinition.parameters.properties).not.toHaveProperty('shellKind');
   });
 
-  test('系统工具注册表应始终注册 Bash，并仅在 Windows 注册 PowerShell', () => {
-    const names = systemTools.map(tool => tool.name);
+  test('系统工具工厂应始终注册 Bash，并仅在 Windows 能力可用时注册 PowerShell', () => {
+    const names = buildSystemTools().map((tool) => tool.name);
+    const shouldExposePowerShell = process.platform === 'win32' &&
+      isShellKindSupportedOnPlatform('powershell', 'win32');
 
     expect(names).toContain('Bash');
-    if (process.platform === 'win32') {
-      expect(names).toContain('PowerShell');
-    } else {
-      expect(names).not.toContain('PowerShell');
-    }
+    expect(names.includes('PowerShell')).toBe(shouldExposePowerShell);
   });
 });

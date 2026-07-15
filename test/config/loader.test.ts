@@ -117,7 +117,10 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
         AGENT_LARGE_TOOL_OUTPUT_LIMIT: '10000',
         AGENT_READ_MANY_FILES_LIMIT: '60000',
         AGENT_SEARCH_LIMIT: '150',
-        AGENT_COMPACTION_WATERMARK_FACTOR: '0.85'
+        AGENT_COMPACTION_WATERMARK_FACTOR: '0.85',
+        AGENT_COMPACTION_RETAIN_COUNT: '3',
+        AGENT_COMPACTION_RETAIN_TOKENS: '7000',
+        AGENT_COMPACTION_SUMMARY_MAX_TOKENS: '3000'
       };
 
       const config = loadConfig(mockEnv);
@@ -126,6 +129,9 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
       expect(config.runtimeLimits.readManyFilesLimit).toBe(60000);
       expect(config.runtimeLimits.searchLimit).toBe(150);
       expect(config.runtimeLimits.compactionWatermarkFactor).toBe(0.85);
+      expect(config.runtimeLimits.compactionRetainCount).toBe(3);
+      expect(config.runtimeLimits.compactionRetainTokens).toBe(7000);
+      expect(config.runtimeLimits.compactionSummaryMaxTokens).toBe(3000);
     });
 
     it('当配置项缺失或输入非法格式时，应能自动回退到默认常量值兜底而不会崩溃', () => {
@@ -136,7 +142,10 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
         AGENT_LARGE_TOOL_OUTPUT_LIMIT: '  ',
         AGENT_READ_MANY_FILES_LIMIT: 'abc',
         AGENT_SEARCH_LIMIT: 'xyz',
-        AGENT_COMPACTION_WATERMARK_FACTOR: 'invalid-float'
+        AGENT_COMPACTION_WATERMARK_FACTOR: 'invalid-float',
+        AGENT_COMPACTION_RETAIN_COUNT: '0',
+        AGENT_COMPACTION_RETAIN_TOKENS: '-1',
+        AGENT_COMPACTION_SUMMARY_MAX_TOKENS: 'invalid-int'
       };
 
       const config = loadConfig(mockEnv);
@@ -145,6 +154,23 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
       expect(config.runtimeLimits.readManyFilesLimit).toBe(50000);
       expect(config.runtimeLimits.searchLimit).toBe(100);
       expect(config.runtimeLimits.compactionWatermarkFactor).toBe(0.8);
+      expect(config.runtimeLimits.compactionRetainCount).toBe(4);
+      expect(config.runtimeLimits.compactionRetainTokens).toBe(8000);
+      expect(config.runtimeLimits.compactionSummaryMaxTokens).toBe(4096);
+    });
+
+    it('旧的异步压缩配置不应再进入运行时限制对象', () => {
+      const config = loadConfig({
+        AGENT_LLM_API_KEY: 'mock-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash',
+        AGENT_COMPACTION_TRIGGER_DELTA: '1',
+        AGENT_COMPACTION_FAILURE_LIMIT: '1',
+        AGENT_COMPACTION_RECENT_FILES_LIMIT: '1'
+      });
+
+      expect(config.runtimeLimits).not.toHaveProperty('compactionTriggerDelta');
+      expect(config.runtimeLimits).not.toHaveProperty('compactionFailureLimit');
+      expect(config.runtimeLimits).not.toHaveProperty('compactionRecentFilesLimit');
     });
 
     it('当配置自定义 AGENT_MODEL_TIMEOUT_MS 和 AGENT_SUB_AGENT_TIMEOUT_MS 时，应正确写入 runtimeLimits', () => {

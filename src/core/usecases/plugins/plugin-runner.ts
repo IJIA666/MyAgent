@@ -188,6 +188,12 @@ async function runHookPipelineInternal(
           draft.history = [systemMsg, ...keptMsgs];
         };
       }
+      if (prop === 'updateHistory') {
+        return (history: ChatMessage[]) => {
+          // 整体历史替换同样必须留在 Hook 的 Immer 沙箱中等待统一提交。
+          draft.history = history;
+        };
+      }
       // 其它普通属性和未拦截方法反射并绑定执行
       const value = Reflect.get(target, prop, receiver);
       return typeof value === 'function' ? value.bind(target) : value;
@@ -254,6 +260,9 @@ async function runHookPipelineInternal(
       duration
     });
   }
+
+  // 插件可以整体替换 control 对象，必须显式同步回外层 Hook 结果。
+  context.control = sandboxContext.control;
 
   // 4. 一次性安全提交 Immer 生成的不可变状态至外层 SessionContext 属性
   // 只有当控制指令没有触发 abort（ 强行终止 ）时，修改才会被确认落盘，防止脏写

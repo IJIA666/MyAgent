@@ -17,7 +17,8 @@ import { LongTermMemoryPlugin } from '../../../../src/core/usecases/plugins/Long
 import { HookEventName, HookContext, LlmRequest } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { runHookPipeline } from '../../../../src/core/usecases/plugins/plugin-runner.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
-import type { CompactionService } from '../../../../src/core/usecases/brain/CompactionService.js';
+import { CompactionService } from '../../../../src/core/usecases/brain/CompactionService.js';
+import type { ContextRepository } from '../../../../src/core/usecases/brain/ContextRepository.js';
 import type { LlmConfig } from '../../../../src/config/index.js';
 import type { ToolDispatcher } from '../../../../src/core/usecases/engine/ToolDispatcher.js';
 import type { AgentTracer } from '../../../../src/core/domain/tracer.js';
@@ -64,7 +65,7 @@ describe('Plugins Lifecycle & Action Tests', () => {
   describe('TokenWatermarkPlugin', () => {
     it('should trigger compaction and restart when estimated tokens exceed threshold', async () => {
       const mockCompactionService = {
-        compact: vi.fn().mockResolvedValue(true)
+        compactInHook: vi.fn().mockResolvedValue(true)
       } as unknown as CompactionService;
       const mockLlmConfig = { model: 'gpt-4o', contextWindow: 10 } as unknown as LlmConfig;
       const mockTokenEstimator = {
@@ -93,10 +94,73 @@ describe('Plugins Lifecycle & Action Tests', () => {
       const next = vi.fn().mockResolvedValue(undefined);
       await plugin.hooks[HookEventName.BeforeModel](context, next);
 
-      expect(mockCompactionService.compact).toHaveBeenCalled();
+      expect(mockCompactionService.compactInHook).toHaveBeenCalledWith(sessionContext);
       expect(context.control.action).toBe('restart');
       expect(next).toHaveBeenCalled();
     }, 60000);
+
+    it('should commit middle compaction through the Hook sandbox and return restart', async () => {
+      sessionContext.appConfig = createMockAppConfig();
+      sessionContext.appConfig.runtimeLimits.compactionRetainCount = 1;
+      sessionContext.addMessage({ role: 'user', content: 'user-first' });
+      sessionContext.addMessage({ role: 'assistant', content: 'assistant-first' });
+      sessionContext.addMessage({ role: 'user', content: 'user-middle' });
+      sessionContext.addMessage({ role: 'assistant', content: 'assistant-middle' });
+      sessionContext.addMessage({ role: 'user', content: 'user-latest' });
+      sessionContext.addMessage({ role: 'assistant', content: 'assistant-latest' });
+
+      const driver = {
+        generateSummaryAsync: vi.fn().mockResolvedValue('middle summary'),
+      } as unknown as LlmPort;
+      const contextRepo = {
+        saveState: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ContextRepository;
+      const tokenEstimator = {
+        countTokens: vi.fn().mockReturnValue(0),
+        estimateMessageTokens: vi.fn().mockReturnValue(1),
+        estimateSnapshotTokens: vi.fn().mockReturnValue({
+          total: 100,
+          system: 10,
+          rules: 10,
+          transient: 10,
+          history: 70,
+          isEstimated: true,
+        }),
+        getCompactionThreshold: vi.fn().mockReturnValue(50),
+      } as unknown as TokenEstimatorPort;
+      const compactionService = new CompactionService(
+        sessionContext,
+        driver,
+        contextRepo,
+        tokenEstimator
+      );
+      const plugin = new TokenWatermarkPlugin(
+        compactionService,
+        tokenEstimator,
+        () => ({ model: 'gpt-4o', contextWindow: 10 } as unknown as LlmConfig)
+      );
+
+      const result = await runHookPipeline(
+        HookEventName.BeforeModel,
+        sessionContext,
+        [plugin.hooks[HookEventName.BeforeModel]],
+        {
+          llmRequest: {
+            messages: sessionContext.getHistory(),
+            tools: [{ name: 'read_file' }],
+          },
+        }
+      );
+      const contents = sessionContext.getHistory().map((message) => message.content);
+
+      expect(result.control.action).toBe('restart');
+      expect(contents).not.toContain('user-middle');
+      expect(contents).toContain('[Summary of Earlier Conversation]\nmiddle summary');
+      expect(contents).toContain('user-latest');
+      expect(result.llmRequest?.tools).toEqual([{ name: 'read_file' }]);
+      expect(contextRepo.saveState).not.toHaveBeenCalled();
+      expect(sessionContext.isProcessing).toBe(false);
+    });
   });
 
   describe('JitRulesPlugin', () => {
