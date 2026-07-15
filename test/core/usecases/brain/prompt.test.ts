@@ -1,32 +1,23 @@
 /**
  * @file prompt.test.ts
- * @description 系统提示词（System Prompt）组装与三层 XML 缓存隔离架构的单元测试。
+ * @description 系统提示词组装、条件章节与会话更新的单元测试。
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
 import {
+  BASE_SYSTEM_PROMPT,
   buildSystemPrompt,
-  OS_INSTRUCTIONS_MAP,
-  RESOLVED_BASE_PROMPT,
   SYSTEM_RULES,
-  RULE_FILE_SANDBOX,
-  RULE_ERROR_HANDLING,
-  RULE_COMMUNICATION,
-  RULE_LANGUAGE,
-  RULE_TERMINAL_SAFETY,
-  RULE_MINIMAL_REFACTOR,
-  RULE_TOOL_PRIORITY,
-  RULE_LONG_TERM_MEMORY,
-  RULE_ERROR_ATTRIBUTION,
-  RULE_EVIDENCE_DISCIPLINE,
+  RULE_TOOL_RESULT_HANDLING,
 } from '../../../../src/core/usecases/brain/prompts.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
+import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 
 let mockGlobalRules = '';
 let mockLocalRules = '';
 let mockSkills: Array<{ name: string; description: string; filePath: string }> = [];
 
-describe('System Prompt 三层 XML 缓存架构单元测试', () => {
+describe('System Prompt 组装契约', () => {
   beforeEach(() => {
     // 每个测试用例开始前清空/重置 mock 变量
     mockGlobalRules = '';
@@ -34,11 +25,11 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     mockSkills = [];
   });
 
-  test('1. 系统提示词应正确包含 stable、context、volatile 三层 XML 结构', () => {
+  test('系统提示词应包含 stable、context、volatile 三个组装区段', () => {
     const prompt = buildSystemPrompt(mockGlobalRules, mockLocalRules, mockSkills);
 
     // 检查 stable 标记
-    expect(prompt).toContain('<!-- 1. stable (稳定人设层，绝对静态，100% 缓存命中) -->');
+    expect(prompt).toContain('<!-- 1. stable');
     // 检查 context_rules XML 嵌套
     expect(prompt).toContain('<context_rules>');
     expect(prompt).toContain('</context_rules>');
@@ -47,7 +38,7 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     expect(prompt).toContain('</volatile_context>');
   });
 
-  test('2. 在无本地规则时，System Prompt 中的 local_rules 结构校验', () => {
+  test('未提供项目规则时不应生成 local_rules', () => {
     mockGlobalRules = '';
     mockLocalRules = '';
 
@@ -56,7 +47,7 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     expect(prompt).not.toContain('<local_rules>');
   });
 
-  test('3. 在有本地现有规则时，System Prompt 的装配校验', () => {
+  test('应将全局规则与局部规则装配进 local_rules', () => {
     mockGlobalRules = 'GLOBAL_RULE_TEST_TEXT';
     mockLocalRules = 'LOCAL_RULE_TEST_TEXT';
 
@@ -66,23 +57,29 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     expect(prompt).toContain('LOCAL_RULE_TEST_TEXT');
   });
 
-  test('4. CWD 动态感知校验（改动后：已从 System Prompt 中移除以保全缓存）', () => {
-    const prompt = buildSystemPrompt(mockGlobalRules, mockLocalRules, mockSkills);
-    
-    // 验证已从头部系统提示词中移除了 <cwd> 和 <date> 标签
-    expect(prompt).not.toContain('<cwd>');
+  test('操作系统与 CWD 应作为运行环境事实注入 System Prompt', () => {
+    const workingDirectory = 'D:\\projects\\prompt-test';
+    const prompt = buildSystemPrompt(
+      mockGlobalRules,
+      mockLocalRules,
+      mockSkills,
+      { workingDirectory },
+    );
+
+    // CWD 属于当前运行环境事实。
+    expect(prompt).toContain(`<cwd>${workingDirectory}</cwd>`);
     expect(prompt).not.toContain('<date>');
     expect(prompt).toContain('<volatile_context>');
     expect(prompt).toContain('<os>');
   });
 
-  test('5. SessionContext 实例中的 System 消息缓存结构校验', () => {
+  test('SessionContext 应创建并支持更新 System 消息', () => {
     const session = new SessionContext();
     const messages = session.getHistory();
     
     expect(messages.length).toBeGreaterThan(0);
     expect(messages[0].role).toBe('system');
-    expect(messages[0].content).toContain('<!-- 1. stable (稳定人设层，绝对静态，100% 缓存命中) -->');
+    expect(messages[0].content).toContain('<!-- 1. stable');
 
     // 验证 updateSystemPrompt 的热重载和三参数同步合并
     session.updateSystemPrompt('GLOBAL_RULE_TEST_TEXT', 'LOCAL_RULE_TEST_TEXT', [
@@ -94,100 +91,65 @@ describe('System Prompt 三层 XML 缓存架构单元测试', () => {
     expect(updatedContent).toContain('test-skill: desc');
   });
 
-  test('6. 跨平台安全性指令映射白盒检验与 RESOLVED_BASE_PROMPT 校验', () => {
-    // 1. 验证 OS_INSTRUCTIONS_MAP 中包含了 win32, darwin, linux 的特定定义
-    expect(OS_INSTRUCTIONS_MAP.win32).toContain('宿主操作系统是 Windows');
-    expect(OS_INSTRUCTIONS_MAP.win32).toContain('Bash');
-    expect(OS_INSTRUCTIONS_MAP.win32).toContain('PowerShell');
-    expect(OS_INSTRUCTIONS_MAP.darwin).toContain('macOS (Darwin)');
-    expect(OS_INSTRUCTIONS_MAP.linux).toContain('Linux');
-
-    // 2. 验证 RESOLVED_BASE_PROMPT 确实被成功装配了当前 process.platform 对应的指令
-    const currentPlatform = process.platform;
-    const expectedInstruction = OS_INSTRUCTIONS_MAP[currentPlatform] ?? OS_INSTRUCTIONS_MAP.linux;
-    expect(RESOLVED_BASE_PROMPT).toContain(expectedInstruction);
-    expect(RESOLVED_BASE_PROMPT).not.toContain('{{OS_SECURITY_INSTRUCTIONS}}');
-  });
-
-  test('7. 验证提示词常量抽取完整性与装配安全性', () => {
-    // 1. 验证最终装配渲染后的 RESOLVED_BASE_PROMPT 不包含冷启动占位符
-    expect(RESOLVED_BASE_PROMPT).not.toContain('{{OS_SECURITY_INSTRUCTIONS}}');
-
-    // 2. 验证所有导出的核心规则常量均被完整装配入最终提示词中
+  test('SYSTEM_RULES 应完整且按顺序装配进基础提示词', () => {
     const rulesToVerify = [
-      RULE_FILE_SANDBOX,
-      RULE_ERROR_HANDLING,
-      RULE_COMMUNICATION,
-      RULE_LANGUAGE,
-      RULE_TERMINAL_SAFETY,
-      RULE_MINIMAL_REFACTOR,
-      RULE_TOOL_PRIORITY,
-      RULE_LONG_TERM_MEMORY,
-      RULE_ERROR_ATTRIBUTION,
-      RULE_EVIDENCE_DISCIPLINE,
+      RULE_TOOL_RESULT_HANDLING,
     ];
 
     for (const rule of rulesToVerify) {
-      if (rule === RULE_TERMINAL_SAFETY) {
-        // 对于终端命令安全约束，验证其冷启动替换后的完整内容是否存在于提示词中
-        const currentPlatform = process.platform;
-        const osInstruction = OS_INSTRUCTIONS_MAP[currentPlatform] ?? OS_INSTRUCTIONS_MAP.linux;
-        const resolvedTerminalSafety = RULE_TERMINAL_SAFETY.replace('{{OS_SECURITY_INSTRUCTIONS}}', osInstruction);
-        expect(RESOLVED_BASE_PROMPT).toContain(resolvedTerminalSafety);
-      } else {
-        expect(RESOLVED_BASE_PROMPT).toContain(rule);
-      }
+      expect(BASE_SYSTEM_PROMPT).toContain(rule);
     }
 
-    // 3. 校验装配数组中的规则数量，确保没有漏装
-    expect(SYSTEM_RULES.length).toBe(10);
+    // 校验装配数组的成员和顺序，避免遗漏或重复装配。
+    expect(SYSTEM_RULES).toEqual(rulesToVerify);
   });
 
-  test('8. 文件沙箱规则应保留默认边界，但不得预判工具层拒绝', () => {
-    // 锁定中性委托语义，防止回退到模型先自我拒绝的旧文案。
-    expect(RULE_FILE_SANDBOX).toContain('默认在授权的工作区目录下执行');
-    expect(RULE_FILE_SANDBOX).toContain('应正常调用工具，由工具层依据安全策略执行、请求审批或拒绝');
-    expect(RULE_FILE_SANDBOX).not.toContain('工具将返回拒绝访问');
+  test('基础提示词不应伪造沙箱或授权边界', () => {
+    const prompt = buildSystemPrompt();
+
+    expect(prompt).not.toContain('授权的工作区');
+    expect(prompt).not.toContain('工作区外');
+    expect(prompt).not.toContain('文件沙箱');
   });
 
-  test('9. 证据约束应跨领域持续生效，不依赖场景意图识别', () => {
-    expect(RULE_EVIDENCE_DISCIPLINE).toContain('事实');
-    expect(RULE_EVIDENCE_DISCIPLINE).toContain('推断');
-    expect(RULE_EVIDENCE_DISCIPLINE).toContain('建议');
-    expect(RULE_EVIDENCE_DISCIPLINE).toContain('文件名、状态摘要');
-    expect(RULE_EVIDENCE_DISCIPLINE).toContain('diff、正文或对应原始记录');
-    expect(RULE_EVIDENCE_DISCIPLINE).toContain('不得为了减少调用次数而省略');
-    expect(RULE_EVIDENCE_DISCIPLINE).not.toContain('C 盘');
-    expect(RULE_EVIDENCE_DISCIPLINE).not.toContain('缓存目录');
+  test('工具失败处理应保持简洁且基于实际结果', () => {
+    expect(RULE_TOOL_RESULT_HANDLING).toContain('先阅读错误并检查假设');
+    expect(RULE_TOOL_RESULT_HANDLING).toContain('不要盲目重复相同调用');
+    expect(RULE_TOOL_RESULT_HANDLING).toContain('不要声称未实际获得的结果');
+    expect(RULE_TOOL_RESULT_HANDLING).not.toContain('网络或基础设施');
+    expect(RULE_TOOL_RESULT_HANDLING).not.toContain('文件名、状态摘要');
   });
 
-  test('10. Shell 提示词应与阶段 4 的复合命令能力一致', () => {
-    expect(RULE_TOOL_PRIORITY).toContain('用户明确指定 Shell');
-    expect(RULE_TOOL_PRIORITY).toContain('终端命令的连接符与禁用结构仅以“终端命令安全性约束”为准');
-    expect(RULE_TOOL_PRIORITY).not.toContain('Bash 仅支持顶层');
-    expect(RULE_TOOL_PRIORITY).not.toContain('PowerShell 仅支持顶层');
-
-    expect(OS_INSTRUCTIONS_MAP.win32).toContain('Shell 原生支持的条件链、管道、重定向、后台、嵌套 Shell、命令替换、脚本块及控制流');
-    expect(OS_INSTRUCTIONS_MAP.win32).toContain('不得仅因命令包含复合结构而擅自改用其他工具');
-    expect(OS_INSTRUCTIONS_MAP.win32).toContain('权限拒绝后不得擅自执行替代命令');
-    expect(OS_INSTRUCTIONS_MAP.win32).toContain('Cmd 复合语法当前不受支持');
-    expect(OS_INSTRUCTIONS_MAP.darwin).toContain('顶层 ;、&&、||');
-    expect(OS_INSTRUCTIONS_MAP.linux).toContain('顶层 ;、&&、||');
-
-    for (const instruction of Object.values(OS_INSTRUCTIONS_MAP)) {
-      expect(instruction).toContain('管道');
-      expect(instruction).toContain('重定向');
-      expect(instruction).toContain('嵌套 Shell');
-      expect(instruction).toContain('命令替换');
-    }
+  test('基础身份应保持通用定位并吸收沟通原则', () => {
+    expect(BASE_SYSTEM_PROMPT).toContain('你是 MyAgent，一个自主的通用智能助手');
+    expect(BASE_SYSTEM_PROMPT).toContain('根据用户请求完成任务');
+    expect(BASE_SYSTEM_PROMPT).toContain('存在不确定性时明确说明');
+    expect(BASE_SYSTEM_PROMPT).toContain('重视实际帮助而非冗长表达');
+    expect(BASE_SYSTEM_PROMPT).not.toContain('专业且精确的本地智能体助手');
+    expect(BASE_SYSTEM_PROMPT).not.toContain('MUST OBEY');
+    expect(RULE_TOOL_RESULT_HANDLING).toContain('针对性修正');
+    expect(BASE_SYSTEM_PROMPT).not.toContain('授权的工作区');
   });
 
-  test('11. 系统提示词不应制造工具选择、记忆和错误恢复冲突', () => {
-    expect(RULE_TOOL_PRIORITY).not.toContain('绝对禁止调用 Bash 或 PowerShell');
-    expect(RULE_LONG_TERM_MEMORY).toContain('仅当最新 User 消息实际包含');
-    expect(RULE_LONG_TERM_MEMORY).toContain('标签不存在时不得假设');
-    expect(RULE_ERROR_HANDLING).toContain('仅当原因与修正方式都有明确证据时');
-    expect(RULE_ERROR_ATTRIBUTION).toContain('修正方式唯一且明确时可以直接修正');
-    expect(RESOLVED_BASE_PROMPT).not.toContain('你严格在授权的工作区根目录下运行');
+  test('语言偏好应仅在显式配置时动态注入', () => {
+    const defaultPrompt = buildSystemPrompt();
+    const configuredPrompt = buildSystemPrompt(undefined, undefined, undefined, {
+      language: '简体中文',
+    });
+
+    expect(defaultPrompt).not.toContain('<language>');
+    expect(defaultPrompt).not.toContain('内部逻辑和推理链');
+    expect(BASE_SYSTEM_PROMPT).not.toContain('语言强制');
+    expect(configuredPrompt).toContain('<language>\nAlways respond in 简体中文.');
+    expect(configuredPrompt).toContain('Technical terms and code identifiers should remain in their original form.');
+  });
+
+  test('SessionContext 重组提示词时应应用配置中的语言偏好', () => {
+    const session = new SessionContext();
+    session.appConfig = createMockAppConfig({ language: '日本語' });
+
+    session.updateSystemPrompt();
+
+    expect(session.getHistory()[0].content).toContain('Always respond in 日本語.');
   });
 });

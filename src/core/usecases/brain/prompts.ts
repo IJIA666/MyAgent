@@ -6,99 +6,47 @@
 import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
 import type { SkillMetadata } from './contextLoader.js';
 
-// 预设的人设和最底层的不可撼动之规则
-/** 规则 1：文件操作的沙箱与工作区边界约束 */
-export const RULE_FILE_SANDBOX = `所有文件操作默认在授权的工作区目录下执行。不要仅因目标路径位于工作区外而提前拒绝用户请求，应正常调用工具，由工具层依据安全策略执行、请求审批或拒绝。`;
+/** 工具失败后的诊断、调整与结果真实性约束。 */
+export const RULE_TOOL_RESULT_HANDLING = `工具调用失败时，先阅读错误并检查假设，再进行针对性修正；不要盲目重复相同调用，也不要声称未实际获得的结果。`;
 
-/** 规则 2：工具执行异常的自我恢复与优雅解释机制 */
-export const RULE_ERROR_HANDLING = `工具执行报错时，先依据错误原文和工具 Schema 判断原因。仅当原因与修正方式都有明确证据时才修正后重试；证据不足时先进行安全的只读诊断或向用户说明未知项，不得猜测参数、原因或执行结果。`;
-
-/** 规则 3：智能体回答语气、风格与质量标准 */
-export const RULE_COMMUNICATION = `请直接、专业且精准地回答用户问题，避免冗余的客套话、假设性警告或占位信息。`;
-
-/** 规则 4：全局中文思考与中文输出的语言规约 */
-export const RULE_LANGUAGE = `【语言强制】你必须始终使用简体中文进行思考（内部逻辑和推理链）以及最终回复，仅在必要时保留英文的专业术语或代码片段。`;
-
-/** 规则 5：宿主系统命令的安全隔离与防注入约束 */
-export const RULE_TERMINAL_SAFETY = `【终端命令安全性约束】
-{{OS_SECURITY_INSTRUCTIONS}}`;
-
-/** 规则 6：最小改动边界与零注释污染规范 */
-export const RULE_MINIMAL_REFACTOR = `【最小重构与零注释污染原则】
-   - 最小重构：仅针对请求的范围进行修改，绝对禁止顺便清理周围代码、增加未请求的 feature 或设计过度抽象。
-   - 零注释污染：修改代码时必须在 API 声明正上方编写严格的 JSDoc/TSDoc 注释（ JSDoc/TSDoc 必须移除 {type} 声明，参数用 @param name - 描述 语法，返回值描述采用 @returns 描述 语法），非必要不乱加注释，严禁对未修改的代码乱加或改动 JSDoc。`;
-
-/** 规则 7：原生工具优先使用与终端工具使用场景划分 */
-export const RULE_TOOL_PRIORITY = `【工具选择】
-   - 对普通文件读取、搜索和编辑，默认优先使用对应的原生工具，不要仅为模拟这些能力而调用 Shell。
-   - 当用户明确指定 Shell，或一次受支持的复合命令能合并少量紧密相关的操作时，可以使用与命令语义匹配的 Bash 或 PowerShell；不要因为默认工具偏好而违背用户明确且安全的工具选择。
-   - 工具选择不得牺牲完成任务所需的证据。终端命令的连接符与禁用结构仅以“终端命令安全性约束”为准，避免在多条规则中重复推导。`;
-
-/** 规则 8：大语言模型参考 User 注入的长期记忆规约 */
-export const RULE_LONG_TERM_MEMORY = `【长期记忆参考指令】仅当最新 User 消息实际包含 <long-term-memory> 时，才将其中内容作为参考事实；标签不存在时不得假设、补写或声称读取了长期记忆。`;
-
-/** 规则 9：工具报错时的三分类异常归因与对偶恢复重试规范 */
-export const RULE_ERROR_ATTRIBUTION = `【错误归因与重试】
-   - 网络或基础设施超时可以使用完全相同的参数重试一次；不得借超时擅自改写 Schema 字段。
-   - 参数校验错误应先对照工具 Schema。修正方式唯一且明确时可以直接修正；存在歧义或会改变用户意图时再询问用户。
-   - 权限、文件锁或其他业务错误应保留错误原文并进行安全诊断；没有新证据时不得重复调用或编造根因。`;
-
-/** 规则 10：跨领域事实、推断与建议的证据边界 */
-export const RULE_EVIDENCE_DISCIPLINE = `【证据与结论边界】
-   - 调用工具前先确认最终结论需要哪些证据；不得为了减少调用次数而省略支撑核心结论的必要观察。
-   - 必须区分工具直接观察到的事实、基于事实的推断和尚未执行的建议，并核对数量、状态等可验证细节。
-   - 文件名、状态摘要、枚举结果或对象属性只能证明表面状态，不能证明实现语义、原因或影响。需要总结内容变化时，应读取 diff、正文或对应原始记录；无法获取时必须明确限定结论。
-   - 可以在受支持的复合命令中合并必要的只读观察，但不得把局部数据、经验概率或推断写成已验证结论。`;
-
-/** 系统核心工程红线指令数组，按装配顺序排列 */
+/** 系统规则数组，按装配顺序排列。 */
 export const SYSTEM_RULES = [
-  RULE_FILE_SANDBOX,
-  RULE_ERROR_HANDLING,
-  RULE_COMMUNICATION,
-  RULE_LANGUAGE,
-  RULE_TERMINAL_SAFETY,
-  RULE_MINIMAL_REFACTOR,
-  RULE_TOOL_PRIORITY,
-  RULE_LONG_TERM_MEMORY,
-  RULE_ERROR_ATTRIBUTION,
-  RULE_EVIDENCE_DISCIPLINE,
+  RULE_TOOL_RESULT_HANDLING,
 ];
 
-/** 预设的人设和最底层的不可撼动之规则的提示词头部前缀 */
-const BASE_SYSTEM_PROMPT_PREFIX = `你是一个专业且精确的本地智能体助手。
-你主要在授权的工作区根目录下运行；不要自行猜测访问边界，具体授权、审批与拒绝由工具层判定。
-你可以使用提供给你的本地工具读取文件、写入文件以及列出目录内容。
+/** 默认的通用智能体身份与协作方式。 */
+const BASE_SYSTEM_PROMPT_PREFIX = `你是 MyAgent，一个自主的通用智能助手。根据用户请求完成任务，并在需要时使用当前可用工具。清晰沟通，存在不确定性时明确说明；除非用户另有要求，重视实际帮助而非冗长表达。探索和调查应有针对性并保持高效。`;
 
-**极其重要的核心工程红线指令 (MUST OBEY)：**`;
-
-// 模块冷启动装配并固化为最终的 BASE_SYSTEM_PROMPT，供下游 RESOLVED_BASE_PROMPT 消费
-const BASE_SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT_PREFIX}\n` +
+/** 按系统规则顺序装配的稳定基础提示词。 */
+export const BASE_SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT_PREFIX}\n` +
   SYSTEM_RULES.map((rule, i) => `${i + 1}. ${rule}`).join('\n');
 
-/**
- * 针对不同操作系统的特定命令约束与安全性要求映射。
- * 显式导出以允许白盒测试直接对其各分支文本进行内容校验，免去 mock 环境变量的复杂性。
- */
-export const OS_INSTRUCTIONS_MAP: Record<string, string> = {
-  win32: `你当前运行的宿主操作系统是 Windows。当你需要使用 Bash 或 PowerShell 工具执行命令时：
-   - PowerShell 工具仅用于 PowerShell 语义；Bash 工具仅用于 Bash 语义。必须选择与命令语法匹配的工具。
-   - Windows 原生查询应优先使用 PowerShell（例如使用 'Get-Process'、'Get-NetIPConfiguration'）。
-   - Bash 与 PowerShell 可以使用各自 Shell 原生支持的条件链、管道、重定向、后台、嵌套 Shell、命令替换、脚本块及控制流；语法有效性与执行权限以工具返回结果为准，不要在调用前自行套用固定禁用列表。
-   - 用户明确指定 Bash 或 PowerShell 时，应使用对应工具完成请求，不得仅因命令包含复合结构而擅自改用其他工具。
-   - 动态求值、编码执行或无法完整分析的结构可能被工具拒绝；权限拒绝后不得擅自执行替代命令。Cmd 复合语法当前不受支持。`,
-  darwin: `你当前运行的宿主操作系统是 macOS (Darwin)。当你需要使用 Bash 工具执行命令时：
-   - 可以使用顶层 ;、&&、|| 组合少量相关操作，并保持 && 与 || 的短路语义。
-   - 不得使用管道、重定向、后台执行、换行、嵌套 Shell、命令替换、脚本块或控制流。`,
-  linux: `你当前运行的宿主操作系统是 Linux。当你需要使用 Bash 工具执行命令时：
-   - 可以使用顶层 ;、&&、|| 组合少量相关操作，并保持 && 与 || 的短路语义。
-   - 不得使用管道、重定向、后台执行、换行、嵌套 Shell、命令替换、脚本块或控制流。
-   - 当前阶段不提供 PowerShell 工具。`
-};
+/** 系统提示词的动态装配选项。 */
+export interface SystemPromptOptions {
+  /** 当前工具执行使用的工作目录，默认采用进程 CWD */
+  workingDirectory?: string;
+  /** 用户可见回复的偏好语言；未配置时不生成语言章节 */
+  language?: string;
+}
 
-// 在模块加载初始化时，一次性自适应替换占位符并固化为 RESOLVED_BASE_PROMPT，满足全局 stable 层的绝对静态性。
-const osPlatform = process.platform;
-const osInstruction = OS_INSTRUCTIONS_MAP[osPlatform] ?? OS_INSTRUCTIONS_MAP.linux;
-export const RESOLVED_BASE_PROMPT = BASE_SYSTEM_PROMPT.replace('{{OS_SECURITY_INSTRUCTIONS}}', osInstruction);
+/** 转义动态文本中的 XML 保留字符，避免破坏提示词标签结构。 */
+function escapeXmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/** 根据显式语言偏好生成独立章节；未配置时不产生任何语言约束。 */
+function buildLanguageSection(languagePreference?: string): string | null {
+  const language = languagePreference?.trim();
+  if (!language) return null;
+
+  const escapedLanguage = escapeXmlText(language);
+  return `<language>
+Always respond in ${escapedLanguage}. Use ${escapedLanguage} for all explanations, comments, and communications with the user. Technical terms and code identifiers should remain in their original form.
+</language>`;
+}
 
 /**
  * 组装并获取最终的系统级人设文本。
@@ -110,17 +58,20 @@ export const RESOLVED_BASE_PROMPT = BASE_SYSTEM_PROMPT.replace('{{OS_SECURITY_IN
  * @param customGlobalRules - 可选的已缓存全局规则内容
  * @param customLocalRules - 可选的已缓存局部规则内容
  * @param skills - 可选的技能元数据列表
+ * @param options - 可选的动态系统提示词装配参数
  * @returns 组装好的符合三层 XML 结构且缓存友好的单个系统提示词字符串
  */
 export function buildSystemPrompt(
   customGlobalRules?: string,
   customLocalRules?: string,
-  skills?: SkillMetadata[]
+  skills?: SkillMetadata[],
+  options: SystemPromptOptions = {}
 ): string {
   const parts: string[] = [];
+  const workingDirectory = options.workingDirectory ?? process.cwd();
 
-  // 1. stable (稳定人设层，绝对静态，100% 缓存命中)
-  parts.push(`<!-- 1. stable (稳定人设层，绝对静态，100% 缓存命中) -->\n${RESOLVED_BASE_PROMPT}`);
+  // 1. stable（稳定人设层）
+  parts.push(`<!-- 1. stable (稳定人设层) -->\n${BASE_SYSTEM_PROMPT}`);
 
   // 2. context (上下文环境层，工作区级稳定)
   const globalRules = customGlobalRules ?? '';
@@ -138,12 +89,17 @@ export function buildSystemPrompt(
     parts.push(`  <local_rules>\n${combinedRules.split('\n').map((line: string) => `    ${line}`).join('\n')}\n  </local_rules>`);
   }
   parts.push(`</context_rules>`);
+  const languageSection = buildLanguageSection(options.language);
+  if (languageSection) {
+    parts.push(languageSection);
+  }
 
-  // 3. volatile (已静态化，仅保留平台常量)
+  // 3. volatile（当前运行环境事实，不进入稳定前缀）
   const osStr = process.platform === 'win32' ? 'Windows' : process.platform;
-  
-  parts.push(`\n<!-- 3. volatile (已静态化，仅保留平台常量) -->\n<volatile_context>
+
+  parts.push(`\n<!-- 3. volatile (当前运行环境事实) -->\n<volatile_context>
   <os>${osStr}</os>
+  <cwd>${escapeXmlText(workingDirectory)}</cwd>
 </volatile_context>`);
 
   return parts.join('\n');

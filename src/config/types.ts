@@ -174,6 +174,8 @@ export const DEFAULT_DIAGNOSTIC_DATA_CONFIG: Readonly<DiagnosticDataConfig> = Ob
 export interface AppConfig {
   /** 大语言模型连接配置 */
   llm: LlmConfig;
+  /** 可选的用户可见回复语言偏好；未配置时不向模型施加语言要求 */
+  language?: string;
   /** 文本嵌入模型连接配置 */
   embedding: EmbeddingConfig;
   /** 授权工作区的绝对路径 */

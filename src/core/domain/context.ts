@@ -128,7 +128,9 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
     if (this.isProcessing) {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
-    const systemPrompt = buildSystemPrompt(customGlobalRules, customLocalRules, skills);
+    const systemPrompt = buildSystemPrompt(customGlobalRules, customLocalRules, skills, {
+      language: this._appConfig?.language,
+    });
     this.conversationState.updateSystemPrompt(systemPrompt);
   }
 

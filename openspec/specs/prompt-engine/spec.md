@@ -17,18 +17,16 @@
 - **WHEN** `SessionManager` 在初始化历史上下文栈时
 - **THEN** 调用 `buildSystemPrompt()` 获取初始化文本，而非自己手工拼装字符串
 
-### Requirement: 系统人设自适应平台装配
-系统提示词引擎必须能够自动依据当前宿主主机的物理操作系统类型，将通用静态提示词模板中的 `{{OS_SECURITY_INSTRUCTIONS}}` 占位符，自适应地在模块初始化阶段替换为对齐当前宿主操作系统的特定安全规则指示，消除平台冲突。
+### Requirement: 操作系统信息仅作为运行环境事实
+系统提示词引擎必须将当前操作系统作为运行环境事实注入，且不得在基础提示词中维护按平台分支的 Shell 能力、安全规则或语法禁用列表。Shell 工具可用性、语法分析与权限结果必须以当次工具注册和运行时策略为准。
 
-#### Scenario: 平台处于 Windows 环境
-- **WHEN** 宿主物理操作系统 `process.platform` 为 `win32` 且模块被加载导入时
-- **THEN** 系统提示词只读常量 `RESOLVED_BASE_PROMPT` 中必须自适应包含 Windows 原生命令红线及复合符号阻断约束。
+#### Scenario: 注入宿主操作系统事实
+- **WHEN** 系统调用 `buildSystemPrompt()` 组装提示词
+- **THEN** `volatile_context` 必须包含当前宿主操作系统对应的 `<os>` 事实
 
-#### Scenario: 平台处于 macOS 或 Linux 环境
-- **WHEN** 宿主物理操作系统 `process.platform` 探测为 `darwin` 或 `linux` 且模块被加载导入时
-- **THEN** 系统提示词只读常量 `RESOLVED_BASE_PROMPT` 中必须自适应包含 POSIX 规范与防命令注入逃逸约束，绝不能出现 Windows 字眼与特有命令限制。
-
----
+#### Scenario: 不注入静态 Shell 平台矩阵
+- **WHEN** 系统组装稳定基础提示词
+- **THEN** 基础提示词不得包含按 Windows、macOS 或 Linux 分支维护的 Shell 能力与语法禁用列表
 
 ### Requirement: 基础提示词必须约束回答聚焦性与可执行性
 

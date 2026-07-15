@@ -245,6 +245,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   const readManyFilesLimit = parseEnvInt(env.AGENT_READ_MANY_FILES_LIMIT, 50000);
   const searchLimit = parseEnvInt(env.AGENT_SEARCH_LIMIT, 100);
   const compactionWatermarkFactor = parseEnvFloat(env.AGENT_COMPACTION_WATERMARK_FACTOR, 0.8);
+  // 语言偏好仅在显式配置时生效，空白值不应生成语言提示。
+  const language = env.AGENT_LANGUAGE?.trim() || undefined;
 
   // 解析 RAG、死循环及上下文压缩的 9 个限额环境变量控制参数
   const ragEnabled = env.AGENT_RAG_ENABLED === undefined ? true : env.AGENT_RAG_ENABLED.trim().toLowerCase() === 'true';
@@ -291,6 +293,7 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
 
   const config: AppConfig = {
     llm,
+    ...(language ? { language } : {}),
     embedding,
     workspace,
     mcp,

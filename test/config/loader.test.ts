@@ -57,6 +57,22 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
     expect(config.workspace).toBe(expectedPath);
   });
 
+  it('仅在 AGENT_LANGUAGE 非空时写入回复语言偏好', () => {
+    const configured = loadConfig({
+      AGENT_LLM_MODEL: 'deepseek-v4-flash',
+      AGENT_LLM_API_KEY: 'mock-api-key-123',
+      AGENT_LANGUAGE: ' 简体中文 '
+    });
+    const unconfigured = loadConfig({
+      AGENT_LLM_MODEL: 'deepseek-v4-flash',
+      AGENT_LLM_API_KEY: 'mock-api-key-123',
+      AGENT_LANGUAGE: '   '
+    });
+
+    expect(configured.language).toBe('简体中文');
+    expect(unconfigured.language).toBeUndefined();
+  });
+
   describe('环境变量依赖注入绝对隔离性验证', () => {
     const originalEnv = { ...process.env };
 

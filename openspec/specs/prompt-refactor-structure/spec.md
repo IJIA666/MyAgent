@@ -1,41 +1,49 @@
 ## 新增需求
 
 ### Requirement: 提示词常量抽取与物理隔离
-系统提示词文件 `src/core/usecases/brain/prompts.ts` 中的 9 条核心红线指令必须（MUST）被提取为独立的 TypeScript 常量，实现物理层面的逻辑隔离，避免未来修改时互相污染。
+系统提示词文件 `src/core/usecases/brain/prompts.ts` 中的核心红线指令必须（MUST）被提取为独立的 TypeScript 常量，实现物理层面的逻辑隔离，避免未来修改时互相污染。
 
 #### Scenario: 规则常量定义
 - **WHEN** 开发者打开 `src/core/usecases/brain/prompts.ts`
-- **THEN** 应当能够清晰地定位到诸如 `RULE_FILE_SANDBOX`、`RULE_TERMINAL_SAFETY`、`RULE_ERROR_ATTRIBUTION` 等 9 条独立的常量规则定义。
+- **THEN** 应当能够清晰地定位到 `RULE_TOOL_RESULT_HANDLING` 等仍由提示词承担的独立规则常量定义。
 
 ### Requirement: 冷启动装配与序号自愈
 模块冷启动加载时，系统提示词必须（MUST）通过规则常量数组动态 map 赋予序号并拼接生成最终的 `BASE_SYSTEM_PROMPT`。
 
 #### Scenario: 冷启动一次性拼接
 - **WHEN** Node.js 模块冷启动加载
-- **THEN** 系统自动按照数组顺序拼接规则常量并生成序号，最终生成的系统提示词在整个会话中固化只读，以确保 100% 兼容前缀缓存（Prefix Cache）。
+- **THEN** 系统自动按照数组顺序拼接规则常量并生成序号，得到确定性的 `BASE_SYSTEM_PROMPT`。
 
 ### Requirement: 装配完整性与安全性验证
 必须（MUST）编写对应的单元测试，对最终装配出的提示词文本进行安全校验与完整性校验。
 
 #### Scenario: 单元测试校验
 - **WHEN** 运行单元测试
-- **THEN** 测试必须断言最终的 `BASE_SYSTEM_PROMPT` 中不含有冷启动替换占位符（如 `{{OS_SECURITY_INSTRUCTIONS}}`），且 9 条核心规则常量均被完整无缺地装配到了最终的提示词文本中。
+- **THEN** 测试必须断言 `SYSTEM_RULES` 中的核心规则常量均被完整装配到 `BASE_SYSTEM_PROMPT`，且操作系统仅作为动态运行环境事实注入。
 
-### Requirement: RULE_FILE_SANDBOX 措辞必须采用中性委托语义
-`RULE_FILE_SANDBOX` 常量（`src/core/usecases/brain/prompts.ts`）的文本内容必须（MUST）使用中性委托语义，不得包含对工具执行结果的负面预判。
+### Requirement: 运行环境提示必须只陈述实际事实
+基础系统提示词不得（MUST NOT）无条件声明文件沙盒、授权工作区边界或工作区外路径的预期处理结果。当前工作目录必须（MUST）作为动态运行事实注入 `volatile_context`；如未来启用真实沙盒，相关能力说明必须由运行时状态按条件生成。
 
-#### Scenario: 措辞不含执行结果预判
-- **WHEN** 审查 `RULE_FILE_SANDBOX` 常量的文本内容
-- **THEN** 文本不得包含"工具将返回拒绝访问错误""工具集会拒绝""操作将失败"等对工具执行结果的预判性声明
+#### Scenario: 注入当前工作目录
+- **WHEN** 使用当前工具执行目录组装系统提示词
+- **THEN** `volatile_context` 必须包含该目录对应的 `<cwd>` 事实
 
-#### Scenario: 措辞包含正向委托指令
-- **WHEN** 审查 `RULE_FILE_SANDBOX` 常量的文本内容
-- **THEN** 文本应当（SHALL）包含指引模型"不要仅因路径位于工作区外而提前拒绝用户请求"或等效的正向行为指令，并明确将安全决策权委托给工具层
+#### Scenario: 不伪造沙盒或授权边界
+- **WHEN** 当前运行时没有启用真实文件沙盒
+- **THEN** 基础系统提示词不得包含“授权的工作区”“工作区外将被拒绝”或其他等价的沙盒与权限结果预判
 
-#### Scenario: 措辞保留默认边界信息
-- **WHEN** 审查 `RULE_FILE_SANDBOX` 常量的文本内容
-- **THEN** 文本应当（SHALL）声明文件操作的默认边界（工作区目录），以防止模型误以为工具具备无限制的全盘访问能力
-
-#### Scenario: 单元测试同步更新
+#### Scenario: 单元测试验证事实边界
 - **WHEN** 运行 `prompt.test.ts` 中的现有测试
-- **THEN** 涉及 `RULE_FILE_SANDBOX` 文本内容的断言必须与新的措辞保持一致，测试不得因措辞变更而失败
+- **THEN** 测试必须验证 CWD 被注入，且基础提示词不再包含文件沙盒或授权工作区暗示
+
+### Requirement: 回复语言偏好按配置动态注入
+系统 MUST 在未配置回复语言时不施加语言要求，并仅在用户显式配置语言偏好时动态注入对应的用户可见输出约束。语言约束 MUST NOT 声称控制模型的内部思考语言。
+
+#### Scenario: 未配置语言偏好
+- **WHEN** 应用配置未提供回复语言
+- **THEN** 系统提示词不包含语言章节
+
+#### Scenario: 已配置语言偏好
+- **WHEN** 应用配置提供非空回复语言
+- **THEN** 系统提示词要求以该语言进行回复、解释、注释和用户沟通
+- **AND** 技术术语与代码标识符保留原文

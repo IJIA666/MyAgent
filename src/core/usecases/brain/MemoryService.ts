@@ -240,6 +240,8 @@ ${historyText}
     const subContext = new SessionContext();
     if (this.appConfig) {
       subContext.appConfig = this.appConfig;
+      // 内部子上下文复用同一语言偏好，但不继承主会话消息和规则缓存。
+      subContext.updateSystemPrompt();
     }
     subContext.addMessage({ role: 'user', content: prompt });
 
