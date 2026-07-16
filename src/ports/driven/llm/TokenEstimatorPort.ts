@@ -24,10 +24,16 @@ export interface ApiUsage {
  */
 export interface ContextTokenUsage {
   total: number;
+  /** 不含模型输出预留的完整请求输入 Token。 */
+  inputTotal?: number;
   system: number;
   rules: number;
   transient: number;
   history: number;
+  /** 当前工具 Schema 的预计 Token。 */
+  tools?: number;
+  /** 为当前模型输出保留的 Token。 */
+  outputReserve?: number;
   isEstimated: boolean;
 }
 
@@ -62,6 +68,24 @@ export interface TokenEstimatorPort {
    */
   estimateSnapshotTokens(
     snapshotContext: ChatMessage[],
+    lastApiUsage: ApiUsage | null,
+    lastApiHistoryLength: number
+  ): ContextTokenUsage;
+
+  /**
+   * 预测最终模型请求的完整 Token 消耗。
+   *
+   * @param messages - 已完成所有注入的最终消息
+   * @param tools - 已完成模式裁剪的最终工具 Schema
+   * @param outputReserve - 为模型输出保留的 Token
+   * @param lastApiUsage - 上次 API 返回的真实用量；候选历史估算时传 null
+   * @param lastApiHistoryLength - 上次调用时的历史长度
+   * @returns 包含输入、工具与输出预留的完整预算
+   */
+  estimateRequestTokens(
+    messages: ChatMessage[],
+    tools: Record<string, unknown>[],
+    outputReserve: number,
     lastApiUsage: ApiUsage | null,
     lastApiHistoryLength: number
   ): ContextTokenUsage;

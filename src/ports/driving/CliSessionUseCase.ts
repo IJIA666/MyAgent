@@ -6,6 +6,10 @@
 
 import type { LlmConfig, ConfigPermissionMode } from '../../config/index.js';
 import type { ToolRegistryPort } from '../driven/tools/ToolRegistryPort.js';
+import type {
+  CompactionPreference,
+  CompactionResult,
+} from '../driven/llm/LlmPort.js';
 import type { ChatUseCase } from './ChatUseCase.js';
 
 /**
@@ -58,11 +62,12 @@ export interface CliSessionUseCase extends ChatUseCase {
   getLlmConfig(): LlmConfig;
 
   /**
-   * 强制触发当前会话的上下文压缩。
+   * 规划并执行当前会话的上下文压缩。
    *
-   * @returns 是否压缩成功
+   * @param preference - 自动选择策略，或显式要求全量压缩
+   * @returns 包含状态、策略、前后预算与原因的结构化结果
    */
-  compact(): Promise<boolean>;
+  compact(preference?: CompactionPreference): Promise<CompactionResult>;
 
   /**
    * 重新加载全局规则、局部规则和技能索引。

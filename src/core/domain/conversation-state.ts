@@ -138,4 +138,10 @@ export class ConversationState {
       historyLength: this.lastApiHistoryLength
     };
   }
+
+  /** 清除因历史整体替换而失效的 API Usage 增量估算基线。 */
+  clearLastApiUsageBaseline(): void {
+    this.lastApiUsage = null;
+    this.lastApiHistoryLength = 0;
+  }
 }

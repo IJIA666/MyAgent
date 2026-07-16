@@ -14,6 +14,12 @@ export interface ChatMessage {
   content: string | null;
   name?: string;
   tool_call_id?: string;
+  /** 超大工具输出的可恢复落盘路径。 */
+  originalPath?: string;
+  /** 工具输出是否已经在进入历史前生成折叠预览。 */
+  isTruncated?: boolean;
+  /** 工具消息是否表示执行失败。 */
+  isError?: boolean;
   reasoning_content?: string;
   tool_calls?: Array<{
     id: string;
@@ -37,6 +43,47 @@ export type LlmStreamEvent =
 export interface LlmPortOptions {
   /** 可选的在途请求取消信号 */
   signal?: AbortSignal;
+}
+
+/** 上下文预算规划可选择的请求处理策略。 */
+export type CompactionStrategy = 'none' | 'middle' | 'full';
+
+/** 手动调用对压缩策略的偏好。 */
+export type CompactionPreference = 'auto' | 'full';
+
+/** 上下文压缩的执行状态。 */
+export type CompactionStatus = 'skipped' | 'compacted' | 'failed';
+
+/** 上下文压缩的结构化执行结果。 */
+export interface CompactionResult {
+  /** 压缩是否跳过、成功提交或失败。 */
+  status: CompactionStatus;
+  /** 规划或实际执行的压缩策略。 */
+  strategy: CompactionStrategy;
+  /** 剪枝前完整请求的预计 Token。 */
+  tokensBefore: number;
+  /** 最终候选请求的预计 Token；无法形成候选时省略。 */
+  tokensAfter?: number;
+  /** 请求期可恢复剪枝预计节省的 Token。 */
+  prunedTokens: number;
+  /** 可审计的选择、跳过或失败原因。 */
+  reason: string;
+}
+
+/** Provider 明确报告请求超过模型上下文窗口。 */
+export class LlmContextWindowExceededError extends Error {
+  /** 原始 provider 错误，供日志与诊断使用。 */
+  public readonly cause?: unknown;
+
+  /**
+   * @param message - 规范化错误说明
+   * @param cause - 原始 provider 错误
+   */
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = 'LlmContextWindowExceededError';
+    this.cause = cause;
+  }
 }
 
 /** 摘要生成请求的可选限制。 */

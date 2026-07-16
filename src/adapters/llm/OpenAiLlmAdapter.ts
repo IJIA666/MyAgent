@@ -1,7 +1,14 @@
 import { OpenAI, type ClientOptions } from 'openai';
 import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat/completions.js';
 import type { LlmConfig } from '../../config/index.js';
-import type { ChatMessage, LlmPort, LlmStreamEvent, LlmPortOptions, SummaryGenerationOptions } from '../../ports/driven/llm/LlmPort.js';
+import {
+  LlmContextWindowExceededError,
+  type ChatMessage,
+  type LlmPort,
+  type LlmStreamEvent,
+  type LlmPortOptions,
+  type SummaryGenerationOptions,
+} from '../../ports/driven/llm/LlmPort.js';
 import type { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
 
 /**
@@ -15,6 +22,36 @@ interface DeepSeekDelta {
     id?: string;
     function?: { name?: string; arguments?: string };
   }>;
+}
+
+/** 将未知错误安全转换为只读记录。 */
+function asErrorRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : {};
+}
+
+/** 判断 OpenAI SDK 或兼容端点错误是否明确表示上下文窗口溢出。 */
+function isContextWindowExceeded(error: unknown): boolean {
+  const outer = asErrorRecord(error);
+  const nested = asErrorRecord(outer.error);
+  const code = String(nested.code ?? outer.code ?? '').toLowerCase();
+  const type = String(nested.type ?? outer.type ?? '').toLowerCase();
+  const structuredValues = new Set([
+    'context_length_exceeded',
+    'context_window_exceeded',
+    'max_tokens_exceeded',
+  ]);
+  if (structuredValues.has(code) || structuredValues.has(type)) {
+    return true;
+  }
+
+  const status = Number(outer.status ?? nested.status);
+  if (status !== 400 && status !== 413) {
+    return false;
+  }
+  const message = String(nested.message ?? outer.message ?? '');
+  return /maximum context length|context.{0,20}(length|window).{0,40}(exceed|limit|maximum)|prompt.{0,20}too long|too many tokens/i.test(message);
 }
 
 /**
@@ -237,6 +274,11 @@ export class OpenAiLlmAdapter implements LlmPort {
         yield { type: 'complete', content: fullContent, reasoning: fullReasoning, assistantMessage, usage: finalUsage };
       }
 
+    } catch (error: unknown) {
+      if (isContextWindowExceeded(error)) {
+        throw new LlmContextWindowExceededError('Provider 报告请求超过模型上下文窗口', error);
+      }
+      throw error;
     } finally {
       this.activeControllers.delete(localAC);
       if (onAbort && options?.signal) {

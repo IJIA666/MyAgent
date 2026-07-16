@@ -20,7 +20,7 @@ export class HelpCommand implements ICommand {
     console.log(`  ${theme.highlight('/mcp <list|enable|disable> [name]')} - 管理与查阅 MCP 扩展服务`);
     console.log(`  ${theme.highlight('/reload-rules')}    - 重新读取并锁定最新的全局和项目局部规则`);
     console.log(`  ${theme.highlight('/workmode [mode]')}  - 切换权限模式（常规 default|acceptEdits|plan|auto；dontAsk/bypassPermissions 需显式指定）`);
-    console.log(`  ${theme.highlight('/compact')}         - 强制对当前上下文历史执行静默压缩与物理轮换`);
+    console.log(`  ${theme.highlight('/compact [full]')}  - 自动规划上下文压缩，或强制生成全量检查点`);
     console.log(`  ${theme.highlight('/tool list')}       - 查看当前已挂载的可用工具清单`);
     console.log(`  ${theme.highlight('/help')}             - 显示此帮助信息`);
     console.log(`  ${theme.highlight('exit / quit')}       - 退出程序`);

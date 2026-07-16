@@ -3,7 +3,12 @@ import { AppConfig, LlmConfig, ConfigPermissionMode } from '../../../config/inde
 import { logger } from '../../../utils/logger.js'; // 导入统一日志单例 logger
 import { AgentTracer } from '../../domain/tracer.js';
 import { SessionContext, ContextTokenUsage, type PendingInteraction } from '../../domain/context.js';
-import type { ChatMessage, LlmPort } from '../../../ports/driven/llm/LlmPort.js';
+import type {
+  ChatMessage,
+  CompactionPreference,
+  CompactionResult,
+  LlmPort,
+} from '../../../ports/driven/llm/LlmPort.js';
 import type { AskUserAnswer } from '../../../ports/driven/session/InteractionPort.js';
 import type { TokenEstimatorPort, ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
@@ -14,7 +19,6 @@ import { TaskAborterPort } from '../../../ports/driven/tools/TaskAborterPort.js'
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { HookEventName, type HookContext, type ApprovalChoice } from '../plugins/plugin-types.js';
 import { runHookPipeline } from '../plugins/plugin-runner.js';
-import { TokenWatermarkPlugin } from '../plugins/TokenWatermarkPlugin.js';
 import { JitRulesPlugin } from '../plugins/JitRulesPlugin.js';
 import { TracerLogPlugin } from '../plugins/TracerLogPlugin.js';
 import { LoopPreventionPlugin } from '../plugins/LoopPreventionPlugin.js';
@@ -30,6 +34,9 @@ import { RuleManager } from '../brain/RuleManager.js';
 import { ContextRepository } from '../brain/ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import { CompactionService } from '../brain/CompactionService.js';
+import { ContextHistoryPruner } from '../brain/ContextHistoryPruner.js';
+import { ContextBudgetPlanner } from '../brain/ContextBudgetPlanner.js';
+import { ContextBudgetCoordinator } from '../brain/ContextBudgetCoordinator.js';
 import { ApprovalService } from '../security/ApprovalService.js';
 import { MemoryService } from '../brain/MemoryService.js';
 
@@ -71,7 +78,6 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   /** 工具调度与返回文本处理服务 */
   private toolDispatcher: ToolDispatcher;
   /** 上下文提炼与截断防爆服务 */
-  private compactionService: CompactionService;
   /** 插件注册中心 */
   private pluginRegistry: PluginRegistry;
   /** 独立的智能体执行循环引擎 */
@@ -138,11 +144,18 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.ruleManager = new RuleManager(this.context);
     this.contextRepo = new ContextRepository(this.context);
     this.toolDispatcher = new ToolDispatcher(this.context, this.toolRegistry);
-    this.compactionService = new CompactionService(this.context, this.driver, this.contextRepo, estimator);
+    const compactionService = new CompactionService(this.context, this.driver, this.contextRepo, estimator);
+    const contextHistoryPruner = new ContextHistoryPruner(estimator);
+    const contextBudgetPlanner = new ContextBudgetPlanner(estimator, contextHistoryPruner);
+    const contextBudgetCoordinator = new ContextBudgetCoordinator(
+      this.context,
+      contextBudgetPlanner,
+      compactionService,
+      () => this.llmConfig
+    );
 
     // 初始化并注册拦截插件
     this.pluginRegistry = new PluginRegistry();
-    this.pluginRegistry.register(new TokenWatermarkPlugin(this.compactionService, estimator, () => this.llmConfig));
     this.pluginRegistry.register(new JitRulesPlugin(this.toolDispatcher));
     this.pluginRegistry.register(new TracerLogPlugin(() => this.tracer));
     this.pluginRegistry.register(
@@ -173,7 +186,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       ruleManager: this.ruleManager,
       contextRepo: this.contextRepo,
       toolDispatcher: this.toolDispatcher,
-      compactionService: this.compactionService,
+      contextBudgetCoordinator,
       pluginRegistry: this.pluginRegistry,
       maxIterations: this.maxIterations
     });
@@ -494,12 +507,13 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   }
 
   /**
-   * 手动触发当前活跃会话的上下文压缩与物理会话轮换。
+   * 手动规划并执行当前活跃会话的上下文压缩。
    *
-   * @returns 是否压缩成功
+   * @param preference - 自动选择策略，或显式要求全量压缩
+   * @returns 包含状态、策略与 Token 预算的结构化压缩结果
    */
-  public async compact(): Promise<boolean> {
-    return await this.compactionService.compact();
+  public async compact(preference: CompactionPreference = 'auto'): Promise<CompactionResult> {
+    return this.agentLoop.compact(preference);
   }
 
   /**

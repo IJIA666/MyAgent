@@ -107,6 +107,17 @@ describe('MemoryService 单元测试', () => {
         history: 0,
         isEstimated: true,
       }),
+      estimateRequestTokens: vi.fn().mockReturnValue({
+        total: 0,
+        inputTotal: 0,
+        system: 0,
+        rules: 0,
+        transient: 0,
+        history: 0,
+        tools: 0,
+        outputReserve: 0,
+        isEstimated: true,
+      }),
       getCompactionThreshold: vi.fn().mockReturnValue(100000),
     };
   });

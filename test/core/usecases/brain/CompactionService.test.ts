@@ -1,231 +1,215 @@
 /**
- * @fileoverview CompactionService 的单元测试，用于验证历史记录首尾双保中段压缩与提炼。
+ * @fileoverview 验证 plan 驱动的 middle/full 压缩、候选预算校验与失败原子性。
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CompactionService } from '../../../../src/core/usecases/brain/CompactionService.js';
+import type { ContextBudgetPlan } from '../../../../src/core/usecases/brain/ContextBudgetPlanner.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
-import type { LlmPort, ChatMessage } from '../../../../src/ports/driven/llm/LlmPort.js';
+import type { ChatMessage, LlmPort } from '../../../../src/ports/driven/llm/LlmPort.js';
 import type { TokenEstimatorPort } from '../../../../src/ports/driven/llm/TokenEstimatorPort.js';
 import type { ContextRepository } from '../../../../src/core/usecases/brain/ContextRepository.js';
-import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 
 describe('CompactionService', () => {
   let context: SessionContext;
-  let mockLlmPort: LlmPort;
-  let mockContextRepo: ContextRepository;
-  let mockTokenEstimator: TokenEstimatorPort;
-  let compactionService: CompactionService;
+  let driver: LlmPort;
+  let contextRepo: ContextRepository;
+  let tokenEstimator: TokenEstimatorPort;
+  let service: CompactionService;
 
   beforeEach(() => {
-    context = new SessionContext('test-session');
-    const appConfig = createMockAppConfig({ workspace: process.cwd() });
-    appConfig.runtimeLimits.compactionRetainCount = 4;
-    appConfig.runtimeLimits.compactionRetainTokens = 8000;
-    appConfig.runtimeLimits.compactionSummaryMaxTokens = 4096;
-    context.appConfig = appConfig;
-
-    // Mock LlmPort
-    mockLlmPort = {
-      getModelName: vi.fn(),
+    context = new SessionContext('compaction-test');
+    driver = {
+      getModelName: vi.fn().mockReturnValue('test-model'),
       switchModel: vi.fn(),
       abort: vi.fn(),
       streamChat: vi.fn(),
       chat: vi.fn(),
       generateSummaryAsync: vi.fn(),
     } as unknown as LlmPort;
-
-    // Mock ContextRepository
-    mockContextRepo = {
+    contextRepo = {
       saveState: vi.fn().mockResolvedValue(undefined),
-      loadState: vi.fn(),
-      rollback: vi.fn(),
     } as unknown as ContextRepository;
-
-    // 默认每条消息估算为 1 Token，具体预算场景在用例中覆盖。
-    mockTokenEstimator = {
-      countTokens: vi.fn(),
-      estimateMessageTokens: vi.fn((_message: ChatMessage) => 1),
+    tokenEstimator = {
+      countTokens: vi.fn((text: string) => text.length),
+      estimateMessageTokens: vi.fn((message: ChatMessage) => (message.content?.length ?? 0) + 4),
       estimateSnapshotTokens: vi.fn(),
+      estimateRequestTokens: vi.fn((messages: ChatMessage[], _tools, reserve: number) => {
+        const inputTotal = messages.reduce((sum, message) => sum + (message.content?.length ?? 0) + 4, 3);
+        return {
+          total: inputTotal + reserve,
+          inputTotal,
+          system: 0,
+          rules: 0,
+          transient: 0,
+          history: inputTotal,
+          tools: 0,
+          outputReserve: reserve,
+          isEstimated: true,
+        };
+      }),
       getCompactionThreshold: vi.fn(),
     } as unknown as TokenEstimatorPort;
-
-    compactionService = new CompactionService(
-      context,
-      mockLlmPort,
-      mockContextRepo,
-      mockTokenEstimator
-    );
+    service = new CompactionService(context, driver, contextRepo, tokenEstimator);
   });
 
-  /** 向当前会话追加一个只含文本问答的完整用户轮次。 */
-  function addTextTurn(label: string): void {
-    context.addMessage({ role: 'user', content: `user-${label}` });
-    context.addMessage({ role: 'assistant', content: `assistant-${label}` });
+  /** 创建包含统一审计字段的测试 plan。 */
+  function createPlan(
+    strategy: 'middle' | 'full',
+    historyView: ChatMessage[],
+    overrides: Partial<ContextBudgetPlan> = {}
+  ): ContextBudgetPlan {
+    return {
+      strategy,
+      requestMessages: historyView,
+      historyView,
+      originalUsage: { total: 10000, system: 0, rules: 0, transient: 0, history: 10000, isEstimated: true },
+      prunedUsage: { total: 9000, system: 0, rules: 0, transient: 0, history: 9000, isEstimated: true },
+      thresholdTokens: 5000,
+      contextWindowTokens: 50000,
+      fixedRequestTokens: 100,
+      projectedTokens: 1000,
+      prunedTokens: 1000,
+      headEndIndex: 0,
+      tailStartIndex: strategy === 'middle' ? 3 : null,
+      reason: `选择 ${strategy}`,
+      summaryMaxTokens: 512,
+      ...overrides,
+    };
   }
 
-  describe('compact', () => {
-    it('头部与尾部之间没有完整中段时应安全跳过', async () => {
-      addTextTurn('first');
-      addTextTurn('latest');
+  /** 在 SessionContext 自带 system 前缀后追加消息并返回实际历史。 */
+  function seedHistory(messages: ChatMessage[]): ChatMessage[] {
+    messages.forEach((message) => context.addMessage(message));
+    return context.getHistory().map((message) => ({ ...message }));
+  }
 
-      const success = await compactionService.compact();
+  it('middle 应只替换中段并完整保留预算内近期轮次', async () => {
+    const history = seedHistory([
+      { role: 'user', content: 'old request' },
+      { role: 'assistant', content: 'old answer' },
+      { role: 'user', content: 'latest request' },
+      { role: 'assistant', content: 'latest answer' },
+    ]);
+    vi.mocked(driver.generateSummaryAsync).mockResolvedValue('middle summary');
 
-      expect(success).toBe(false);
-      expect(mockLlmPort.generateSummaryAsync).not.toHaveBeenCalled();
-      expect(mockContextRepo.saveState).not.toHaveBeenCalled();
-    });
+    const result = await service.execute(createPlan('middle', history));
 
-    it('应摘要第一轮及其他较早历史，并无损保留 system 与最新完整工具轮次', async () => {
-      compactionService['compactionRetainCount'] = 1;
-      context.addMessage({ role: 'user', content: 'user-first' });
-      context.addMessage({
-        role: 'assistant',
-        content: null,
-        tool_calls: [{
-          id: 'head-call',
-          type: 'function',
-          function: { name: 'head_tool', arguments: '{}' },
-        }],
-      });
-      context.addMessage({ role: 'tool', tool_call_id: 'head-call', content: 'head-result' });
-      addTextTurn('middle');
-      context.addMessage({ role: 'user', content: 'user-latest' });
-      context.addMessage({
-        role: 'assistant',
-        content: null,
-        tool_calls: [{
-          id: 'tail-call',
-          type: 'function',
-          function: { name: 'tail_tool', arguments: '{"path":"tail.txt"}' },
-        }],
-      });
-      context.addMessage({ role: 'tool', tool_call_id: 'tail-call', content: 'tail-result' });
-      vi.mocked(mockLlmPort.generateSummaryAsync).mockResolvedValue('Mocked Mid Summary');
+    expect(result.status).toBe('compacted');
+    expect(result.strategy).toBe('middle');
+    expect(context.getHistory().map((message) => message.content)).toEqual([
+      expect.stringContaining('你是 MyAgent'),
+      '[Summary of Earlier Conversation]\nmiddle summary',
+      'latest request',
+      'latest answer',
+    ]);
+    const prompt = vi.mocked(driver.generateSummaryAsync).mock.calls[0][0];
+    expect(prompt[1].content).toContain('old request');
+    expect(prompt[1].content).not.toContain('latest request');
+  });
 
-      const success = await compactionService.compact();
-      const newHistory = context.getHistory();
+  it('middle 应按剪枝请求视图验收预算但持久化完整近期尾部', async () => {
+    const fullToolOutput = 'x'.repeat(6000);
+    const history = seedHistory([
+      { role: 'user', content: 'old request' },
+      { role: 'assistant', content: 'old answer' },
+      { role: 'user', content: 'retained request' },
+      { role: 'assistant', content: 'running retained tool' },
+      {
+        role: 'tool',
+        tool_call_id: 'retained-tool',
+        content: fullToolOutput,
+        originalPath: '.myagent/tool-outputs/retained.log',
+        isTruncated: true,
+      },
+      { role: 'user', content: 'latest request' },
+      { role: 'assistant', content: 'latest answer' },
+    ]);
+    const historyView = history.map((message) => message.tool_call_id === 'retained-tool'
+      ? {
+          ...message,
+          content: '[Tool output preview omitted; complete output is available at .myagent/tool-outputs/retained.log]',
+        }
+      : message
+    );
+    vi.mocked(driver.generateSummaryAsync).mockResolvedValue('middle summary');
 
-      expect(success).toBe(true);
-      expect(newHistory.map((message) => message.content)).toEqual([
-        expect.any(String),
-        '[Summary of Earlier Conversation]\nMocked Mid Summary',
-        'user-latest',
-        null,
-        'tail-result',
-      ]);
-      expect(newHistory[3].tool_calls?.[0].function.name).toBe('tail_tool');
-      expect(mockLlmPort.generateSummaryAsync).toHaveBeenCalledWith(
-        expect.any(Array),
-        { maxTokens: 4096 }
-      );
-      const summaryInput = vi.mocked(mockLlmPort.generateSummaryAsync).mock.calls[0][0];
-      expect(summaryInput[1].content).toContain('user-first');
-      expect(summaryInput[1].content).toContain('head_tool');
-      expect(summaryInput[1].content).toContain('head-result');
-      expect(summaryInput[1].content).toContain('user-middle');
-      expect(summaryInput[1].content).not.toContain('user-latest');
-      expect(mockContextRepo.saveState).toHaveBeenCalledOnce();
-    });
+    const result = await service.execute(createPlan('middle', historyView));
 
-    it('尾部最多保留四个完整用户轮次', async () => {
-      addTextTurn('first');
-      addTextTurn('2');
-      addTextTurn('3');
-      addTextTurn('4');
-      addTextTurn('5');
-      addTextTurn('6');
-      vi.mocked(mockLlmPort.generateSummaryAsync).mockResolvedValue('summary');
+    expect(result.status).toBe('compacted');
+    expect(result.tokensAfter).toBeLessThan(5000);
+    expect(context.getHistory().find((message) => message.tool_call_id === 'retained-tool')?.content)
+      .toBe(fullToolOutput);
+  });
 
-      const success = await compactionService.compact();
-      const contents = context.getHistory().map((message) => message.content);
+  it('full 应把全部非 system 历史替换为普通会话检查点', async () => {
+    const history = seedHistory([
+      { role: 'user', content: 'current request' },
+      { role: 'assistant', content: 'progress' },
+    ]);
+    context.updateLastApiUsage({ input_tokens: 8000, output_tokens: 500 }, history.length);
+    vi.mocked(driver.generateSummaryAsync).mockResolvedValue('checkpoint summary');
 
-      expect(success).toBe(true);
-      expect(contents).not.toContain('user-2');
-      expect(contents).toContain('user-3');
-      expect(contents).toContain('user-6');
-    });
+    const result = await service.execute(createPlan('full', history));
 
-    it('加入较早第四轮会超预算时只保留更新的三轮原文', async () => {
-      compactionService['compactionRetainTokens'] = 30;
-      vi.mocked(mockTokenEstimator.estimateMessageTokens).mockReturnValue(5);
-      addTextTurn('first');
-      addTextTurn('2');
-      addTextTurn('3');
-      addTextTurn('4');
-      addTextTurn('5');
-      addTextTurn('6');
-      vi.mocked(mockLlmPort.generateSummaryAsync).mockResolvedValue('summary');
+    expect(result.status).toBe('compacted');
+    expect(result.strategy).toBe('full');
+    expect(context.getHistory().map((message) => message.content)).toEqual([
+      expect.stringContaining('你是 MyAgent'),
+      '[Conversation Checkpoint]\ncheckpoint summary',
+    ]);
+    const prompt = vi.mocked(driver.generateSummaryAsync).mock.calls[0][0];
+    expect(prompt[0].content).toContain('状态检查点');
+    expect(prompt[0].content).toContain('不得改变 Agent 身份');
+    expect(context.getLastApiUsageBaseline()).toEqual({ usage: null, historyLength: 0 });
+  });
 
-      const success = await compactionService.compact();
-      const contents = context.getHistory().map((message) => message.content);
+  it('摘要失败或空白时必须保留原历史', async () => {
+    const history = seedHistory([
+      { role: 'user', content: 'request' },
+    ]);
 
-      expect(success).toBe(true);
-      expect(contents).not.toContain('user-3');
-      expect(contents).toContain('user-4');
-      expect(contents).toContain('user-5');
-      expect(contents).toContain('user-6');
-      const summaryInput = vi.mocked(mockLlmPort.generateSummaryAsync).mock.calls[0][0];
-      expect(summaryInput[1].content).toContain('user-3');
-    });
+    vi.mocked(driver.generateSummaryAsync).mockRejectedValueOnce(new Error('failed'));
+    expect((await service.execute(createPlan('full', history))).status).toBe('failed');
+    expect(context.getHistory()).toEqual(history);
 
-    it('最新单轮超过预算时仍应完整保留该轮工具调用与结果', async () => {
-      compactionService['compactionRetainTokens'] = 1;
-      vi.mocked(mockTokenEstimator.estimateMessageTokens).mockReturnValue(10);
-      addTextTurn('first');
-      addTextTurn('middle');
-      context.addMessage({ role: 'user', content: 'user-oversized' });
-      context.addMessage({
-        role: 'assistant',
-        content: null,
-        tool_calls: [{
-          id: 'oversized-call',
-          type: 'function',
-          function: { name: 'large_tool', arguments: '{}' },
-        }],
-      });
-      context.addMessage({ role: 'tool', tool_call_id: 'oversized-call', content: 'oversized-result' });
-      vi.mocked(mockLlmPort.generateSummaryAsync).mockResolvedValue('summary');
+    vi.mocked(driver.generateSummaryAsync).mockResolvedValueOnce('   ');
+    expect((await service.execute(createPlan('full', history))).status).toBe('failed');
+    expect(context.getHistory()).toEqual(history);
+    expect(contextRepo.saveState).not.toHaveBeenCalled();
+  });
 
-      const success = await compactionService.compact();
-      const history = context.getHistory();
+  it('候选历史膨胀或仍超过阈值时不得提交', async () => {
+    const history = seedHistory([
+      { role: 'user', content: 'request' },
+    ]);
+    vi.mocked(driver.generateSummaryAsync).mockResolvedValue('x'.repeat(6000));
 
-      expect(success).toBe(true);
-      expect(history.some((message) => message.content === 'user-oversized')).toBe(true);
-      expect(history.some((message) => message.tool_call_id === 'oversized-call')).toBe(true);
-      expect(history.some((message) => message.content === 'oversized-result')).toBe(true);
-    });
+    const result = await service.execute(createPlan('full', history));
 
-    it('摘要调用失败或返回空白时不得修改历史', async () => {
-      compactionService['compactionRetainCount'] = 1;
-      addTextTurn('first');
-      addTextTurn('middle');
-      addTextTurn('latest');
-      const originalHistory = context.getHistory().map((message) => ({ ...message }));
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('仍超过');
+    expect(context.getHistory()).toEqual(history);
+    expect(contextRepo.saveState).not.toHaveBeenCalled();
+  });
 
-      vi.mocked(mockLlmPort.generateSummaryAsync).mockRejectedValueOnce(new Error('summary failed'));
-      expect(await compactionService.compact()).toBe(false);
-      expect(context.getHistory()).toEqual(originalHistory);
+  it('持久化失败时必须恢复内存历史', async () => {
+    const history = seedHistory([
+      { role: 'user', content: 'request' },
+    ]);
+    const baselineUsage = { input_tokens: 8000, output_tokens: 500 };
+    context.updateLastApiUsage(baselineUsage, history.length);
+    vi.mocked(driver.generateSummaryAsync).mockResolvedValue('summary');
+    vi.mocked(contextRepo.saveState).mockRejectedValueOnce(new Error('save failed'));
 
-      vi.mocked(mockLlmPort.generateSummaryAsync).mockResolvedValueOnce('   ');
-      expect(await compactionService.compact()).toBe(false);
-      expect(context.getHistory()).toEqual(originalHistory);
-      expect(mockContextRepo.saveState).not.toHaveBeenCalled();
-    });
+    const result = await service.execute(createPlan('full', history));
 
-    it('持久化失败时应恢复压缩前的内存历史', async () => {
-      compactionService['compactionRetainCount'] = 1;
-      addTextTurn('first');
-      addTextTurn('middle');
-      addTextTurn('latest');
-      const originalHistory = context.getHistory().map((message) => ({ ...message }));
-      vi.mocked(mockLlmPort.generateSummaryAsync).mockResolvedValue('summary');
-      vi.mocked(mockContextRepo.saveState).mockRejectedValueOnce(new Error('save failed'));
-
-      const success = await compactionService.compact();
-
-      expect(success).toBe(false);
-      expect(context.getHistory()).toEqual(originalHistory);
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('持久化失败');
+    expect(context.getHistory()).toEqual(history);
+    expect(context.getLastApiUsageBaseline()).toEqual({
+      usage: baselineUsage,
+      historyLength: history.length,
     });
   });
 });

@@ -1,6 +1,6 @@
 /**
  * @fileoverview ModelRequestAssembler 的单元测试，验证模型请求组装流程
- * （工具获取 → BeforeToolSelection → 上下文装配 → BeforeModel → system-reminder 注入 → Plan 模式裁剪）。
+ * （工具获取 → BeforeToolSelection → 上下文装配 → BeforeModel → reminder/Plan 裁剪 → 最终预算协调）。
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -11,6 +11,8 @@ import type { ContextAdapter } from '../../../../src/ports/driven/session/Contex
 import type { PluginRegistry } from '../../../../src/core/usecases/plugins/plugin-registry.js';
 import type { ChatMessage } from '../../../../src/ports/driven/llm/LlmPort.js';
 import type { AppConfig } from '../../../../src/config/index.js';
+import type { ContextBudgetCoordinator } from '../../../../src/core/usecases/brain/ContextBudgetCoordinator.js';
+import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-types.js';
 
 /** 构造模拟工具列表 */
 function makeMockTools(): Record<string, unknown>[] {
@@ -35,6 +37,7 @@ describe('ModelRequestAssembler', () => {
   let mockToolRegistry: ToolRegistryPort;
   let mockContextAdapter: ContextAdapter;
   let mockPluginRegistry: PluginRegistry;
+  let mockBudgetCoordinator: ContextBudgetCoordinator;
 
   beforeEach(() => {
     context = new SessionContext('test-mra-session');
@@ -55,6 +58,32 @@ describe('ModelRequestAssembler', () => {
     mockPluginRegistry = {
       getPluginsForEvent: () => []
     } as unknown as PluginRegistry;
+    mockBudgetCoordinator = {
+      coordinate: vi.fn().mockImplementation(async (request: { messages: ChatMessage[]; tools: Record<string, unknown>[] }) => ({
+        messages: request.messages,
+        tools: request.tools,
+        control: { action: 'continue' },
+        estimatedUsage: {
+          total: 42,
+          inputTotal: 32,
+          system: 10,
+          rules: 0,
+          transient: 0,
+          history: 22,
+          tools: 5,
+          outputReserve: 10,
+          isEstimated: true,
+        },
+        compactionResult: {
+          status: 'skipped',
+          strategy: 'none',
+          tokensBefore: 42,
+          tokensAfter: 42,
+          prunedTokens: 0,
+          reason: '测试请求处于安全水位',
+        },
+      })),
+    } as unknown as ContextBudgetCoordinator;
 
     // Mock RuleManager
     const mockRuleManager = {
@@ -63,7 +92,7 @@ describe('ModelRequestAssembler', () => {
 
     assembler = new ModelRequestAssembler(
       mockToolRegistry, mockContextAdapter, mockRuleManager,
-      mockPluginRegistry, context
+      mockPluginRegistry, context, mockBudgetCoordinator
     );
   });
 
@@ -98,14 +127,47 @@ describe('ModelRequestAssembler', () => {
     it('应正确传递 estimatedUsage', async () => {
       const result = await assembler.assemble(undefined, 'gpt-4');
 
-      // 无插件时 estimatedUsage 应为 undefined
-      expect(result.estimatedUsage).toBeUndefined();
+      expect(result.estimatedUsage?.total).toBe(42);
     });
 
     it('应正确传递 mockResponse（无插件时为 undefined）', async () => {
       const result = await assembler.assemble(undefined, 'gpt-4');
 
       expect(result.mockResponse).toBeUndefined();
+    });
+
+    it('BeforeModel 已提供 mockResponse 时不应触发真实请求预算或压缩', async () => {
+      const mockResponse = {
+        type: 'complete',
+        content: 'mocked',
+        assistantMessage: { role: 'assistant', content: 'mocked' },
+      };
+      const pluginMiddleware = async (
+        hookContext: { llmResponse?: unknown },
+        next: () => Promise<void>
+      ) => {
+        hookContext.llmResponse = mockResponse;
+        await next();
+      };
+      mockPluginRegistry = {
+        getPluginsForEvent: (event: HookEventName) => event === HookEventName.BeforeModel
+          ? [pluginMiddleware]
+          : [],
+      } as unknown as PluginRegistry;
+      assembler = new ModelRequestAssembler(
+        mockToolRegistry,
+        mockContextAdapter,
+        { getLocalRules: () => null },
+        mockPluginRegistry,
+        context,
+        mockBudgetCoordinator
+      );
+
+      const result = await assembler.assemble(undefined, 'gpt-4');
+
+      expect(result.mockResponse).toBe(mockResponse);
+      expect(result.compactionResult?.status).toBe('skipped');
+      expect(mockBudgetCoordinator.coordinate).not.toHaveBeenCalled();
     });
 
     it('应透传 BeforeModel 阶段插件发出的流式事件', async () => {
@@ -122,7 +184,7 @@ describe('ModelRequestAssembler', () => {
       assembler = new ModelRequestAssembler(
         mockToolRegistry, mockContextAdapter,
         { getLocalRules: () => null },
-        mockPluginRegistry, context
+        mockPluginRegistry, context, mockBudgetCoordinator
       );
 
       const result = await assembler.assemble(undefined, 'gpt-4', (event) => emitted.push(event));
@@ -141,7 +203,7 @@ describe('ModelRequestAssembler', () => {
 
       assembler = new ModelRequestAssembler(
         mockToolRegistry, mockContextAdapter, { getLocalRules: () => null },
-        mockPluginRegistry, context
+        mockPluginRegistry, context, mockBudgetCoordinator
       );
 
       const result = await assembler.assemble(undefined, 'gpt-4');
@@ -179,6 +241,11 @@ describe('ModelRequestAssembler', () => {
       const toolNames = result.tools.map((t: Record<string, unknown>) => (t as { function: { name: string } }).function.name);
       expect(toolNames).toContain('readFile');
       expect(toolNames).toContain('search');
+      const coordinateCall = vi.mocked(mockBudgetCoordinator.coordinate).mock.calls.at(-1);
+      const finalRequest = coordinateCall?.[0];
+      expect(finalRequest?.tools).toHaveLength(2);
+      const finalUser = [...(finalRequest?.messages ?? [])].reverse().find((message) => message.role === 'user');
+      expect(finalUser?.content).toContain('<system-reminder>');
       expect(toolNames).not.toContain('writeFile');
     });
 
@@ -206,12 +273,46 @@ describe('ModelRequestAssembler', () => {
   });
 
   describe('assemble - 控制流', () => {
-    it('应在收到 abort 控制信号时立即中断并返回 abort', async () => {
-      // 什么都不做——默认行为已经验证了 continue。
-      // abort 场景需要挂载实际插件，这里仅验证 continue 路径。
-      // 实际 abort 测试依赖完整管线集成，此处为基调覆盖。
+    it('预算协调器压缩成功时应透传 restart', async () => {
+      vi.mocked(mockBudgetCoordinator.coordinate).mockResolvedValueOnce({
+        messages: makeMockHistory(),
+        tools: makeMockTools(),
+        control: { action: 'restart', reason: 'middle compacted' },
+        estimatedUsage: {
+          total: 2000, system: 100, rules: 0, transient: 0,
+          history: 1900, isEstimated: true,
+        },
+        compactionResult: {
+          status: 'compacted', strategy: 'middle', tokensBefore: 9000,
+          tokensAfter: 2000, prunedTokens: 500, reason: 'middle compacted',
+        },
+      });
+
       const result = await assembler.assemble(undefined, 'gpt-4');
-      expect(result.control.action).toBe('continue');
+
+      expect(result.control.action).toBe('restart');
+      expect(result.compactionResult?.strategy).toBe('middle');
+    });
+
+    it('预算协调器压缩失败时应透传 abort 和失败原因', async () => {
+      vi.mocked(mockBudgetCoordinator.coordinate).mockResolvedValueOnce({
+        messages: makeMockHistory(),
+        tools: makeMockTools(),
+        control: { action: 'abort', reason: 'summary failed' },
+        estimatedUsage: {
+          total: 9000, system: 100, rules: 0, transient: 0,
+          history: 8900, isEstimated: true,
+        },
+        compactionResult: {
+          status: 'failed', strategy: 'full', tokensBefore: 9000,
+          tokensAfter: 9000, prunedTokens: 0, reason: 'summary failed',
+        },
+      });
+
+      const result = await assembler.assemble(undefined, 'gpt-4');
+
+      expect(result.control).toEqual({ action: 'abort', reason: 'summary failed' });
+      expect(result.compactionResult?.status).toBe('failed');
     });
   });
 

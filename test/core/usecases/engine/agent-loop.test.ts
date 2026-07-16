@@ -2,17 +2,68 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AgentLoop, type AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 import { LlmConfig } from '../../../../src/config/index.js';
-import type { LlmPort, LlmStreamEvent, ChatMessage } from '../../../../src/ports/driven/llm/LlmPort.js';
+import {
+  LlmContextWindowExceededError,
+  type LlmPort,
+  type LlmStreamEvent,
+  type ChatMessage,
+  type CompactionResult,
+} from '../../../../src/ports/driven/llm/LlmPort.js';
+import type { ContextTokenUsage } from '../../../../src/ports/driven/llm/TokenEstimatorPort.js';
 import type { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
 import type { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdapter.js';
 import type { RuleManager } from '../../../../src/core/usecases/brain/RuleManager.js';
 import type { ContextRepository } from '../../../../src/core/usecases/brain/ContextRepository.js';
 import type { ToolDispatcher } from '../../../../src/core/usecases/engine/ToolDispatcher.js';
-import type { CompactionService } from '../../../../src/core/usecases/brain/CompactionService.js';
+import type { ContextBudgetCoordinator } from '../../../../src/core/usecases/brain/ContextBudgetCoordinator.js';
 import { PluginRegistry } from '../../../../src/core/usecases/plugins/plugin-registry.js';
 import { HookEventName, type HookContext } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { AgentTracer } from '../../../../src/core/domain/tracer.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
+
+/** 创建溢出恢复测试使用的最小请求消息。 */
+function makeRequestMessages(): ChatMessage[] {
+  return [{ role: 'user', content: 'test request' }];
+}
+
+/** 创建溢出恢复测试使用的零预算。 */
+function zeroUsage(): ContextTokenUsage {
+  return {
+    total: 0,
+    inputTotal: 0,
+    system: 0,
+    rules: 0,
+    transient: 0,
+    history: 0,
+    tools: 0,
+    outputReserve: 0,
+    isEstimated: true,
+  };
+}
+
+/** 创建未触发压缩的结构化结果。 */
+function skippedCompaction(): CompactionResult {
+  return {
+    status: 'skipped',
+    strategy: 'none',
+    tokensBefore: 0,
+    tokensAfter: 0,
+    prunedTokens: 0,
+    reason: 'test request is within budget',
+  };
+}
+
+/** 创建测试使用的 middle 压缩成功结果。 */
+function compactedMiddle(): CompactionResult {
+  return {
+    status: 'compacted',
+    strategy: 'middle',
+    tokensBefore: 100,
+    tokensAfter: 10,
+    prunedTokens: 0,
+    reason: 'test middle compaction',
+  };
+}
 
 describe('AgentLoop 动态安全特性测试', () => {
   let context: SessionContext;
@@ -22,7 +73,7 @@ describe('AgentLoop 动态安全特性测试', () => {
   let mockRuleManager: unknown;
   let mockContextRepo: unknown;
   let mockToolDispatcher: unknown;
-  let mockCompactionService: unknown;
+  let mockContextBudgetCoordinator: unknown;
   let pluginRegistry: PluginRegistry;
 
   beforeEach(() => {
@@ -77,12 +128,276 @@ describe('AgentLoop 动态安全特性测试', () => {
       }))
     };
 
-    mockCompactionService = {};
+    mockContextBudgetCoordinator = {
+      coordinate: vi.fn().mockImplementation(async (request: { messages: ChatMessage[]; tools: Record<string, unknown>[] }) => ({
+        messages: request.messages,
+        tools: request.tools,
+        control: { action: 'continue' },
+        estimatedUsage: {
+          total: 0,
+          inputTotal: 0,
+          system: 0,
+          rules: 0,
+          transient: 0,
+          history: 0,
+          tools: 0,
+          outputReserve: 0,
+          isEstimated: true,
+        },
+        compactionResult: {
+          status: 'skipped',
+          strategy: 'none',
+          tokensBefore: 0,
+          tokensAfter: 0,
+          prunedTokens: 0,
+          reason: '测试请求处于安全水位',
+        },
+      })),
+    };
     pluginRegistry = new PluginRegistry();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  /** 使用当前 beforeEach 中的依赖创建 AgentLoop。 */
+  function createLoop(): AgentLoop {
+    return new AgentLoop({
+      toolRegistry: mockToolRegistry as ToolRegistryPort,
+      context,
+      driver: mockLlmDriver as LlmPort,
+      contextAdapter: mockContextAdapter as ContextAdapter,
+      ruleManager: mockRuleManager as RuleManager,
+      contextRepo: mockContextRepo as ContextRepository,
+      toolDispatcher: mockToolDispatcher as ToolDispatcher,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
+      pluginRegistry,
+    });
+  }
+
+  it('Provider 首次溢出时应只强制一次 full 并在恢复后继续', async () => {
+    const overflow = new LlmContextWindowExceededError('context exceeded');
+    const streamChat = vi.fn()
+      .mockImplementationOnce(async function* () {
+        yield await Promise.reject(overflow);
+      })
+      .mockImplementationOnce(async function* () {
+        yield { type: 'content', content: 'recovered' } as LlmStreamEvent;
+        yield {
+          type: 'complete',
+          content: 'recovered',
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: 'recovered' },
+        } as LlmStreamEvent;
+      });
+    (mockLlmDriver as { streamChat: typeof streamChat }).streamChat = streamChat;
+    const coordinate = vi.mocked(
+      (mockContextBudgetCoordinator as ContextBudgetCoordinator).coordinate
+    );
+    coordinate
+      .mockResolvedValueOnce({
+        messages: makeRequestMessages(),
+        tools: [],
+        control: { action: 'continue' },
+        estimatedUsage: zeroUsage(),
+        compactionResult: skippedCompaction(),
+      })
+      .mockResolvedValueOnce({
+        messages: makeRequestMessages(),
+        tools: [],
+        control: { action: 'restart', reason: 'full compacted' },
+        estimatedUsage: zeroUsage(),
+        compactionResult: {
+          status: 'compacted',
+          strategy: 'full',
+          tokensBefore: 100,
+          tokensAfter: 10,
+          prunedTokens: 0,
+          reason: 'provider overflow recovery',
+        },
+      })
+      .mockResolvedValueOnce({
+        messages: makeRequestMessages(),
+        tools: [],
+        control: { action: 'continue' },
+        estimatedUsage: zeroUsage(),
+        compactionResult: skippedCompaction(),
+      });
+
+    const events: AgentEvent[] = [];
+    for await (const event of createLoop().chat(undefined, new AgentTracer(process.cwd(), 'overflow-recovery'), { model: 'mock-model' } as LlmConfig)) {
+      events.push(event);
+    }
+
+    expect(streamChat).toHaveBeenCalledTimes(2);
+    expect(coordinate.mock.calls.map((call) => call[1])).toEqual(['auto', 'full', 'auto']);
+    expect(events.some((event) => event.type === 'content' && event.content === 'recovered')).toBe(true);
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+  });
+
+  it('full 恢复后再次溢出时必须停止而不再摘要', async () => {
+    const streamChat = vi.fn().mockImplementation(async function* () {
+      yield await Promise.reject(new LlmContextWindowExceededError('context exceeded'));
+    });
+    (mockLlmDriver as { streamChat: typeof streamChat }).streamChat = streamChat;
+    const coordinate = vi.mocked(
+      (mockContextBudgetCoordinator as ContextBudgetCoordinator).coordinate
+    );
+    coordinate
+      .mockResolvedValueOnce({
+        messages: makeRequestMessages(),
+        tools: [],
+        control: { action: 'continue' },
+        estimatedUsage: zeroUsage(),
+        compactionResult: skippedCompaction(),
+      })
+      .mockResolvedValueOnce({
+        messages: makeRequestMessages(),
+        tools: [],
+        control: { action: 'restart', reason: 'full compacted' },
+        estimatedUsage: zeroUsage(),
+        compactionResult: {
+          status: 'compacted',
+          strategy: 'full',
+          tokensBefore: 100,
+          tokensAfter: 10,
+          prunedTokens: 0,
+          reason: 'provider overflow recovery',
+        },
+      })
+      .mockResolvedValueOnce({
+        messages: makeRequestMessages(),
+        tools: [],
+        control: { action: 'continue' },
+        estimatedUsage: zeroUsage(),
+        compactionResult: skippedCompaction(),
+      });
+
+    const events: AgentEvent[] = [];
+    for await (const event of createLoop().chat(undefined, new AgentTracer(process.cwd(), 'overflow-stop'), { model: 'mock-model' } as LlmConfig)) {
+      events.push(event);
+    }
+
+    expect(streamChat).toHaveBeenCalledTimes(2);
+    expect(coordinate).toHaveBeenCalledTimes(3);
+    expect(events.some((event) => event.type === 'error' && event.message.includes('仍报告上下文窗口溢出'))).toBe(true);
+  });
+
+  it('普通模型错误不得触发 full 压缩恢复', async () => {
+    const streamChat = vi.fn().mockImplementation(async function* () {
+      yield await Promise.reject(new Error('400 bad request'));
+    });
+    (mockLlmDriver as { streamChat: typeof streamChat }).streamChat = streamChat;
+    const coordinate = vi.mocked(
+      (mockContextBudgetCoordinator as ContextBudgetCoordinator).coordinate
+    );
+
+    const events: AgentEvent[] = [];
+    let thrownError: unknown;
+    try {
+      for await (const event of createLoop().chat(
+        undefined,
+        new AgentTracer(process.cwd(), 'ordinary-provider-error'),
+        { model: 'mock-model' } as LlmConfig
+      )) {
+        events.push(event);
+      }
+    } catch (error: unknown) {
+      // 普通调度错误按既有契约在发出 error 事件后继续向调用方抛出。
+      thrownError = error;
+    }
+
+    expect(streamChat).toHaveBeenCalledOnce();
+    expect(coordinate).toHaveBeenCalledOnce();
+    expect(coordinate.mock.calls.map((call) => call[1])).toEqual(['auto']);
+    expect(events.some((event) => event.type === 'error' && event.message.includes('400 bad request')))
+      .toBe(true);
+    expect(thrownError).toBeInstanceOf(Error);
+  });
+
+  it('真实模型成功执行工具后应重置预压缩次数', async () => {
+    let streamCallCount = 0;
+    const streamChat = vi.fn().mockImplementation(async function* () {
+      streamCallCount++;
+      if (streamCallCount === 1) {
+        yield {
+          type: 'tool_calls',
+          toolCalls: [{
+            id: 'call-reset',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"test.txt"}' },
+          }],
+          assistantMessage: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: 'call-reset',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{"path":"test.txt"}' },
+            }],
+          },
+        } as LlmStreamEvent;
+        return;
+      }
+
+      yield { type: 'content', content: 'done' } as LlmStreamEvent;
+      yield {
+        type: 'complete',
+        content: 'done',
+        reasoning: '',
+        assistantMessage: { role: 'assistant', content: 'done' },
+      } as LlmStreamEvent;
+    });
+    (mockLlmDriver as { streamChat: typeof streamChat }).streamChat = streamChat;
+    mockToolRegistry = {
+      getTools: vi.fn().mockResolvedValue([{ name: 'read_file', securityCategory: 'read' }]),
+      getTool: vi.fn().mockReturnValue({ name: 'read_file', securityCategory: 'read' }),
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'file content' }] }),
+    };
+    const coordinate = vi.mocked(
+      (mockContextBudgetCoordinator as ContextBudgetCoordinator).coordinate
+    );
+    coordinate
+      .mockResolvedValueOnce({
+        messages: makeRequestMessages(),
+        tools: [],
+        control: { action: 'restart', reason: 'first middle compacted' },
+        estimatedUsage: zeroUsage(),
+        compactionResult: compactedMiddle(),
+      })
+      .mockResolvedValueOnce({
+        messages: makeRequestMessages(),
+        tools: [],
+        control: { action: 'continue' },
+        estimatedUsage: zeroUsage(),
+        compactionResult: skippedCompaction(),
+      })
+      .mockResolvedValueOnce({
+        messages: makeRequestMessages(),
+        tools: [],
+        control: { action: 'restart', reason: 'second middle compacted' },
+        estimatedUsage: zeroUsage(),
+        compactionResult: compactedMiddle(),
+      })
+      .mockResolvedValueOnce({
+        messages: makeRequestMessages(),
+        tools: [],
+        control: { action: 'continue' },
+        estimatedUsage: zeroUsage(),
+        compactionResult: skippedCompaction(),
+      });
+
+    for await (const event of createLoop().chat(
+      undefined,
+      new AgentTracer(process.cwd(), 'compaction-reset-after-tool'),
+      { model: 'mock-model' } as LlmConfig
+    )) {
+      void event;
+    }
+
+    expect(streamChat).toHaveBeenCalledTimes(2);
+    expect(coordinate.mock.calls.map((call) => call[3])).toEqual([true, false, true, false]);
   });
 
   it('1. Plan 模式应向最后一条用户消息注入 system-reminder，且不污染物理历史', async () => {
@@ -94,7 +409,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -134,7 +449,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -165,7 +480,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -198,7 +513,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -229,7 +544,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -336,7 +651,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -384,7 +699,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -408,7 +723,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -481,7 +796,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -589,7 +904,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -665,7 +980,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
 
@@ -711,7 +1026,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       ruleManager: mockRuleManager as RuleManager,
       contextRepo: mockContextRepo as ContextRepository,
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
-      compactionService: mockCompactionService as CompactionService,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry
     });
     const events: AgentEvent[] = [];

@@ -130,6 +130,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
       language: this._appConfig?.language,
     });
     this.conversationState.updateSystemPrompt(systemPrompt);
+    this.conversationState.clearLastApiUsageBaseline();
   }
 
   // ── 会话元数据（保留在 façade）──
@@ -153,6 +154,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
       throw new Error(`Invalid rollback length: ${length}, current length: ${currentLength}`);
     }
     this.conversationState.rollbackHistoryToLength(length);
+    this.conversationState.clearLastApiUsageBaseline();
     logger.info(`[SessionContext] 消息历史回滚截断至长度: ${length}`);
   }
 
@@ -203,6 +205,11 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
     return this.conversationState.getLastApiUsageBaseline();
   }
 
+  /** 清除因压缩等历史整体替换而失效的 API Usage 基线。 */
+  public clearLastApiUsageBaseline(): void {
+    this.conversationState.clearLastApiUsageBaseline();
+  }
+
   // ── 消息历史管理（委托给 ConversationState + busy 检查）──
 
   /** 输出当前关联的上下文状态数据 */
@@ -240,6 +247,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
     this.conversationState.truncateHistory(keepLastN);
+    this.conversationState.clearLastApiUsageBaseline();
   }
 
   /**
@@ -252,6 +260,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
     this.conversationState.truncateHistoryFromIndex(startIndex);
+    this.conversationState.clearLastApiUsageBaseline();
   }
 
   /** 设定当前会话唯一标识（用于恢复会话状态重新绑定） */
@@ -392,12 +401,19 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
    * 覆写整个消息历史记录（委托给 ConversationState + busy 检查）。
    *
    * @param history - 新的消息历史数组
+   * @param preserveApiUsageBaseline - 是否在外层事务完成前暂时保留旧 API 用量基线
    */
-  public updateHistory(history: StoredChatMessage[]): void {
+  public updateHistory(
+    history: StoredChatMessage[],
+    preserveApiUsageBaseline = false
+  ): void {
     if (this.isProcessing) {
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
     this.conversationState.updateHistory(history);
+    if (!preserveApiUsageBaseline) {
+      this.conversationState.clearLastApiUsageBaseline();
+    }
   }
 
   // ── 审批（委托给 AuthorizationState）──

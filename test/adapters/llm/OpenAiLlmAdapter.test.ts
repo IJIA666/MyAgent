@@ -6,6 +6,7 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { OpenAiLlmAdapter } from '../../../src/adapters/llm/OpenAiLlmAdapter.js';
 import type { LlmConfig } from '../../../src/config/index.js';
+import { LlmContextWindowExceededError } from '../../../src/ports/driven/llm/LlmPort.js';
 
 // Mock openai 库
 const mockCreate = vi.fn().mockImplementation((payload: unknown, options: unknown) => {
@@ -109,5 +110,28 @@ describe('OpenAiLlmAdapter 单元测试', () => {
       expect.objectContaining({ max_tokens: 100 }),
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
+  });
+
+  test('流式请求应规范化 provider 的结构化上下文溢出错误', async () => {
+    mockCreate.mockRejectedValueOnce({
+      status: 400,
+      error: {
+        code: 'context_length_exceeded',
+        message: 'maximum context length exceeded',
+      },
+    });
+    const adapter = new OpenAiLlmAdapter(config);
+    const stream = adapter.streamChat([{ role: 'user', content: 'history' }], []);
+
+    await expect(stream.next()).rejects.toBeInstanceOf(LlmContextWindowExceededError);
+  });
+
+  test('普通 provider 错误不得被误判为上下文溢出', async () => {
+    const providerError = { status: 400, error: { code: 'invalid_request', message: 'invalid tools' } };
+    mockCreate.mockRejectedValueOnce(providerError);
+    const adapter = new OpenAiLlmAdapter(config);
+    const stream = adapter.streamChat([{ role: 'user', content: 'history' }], []);
+
+    await expect(stream.next()).rejects.toBe(providerError);
   });
 });

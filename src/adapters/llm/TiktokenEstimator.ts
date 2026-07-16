@@ -10,6 +10,24 @@ const encoder = getEncoding('cl100k_base');
  * 落实 TokenEstimatorPort 契约，接管本地分词计算底层细节。
  */
 export class TiktokenEstimator implements TokenEstimatorPort {
+  /** 将 JSON 兼容值递归规范化为键顺序稳定的结构。 */
+  private normalizeJsonValue(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.normalizeJsonValue(item));
+    }
+    if (value && typeof value === 'object') {
+      const normalized: Record<string, unknown> = {};
+      for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+        const nestedValue = (value as Record<string, unknown>)[key];
+        if (nestedValue !== undefined) {
+          normalized[key] = this.normalizeJsonValue(nestedValue);
+        }
+      }
+      return normalized;
+    }
+    return value;
+  }
+
   /**
    * 计算指定文本的 Token 数量。
    *
@@ -44,6 +62,18 @@ export class TiktokenEstimator implements TokenEstimatorPort {
       }
     }
     return tokens;
+  }
+
+  /** 估算上次持久历史基线之后新增的非 system 消息。 */
+  private estimateIncrementalMessageTokens(
+    messages: ChatMessage[],
+    lastApiHistoryLength: number
+  ): number {
+    const nonSystemMessages = messages.filter((message) => message.role !== 'system');
+    const baselineNonSystemCount = Math.max(0, lastApiHistoryLength - 1);
+    return nonSystemMessages
+      .slice(baselineNonSystemCount)
+      .reduce((sum, message) => sum + this.estimateMessageTokens(message), 0);
   }
 
   /**
@@ -118,6 +148,54 @@ export class TiktokenEstimator implements TokenEstimatorPort {
       transient: transientTokens,
       history: historyTokens,
       isEstimated: true
+    };
+  }
+
+  /**
+   * 预测最终消息、工具 Schema 与模型输出预留构成的完整请求预算。
+   *
+   * @param messages - 已完成所有运行时注入的最终消息
+   * @param tools - 已完成模式裁剪的最终工具 Schema
+   * @param outputReserve - 为当前模型输出保留的 Token
+   * @param lastApiUsage - 上次 API 真实用量；候选历史必须传 null
+   * @param lastApiHistoryLength - 上次调用时的历史长度
+   * @returns 完整请求的 Token 分项估算
+   */
+  public estimateRequestTokens(
+    messages: ChatMessage[],
+    tools: Record<string, unknown>[],
+    outputReserve: number,
+    lastApiUsage: ApiUsage | null,
+    lastApiHistoryLength: number
+  ): ContextTokenUsage {
+    // 完整请求始终先做本地计数；API usage 只作为当前未改写请求的校准下界。
+    const messageUsage = this.estimateSnapshotTokens(
+      messages,
+      null,
+      0
+    );
+    const serializedTools = JSON.stringify(this.normalizeJsonValue(tools));
+    const toolTokens = tools.length > 0 ? this.countTokens(serializedTools) : 0;
+    const safeOutputReserve = Number.isFinite(outputReserve) && outputReserve > 0
+      ? Math.floor(outputReserve)
+      : 0;
+    const localInputTotal = messageUsage.total + toolTokens;
+    const calibratedInputTotal = lastApiUsage
+      ? lastApiUsage.input_tokens
+        + lastApiUsage.output_tokens
+        + this.estimateIncrementalMessageTokens(messages, lastApiHistoryLength)
+      : 0;
+    const inputTotal = Math.max(localInputTotal, calibratedInputTotal);
+    const calibrationDelta = inputTotal - localInputTotal;
+
+    return {
+      ...messageUsage,
+      total: inputTotal + safeOutputReserve,
+      inputTotal,
+      // 校准差额归入历史，保证公开分项与完整输入总量口径一致。
+      history: messageUsage.history + calibrationDelta,
+      tools: toolTokens,
+      outputReserve: safeOutputReserve,
     };
   }
 

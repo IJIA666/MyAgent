@@ -235,7 +235,8 @@ async function runHookPipelineInternal(
   try {
     // 异步执行洋葱链，由 Try-Catch-Finally 提供稳固的异常熔断和忙锁释放防护
     await dispatch(0);
-    // 将中间件中填写的尾随工具请求与控制指令提取到最终合并状态中
+    // 整体替换不会自动写入原 draft，显式同步可由插件新建的响应与尾随工具请求。
+    draft.llmResponse = sandboxContext.llmResponse;
     draft.tailToolCallRequest = sandboxContext.tailToolCallRequest;
     // 冻结 Draft 状态并捕获 patches 补丁
     finalState = finishDraft(draft, (p) => {

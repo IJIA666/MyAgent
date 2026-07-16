@@ -2,8 +2,17 @@ import { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.j
 import { LlmConfig } from '../../../config/index.js';
 import { AgentTracer } from '../../domain/tracer.js';
 import { SessionContext, ContextTokenUsage } from '../../domain/context.js';
-import type { ChatMessage, LlmPort, LlmStreamEvent } from '../../../ports/driven/llm/LlmPort.js';
+import {
+  LlmContextWindowExceededError,
+  type CompactionStrategy,
+  type ChatMessage,
+  type CompactionPreference,
+  type CompactionResult,
+  type LlmPort,
+  type LlmStreamEvent,
+} from '../../../ports/driven/llm/LlmPort.js';
 import type { ApiUsage } from '../../../ports/driven/llm/TokenEstimatorPort.js';
+import { logger } from '../../../utils/logger.js';
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { runHookPipeline } from '../plugins/plugin-runner.js';
@@ -14,7 +23,7 @@ import type { InteractionPort } from '../../../ports/driven/session/InteractionP
 import { RuleManager } from '../brain/RuleManager.js';
 import { ContextRepository } from '../brain/ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
-import { CompactionService } from '../brain/CompactionService.js';
+import type { ContextBudgetCoordinator } from '../brain/ContextBudgetCoordinator.js';
 import { ModelRequestAssembler } from './model-request-assembler.js';
 import { ToolCallOrchestrator } from './tool-call-orchestrator.js';
 import {
@@ -53,8 +62,8 @@ export interface AgentLoopOptions {
   contextRepo: ContextRepository;
   /** 工具调度与返回文本处理服务 */
   toolDispatcher: ToolDispatcher;
-  /** 上下文提炼与截断防爆服务 */
-  compactionService: CompactionService;
+  /** 最终请求预算与压缩协调器 */
+  contextBudgetCoordinator: ContextBudgetCoordinator;
   /** 插件注册管理器 */
   pluginRegistry: PluginRegistry;
   /** 人机对话交互端口（agent 提问用户并等待回答） */
@@ -87,8 +96,8 @@ export class AgentLoop {
   private contextRepo: ContextRepository;
   /** 工具调度与返回文本处理服务 */
   private toolDispatcher: ToolDispatcher;
-  /** 上下文提炼与截断防爆服务 */
-  private compactionService: CompactionService;
+  /** 最终请求预算与压缩协调器 */
+  private contextBudgetCoordinator: ContextBudgetCoordinator;
   /** 插件注册管理器 */
   private pluginRegistry: PluginRegistry;
   /** 模型请求组装协作者 */
@@ -129,11 +138,11 @@ export class AgentLoop {
     this.ruleManager = options.ruleManager;
     this.contextRepo = options.contextRepo;
     this.toolDispatcher = options.toolDispatcher;
-    this.compactionService = options.compactionService;
+    this.contextBudgetCoordinator = options.contextBudgetCoordinator;
     this.pluginRegistry = options.pluginRegistry;
     this.modelRequestAssembler = new ModelRequestAssembler(
       this.toolRegistry, this.contextAdapter, this.ruleManager,
-      this.pluginRegistry, this.context
+      this.pluginRegistry, this.context, this.contextBudgetCoordinator
     );
     this.toolCallOrchestrator = new ToolCallOrchestrator(
       this.toolRegistry, this.toolDispatcher, this.pluginRegistry,
@@ -142,6 +151,16 @@ export class AgentLoop {
     // 若构造期已提供交互端口，则通过访问器统一写入并同步给协作者。
     this.interactionPort = options.interactionPort;
     this.maxIterations = options.maxIterations ?? 20;
+  }
+
+  /**
+   * 使用最终请求组装边界执行手动上下文压缩。
+   *
+   * @param preference - 自动规划或强制全量
+   * @returns 结构化压缩结果
+   */
+  public async compact(preference: CompactionPreference = 'auto'): Promise<CompactionResult> {
+    return this.modelRequestAssembler.compact(preference, this.driver.getModelName());
   }
 
   /**
@@ -211,6 +230,11 @@ export class AgentLoop {
   ): AsyncGenerator<AgentEvent, void, unknown> {
     // 初始化迭代计数器
     let iteration = 0;
+    // 连续预算恢复只覆盖真实模型调用前的请求重组，模型成功调用后清零。
+    let consecutiveCompactionRestarts = 0;
+    let overflowRecoveryUsed = false;
+    let lastCompactionStrategy: CompactionStrategy = 'none';
+    let forceFullOnNextAssembly = false;
     // 事件中转队列及推送回调，供插件安全发射流式交互事件
     const eventQueue: AgentEvent[] = [];
     const emitEvent = (event: unknown) => {
@@ -241,7 +265,11 @@ export class AgentLoop {
       try {
         // 委托 ModelRequestAssembler 执行模型请求组装（getTools → BeforeToolSelection → assemble → BeforeModel → system-reminder → Plan 裁剪）
         const assembly = await this.modelRequestAssembler.assemble(
-          transientSkillContent, llmConfig.model, emitEvent
+          transientSkillContent,
+          llmConfig.model,
+          emitEvent,
+          forceFullOnNextAssembly ? 'full' : 'auto',
+          consecutiveCompactionRestarts === 0
         );
         while (eventQueue.length > 0) {
           yield eventQueue.shift()!;
@@ -252,6 +280,17 @@ export class AgentLoop {
           return;
         }
         if (assembly.control.action === 'restart') {
+          if (assembly.compactionResult?.status === 'compacted') {
+            consecutiveCompactionRestarts++;
+            lastCompactionStrategy = assembly.compactionResult.strategy;
+            forceFullOnNextAssembly = false;
+            logger.info('[AgentLoop] context_compaction_restart', {
+              component: 'context_budget',
+              event: 'context_compaction_restart',
+              restartCount: consecutiveCompactionRestarts,
+              strategy: lastCompactionStrategy,
+            });
+          }
           iteration = Math.max(0, iteration - 1);
           continue;
         }
@@ -461,7 +500,8 @@ export class AgentLoop {
                     tool_call_id: event.toolCalls[i].id,
                     content: parseFailedBeforeExecution
                       ? `错误：工具调用前参数解析失败（兼容标签：瑙ｆ瀽宸ュ叿鍙傛暟澶辫触），请检查 arguments JSON 是否合法。原始错误：${taskRes.finalCallUpdate.error}`
-                      : taskRes.finalCallUpdate.error
+                      : taskRes.finalCallUpdate.error,
+                    isError: true,
                   });
                 }
 
@@ -478,7 +518,8 @@ export class AgentLoop {
                 this.context.addMessage({
                   role: 'tool',
                   tool_call_id: toolCall.id,
-                  content: `错误：${errorMsg}`
+                  content: `错误：${errorMsg}`,
+                  isError: true,
                 });
               }
             }
@@ -564,12 +605,47 @@ export class AgentLoop {
 
         // 如果本轮存在工具动作被执行，那么状态已改变，进行递归（开启新的循环），再次请求大模型进行研判
         if (hasToolCalls) {
+          consecutiveCompactionRestarts = 0;
+          overflowRecoveryUsed = false;
+          lastCompactionStrategy = 'none';
+          forceFullOnNextAssembly = false;
           continue;
         }
 
       } catch (apiError: unknown) {
         // 捕获请求调度侧或网络的灾难性崩溃
         const errorMsg = apiError instanceof Error ? apiError.message : String(apiError);
+
+        if (apiError instanceof LlmContextWindowExceededError) {
+          if (!overflowRecoveryUsed && lastCompactionStrategy !== 'full') {
+            overflowRecoveryUsed = true;
+            forceFullOnNextAssembly = true;
+            consecutiveCompactionRestarts = 0;
+            logger.warn('[AgentLoop] provider_context_overflow_recovery', {
+              component: 'context_budget',
+              event: 'provider_context_overflow_recovery',
+              recoveryAttempt: 1,
+              lastCompactionStrategy,
+            });
+            yield {
+              type: 'thinking',
+              content: '[系统检测] Provider 报告上下文窗口溢出，正在执行唯一一次全量检查点恢复。'
+            };
+            continue;
+          }
+          yield {
+            type: 'error',
+            message: 'Provider 在全量压缩或一次恢复后仍报告上下文窗口溢出，已停止继续压缩。',
+            cause: apiError,
+          };
+          logger.error('[AgentLoop] provider_context_overflow_stopped', {
+            component: 'context_budget',
+            event: 'provider_context_overflow_stopped',
+            recoveryUsed: overflowRecoveryUsed,
+            lastCompactionStrategy,
+          });
+          return;
+        }
 
         // 如果是系统或用户主动下发的中断打断信号，进行安全脱离而不当一致性崩溃处理
         if (errorMsg.includes('APIUserAbortError') || errorMsg.includes('abort') || (apiError instanceof Error && apiError.name === 'AbortError')) {

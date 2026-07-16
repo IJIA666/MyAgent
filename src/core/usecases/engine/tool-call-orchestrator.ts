@@ -189,7 +189,8 @@ export class ToolCallOrchestrator {
         toolMessage = {
           role: 'tool',
           tool_call_id: toolCall.id,
-          content: toolResult
+          content: toolResult,
+          isError: true,
         };
         const abortEffect: ToolExecutionEffect = {
           kind: 'none',
@@ -424,7 +425,8 @@ export class ToolCallOrchestrator {
       toolMessage = {
         role: 'tool',
         tool_call_id: toolCall.id,
-        content: finalErrorMsg
+        content: finalErrorMsg,
+        isError: true,
       };
     }
 

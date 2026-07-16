@@ -26,8 +26,6 @@ export enum HookEventName {
   AfterTool = 'AfterTool',
   /** 决策工具集前的工具白名单精修与干预拦截 */
   BeforeToolSelection = 'BeforeToolSelection',
-  /** 上下文提炼与防爆压缩启动前的决策拦截 */
-  PreCompact = 'PreCompact',
   /** 上下文防爆压缩完成后的收尾决策拦截 */
   PostCompact = 'PostCompact'
 }

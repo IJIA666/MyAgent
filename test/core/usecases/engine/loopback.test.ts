@@ -178,8 +178,15 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
     } as unknown as LlmPort;
 
     const mockEstimator = {
-      estimateTokens: () => 0,
-      estimateSnapshotTokens: () => ({ total: 0 }),
+      countTokens: () => 0,
+      estimateMessageTokens: () => 0,
+      estimateSnapshotTokens: () => ({
+        total: 0, system: 0, rules: 0, transient: 0, history: 0, isEstimated: true
+      }),
+      estimateRequestTokens: () => ({
+        total: 0, inputTotal: 0, system: 0, rules: 0, transient: 0,
+        history: 0, tools: 0, outputReserve: 0, isEstimated: true
+      }),
       getCompactionThreshold: () => 100000
     } as unknown as TokenEstimatorPort;
 

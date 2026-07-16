@@ -81,6 +81,19 @@ describe('SessionContext Token & Hash Tests', () => {
     expect(estimate.total).toBeGreaterThan(1200);
   });
 
+  it('改写既有历史或 system prompt 后应清除失效的 API Usage 基线', () => {
+    const usage = { input_tokens: 1000, output_tokens: 200 };
+    context.addMessage({ role: 'user', content: 'temporary message' });
+    context.updateLastApiUsage(usage, context.getHistory().length);
+
+    context.rollbackHistoryToLength(1);
+    expect(context.getLastApiUsageBaseline()).toEqual({ usage: null, historyLength: 0 });
+
+    context.updateLastApiUsage(usage, context.getHistory().length);
+    context.updateSystemPrompt('new system prompt');
+    expect(context.getLastApiUsageBaseline()).toEqual({ usage: null, historyLength: 0 });
+  });
+
   it('应该在并发忙状态锁激活时，阻断状态修改与存档载入操作', () => {
     // 激活并发忙状态锁
     context.isProcessing = true;

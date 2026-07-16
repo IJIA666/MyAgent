@@ -1,21 +1,22 @@
-import type { ChatMessage, LlmPort } from '../../../ports/driven/llm/LlmPort.js';
+import type {
+  ChatMessage,
+  CompactionResult,
+  LlmPort,
+} from '../../../ports/driven/llm/LlmPort.js';
 import type { TokenEstimatorPort } from '../../../ports/driven/llm/TokenEstimatorPort.js';
-import { SessionContext, StoredChatMessage } from '../../domain/context.js';
-import { buildMiddleCompactionSummaryPrompt } from './prompts.js';
-import { ContextRepository } from './ContextRepository.js';
+import type { SessionContext, StoredChatMessage } from '../../domain/context.js';
+import {
+  buildFullCompactionSummaryPrompt,
+  buildMiddleCompactionSummaryPrompt,
+} from './prompts.js';
+import type { ContextRepository } from './ContextRepository.js';
 import { logger } from '../../../utils/logger.js';
+import type { ContextBudgetPlan } from './ContextBudgetPlanner.js';
 
 /**
- * 负责防范 Token 爆仓及上下文的截断与提炼。
+ * 执行预算规划器选定的上下文摘要策略，并原子提交有效候选历史。
  */
 export class CompactionService {
-  /** 中段压缩时最多保留的最新完整用户轮次数。 */
-  private compactionRetainCount = 4;
-  /** 最新完整轮次尾部的 Token 预算。 */
-  private compactionRetainTokens = 8000;
-  /** 摘要模型单次调用的最大输出 Token 数。 */
-  private compactionSummaryMaxTokens = 4096;
-
   /**
    * 实例初始化。
    *
@@ -25,160 +26,173 @@ export class CompactionService {
    * @param tokenEstimator - 消息 Token 估算端口
    */
   constructor(
-    private context: SessionContext,
-    private driver: LlmPort,
-    private contextRepo: ContextRepository,
-    private tokenEstimator: TokenEstimatorPort
+    private readonly context: SessionContext,
+    private readonly driver: LlmPort,
+    private readonly contextRepo: ContextRepository,
+    private readonly tokenEstimator: TokenEstimatorPort
   ) {
-    const limits = context.appConfig?.runtimeLimits;
-    if (limits) {
-      this.compactionRetainCount = limits.compactionRetainCount;
-      this.compactionRetainTokens = limits.compactionRetainTokens;
-      this.compactionSummaryMaxTokens = limits.compactionSummaryMaxTokens;
-    }
+    // 依赖在构造期固定，压缩策略与预算由每次 ContextBudgetPlan 提供。
   }
 
-  /** 找到消息历史开头连续 system 前缀的结束位置。 */
-  private findProtectedHeadEnd(history: ChatMessage[]): number | null {
-    let headEndIndex = -1;
-    for (let index = 0; index < history.length; index++) {
-      if (history[index].role !== 'system') {
-        break;
-      }
-      headEndIndex = index;
-    }
-    return headEndIndex === -1 ? null : headEndIndex;
+  /** 创建保持统一审计字段的失败结果。 */
+  private failure(plan: ContextBudgetPlan, reason: string, tokensAfter?: number): CompactionResult {
+    return {
+      status: 'failed',
+      strategy: plan.strategy,
+      tokensBefore: plan.originalUsage.total,
+      tokensAfter,
+      prunedTokens: plan.prunedTokens,
+      reason,
+    };
   }
 
-  /** 估算半开消息区间的 Token 数，并防御异常估算值。 */
-  private estimateRangeTokens(history: ChatMessage[], start: number, end: number): number {
-    let total = 0;
-    for (let index = start; index < end; index++) {
-      const estimated = this.tokenEstimator.estimateMessageTokens(history[index]);
-      // 非有限值或负数不能参与安全预算计算。
-      total += Number.isFinite(estimated) && estimated > 0 ? estimated : 0;
-    }
-    return total;
+  /** 估算摘要请求是否能够放入物理上下文窗口。 */
+  private canSendSummaryRequest(
+    summaryPrompt: ChatMessage[],
+    plan: ContextBudgetPlan
+  ): boolean {
+    const usage = this.tokenEstimator.estimateRequestTokens(
+      summaryPrompt,
+      [],
+      plan.summaryMaxTokens,
+      null,
+      0
+    );
+    return usage.total <= plan.contextWindowTokens;
   }
 
-  /** 从最新用户轮次向前选择满足轮数和 Token 双重上限的完整尾部。 */
-  private findProtectedTailStart(history: ChatMessage[], firstTailCandidate: number): number | null {
-    const turnStarts: number[] = [];
-    for (let index = firstTailCandidate; index < history.length; index++) {
-      if (history[index].role === 'user') {
-        turnStarts.push(index);
-      }
-    }
-    if (turnStarts.length === 0) {
-      return null;
-    }
-
-    // 最新一轮无条件完整保留，即使自身已经超过预算。
-    let tailStart = turnStarts[turnStarts.length - 1];
-    let retainedTurns = 1;
-    let retainedTokens = this.estimateRangeTokens(history, tailStart, history.length);
-
-    for (
-      let turnIndex = turnStarts.length - 2;
-      turnIndex >= 0 && retainedTurns < this.compactionRetainCount;
-      turnIndex--
-    ) {
-      const candidateStart = turnStarts[turnIndex];
-      const candidateTokens = this.estimateRangeTokens(history, candidateStart, tailStart);
-      if (retainedTokens + candidateTokens > this.compactionRetainTokens) {
-        break;
-      }
-      tailStart = candidateStart;
-      retainedTokens += candidateTokens;
-      retainedTurns++;
-    }
-
-    return tailStart;
+  /** 估算候选持久历史重新进入当前请求后的完整预算。 */
+  private estimateCandidateTokens(history: ChatMessage[], plan: ContextBudgetPlan): number {
+    const historyTokens = this.tokenEstimator.estimateRequestTokens(
+      history,
+      [],
+      0,
+      null,
+      0
+    ).total;
+    return plan.fixedRequestTokens + historyTokens;
   }
 
   /**
-   * 执行首尾双保中段有损压缩（Middle Compaction）。
-   * 保留 System 前缀和受预算约束的最新完整轮次，
-   * 将两者之间的历史提炼为一条原位 Summary Notice。
-   * 
-   * @returns 压缩轮换是否成功
-   */
-  public async compact(): Promise<boolean> {
-    return this.compactContext(this.context, true);
-  }
-
-  /**
-   * 在 Hook 沙箱中执行同一套中段压缩策略，由插件运行器统一提交历史。
+   * 执行 planner 已经唯一选定的 middle 或 full 压缩策略。
    *
-   * @param sandboxedContext - 插件运行器提供的会话沙箱代理
-   * @returns 压缩轮换是否成功
+   * @param plan - 最终请求边界生成的预算计划
+   * @returns 带实际策略、预算和原因的结构化结果
    */
-  public async compactInHook(sandboxedContext: SessionContext): Promise<boolean> {
-    return this.compactContext(sandboxedContext, false);
-  }
+  public async execute(plan: ContextBudgetPlan): Promise<CompactionResult> {
+    if (plan.strategy === 'none') {
+      return {
+        status: 'skipped',
+        strategy: 'none',
+        tokensBefore: plan.originalUsage.total,
+        tokensAfter: plan.prunedUsage.total,
+        prunedTokens: plan.prunedTokens,
+        reason: plan.reason,
+      };
+    }
 
-  /** 在指定上下文上生成并提交中段压缩结果。 */
-  private async compactContext(targetContext: SessionContext, persistImmediately: boolean): Promise<boolean> {
     try {
-      const fullHistory = targetContext.getHistory();
-      const headEndIndex = this.findProtectedHeadEnd(fullHistory);
+      const fullHistory = this.context.getHistory();
+      const headEndIndex = plan.headEndIndex;
       if (headEndIndex === null) {
-        return false;
+        return this.failure(plan, '会话历史缺少连续 system 前缀，无法安全压缩');
       }
 
-      const tailStartIndex = this.findProtectedTailStart(fullHistory, headEndIndex + 1);
-      if (tailStartIndex === null || tailStartIndex <= headEndIndex + 1) {
-        return false;
+      const tailStartIndex = plan.strategy === 'middle' ? plan.tailStartIndex : null;
+      if (
+        plan.strategy === 'middle'
+        && (tailStartIndex === null || tailStartIndex <= headEndIndex + 1)
+      ) {
+        return this.failure(plan, '规划结果没有形成安全可压缩中段');
       }
 
-      const middleMessages = fullHistory.slice(headEndIndex + 1, tailStartIndex);
-      if (middleMessages.length === 0) {
-        return false;
+      const summarySource = plan.strategy === 'middle' && tailStartIndex !== null
+        ? plan.historyView.slice(headEndIndex + 1, tailStartIndex)
+        : plan.historyView.slice(headEndIndex + 1).filter((message) => message.role !== 'system');
+      if (summarySource.length === 0) {
+        return this.failure(plan, '没有可用于生成摘要的非 system 历史');
+      }
+
+      const summaryPrompt = plan.strategy === 'middle'
+        ? buildMiddleCompactionSummaryPrompt(summarySource)
+        : buildFullCompactionSummaryPrompt(summarySource);
+      if (!this.canSendSummaryRequest(summaryPrompt, plan)) {
+        return this.failure(plan, '摘要输入与输出预留超过当前模型物理上下文窗口');
       }
 
       let summaryText: string;
       try {
-        const summaryPrompt = buildMiddleCompactionSummaryPrompt(middleMessages);
         summaryText = await this.driver.generateSummaryAsync(summaryPrompt, {
-          maxTokens: this.compactionSummaryMaxTokens,
+          maxTokens: plan.summaryMaxTokens,
         });
       } catch (summaryError: unknown) {
-        logger.warn(`[CompactionService] 提炼中段摘要失败，保留原历史：${summaryError}`);
-        return false;
+        logger.warn(`[CompactionService] 生成 ${plan.strategy} 摘要失败，保留原历史：${summaryError}`);
+        return this.failure(plan, `摘要调用失败：${String(summaryError)}`);
       }
 
       const normalizedSummary = summaryText.trim();
       if (normalizedSummary.length === 0) {
-        return false;
+        return this.failure(plan, '摘要模型返回空白结果');
       }
 
       const summaryNotice: StoredChatMessage = {
         role: 'user',
-        content: `[Summary of Earlier Conversation]\n${normalizedSummary}`,
+        content: plan.strategy === 'middle'
+          ? `[Summary of Earlier Conversation]\n${normalizedSummary}`
+          : `[Conversation Checkpoint]\n${normalizedSummary}`,
       };
 
-      const newHistory = [
-        ...fullHistory.slice(0, headEndIndex + 1),
-        summaryNotice,
-        ...fullHistory.slice(tailStartIndex),
-      ];
-
-      targetContext.updateHistory(newHistory);
-      if (!persistImmediately) {
-        return true;
+      const newHistory = plan.strategy === 'middle' && tailStartIndex !== null
+        ? [
+            ...fullHistory.slice(0, headEndIndex + 1),
+            summaryNotice,
+            ...fullHistory.slice(tailStartIndex),
+          ]
+        : [
+            ...fullHistory.slice(0, headEndIndex + 1),
+            summaryNotice,
+          ];
+      // 剪枝是请求期投影，不能落入持久历史；候选预算应模拟重启后的剪枝请求视图。
+      const candidateRequestView = plan.strategy === 'middle' && tailStartIndex !== null
+        ? [
+            ...plan.historyView.slice(0, headEndIndex + 1),
+            summaryNotice,
+            ...plan.historyView.slice(tailStartIndex),
+          ]
+        : [
+            ...plan.historyView.slice(0, headEndIndex + 1),
+            summaryNotice,
+          ];
+      const tokensAfter = this.estimateCandidateTokens(candidateRequestView, plan);
+      if (tokensAfter >= plan.prunedUsage.total) {
+        return this.failure(plan, '候选历史没有产生正向 Token 收益', tokensAfter);
+      }
+      if (tokensAfter > plan.thresholdTokens) {
+        return this.failure(plan, '候选历史仍超过压缩安全水位', tokensAfter);
       }
 
+      this.context.updateHistory(newHistory, true);
       try {
         await this.contextRepo.saveState();
       } catch (persistenceError: unknown) {
         // 持久化失败时恢复内存历史，维持有损操作的原子性。
-        targetContext.updateHistory(fullHistory);
-        throw persistenceError;
+        this.context.updateHistory(fullHistory, true);
+        return this.failure(plan, `持久化失败：${String(persistenceError)}`, tokensAfter);
       }
-      return true;
+      // 历史已整体替换，旧 API usage 不再能作为新请求的增量估算锚点。
+      this.context.clearLastApiUsageBaseline();
+
+      return {
+        status: 'compacted',
+        strategy: plan.strategy,
+        tokensBefore: plan.originalUsage.total,
+        tokensAfter,
+        prunedTokens: plan.prunedTokens,
+        reason: plan.reason,
+      };
     } catch (e) {
-      logger.warn(`[CompactionService] 首尾双保中段有损压缩失败: ${e}`);
-      return false;
+      logger.warn(`[CompactionService] 上下文压缩失败: ${e}`);
+      return this.failure(plan, `压缩执行异常：${String(e)}`);
     }
   }
 }

@@ -11,6 +11,9 @@ import { RuleManager } from './RuleManager.js';
 import { ContextRepository } from './ContextRepository.js';
 import { ToolDispatcher } from '../engine/ToolDispatcher.js';
 import { CompactionService } from './CompactionService.js';
+import { ContextHistoryPruner } from './ContextHistoryPruner.js';
+import { ContextBudgetPlanner } from './ContextBudgetPlanner.js';
+import { ContextBudgetCoordinator } from './ContextBudgetCoordinator.js';
 import type { ChatMessage, LlmPort } from '../../../ports/driven/llm/LlmPort.js';
 import type { TokenEstimatorPort } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import type { EmbeddingPort } from '../../../ports/driven/llm/EmbeddingPort.js';
@@ -273,6 +276,14 @@ ${historyText}
       subContextRepo,
       this.tokenEstimator
     );
+    const subHistoryPruner = new ContextHistoryPruner(this.tokenEstimator);
+    const subBudgetPlanner = new ContextBudgetPlanner(this.tokenEstimator, subHistoryPruner);
+    const subBudgetCoordinator = new ContextBudgetCoordinator(
+      subContext,
+      subBudgetPlanner,
+      subCompactionService,
+      () => llmConfig
+    );
 
     // 6. 实例化隔离的子 AgentLoop，限制最大步数为 3 轮
     const forkedAgent = new AgentLoop({
@@ -283,7 +294,7 @@ ${historyText}
       ruleManager: subRuleManager,
       contextRepo: subContextRepo,
       toolDispatcher: subToolDispatcher,
-      compactionService: subCompactionService,
+      contextBudgetCoordinator: subBudgetCoordinator,
       pluginRegistry: emptyPluginRegistry,
       maxIterations: 3
     });

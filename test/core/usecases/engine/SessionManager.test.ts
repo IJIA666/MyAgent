@@ -25,6 +25,30 @@ interface VirtualAgentLoop {
   lastInteractionTime: number | null;
 }
 
+/** 创建实现完整 TokenEstimatorPort 契约的确定性测试估算器。 */
+function createMockEstimator(total = 0): TokenEstimatorPort {
+  const makeUsage = (outputReserve = 0) => ({
+    total: total + outputReserve,
+    inputTotal: total,
+    system: 0,
+    rules: 0,
+    transient: 0,
+    history: total,
+    tools: 0,
+    outputReserve,
+    isEstimated: true,
+  });
+  return {
+    countTokens: (text: string) => text.length,
+    estimateMessageTokens: (message: ChatMessage) => message.content?.length ?? 0,
+    estimateSnapshotTokens: () => makeUsage(),
+    estimateRequestTokens: (_messages, _tools, outputReserve) => makeUsage(
+      Number.isFinite(outputReserve) && outputReserve > 0 ? outputReserve : 0
+    ),
+    getCompactionThreshold: () => 100000,
+  };
+}
+
 describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
   const mockVectorDb = {
     add: vi.fn().mockResolvedValue(undefined),
@@ -60,7 +84,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       abort: vi.fn(),
       streamChat: async function* () { }
     } as unknown as LlmPort;
-    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const mockEstimator = createMockEstimator();
     const mockToolRegistry = {
       getTools: async () => [],
       callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }),
@@ -88,7 +112,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     session.reloadRules();
     expect(session.getSystemPromptHash()).toBeDefined();
 
-    expect(await session.compact()).toBe(false);
+    expect((await session.compact()).status).toBe('skipped');
     session.rollback(0);
     session.switchModel({ model: 'new-model' } as unknown as LlmConfig);
     expect(mockDriver.switchModel).toHaveBeenCalled();
@@ -106,7 +130,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       abort: vi.fn(),
       streamChat: async function* () { }
     } as unknown as LlmPort;
-    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const mockEstimator = createMockEstimator();
     const mockToolRegistry = {
       getTools: async () => [],
       callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }),
@@ -172,11 +196,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       }
     } as unknown as LlmPort;
 
-    const mockEstimator = {
-      estimateTokens: () => 10,
-      estimateSnapshotTokens: () => ({ total: 10, system: 2, rules: 2, transient: 2, history: 4 }),
-      getCompactionThreshold: () => 100000
-    } as unknown as TokenEstimatorPort;
+    const mockEstimator = createMockEstimator(10);
 
     const mockToolRegistry = {
       getTools: async () => [],
@@ -258,11 +278,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       }
     } as unknown as LlmPort;
 
-    const mockEstimator = {
-      estimateTokens: () => 10,
-      estimateSnapshotTokens: () => ({ total: 10, system: 2, rules: 2, transient: 2, history: 4 }),
-      getCompactionThreshold: () => 100000
-    } as unknown as TokenEstimatorPort;
+    const mockEstimator = createMockEstimator(10);
 
     const mockToolRegistry = {
       getTools: async () => [
@@ -314,7 +330,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
   it('应该能够运行缓存归因校验处理器 checkCacheAndCalibrate', () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = { getModelName: () => 'MockModel', switchModel: () => { }, abort: () => { } } as unknown as LlmPort;
-    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const mockEstimator = createMockEstimator();
     const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }) } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
@@ -385,7 +401,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
   it('open() 应该派发 SessionOpened 事件并允许插件执行初始化', async () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
-    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const mockEstimator = createMockEstimator();
     const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }), close: vi.fn().mockResolvedValue(undefined) } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
@@ -401,7 +417,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
   it('close() 应该派发 SessionClosing，清理资源，清除白名单，并派发 SessionClosed', async () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
-    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const mockEstimator = createMockEstimator();
     const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }), close: vi.fn().mockResolvedValue(undefined) } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
@@ -421,7 +437,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
   it('close() 幂等保护应防止重复清理和重复派发 SessionClosed', async () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
-    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const mockEstimator = createMockEstimator();
     const closeSpy = vi.fn().mockResolvedValue(undefined);
     const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }), close: closeSpy } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
@@ -442,7 +458,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
   it('SessionClosed 阶段单个插件失败或不调用 next，不应阻断后续订阅者和 close() 完成', async () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
-    const mockEstimator = { estimateSnapshotTokens: () => ({ total: 0 }), getCompactionThreshold: () => 100000 } as unknown as TokenEstimatorPort;
+    const mockEstimator = createMockEstimator();
     const closeSpy = vi.fn().mockResolvedValue(undefined);
     const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }), close: closeSpy } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;

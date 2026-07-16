@@ -4,8 +4,13 @@ import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryP
 import type { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import type { PluginRegistry } from '../plugins/plugin-registry.js';
 import type { SessionContext, ContextTokenUsage } from '../../domain/context.js';
-import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
+import type {
+  ChatMessage,
+  CompactionPreference,
+  CompactionResult,
+} from '../../../ports/driven/llm/LlmPort.js';
 import type { AgentEvent } from './agent-loop.js';
+import type { ContextBudgetCoordinator } from '../brain/ContextBudgetCoordinator.js';
 
 /**
  * 模型请求组装阶段产生的结果。
@@ -23,6 +28,8 @@ export interface AssemblyResult {
   estimatedUsage?: ContextTokenUsage;
   /** BeforeModel 插件产生的 mock 响应（若插件直接模拟了 LLM 回包） */
   mockResponse?: unknown;
+  /** 最终预算阶段产生的压缩或跳过结果。 */
+  compactionResult?: CompactionResult;
 }
 
 /**
@@ -39,6 +46,8 @@ export class ModelRequestAssembler {
   private ruleManager: { getLocalRules(): string | null };
   private pluginRegistry: PluginRegistry;
   private context: SessionContext;
+  /** 最终模型请求预算协调器。 */
+  private contextBudgetCoordinator: ContextBudgetCoordinator;
 
   /**
    * @param toolRegistry - 工具注册端口，用于获取当前可用工具集
@@ -46,19 +55,22 @@ export class ModelRequestAssembler {
    * @param ruleManager - 规则管理服务，提供局部规则
    * @param pluginRegistry - 插件注册管理器，用于获取各生命周期的 Hook 插件
    * @param context - 当前会话上下文
+   * @param contextBudgetCoordinator - 最终请求预算与压缩协调器
    */
   constructor(
     toolRegistry: ToolRegistryPort,
     contextAdapter: ContextAdapter,
     ruleManager: { getLocalRules(): string | null },
     pluginRegistry: PluginRegistry,
-    context: SessionContext
+    context: SessionContext,
+    contextBudgetCoordinator: ContextBudgetCoordinator
   ) {
     this.toolRegistry = toolRegistry;
     this.contextAdapter = contextAdapter;
     this.ruleManager = ruleManager;
     this.pluginRegistry = pluginRegistry;
     this.context = context;
+    this.contextBudgetCoordinator = contextBudgetCoordinator;
   }
 
   /**
@@ -71,16 +83,21 @@ export class ModelRequestAssembler {
    * 4. `BeforeModel` 管线 → 插件拦截/改写模型请求
    * 5. system-reminder 注入 → 日期/CWD/安全模式提醒
    * 6. Plan 模式工具裁剪 → 过滤 write 类工具
+   * 7. 最终请求预算协调 → 剪枝、规划或压缩重启
    *
    * @param transientSkillContent - 当前请求独占的临时技能规范内容
    * @param llmModel - 大模型名称，用于 BeforeModel 管线上下文中
    * @param emitEvent - 可选的事件发射回调，用于透传 BeforeToolSelection / BeforeModel 阶段的插件流式事件
+   * @param compactionPreference - 自动规划或强制全量压缩
+   * @param allowCompaction - 当前真实模型调用前是否仍允许执行摘要
    * @returns 组装结果，包含最终消息、工具列表、控制流状态与管线事件
    */
   public async assemble(
     transientSkillContent: string | undefined,
     llmModel: string,
-    emitEvent?: (event: unknown) => void
+    emitEvent?: (event: unknown) => void,
+    compactionPreference: CompactionPreference = 'auto',
+    allowCompaction = true
   ): Promise<AssemblyResult> {
     const events: AgentEvent[] = [];
 
@@ -203,13 +220,65 @@ export class ModelRequestAssembler {
       });
     }
 
+    // 插件直接提供模型响应时不会发出真实请求，不应为虚拟请求触发有损压缩。
+    if (beforeModelResult.llmResponse) {
+      return {
+        messages: finalRequestMessages,
+        tools: finalRequestTools,
+        control: { action: 'continue' },
+        events,
+        estimatedUsage: beforeModelResult.estimatedUsage,
+        mockResponse: beforeModelResult.llmResponse,
+        compactionResult: {
+          status: 'skipped',
+          strategy: 'none',
+          tokensBefore: beforeModelResult.estimatedUsage?.total ?? 0,
+          tokensAfter: beforeModelResult.estimatedUsage?.total ?? 0,
+          prunedTokens: 0,
+          reason: 'BeforeModel 插件已提供模型响应，无需预算真实请求',
+        },
+      };
+    }
+
+    // Step 7: 预算协调必须看到不会再被后续阶段修改的最终请求。
+    const budgetResult = await this.contextBudgetCoordinator.coordinate(
+      { messages: finalRequestMessages, tools: finalRequestTools },
+      compactionPreference,
+      emitEvent,
+      allowCompaction
+    );
+
     return {
-      messages: finalRequestMessages,
-      tools: finalRequestTools,
-      control: { action: 'continue' },
+      messages: budgetResult.messages,
+      tools: budgetResult.tools,
+      control: budgetResult.control,
       events,
-      estimatedUsage: beforeModelResult.estimatedUsage,
-      mockResponse: beforeModelResult.llmResponse
+      estimatedUsage: budgetResult.estimatedUsage,
+      mockResponse: beforeModelResult.llmResponse,
+      compactionResult: budgetResult.compactionResult,
+    };
+  }
+
+  /**
+   * 使用最终请求边界执行一次手动压缩规划。
+   *
+   * @param preference - 自动选择或强制全量
+   * @param llmModel - 当前激活模型名称
+   * @param emitEvent - 可选的用户可见事件回调
+   * @returns 结构化压缩结果
+   */
+  public async compact(
+    preference: CompactionPreference,
+    llmModel: string,
+    emitEvent?: (event: unknown) => void
+  ): Promise<CompactionResult> {
+    const result = await this.assemble(undefined, llmModel, emitEvent, preference);
+    return result.compactionResult ?? {
+      status: 'failed',
+      strategy: preference === 'full' ? 'full' : 'none',
+      tokensBefore: 0,
+      prunedTokens: 0,
+      reason: result.control.reason ?? '最终请求在压缩规划前被其他生命周期中断',
     };
   }
 }
