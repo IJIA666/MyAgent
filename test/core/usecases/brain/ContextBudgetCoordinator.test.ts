@@ -156,4 +156,34 @@ describe('ContextBudgetCoordinator', () => {
     expect(result.compactionResult.reason).toContain('已经执行过一次压缩');
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it('连续压缩失败达到阈值后应熔断后续摘要调用', async () => {
+    plan.mockReturnValue(makePlan('full'));
+    execute.mockResolvedValue(makeResult('failed', 'full'));
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect((await coordinator.coordinate({ messages: originalMessages, tools: [] })).control.action)
+        .toBe('abort');
+    }
+    const circuitResult = await coordinator.coordinate({ messages: originalMessages, tools: [] });
+
+    expect(circuitResult.control.action).toBe('abort');
+    expect(circuitResult.compactionResult.reason).toContain('连续压缩失败');
+    expect(execute).toHaveBeenCalledTimes(3);
+  });
+
+  it('连续快速回填压缩达到阈值后应停止继续压缩', async () => {
+    plan.mockReturnValue(makePlan('middle'));
+    execute.mockResolvedValue(makeResult('compacted', 'middle'));
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect((await coordinator.coordinate({ messages: originalMessages, tools: [] })).control.action)
+        .toBe('restart');
+    }
+    const circuitResult = await coordinator.coordinate({ messages: originalMessages, tools: [] });
+
+    expect(circuitResult.control.action).toBe('abort');
+    expect(circuitResult.compactionResult.reason).toContain('快速回填');
+    expect(execute).toHaveBeenCalledTimes(3);
+  });
 });

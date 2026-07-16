@@ -10,6 +10,9 @@ import { logger } from '../../../utils/logger.js';
 import type { CompactionService } from './CompactionService.js';
 import type { ContextBudgetPlanner } from './ContextBudgetPlanner.js';
 
+const MAX_CONSECUTIVE_COMPACTION_FAILURES = 3;
+const MAX_RAPID_REFILL_COMPACTIONS = 3;
+
 /** 最终请求预算协调的输入。 */
 export interface ContextBudgetRequest {
   /** 已完成所有注入的最终消息。 */
@@ -36,6 +39,15 @@ export interface ContextBudgetCoordinationResult {
  * 在最终模型请求边界协调预算规划、可恢复剪枝与语义压缩。
  */
 export class ContextBudgetCoordinator {
+  /** 当前会话连续压缩失败次数。 */
+  private consecutiveCompactionFailures = 0;
+
+  /** 未经过足够历史增长便再次压缩的连续次数。 */
+  private rapidRefillCompactions = 0;
+
+  /** 最近一次成功压缩后的累计用户回合数。 */
+  private lastSuccessfulCompactionUserTurns: number | null = null;
+
   /**
    * @param context - 当前持久会话上下文
    * @param planner - 无副作用预算规划器
@@ -60,6 +72,42 @@ export class ContextBudgetCoordinator {
     };
   }
 
+  /** 创建不调用摘要模型的熔断失败结果。 */
+  private createCircuitFailure(
+    plan: ReturnType<ContextBudgetPlanner['plan']>,
+    reason: string
+  ): CompactionResult {
+    return {
+      status: 'failed',
+      strategy: plan.strategy,
+      tokensBefore: plan.originalUsage.total,
+      tokensAfter: plan.prunedUsage.total,
+      prunedTokens: plan.prunedTokens,
+      reason,
+    };
+  }
+
+  /** 历史已经正常增长时结束上一条快速回填链。 */
+  private resetRapidRefillIfRecovered(retainCount: number): void {
+    if (this.lastSuccessfulCompactionUserTurns === null) {
+      return;
+    }
+    const userTurnGrowth = this.countUserTurns(this.context.getHistory())
+      - this.lastSuccessfulCompactionUserTurns;
+    if (userTurnGrowth > retainCount) {
+      this.rapidRefillCompactions = 0;
+      this.lastSuccessfulCompactionUserTurns = null;
+    }
+  }
+
+  /** 统计持久历史中的用户回合数量。 */
+  private countUserTurns(messages: ChatMessage[]): number {
+    return messages.reduce(
+      (count, message) => count + (message.role === 'user' ? 1 : 0),
+      0
+    );
+  }
+
   /**
    * 处理一个已经完成所有运行时修改的最终请求。
    *
@@ -75,13 +123,15 @@ export class ContextBudgetCoordinator {
     emitEvent?: (event: unknown) => void,
     allowCompaction = true
   ): Promise<ContextBudgetCoordinationResult> {
+    const settings = this.getSettings();
+    this.resetRapidRefillIfRecovered(settings.retainCount);
     const baseline = this.context.getLastApiUsageBaseline();
     const plan = this.planner.plan({
       requestMessages: request.messages,
       tools: request.tools,
       history: this.context.getHistory(),
       llmConfig: this.configProvider(),
-      settings: this.getSettings(),
+      settings,
       baselineUsage: baseline.usage,
       baselineHistoryLength: baseline.historyLength,
       preference,
@@ -89,6 +139,8 @@ export class ContextBudgetCoordinator {
 
     if (plan.strategy === 'none') {
       const result = await this.compactionService.execute(plan);
+      // 一次无需压缩的正常请求足以打断连续失败链。
+      this.consecutiveCompactionFailures = 0;
       logger.debug('[ContextBudgetCoordinator] request_budget_ready', {
         component: 'context_budget',
         event: 'request_budget_ready',
@@ -103,6 +155,31 @@ export class ContextBudgetCoordinator {
         messages: plan.requestMessages,
         tools: request.tools,
         control: { action: 'continue' },
+        estimatedUsage: plan.prunedUsage,
+        compactionResult: result,
+      };
+    }
+
+    const circuitReason = this.consecutiveCompactionFailures
+      >= MAX_CONSECUTIVE_COMPACTION_FAILURES
+      ? `连续压缩失败已达到 ${MAX_CONSECUTIVE_COMPACTION_FAILURES} 次，熔断后停止继续调用摘要模型`
+      : this.rapidRefillCompactions >= MAX_RAPID_REFILL_COMPACTIONS
+        ? `上下文已连续 ${MAX_RAPID_REFILL_COMPACTIONS} 次在压缩后快速回填，熔断后停止继续压缩`
+        : null;
+    if (circuitReason) {
+      const result = this.createCircuitFailure(plan, circuitReason);
+      emitEvent?.({ type: 'error', message: `[系统警报] ${circuitReason}` });
+      logger.error('[ContextBudgetCoordinator] compaction_circuit_open', {
+        component: 'context_budget',
+        event: 'compaction_circuit_open',
+        consecutiveFailures: this.consecutiveCompactionFailures,
+        rapidRefillCompactions: this.rapidRefillCompactions,
+        reason: circuitReason,
+      });
+      return {
+        messages: plan.requestMessages,
+        tools: request.tools,
+        control: { action: 'abort', reason: circuitReason },
         estimatedUsage: plan.prunedUsage,
         compactionResult: result,
       };
@@ -130,6 +207,7 @@ export class ContextBudgetCoordinator {
       type: 'thinking',
       content: `[系统检测] 完整请求预计 ${plan.originalUsage.total} tokens，选择 ${plan.strategy} 压缩：${plan.reason}`,
     });
+    const userTurnsBeforeCompaction = this.countUserTurns(this.context.getHistory());
     const result = await this.compactionService.execute(plan);
     logger.info('[ContextBudgetCoordinator] compaction_result', {
       component: 'context_budget',
@@ -143,6 +221,14 @@ export class ContextBudgetCoordinator {
     });
 
     if (result.status === 'compacted') {
+      const isRapidRefill = this.lastSuccessfulCompactionUserTurns !== null
+        && userTurnsBeforeCompaction - this.lastSuccessfulCompactionUserTurns
+          <= settings.retainCount;
+      this.rapidRefillCompactions = isRapidRefill
+        ? this.rapidRefillCompactions + 1
+        : 1;
+      this.lastSuccessfulCompactionUserTurns = this.countUserTurns(this.context.getHistory());
+      this.consecutiveCompactionFailures = 0;
       return {
         messages: plan.requestMessages,
         tools: request.tools,
@@ -154,6 +240,8 @@ export class ContextBudgetCoordinator {
         compactionResult: result,
       };
     }
+
+    this.consecutiveCompactionFailures++;
 
     emitEvent?.({
       type: 'error',

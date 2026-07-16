@@ -112,6 +112,21 @@ describe('OpenAiLlmAdapter 单元测试', () => {
     );
   });
 
+  test('摘要请求应规范化 provider 的上下文溢出错误', async () => {
+    mockCreate.mockRejectedValueOnce({
+      status: 413,
+      error: {
+        type: 'context_window_exceeded',
+        message: 'prompt too long',
+      },
+    });
+    const adapter = new OpenAiLlmAdapter(config);
+
+    await expect(
+      adapter.generateSummaryAsync([{ role: 'user', content: 'history' }])
+    ).rejects.toBeInstanceOf(LlmContextWindowExceededError);
+  });
+
   test('流式请求应规范化 provider 的结构化上下文溢出错误', async () => {
     mockCreate.mockRejectedValueOnce({
       status: 400,

@@ -1,7 +1,8 @@
-import type {
-  ChatMessage,
-  CompactionResult,
-  LlmPort,
+import {
+  LlmContextWindowExceededError,
+  type ChatMessage,
+  type CompactionResult,
+  type LlmPort,
 } from '../../../ports/driven/llm/LlmPort.js';
 import type { TokenEstimatorPort } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import type { SessionContext, StoredChatMessage } from '../../domain/context.js';
@@ -12,6 +13,16 @@ import {
 import type { ContextRepository } from './ContextRepository.js';
 import { logger } from '../../../utils/logger.js';
 import type { ContextBudgetPlan } from './ContextBudgetPlanner.js';
+
+const MAX_SUMMARY_OVERFLOW_RETRIES = 3;
+
+/** 摘要生成及溢出恢复的内部结果。 */
+interface SummaryGenerationResult {
+  /** 成功生成的摘要；失败时为空。 */
+  summaryText?: string;
+  /** 无法继续恢复时的稳定失败原因。 */
+  failureReason?: string;
+}
 
 /**
  * 执行预算规划器选定的上下文摘要策略，并原子提交有效候选历史。
@@ -73,6 +84,77 @@ export class CompactionService {
     return plan.fixedRequestTokens + historyTokens;
   }
 
+  /** 按规划策略构造当前摘要源的模型请求。 */
+  private buildSummaryPrompt(
+    summarySource: ChatMessage[],
+    plan: ContextBudgetPlan
+  ): ChatMessage[] {
+    return plan.strategy === 'middle'
+      ? buildMiddleCompactionSummaryPrompt(summarySource)
+      : buildFullCompactionSummaryPrompt(summarySource);
+  }
+
+  /**
+   * 删除最老的完整用户回合，并至少保留最后一个用户回合。
+   *
+   * @param messages - 当前摘要源消息
+   * @returns 删除首个完整回合后的副本；无法安全缩小时返回 null
+   */
+  private dropOldestCompleteTurn(messages: ChatMessage[]): ChatMessage[] | null {
+    const nextUserIndex = messages.findIndex(
+      (message, index) => index > 0 && message.role === 'user'
+    );
+    return nextUserIndex > 0 ? messages.slice(nextUserIndex) : null;
+  }
+
+  /** 在物理窗口溢出时按完整回合有限缩小摘要输入。 */
+  private async generateSummaryWithOverflowRecovery(
+    initialSource: ChatMessage[],
+    plan: ContextBudgetPlan
+  ): Promise<SummaryGenerationResult> {
+    let summarySource = initialSource;
+    let droppedTurns = 0;
+
+    while (true) {
+      const summaryPrompt = this.buildSummaryPrompt(summarySource, plan);
+      const preflightOverflow = !this.canSendSummaryRequest(summaryPrompt, plan);
+
+      if (!preflightOverflow) {
+        try {
+          const generated = await this.driver.generateSummaryAsync(summaryPrompt, {
+            maxTokens: plan.summaryMaxTokens,
+          });
+          const omissionNotice = droppedTurns > 0
+            ? `[摘要恢复说明：因上下文窗口限制，摘要输入省略了最早 ${droppedTurns} 个完整用户回合。]\n`
+            : '';
+          return { summaryText: `${omissionNotice}${generated}` };
+        } catch (summaryError: unknown) {
+          if (!(summaryError instanceof LlmContextWindowExceededError)) {
+            logger.warn(`[CompactionService] 生成 ${plan.strategy} 摘要失败，保留原历史：${summaryError}`);
+            return { failureReason: `摘要调用失败：${String(summaryError)}` };
+          }
+        }
+      }
+
+      if (droppedTurns >= MAX_SUMMARY_OVERFLOW_RETRIES) {
+        return { failureReason: '摘要请求超过模型物理上下文窗口，有限删头重试已耗尽' };
+      }
+      const narrowedSource = this.dropOldestCompleteTurn(summarySource);
+      if (!narrowedSource) {
+        return { failureReason: '摘要请求超过模型物理上下文窗口，且没有可安全删除的更早完整回合' };
+      }
+
+      droppedTurns++;
+      summarySource = narrowedSource;
+      logger.warn('[CompactionService] 摘要请求超出上下文窗口，删除最老完整回合后重试', {
+        strategy: plan.strategy,
+        retry: droppedTurns,
+        maxRetries: MAX_SUMMARY_OVERFLOW_RETRIES,
+        remainingMessages: summarySource.length,
+      });
+    }
+  }
+
   /**
    * 执行 planner 已经唯一选定的 middle 或 full 压缩策略。
    *
@@ -113,22 +195,11 @@ export class CompactionService {
         return this.failure(plan, '没有可用于生成摘要的非 system 历史');
       }
 
-      const summaryPrompt = plan.strategy === 'middle'
-        ? buildMiddleCompactionSummaryPrompt(summarySource)
-        : buildFullCompactionSummaryPrompt(summarySource);
-      if (!this.canSendSummaryRequest(summaryPrompt, plan)) {
-        return this.failure(plan, '摘要输入与输出预留超过当前模型物理上下文窗口');
+      const summaryResult = await this.generateSummaryWithOverflowRecovery(summarySource, plan);
+      if (summaryResult.failureReason) {
+        return this.failure(plan, summaryResult.failureReason);
       }
-
-      let summaryText: string;
-      try {
-        summaryText = await this.driver.generateSummaryAsync(summaryPrompt, {
-          maxTokens: plan.summaryMaxTokens,
-        });
-      } catch (summaryError: unknown) {
-        logger.warn(`[CompactionService] 生成 ${plan.strategy} 摘要失败，保留原历史：${summaryError}`);
-        return this.failure(plan, `摘要调用失败：${String(summaryError)}`);
-      }
+      const summaryText = summaryResult.summaryText ?? '';
 
       const normalizedSummary = summaryText.trim();
       if (normalizedSummary.length === 0) {

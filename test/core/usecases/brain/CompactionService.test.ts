@@ -6,7 +6,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CompactionService } from '../../../../src/core/usecases/brain/CompactionService.js';
 import type { ContextBudgetPlan } from '../../../../src/core/usecases/brain/ContextBudgetPlanner.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
-import type { ChatMessage, LlmPort } from '../../../../src/ports/driven/llm/LlmPort.js';
+import {
+  LlmContextWindowExceededError,
+  type ChatMessage,
+  type LlmPort,
+} from '../../../../src/ports/driven/llm/LlmPort.js';
 import type { TokenEstimatorPort } from '../../../../src/ports/driven/llm/TokenEstimatorPort.js';
 import type { ContextRepository } from '../../../../src/core/usecases/brain/ContextRepository.js';
 
@@ -177,6 +181,53 @@ describe('CompactionService', () => {
     expect((await service.execute(createPlan('full', history))).status).toBe('failed');
     expect(context.getHistory()).toEqual(history);
     expect(contextRepo.saveState).not.toHaveBeenCalled();
+  });
+
+  it('摘要请求真实溢出时应按完整用户回合有限删头后重试', async () => {
+    const history = seedHistory([
+      { role: 'user', content: 'old request' },
+      {
+        role: 'assistant',
+        content: 'old tool call',
+        tool_calls: [{
+          id: 'call-1',
+          type: 'function',
+          function: { name: 'read_file', arguments: '{}' },
+        }],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'old tool result' },
+      { role: 'user', content: 'latest request' },
+      { role: 'assistant', content: 'latest answer' },
+    ]);
+    vi.mocked(driver.generateSummaryAsync)
+      .mockRejectedValueOnce(new LlmContextWindowExceededError('too long'))
+      .mockResolvedValueOnce('recovered summary');
+
+    const result = await service.execute(createPlan('full', history));
+
+    expect(result.status).toBe('compacted');
+    expect(driver.generateSummaryAsync).toHaveBeenCalledTimes(2);
+    const retryPrompt = vi.mocked(driver.generateSummaryAsync).mock.calls[1][0];
+    expect(retryPrompt[1].content).not.toContain('old request');
+    expect(retryPrompt[1].content).not.toContain('old tool result');
+    expect(retryPrompt[1].content).toContain('latest request');
+    expect(context.getHistory()[1]?.content).toContain('省略了最早 1 个完整用户回合');
+  });
+
+  it('摘要请求只有一个完整用户回合时不得通过拆分消息继续重试', async () => {
+    const history = seedHistory([
+      { role: 'user', content: 'only request' },
+      { role: 'assistant', content: 'only answer' },
+    ]);
+    vi.mocked(driver.generateSummaryAsync)
+      .mockRejectedValueOnce(new LlmContextWindowExceededError('too long'));
+
+    const result = await service.execute(createPlan('full', history));
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('没有可安全删除');
+    expect(driver.generateSummaryAsync).toHaveBeenCalledOnce();
+    expect(context.getHistory()).toEqual(history);
   });
 
   it('候选历史膨胀或仍超过阈值时不得提交', async () => {

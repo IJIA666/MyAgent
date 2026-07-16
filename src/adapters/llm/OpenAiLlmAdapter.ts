@@ -354,17 +354,25 @@ export class OpenAiLlmAdapter implements LlmPort {
     const timeoutMs = this.llmConfig.timeout ?? 60000;
     // 调用级摘要预算不能突破模型自身的最大输出限制。
     const maxTokens = Math.min(options?.maxTokens ?? this.llmConfig.maxTokens, this.llmConfig.maxTokens);
-    const response = await this.client.chat.completions.create(
-      {
-        model: this.modelName,
-        messages: openAiMessages,
-        max_tokens: maxTokens,
-        stream: false,
-        ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
-        ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions, this.llmConfig) : {})
-      },
-      { signal: AbortSignal.timeout(timeoutMs) }
-    );
-    return response.choices[0]?.message?.content || '';
+    try {
+      const response = await this.client.chat.completions.create(
+        {
+          model: this.modelName,
+          messages: openAiMessages,
+          max_tokens: maxTokens,
+          stream: false,
+          ...(this.llmConfig.temperature !== undefined ? { temperature: this.llmConfig.temperature } : {}),
+          ...(this.llmConfig.profile.buildExtraPayload ? this.llmConfig.profile.buildExtraPayload(this.modelOptions, this.llmConfig) : {})
+        },
+        { signal: AbortSignal.timeout(timeoutMs) }
+      );
+      return response.choices[0]?.message?.content || '';
+    } catch (error: unknown) {
+      // 摘要与主模型请求必须共享同一溢出错误契约，供上层执行有限恢复。
+      if (isContextWindowExceeded(error)) {
+        throw new LlmContextWindowExceededError('Provider 报告摘要请求超过模型上下文窗口', error);
+      }
+      throw error;
+    }
   }
 }
