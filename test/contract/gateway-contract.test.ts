@@ -3,13 +3,14 @@
  * 覆盖未携带内部执行上下文的直接执行、已授权 Gateway 执行、单次执行和执行后 effect 记录。
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ToolCallGateway } from '../../src/adapters/tools/ToolCallGateway.js';
 import { PermissionRuleStore } from '../../src/core/domain/permissions/rule-store.js';
 import { ToolPermissionService } from '../../src/core/domain/permissions/tool-permission-service.js';
 import type { NativeTool } from '../../src/adapters/tools/tool-types.js';
 import { PermissionPromptAdapter } from '../../src/core/usecases/plugins/PermissionPromptAdapter.js';
 import type { ToolPermissionCheckResult } from '../../src/core/domain/permissions/permission-types.js';
+import { logger, LOG_EVENT } from '../../src/utils/logger.js';
 
 /** 模拟工具 */
 class MockTool implements NativeTool {
@@ -81,7 +82,13 @@ describe('ToolCallGateway', () => {
     const tool = new MockTool('TailTool');
     gateway.registerTools([tool]);
 
-    const ctx = service.createAuthorizedContext('TailTool', {}, { kind: 'allow', decisionReason: 'tail' });
+    const ctx = service.createAuthorizedContext('TailTool', {}, {
+      kind: 'allow',
+      decisionReason: 'tail',
+      decisionSource: 'userApproval',
+      matchedEvidenceIds: [],
+      overridable: false,
+    });
     expect(ctx).not.toBeNull();
     const result = await gateway.executeAuthorized(ctx!);
     expect(result).toContain('executed: TailTool');
@@ -140,6 +147,81 @@ describe('ToolCallGateway', () => {
     expect(tool.executionCount).toBe(1);
   });
 
+  it('结构化诊断事件应关联分析、审批和执行且不记录原始命令', async () => {
+    const store = new PermissionRuleStore();
+    const service = new ToolPermissionService({ ruleStore: store });
+    const tool = new MockTool('ObservableTool', {
+      kind: 'ask',
+      message: '确认执行',
+      decisionReason: '写操作',
+      evidence: {
+        operationCategory: 'command-execute',
+        sideEffect: 'write',
+        riskReason: '写操作',
+        shellKind: 'powershell',
+        parseStatus: 'parsed',
+        subcommands: [{
+          command: 'touch secret.txt',
+          sideEffect: 'write',
+          permission: 'ask',
+          reason: '写操作',
+        }],
+        resources: [{
+          kind: 'file',
+          operation: 'write',
+          rawExpression: 'secret.txt',
+          resolvedResource: 'C:\\private\\secret.txt',
+          baseContext: 'workspace',
+          scope: 'external',
+          certainty: 'exact',
+          sourceNodeId: 'node-1',
+          reason: '测试资源',
+        }],
+      },
+    });
+    const gateway = new ToolCallGateway(service, store);
+    gateway.registerTools([tool]);
+    const promptAdapter = new PermissionPromptAdapter(store, async () => ({ approved: true, scope: 'once' }));
+    const logSpy = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+    const records = await (async (): Promise<Record<string, unknown>[]> => {
+      try {
+        await gateway.execute('ObservableTool', { command: 'touch secret.txt' }, 'default', {
+          promptAdapter,
+          runtime: { sessionId: 'session-observe', correlationId: 'call-observe' },
+        });
+        return logSpy.mock.calls.map(([, properties]) => properties as Record<string, unknown>);
+      } finally {
+        logSpy.mockRestore();
+      }
+    })();
+
+    const events = records.map(record => record.event);
+    expect(events).toEqual(expect.arrayContaining([
+      LOG_EVENT.COMMAND_ANALYSIS_COMPLETED,
+      LOG_EVENT.PERMISSION_DECISION_RESOLVED,
+      LOG_EVENT.APPROVAL_STATE_CHANGED,
+      LOG_EVENT.TOOL_EXECUTION_STATE_CHANGED,
+    ]));
+    expect(records.every(record => record.correlationId === 'call-observe')).toBe(true);
+    expect(records.find(record => record.event === LOG_EVENT.COMMAND_ANALYSIS_COMPLETED)).toMatchObject({
+      shellKind: 'powershell',
+      parseStatus: 'parsed',
+      sideEffect: 'write',
+      subcommandCount: 1,
+      resourceCount: 1,
+      resourceKinds: ['file'],
+      resourceScopes: ['external'],
+    });
+    expect(records
+      .filter(record => record.event === LOG_EVENT.APPROVAL_STATE_CHANGED)
+      .map(record => record.state)).toEqual(['awaiting', 'allowed']);
+    expect(records
+      .filter(record => record.event === LOG_EVENT.TOOL_EXECUTION_STATE_CHANGED)
+      .map(record => record.state)).toEqual(['preparing', 'started', 'completed']);
+    expect(JSON.stringify(records)).not.toContain('touch secret.txt');
+    expect(JSON.stringify(records)).not.toContain('C:\\private\\secret.txt');
+  });
+
   it('用户拒绝 ask 时不得创建执行副作用', async () => {
     const store = new PermissionRuleStore();
     const service = new ToolPermissionService({ ruleStore: store });
@@ -152,7 +234,10 @@ describe('ToolCallGateway', () => {
     gateway.registerTools([tool]);
     const promptAdapter = new PermissionPromptAdapter(store, async () => ({ approved: false, scope: 'once' }));
 
-    await expect(gateway.execute('RejectedTool', {}, 'default', { promptAdapter })).rejects.toThrow('审批拒绝');
+    await expect(gateway.execute('RejectedTool', {}, 'default', { promptAdapter })).rejects.toMatchObject({
+      code: 'approval_denied_before_execution',
+      executionStarted: false,
+    });
     expect(tool.executionCount).toBe(0);
   });
 
@@ -183,6 +268,78 @@ describe('ToolCallGateway', () => {
     expect(tool.executionCount).toBe(1);
   });
 
+  it('准备工作必须在用户批准后、真实执行前运行并最终清理', async () => {
+    const store = new PermissionRuleStore();
+    const service = new ToolPermissionService({ ruleStore: store });
+    const order: string[] = [];
+    const gateway = new ToolCallGateway(service, store);
+    const promptAdapter = new PermissionPromptAdapter(store, async () => {
+      order.push('approved');
+      return { approved: true, scope: 'once' };
+    });
+
+    await gateway.executeExternal(
+      'mcp__demo__prepared',
+      {},
+      'default',
+      {
+        checker: {
+          checkPermissions: () => ({
+            kind: 'ask', message: '确认执行', decisionReason: '需要审批',
+          }),
+        },
+        execute: async () => {
+          order.push('executed');
+          return 'ok';
+        },
+      },
+      {
+        promptAdapter,
+        runtime: {
+          prepareExecution: async () => {
+            order.push('prepared');
+            return () => order.push('cleaned');
+          },
+        },
+      },
+    );
+
+    expect(order).toEqual(['approved', 'prepared', 'executed', 'cleaned']);
+  });
+
+  it('准备失败时不得启动工具', async () => {
+    const store = new PermissionRuleStore();
+    const service = new ToolPermissionService({ ruleStore: store });
+    const gateway = new ToolCallGateway(service, store);
+    let executionCount = 0;
+
+    const execution = gateway.executeExternal(
+      'mcp__demo__prepare_failure',
+      {},
+      'default',
+      {
+        checker: { checkPermissions: () => ({ kind: 'allow' }) },
+        execute: async () => {
+          executionCount++;
+          return 'unexpected';
+        },
+      },
+      {
+        runtime: {
+          prepareExecution: async () => {
+            throw new Error('备份失败');
+          },
+        },
+      },
+    );
+
+    await expect(execution).rejects.toMatchObject({
+      code: 'failed_during_preparation',
+      executionStarted: false,
+    });
+    expect(executionCount).toBe(0);
+  });
+
   it('获得授权后的真实执行仍应受工具超时限制', async () => {
     const store = new PermissionRuleStore();
     const service = new ToolPermissionService({ ruleStore: store });
@@ -210,7 +367,11 @@ describe('ToolCallGateway', () => {
       { runtime: { timeoutMs: 10 } },
     );
 
-    await expect(execution).rejects.toMatchObject({ name: 'TimeoutError' });
+    await expect(execution).rejects.toMatchObject({
+      name: 'ToolLifecycleError',
+      code: 'execution_timed_out',
+      executionStarted: true,
+    });
   });
 
   it('复合命令会按需要批准的子命令保存规则，不保存整串命令', async () => {

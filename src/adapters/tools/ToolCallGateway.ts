@@ -13,6 +13,11 @@ import { PermissionRuleStore } from '../../core/domain/permissions/rule-store.js
 import type { AuthorizedToolRuntime, ToolExecutor } from './ToolExecutor.js';
 import { createAuthorizedExecutionSignal, createExecutionEffectFromEvidence } from './ToolExecutor.js';
 import { PermissionPromptAdapter } from '../../core/usecases/plugins/PermissionPromptAdapter.js';
+import {
+  ToolLifecycleError,
+  isToolLifecycleError,
+} from '../../core/domain/tool-lifecycle-error.js';
+import { logger, LOG_COMPONENT, LOG_EVENT } from '../../utils/logger.js';
 
 /** Gateway 执行时的交互与运行时参数。 */
 export interface GatewayExecuteOptions {
@@ -121,6 +126,7 @@ export class ToolCallGateway {
       mode,
       toolChecker,
       options.promptAdapter,
+      options.runtime,
     );
 
     const executableArgs = decision.updatedInput ?? args;
@@ -169,6 +175,7 @@ export class ToolCallGateway {
       mode,
       target.checker,
       options.promptAdapter,
+      options.runtime,
     );
     const executableArgs = decision.updatedInput ?? args;
     const authorizedContext = this.permissionService.createAuthorizedContext(
@@ -181,8 +188,11 @@ export class ToolCallGateway {
     }
 
     // 外部工具与本地工具一致：仅在授权完成后启动执行超时。
-    const executionSignal = createAuthorizedExecutionSignal(options.runtime ?? {});
-    const value = await target.execute(executableArgs, executionSignal);
+    const runtime = options.runtime ?? {};
+    const value = await runPreparedExecution(runtime, async () => {
+      const executionSignal = createAuthorizedExecutionSignal(runtime);
+      return target.execute(executableArgs, executionSignal);
+    });
     const outcome: ToolExecutionOutcome<T> = {
       value,
       effect: createExecutionEffectFromEvidence(authorizedContext.evidence, true),
@@ -218,6 +228,7 @@ export class ToolCallGateway {
     mode: PermissionMode,
     checker: ToolPermissionChecker | undefined,
     promptAdapter: PermissionPromptAdapter | undefined,
+    runtime: AuthorizedToolRuntime = {},
   ): Promise<PermissionDecision & { kind: 'allow' }> {
     let decision = await this.permissionService.checkPermissions(
       toolName,
@@ -225,19 +236,45 @@ export class ToolCallGateway {
       mode,
       checker,
     );
+    logCommandAnalysis(toolName, decision, runtime);
+    logPermissionDecision(toolName, mode, decision, runtime);
 
     if (decision.kind === 'deny') {
-      throw new Error(`权限拒绝: ${decision.decisionReason}`);
+      throw new ToolLifecycleError(
+        'permission_denied_before_execution',
+        `权限拒绝: ${decision.decisionReason}`,
+        'authorization',
+        false,
+      );
     }
 
     if (decision.kind === 'ask') {
       if (!promptAdapter) {
-        throw new Error(`工具 "${toolName}" 需要权限确认，但当前没有审批会话`);
+        throw new ToolLifecycleError(
+          'permission_denied_before_execution',
+          `工具 "${toolName}" 需要权限确认，但当前没有审批会话`,
+          'authorization',
+          false,
+        );
       }
-      const response = await promptAdapter.promptForPermission(decision, mode);
+      logApprovalState(toolName, 'awaiting', runtime);
+      let response: Awaited<ReturnType<PermissionPromptAdapter['promptForPermission']>>;
+      try {
+        response = await promptAdapter.promptForPermission(decision, mode, runtime.signal);
+      } catch (error) {
+        logApprovalState(toolName, 'cancelled', runtime);
+        throw error;
+      }
       if (!response?.approved) {
-        throw new Error(`审批拒绝：${toolName}`);
+        logApprovalState(toolName, 'denied', runtime);
+        throw new ToolLifecycleError(
+          'approval_denied_before_execution',
+          `审批拒绝：${toolName}`,
+          'authorization',
+          false,
+        );
       }
+      logApprovalState(toolName, 'allowed', runtime);
       const update = decision.suggestedUpdate
         ?? promptAdapter.buildUpdateFromDecision(toolName, args, decision, response.scope);
       if (update) {
@@ -247,9 +284,15 @@ export class ToolCallGateway {
         kind: 'allow',
         decisionReason: '用户完成权限确认',
         evidence: decision.evidence,
+        decisionSource: 'userApproval',
+        matchedEvidenceIds: decision.matchedEvidenceIds,
+        overridable: false,
       };
     }
 
+    if (decision.kind !== 'allow') {
+      throw new Error(`工具 "${toolName}" 未获得执行权限`);
+    }
     return decision;
   }
 
@@ -268,19 +311,216 @@ export class ToolCallGateway {
       throw new Error('非法执行上下文: 未由当前权限服务签发或已被使用');
     }
 
-    if (this.executor) {
-      return this.executor.executeAuthorized(authorizedContext, runtime);
-    }
-    const executionSignal = createAuthorizedExecutionSignal(runtime);
-    const result = await tool.execute(
-      authorizedContext.args,
-      runtime.context,
-      executionSignal,
-      runtime.interactionPort,
-    );
-    return {
-      value: { content: [{ type: 'text', text: result }] },
-      effect: createExecutionEffectFromEvidence(authorizedContext.evidence, true),
-    };
+    return runPreparedExecution(runtime, async () => {
+      if (this.executor) {
+        return await this.executor.executeAuthorized(authorizedContext, runtime);
+      }
+      const executionSignal = createAuthorizedExecutionSignal(runtime);
+      const result = await tool.execute(
+        authorizedContext.args,
+        runtime.context,
+        executionSignal,
+        runtime.interactionPort,
+      );
+      return {
+        value: { content: [{ type: 'text', text: result }] },
+        effect: createExecutionEffectFromEvidence(authorizedContext.evidence, true),
+      };
+    });
   }
+}
+
+/** 在获批后执行准备工作，并保证清理与执行超时边界正确。 */
+async function runPreparedExecution<T>(
+  runtime: AuthorizedToolRuntime,
+  execute: () => Promise<T>,
+): Promise<T> {
+  let cleanup: (() => void) | undefined;
+  let executionStarted = false;
+  try {
+    if (runtime.signal?.aborted) {
+      throw new ToolLifecycleError(
+        'cancelled_before_execution',
+        '工具在准备执行前被取消',
+        'authorization',
+        false,
+        runtime.signal.reason,
+      );
+    }
+    logExecutionState('preparing', runtime);
+    cleanup = await runtime.prepareExecution?.() || undefined;
+    if (runtime.signal?.aborted) {
+      throw new ToolLifecycleError(
+        'cancelled_before_execution',
+        '工具在准备完成后被取消',
+        'preparation',
+        false,
+        runtime.signal.reason,
+      );
+    }
+    executionStarted = true;
+    logExecutionState('started', runtime);
+    const result = await execute();
+    logExecutionState('completed', runtime);
+    return result;
+  } catch (error) {
+    if (isToolLifecycleError(error)) {
+      logExecutionFailure(error, runtime);
+      throw error;
+    }
+    if (!executionStarted) {
+      const lifecycleError = new ToolLifecycleError(
+        'failed_during_preparation',
+        '工具执行前的加锁或备份准备失败',
+        'preparation',
+        false,
+        error,
+      );
+      logExecutionFailure(lifecycleError, runtime);
+      throw lifecycleError;
+    }
+    const normalizedError = normalizeExecutionError(error, runtime.signal);
+    logExecutionFailure(normalizedError, runtime);
+    throw normalizedError;
+  } finally {
+    cleanup?.();
+  }
+}
+
+/** 生成同一次工具调用在不同诊断阶段共享的字段。 */
+function createDiagnosticContext(runtime: AuthorizedToolRuntime): Record<string, unknown> {
+  return {
+    component: LOG_COMPONENT.TOOL_DIAGNOSTICS,
+    sessionId: runtime.sessionId,
+    correlationId: runtime.correlationId,
+    analysisId: runtime.correlationId ? `${runtime.correlationId}:analysis` : undefined,
+  };
+}
+
+/** 记录不含命令正文和完整资源路径的命令分析摘要。 */
+function logCommandAnalysis(
+  toolName: string,
+  decision: PermissionDecision,
+  runtime: AuthorizedToolRuntime,
+): void {
+  const evidence = decision.evidence;
+  if (!evidence) {
+    return;
+  }
+  const resources = evidence.resources ?? [];
+  const resourceKinds = new Set<string>();
+  const resourceScopes = new Set<string>();
+  for (const resource of resources) {
+    if ('kind' in resource && typeof resource.kind === 'string') {
+      resourceKinds.add(resource.kind);
+    }
+    if ('scope' in resource && typeof resource.scope === 'string') {
+      resourceScopes.add(resource.scope);
+    }
+  }
+  logger.debug('[ToolGateway] command_analysis_completed', {
+    ...createDiagnosticContext(runtime),
+    event: LOG_EVENT.COMMAND_ANALYSIS_COMPLETED,
+    toolName,
+    operationCategory: evidence.operationCategory,
+    shellKind: evidence.shellKind,
+    parseStatus: evidence.parseStatus,
+    sideEffect: evidence.sideEffect,
+    subcommandCount: evidence.subcommands?.length ?? 0,
+    resourceCount: resources.length,
+    resourceKinds: [...resourceKinds],
+    resourceScopes: [...resourceScopes],
+  });
+}
+
+/** 记录统一权限服务的稳定决定来源，不解析展示文案。 */
+function logPermissionDecision(
+  toolName: string,
+  mode: PermissionMode,
+  decision: PermissionDecision,
+  runtime: AuthorizedToolRuntime,
+): void {
+  logger.debug('[ToolGateway] permission_decision_resolved', {
+    ...createDiagnosticContext(runtime),
+    event: LOG_EVENT.PERMISSION_DECISION_RESOLVED,
+    toolName,
+    mode,
+    behavior: decision.kind,
+    decisionSource: decision.decisionSource,
+    matchedRuleSource: decision.matchedRule?.source,
+    matchedEvidenceIds: decision.matchedEvidenceIds,
+    overridable: decision.overridable,
+  });
+}
+
+/** 记录人工审批的真实状态转换。 */
+function logApprovalState(
+  toolName: string,
+  state: 'awaiting' | 'allowed' | 'denied' | 'cancelled',
+  runtime: AuthorizedToolRuntime,
+): void {
+  logger.debug('[ToolGateway] approval_state_changed', {
+    ...createDiagnosticContext(runtime),
+    event: LOG_EVENT.APPROVAL_STATE_CHANGED,
+    toolName,
+    state,
+  });
+}
+
+/** 记录工具准备和执行阶段的真实状态。 */
+function logExecutionState(
+  state: 'preparing' | 'started' | 'completed',
+  runtime: AuthorizedToolRuntime,
+): void {
+  logger.debug('[ToolGateway] tool_execution_state_changed', {
+    ...createDiagnosticContext(runtime),
+    event: LOG_EVENT.TOOL_EXECUTION_STATE_CHANGED,
+    state,
+  });
+}
+
+/** 根据稳定生命周期错误记录执行失败状态。 */
+function logExecutionFailure(error: unknown, runtime: AuthorizedToolRuntime): void {
+  const lifecycleError = isToolLifecycleError(error) ? error : undefined;
+  const state = lifecycleError?.code === 'execution_timed_out'
+    ? 'timed_out'
+    : lifecycleError?.code === 'execution_cancelled_after_start'
+      || lifecycleError?.code === 'cancelled_before_execution'
+      || lifecycleError?.code === 'cancelled_while_queued'
+      ? 'cancelled'
+      : 'failed';
+  logger.debug('[ToolGateway] tool_execution_state_changed', {
+    ...createDiagnosticContext(runtime),
+    event: LOG_EVENT.TOOL_EXECUTION_STATE_CHANGED,
+    state,
+    phase: lifecycleError?.phase ?? 'execution',
+    reasonCode: lifecycleError?.code ?? 'execution_failed_after_start',
+    executionStarted: lifecycleError?.executionStarted ?? true,
+  });
+}
+
+/** 将授权后的取消和超时转换为稳定生命周期错误。 */
+function normalizeExecutionError(error: unknown, upstreamSignal?: AbortSignal): unknown {
+  if (isToolLifecycleError(error)) {
+    return error;
+  }
+  if (upstreamSignal?.aborted) {
+    return new ToolLifecycleError(
+      'execution_cancelled_after_start',
+      '工具执行已被上游取消',
+      'execution',
+      true,
+      error,
+    );
+  }
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+    return new ToolLifecycleError(
+      'execution_timed_out',
+      '工具执行超过允许时间',
+      'execution',
+      true,
+      error,
+    );
+  }
+  return error;
 }

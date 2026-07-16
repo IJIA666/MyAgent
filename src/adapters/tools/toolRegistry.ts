@@ -8,12 +8,14 @@ import { PermissionRuleStore } from '../../core/domain/permissions/rule-store.js
 import { ToolPermissionService } from '../../core/domain/permissions/tool-permission-service.js';
 import { PermissionPromptAdapter } from '../../core/usecases/plugins/PermissionPromptAdapter.js';
 import type { ToolPermissionCheckResult, ToolPermissionEvidence } from '../../core/domain/permissions/permission-types.js';
+import { isToolLifecycleError } from '../../core/domain/tool-lifecycle-error.js';
 import { ToolAccessMetadataProvider } from './ToolAccessMetadataProvider.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabilityPort.js';
 import type { EventNotificationPort } from '../../ports/driven/session/EventNotificationPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
+import type { ToolExecutionLifecycleHooks } from '../../ports/driven/tools/ToolRegistryPort.js';
 import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
 import type { ToolAccessMetadataPort, ResourceExtractor, ToolAccessMetadata } from '../../ports/driven/tools/ToolAccessMetadataPort.js';
 import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
@@ -104,8 +106,9 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
-    _toolCallId?: string,
+    toolCallId?: string,
     timeoutMs: number = 30000,
+    lifecycleHooks?: ToolExecutionLifecycleHooks,
   ): Promise<ToolExecutionOutcome<unknown>> {
     // 检查目标工具是否隶属于本地内置集合
     const toolMeta = this.catalog.getToolMetadata(functionName);
@@ -128,10 +131,13 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
           {
             promptAdapter,
             runtime: {
+              sessionId: sessionContext?.getSessionId(),
+              correlationId: toolCallId,
               context: sessionContext,
               signal,
               timeoutMs,
               interactionPort,
+              prepareExecution: lifecycleHooks?.prepareExecution,
             },
           },
         );
@@ -160,22 +166,31 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
               executionSignal,
             ),
           },
-          { promptAdapter, runtime: { signal, timeoutMs } },
+          {
+            promptAdapter,
+            runtime: {
+              sessionId: sessionContext?.getSessionId(),
+              correlationId: toolCallId,
+              signal,
+              timeoutMs,
+              prepareExecution: lifecycleHooks?.prepareExecution,
+            },
+          },
         );
         return gatewayResult.outcome;
       } else {
         throw new Error(`未知的工具名称："${functionName}"`);
       }
     } catch (error: unknown) {
+      if (isToolLifecycleError(error)) {
+        throw error;
+      }
       // 执行超时必须交给编排器统一转换为用户可见的超时阻断事件。
       if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
         throw error;
       }
       if (error instanceof Error && (
         error.name === 'InteractionRequestError' ||
-        error.message.includes('权限拒绝') ||
-        error.message.includes('审批拒绝') ||
-        error.message.includes('被拒绝') ||
         error.message.includes('找不到提供工具')
       )) {
         throw error; // 交互类或工具找不到异常向上冒泡
@@ -206,11 +221,11 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     }
     return new PermissionPromptAdapter(
       this.permissionRuleStore,
-      async (decision) => {
+      async (decision, _mode, signal) => {
         const approval = await sessionContext.waitApproval(
           `permission_${Date.now()}_${toolName}`,
           { name: toolName, arguments: args },
-          undefined,
+          { signal },
           `${decision.message}（${decision.decisionReason}）`,
         );
         return { approved: approval.action === 'approve', scope: 'once' };

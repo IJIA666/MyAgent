@@ -131,8 +131,33 @@ export interface ToolPermissionEvidence {
   readonly parseStatus?: string;
   /** 有序子操作证据。 */
   readonly subcommands?: readonly ToolPermissionSubcommandEvidence[];
-  /** 可选的结构化资源证据。 */
-  readonly resources?: readonly Readonly<Record<string, unknown>>[];
+  /**
+   * 可选的结构化资源证据。
+   * Shell 使用正式资源契约；其它工具的旧资源记录在独立迁移前保持兼容。
+   */
+  readonly resources?: readonly (ToolPermissionResourceEvidence | Readonly<Record<string, unknown>>)[];
+}
+
+/** 核心权限层消费的通用资源访问证据。 */
+export interface ToolPermissionResourceEvidence {
+  /** 资源种类。 */
+  readonly kind: 'file' | 'directory' | 'process' | 'network' | 'environment' | 'registry' | 'service' | 'unknown';
+  /** 对资源执行的操作。 */
+  readonly operation: 'read' | 'write' | 'create' | 'delete' | 'execute' | 'connect' | 'mutate';
+  /** 工具调用中的原始资源表达式。 */
+  readonly rawExpression: string;
+  /** 能够静态解析时的规范资源标识。 */
+  readonly resolvedResource?: string;
+  /** 解析资源时使用的上下文。 */
+  readonly baseContext: string;
+  /** 资源相对于工作区和系统的事实范围。 */
+  readonly scope: 'workspace' | 'external' | 'sensitive' | 'system' | 'unknown';
+  /** 静态资源解析的确定程度。 */
+  readonly certainty: 'exact' | 'pattern' | 'symbolic' | 'unknown';
+  /** 工具内部产生资源访问的节点标识。 */
+  readonly sourceNodeId: string;
+  /** 面向日志和规则解释的稳定说明。 */
+  readonly reason: string;
 }
 
 // ── ToolPermissionCheckResult（工具内部检查结果）──
@@ -155,12 +180,39 @@ export type ToolPermissionCheckResult =
 
 // ── PermissionDecision ──
 
+/** 最终权限决定的稳定来源。 */
+export type PermissionDecisionSource =
+  | 'invariant'
+  | 'policyRule'
+  | 'userRule'
+  | 'projectRule'
+  | 'builtInBaseline'
+  | 'mode'
+  | 'classifier'
+  | 'userApproval';
+
+/**
+ * 最终权限决定的来源信息。
+ *
+ * 权限模式和日志必须读取这些稳定字段，不能再从中文原因文字中猜测决定来源。
+ */
+export interface PermissionDecisionProvenance {
+  /** 产生当前最终决定的层级。 */
+  readonly decisionSource: PermissionDecisionSource;
+  /** 命中的显式规则；没有命中规则时省略。 */
+  readonly matchedRule?: PermissionRule;
+  /** 参与当前决定的结构化证据标识。 */
+  readonly matchedEvidenceIds: readonly string[];
+  /** 后续普通模式是否可以覆盖当前决定。 */
+  readonly overridable: boolean;
+}
+
 /**
  * 统一权限服务的最终决策结果。
  * 只包含 `allow`、`ask`、`deny` 三种最终结果，
  * 禁止引入 `pass`、`suspend`、`PlanSideEffect` 或新的风险枚举。
  */
-export type PermissionDecision =
+export type PermissionDecision = PermissionDecisionProvenance & (
   | {
       kind: 'allow';
       /** 可选的可执行原因描述 */
@@ -187,7 +239,8 @@ export type PermissionDecision =
       decisionReason: string;
       /** 工具检查产生的只读证据 */
       evidence?: ToolPermissionEvidence;
-    };
+    }
+);
 
 // ── PermissionUpdate ──
 

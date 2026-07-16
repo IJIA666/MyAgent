@@ -1,6 +1,6 @@
 /**
  * 终端指令执行工具类。
- * 提供受限沙箱隔离、自动后台化及人工交互确认等高级机制。
+ * 提供独立 Shell 执行、自动后台化及执行前权限确认等机制。
  */
 
 import {
@@ -10,6 +10,7 @@ import {
   type ShellCompoundFeatureConfig,
 } from './command-analysis/index.js';
 import { validateCommand, validateCwd } from './terminal-guard.js';
+import { getPhysicalRealPath } from '../base.js';
 import { runCommandEngine } from './terminal-engine.js';
 import { loadDefaultShellFamily } from './terminal-config.js';
 import { createShellExecutionPlan } from './terminal-plan.js';
@@ -37,6 +38,31 @@ interface ShellToolOptions {
 
 /** 引导模型优先使用结构化文件工具，同时为 Shell 专用能力保留终端入口。 */
 const FILE_SEARCH_TOOL_GUIDANCE = '搜索文件内容或路径时优先使用 grepSearch/globSearch；仅在需要专用 Shell 语义或这些工具无法表达的选项时使用终端搜索命令。';
+
+/** 根据当前分析能力生成简短、真实的复合结构说明。 */
+function describeCompoundFeatures(features: Readonly<ShellCompoundFeatureConfig>): string {
+  const enabledFeatures = [
+    features.pipelines ? '管道' : undefined,
+    features.conditionals ? '条件链' : undefined,
+    features.redirections ? '重定向' : undefined,
+    features.background ? '后台操作符' : undefined,
+    features.nested ? '嵌套结构' : undefined,
+  ].filter((feature): feature is string => feature !== undefined);
+
+  if (enabledFeatures.length === 0) {
+    return '复合结构会按当前分析能力检查，未充分识别的行为可能请求授权。';
+  }
+  return `Shell 可执行标准复合语法；当前权限分析覆盖${enabledFeatures.join('、')}，未充分识别的行为可能请求授权。`;
+}
+
+/** 生成与真实运行边界一致的 Shell 工具描述。 */
+function createShellToolDescription(
+  shellLabel: string,
+  features: Readonly<ShellCompoundFeatureConfig>,
+  platformNote = '',
+): string {
+  return `以工作区为默认 cwd 启动一条独立的 ${shellLabel} 命令。cwd 只是启动目录，不是文件系统沙盒；绝对路径可能访问工作区外资源。每次调用使用新的 Shell，变量和函数不会跨调用保留。${describeCompoundFeatures(features)}执行前可能根据命令行为和访问资源请求授权；长时间服务请使用 isBackground。${platformNote}${FILE_SEARCH_TOOL_GUIDANCE}`;
+}
 
 /**
  * 创建 Shell 工具的 OpenAI Function Calling 定义。
@@ -77,7 +103,7 @@ function createShellToolDefinition(
     type: 'function',
     function: {
       name,
-      description: description ?? `在工作区内执行一条 ${shellLabel} 命令。当前执行策略可能要求额外授权。`,
+      description: description ?? `以工作区为默认 cwd 启动一条独立的 ${shellLabel} 命令。cwd 不是文件系统沙盒，执行前可能根据命令行为和访问资源请求授权。`,
       parameters: {
         type: 'object',
         properties,
@@ -103,7 +129,7 @@ function createPermissionEvidence(analysis: ShellCommandAnalysis): ToolPermissio
       reason: segment.reason,
       ruleSuggestion: segment.ruleSuggestion,
     })),
-    resources: [],
+    resources: analysis.resourceAccesses ?? [],
   };
 }
 
@@ -168,8 +194,8 @@ class BaseShellTool implements NativeTool {
 
   /**
    * Claude 风格的 tool-level checkPermissions。
-   * 只执行工具专属的安全检查（硬红线、只读/写判定），
-   * 不处理 PermissionMode 之外的模式逻辑——统一策略由 ToolPermissionService 处理。
+   * 只执行工具专属的命令分析和不可绕过检查。
+   * 普通读写或未知命令仅返回结构化证据，最终决定由 ToolPermissionService 统一产生。
    *
    * @param args - 工具调用参数
    * @returns 工具内部检查结果
@@ -184,19 +210,29 @@ class BaseShellTool implements NativeTool {
 
     const rawShellKind = this.getShellKind();
     let plan;
+    let targetCwd: string;
+    let workspaceRoot: string;
     try {
       plan = this.createPlan(command, rawShellKind);
+      const cwd = typeof args.cwd === 'string' ? args.cwd : undefined;
+      workspaceRoot = validateCwd();
+      targetCwd = validateCwd(cwd);
     } catch (error) {
       return {
         kind: 'deny',
-        decisionReason: error instanceof Error ? error.message : '无法解析 shell 执行计划',
+        decisionReason: error instanceof Error ? error.message : '无法解析 shell 执行计划或 cwd',
       };
     }
 
     const resolvedShellKind = plan.shellKind;
 
     // 统一分析命令，确保权限决策与执行阶段使用相同的子命令结果。
-    const commandAnalysis = await analyzeShellCommand(command, resolvedShellKind, this.compoundFeatures);
+    const commandAnalysis = await analyzeShellCommand(
+      command,
+      resolvedShellKind,
+      this.compoundFeatures,
+      { cwd: targetCwd, workspaceRoot, resolvePhysicalPath: getPhysicalRealPath },
+    );
     const planSideEffect = commandAnalysis.sideEffect;
     const evidence = createPermissionEvidence(commandAnalysis);
 
@@ -209,43 +245,8 @@ class BaseShellTool implements NativeTool {
       };
     }
 
-    // 语法无效的一律 deny；unsupported 结构放行到下级 ask 路径，由权限服务决定是否授权。
-    if (commandAnalysis.parseStatus === 'invalid') {
-      return { kind: 'deny', decisionReason: commandAnalysis.riskReason, evidence };
-    }
-
-    // 所有子命令均为普通只读时 → allow
-    if (planSideEffect === 'read') {
-      return { kind: 'allow', decisionReason: '安全的只读命令', evidence };
-    }
-
-    // 敏感读取 → ask
-    if (planSideEffect === 'sensitive-read') {
-      return {
-        kind: 'ask',
-        message: '该命令可能读取敏感信息',
-        decisionReason: '敏感只读命令',
-        evidence,
-      };
-    }
-
-    // 写倾向命令 → ask
-    if (planSideEffect === 'write') {
-      return {
-        kind: 'ask',
-        message: `执行写操作命令: ${command}`,
-        decisionReason: commandAnalysis.riskReason || '写倾向命令',
-        evidence,
-      };
-    }
-
-    // 无法确定副作用的原子命令明确进入 ask，不允许其他层重新分析。
-    return {
-      kind: 'ask',
-      message: `无法确定命令副作用: ${command}`,
-      decisionReason: commandAnalysis.riskReason || '未知命令副作用',
-      evidence,
-    };
+    // 语法错误和无法分析的结构也只上交证据；授权后由真实 Shell 返回自身错误。
+    return { kind: 'passthrough', evidence };
   }
 
   /**
@@ -345,7 +346,7 @@ export class BashTool extends BaseShellTool {
     super({
       name: 'Bash',
       shellKind: 'posix',
-      description: `在工作区内执行 Bash 命令。命令的读写和风险属性由统一权限策略判断。${FILE_SEARCH_TOOL_GUIDANCE}`,
+      description: createShellToolDescription('Bash', features),
       features,
     });
   }
@@ -365,7 +366,11 @@ export class PowerShellTool extends BaseShellTool {
     super({
       name: 'PowerShell',
       shellKind: 'powershell',
-      description: `在工作区内执行 PowerShell 命令。该工具仅在 Windows 平台且 PowerShell 可用时提供。${FILE_SEARCH_TOOL_GUIDANCE}`,
+      description: createShellToolDescription(
+        'PowerShell',
+        features,
+        '该工具仅在 Windows 平台且 PowerShell 可用时提供。',
+      ),
       features,
     });
   }

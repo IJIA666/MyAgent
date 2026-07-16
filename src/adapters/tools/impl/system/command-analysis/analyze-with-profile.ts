@@ -139,9 +139,16 @@ export function mergeStructureEvidence(
     return merged;
   });
 
-  // 任一前置语法扫描已确认 invalid 时，后续词法 parser 不得将其提升为 parsed。
+  // 语法扫描失败表示无法可靠分析，不等于命令被安全策略禁止；明确 hardline 仍保持拒绝。
   if (analysis.parseStatus === 'invalid') {
-    return { ...analysis, subcommands };
+    const hasHardline = analysis.sideEffect === 'hardline' ||
+      subcommands.some(subcommand => subcommand.sideEffect === 'hardline');
+    return {
+      ...analysis,
+      subcommands,
+      sideEffect: hasHardline ? 'hardline' : 'unknown',
+      permission: hasHardline ? 'deny' : 'ask',
+    };
   }
 
   if (structure.parseStatus === 'parsed') {

@@ -65,7 +65,13 @@ describe('审批交互流程', () => {
   it('once 授权应允许当前调用但不产生持久规则', async () => {
     const store = new PermissionRuleStore();
     const service = new ToolPermissionService({ ruleStore: store });
-    const ctx = service.createAuthorizedContext('Bash', { command: 'ls' }, { kind: 'allow', decisionReason: 'once' });
+    const ctx = service.createAuthorizedContext('Bash', { command: 'ls' }, {
+      kind: 'allow',
+      decisionReason: 'once',
+      decisionSource: 'userApproval',
+      matchedEvidenceIds: [],
+      overridable: false,
+    });
     expect(ctx).not.toBeNull();
     expect(store.getAllRules().length).toBe(0);
   });

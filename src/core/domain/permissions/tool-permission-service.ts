@@ -8,8 +8,12 @@
 import type {
   PermissionMode,
   PermissionDecision,
+  PermissionDecisionSource,
+  PermissionRule,
+  PermissionRuleSource,
   ToolPermissionEvidence,
   ToolPermissionCheckResult,
+  ToolPermissionResourceEvidence,
 } from './permission-types.js';
 import { PermissionRuleStore } from './rule-store.js';
 
@@ -53,9 +57,35 @@ export interface AutoClassifier {
    *
    * @param toolName - 工具名称
    * @param args - 工具参数
+   * @param evidence - 工具分析产生的结构化证据
    * @returns 允许或拒绝
    */
-  classify(toolName: string, args: Record<string, unknown>): Promise<{ allow: boolean; reason: string }>;
+  classify(
+    toolName: string,
+    args: Record<string, unknown>,
+    evidence?: ToolPermissionEvidence,
+  ): Promise<{ allow: boolean; reason: string }>;
+}
+
+/** 规则匹配候选的类型。 */
+type RuleCandidateKind = 'full' | 'subcommand' | 'resource' | 'operation';
+
+/** 一条可供显式权限规则匹配的结构化候选。 */
+interface RuleMatchCandidate {
+  /** 候选内容。 */
+  readonly content?: string;
+  /** 候选来自完整调用、子命令、资源还是操作类别。 */
+  readonly kind: RuleCandidateKind;
+  /** 对应的稳定证据标识。 */
+  readonly evidenceId: string;
+}
+
+/** 一次规则与结构化候选的命中结果。 */
+interface MatchedPermissionRule {
+  /** 命中的权限规则。 */
+  readonly rule: PermissionRule;
+  /** 命中的候选。 */
+  readonly candidate: RuleMatchCandidate;
 }
 
 /** 不可伪造的内部执行上下文，证明调用已通过权限检查 */
@@ -90,14 +120,10 @@ export interface ToolPermissionServiceOptions {
  * 统一工具权限服务。
  *
  * 执行顺序（固定）：
- * 1. 全局 deny / ask 规则匹配
- * 2. 工具 checkPermissions(input, context)
- * 3. 工具级 deny / 内容级 ask / 安全检查结果
- * 4. bypassPermissions 判断
- * 5. allow 规则匹配
- * 6. passthrough 转 ask
- * 7. dontAsk / auto classifier / headless fallback
- * 8. 产生最终 PermissionDecision
+ * 1. 工具分析并产生 evidence；不可绕过检查可直接 deny
+ * 2. 显式规则按 deny → ask → allow 匹配完整调用、子命令与资源
+ * 3. 无显式规则时，根据 evidence 产生内置基线
+ * 4. PermissionMode 基于稳定来源和 evidence 做最终转换
  */
 export class ToolPermissionService {
   private readonly ruleStore: PermissionRuleStore;
@@ -131,11 +157,7 @@ export class ToolPermissionService {
     toolChecker?: ToolPermissionChecker,
     context?: { cwd?: string },
   ): Promise<PermissionDecision> {
-    // 步骤 1：收集规则结果，但不因 ask/deny 提前跳过工具 hardline 检查。
-    const ruleDecision = this.evaluateGlobalRules(toolName, args)
-      ?? this.evaluateAllowRules(toolName, args);
-
-    // 步骤 2：每次权限评估恰好执行一次工具检查。
+    // 工具检查只执行一次，优先取得结构化证据与不可绕过结果。
     let toolResult: ToolPermissionCheckResult = { kind: 'passthrough' };
     if (toolChecker) {
       toolResult = await toolChecker.checkPermissions(
@@ -144,54 +166,34 @@ export class ToolPermissionService {
       );
     }
 
-    // 步骤 3：按 deny > ask > allow > passthrough 聚合规则和工具结果。
-    let decision: PermissionDecision;
+    // 工具 deny 只表示输入契约失败、完整性失败或工具硬红线，任何规则和模式都不能覆盖。
     if (toolResult.kind === 'deny') {
-      decision = {
+      return {
         kind: 'deny',
         decisionReason: toolResult.decisionReason,
         evidence: toolResult.evidence,
-      };
-    } else if (ruleDecision?.kind === 'deny') {
-      decision = {
-        ...ruleDecision,
-        evidence: toolResult.evidence,
-      };
-    } else if (toolResult.kind === 'ask') {
-      decision = {
-        kind: 'ask',
-        message: toolResult.message ?? `工具 "${toolName}" 需要权限确认`,
-        decisionReason: toolResult.decisionReason ?? '工具检查要求权限确认',
-        evidence: toolResult.evidence,
-      };
-    } else if (ruleDecision?.kind === 'ask') {
-      decision = {
-        ...ruleDecision,
-        evidence: toolResult.evidence,
-      };
-    } else if (toolResult.kind === 'allow') {
-      decision = {
-        kind: 'allow',
-        decisionReason: toolResult.decisionReason || '工具安全检查通过',
-        updatedInput: toolResult.updatedInput,
-        evidence: toolResult.evidence,
-      };
-    } else if (ruleDecision?.kind === 'allow') {
-      decision = {
-        ...ruleDecision,
-        evidence: toolResult.evidence,
-      };
-    } else {
-      decision = {
-        kind: 'ask',
-        message: `工具 "${toolName}" 需要权限确认`,
-        decisionReason: '未配置 allow 规则，且工具检查结果为 passthrough',
-        evidence: toolResult.evidence,
+        decisionSource: 'invariant',
+        matchedEvidenceIds: collectEvidenceIds(toolResult.evidence),
+        overridable: false,
       };
     }
 
-    // 步骤 4：只有聚合后的 ask 进入模式后处理，deny 永不降级。
-    return this.handleModePostProcessing(decision, mode, toolName, args);
+    // 防御性检查：即使工具误把硬红线包装为 passthrough，也不能进入普通规则层。
+    if (toolResult.evidence?.sideEffect === 'hardline') {
+      return {
+        kind: 'deny',
+        decisionReason: toolResult.evidence.riskReason || '命令未通过不可绕过安全检查',
+        evidence: toolResult.evidence,
+        decisionSource: 'invariant',
+        matchedEvidenceIds: collectEvidenceIds(toolResult.evidence),
+        overridable: false,
+      };
+    }
+
+    // 显式用户规则高于普通工具建议；deny 和 ask 仍高于 allow。
+    const ruleDecision = this.evaluateExplicitRules(toolName, args, toolResult.evidence);
+    const baselineDecision = ruleDecision ?? this.createBuiltInBaseline(toolName, toolResult);
+    return this.applyPermissionMode(baselineDecision, mode, toolName, args);
   }
 
   /**
@@ -246,58 +248,164 @@ export class ToolPermissionService {
     return this.issuedContexts.has(context);
   }
 
-  // ── 全局规则评估 ──
+  // ── 显式规则评估 ──
 
   /**
-   * 评估全局 deny / ask 规则。
-   * 按 deny → ask → allow 顺序，返回最高优先级匹配决策。
+   * 对完整调用、子命令、资源和操作类别评估显式规则。
+   * deny/ask 命中任何候选即可生效；allow 必须覆盖完整调用或所有子命令，避免复合命令被部分放行。
    *
    * @param toolName - 工具名称
    * @param args - 工具参数
-   * @returns 匹配的 deny/ask 决策，无匹配则返回 undefined
+   * @param evidence - 工具分析证据
+   * @returns 匹配的最终规则决策，无匹配则返回 undefined
    */
-  private evaluateGlobalRules(
+  private evaluateExplicitRules(
     toolName: string,
     args: Record<string, unknown>,
+    evidence?: ToolPermissionEvidence,
   ): PermissionDecision | undefined {
-    const content = extractContentFromArgs(toolName, args);
+    const candidates = createRuleCandidates(toolName, args, evidence);
+    const matches = this.collectRuleMatches(toolName, candidates);
 
-    // 获取匹配的所有规则
-    const matchedRules = this.ruleStore.getMatchingRules(toolName, content);
-
-    // deny → ask 顺序
+    // deny 和 ask 只要命中一个结构化候选就必须生效。
     for (const behavior of ['deny', 'ask'] as const) {
-      const rule = matchedRules.find((r) => r.ruleBehavior === behavior);
-      if (rule) {
+      const match = matches.find((item) => item.rule.ruleBehavior === behavior);
+      if (match) {
+        const decisionSource = getRuleDecisionSource(match.rule.source);
         if (behavior === 'deny') {
-          return { kind: 'deny', decisionReason: `规则 (${rule.source}): ${rule.ruleValue.toolName} 被拒绝` };
+          return {
+            kind: 'deny',
+            decisionReason: `规则 (${match.rule.source}): ${match.rule.ruleValue.toolName} 被拒绝`,
+            evidence,
+            decisionSource,
+            matchedRule: match.rule,
+            matchedEvidenceIds: [match.candidate.evidenceId],
+            overridable: false,
+          };
         }
         return {
           kind: 'ask',
-          message: `规则 (${rule.source}): ${rule.ruleValue.toolName} 需要确认`,
-          decisionReason: `显式 ask 规则 (${rule.source}): ${rule.ruleValue.toolName} 需要权限确认`,
+          message: `规则 (${match.rule.source}): ${match.rule.ruleValue.toolName} 需要确认`,
+          decisionReason: `规则 (${match.rule.source}): ${match.rule.ruleValue.toolName} 需要权限确认`,
+          evidence,
+          decisionSource,
+          matchedRule: match.rule,
+          matchedEvidenceIds: [match.candidate.evidenceId],
+          overridable: false,
         };
       }
+    }
+
+    const allowMatches = matches.filter((item) => item.rule.ruleBehavior === 'allow');
+    const coveringMatches = findCoveringAllowMatches(candidates, allowMatches);
+    if (coveringMatches.length > 0) {
+      const primaryMatch = coveringMatches[0];
+      return {
+        kind: 'allow',
+        decisionReason: `规则 (${primaryMatch.rule.source}): ${primaryMatch.rule.ruleValue.toolName} 已允许`,
+        evidence,
+        decisionSource: getRuleDecisionSource(primaryMatch.rule.source),
+        matchedRule: primaryMatch.rule,
+        matchedEvidenceIds: [...new Set(coveringMatches.map((item) => item.candidate.evidenceId))],
+        overridable: false,
+      };
     }
 
     return undefined;
   }
 
-  /**
-   * 评估 allow 规则匹配。
-   *
-   * @param toolName - 工具名称
-   * @param args - 工具参数
-   * @returns 匹配的 allow 决策或无
-   */
-  private evaluateAllowRules(toolName: string, args: Record<string, unknown>): PermissionDecision | undefined {
-    const content = extractContentFromArgs(toolName, args);
-    const matchedRules = this.ruleStore.getMatchingRules(toolName, content);
-    const allowRule = matchedRules.find((r) => r.ruleBehavior === 'allow');
-    if (allowRule) {
-      return { kind: 'allow', decisionReason: `规则 (${allowRule.source}): ${allowRule.ruleValue.toolName} 已允许` };
+  /** 收集所有规则候选的命中结果。 */
+  private collectRuleMatches(
+    toolName: string,
+    candidates: readonly RuleMatchCandidate[],
+  ): MatchedPermissionRule[] {
+    const matches: MatchedPermissionRule[] = [];
+    for (const candidate of candidates) {
+      const matchedRules = this.ruleStore.getMatchingRules(toolName, candidate.content);
+      for (const rule of matchedRules) {
+        matches.push({ rule, candidate });
+      }
     }
-    return undefined;
+    return matches;
+  }
+
+  /** 根据工具建议和结构化证据生成无显式规则时的基线决定。 */
+  private createBuiltInBaseline(
+    toolName: string,
+    toolResult: Exclude<ToolPermissionCheckResult, { kind: 'deny' }>,
+  ): PermissionDecision {
+    const evidence = toolResult.evidence;
+    const matchedEvidenceIds = collectEvidenceIds(evidence);
+
+    if (evidence?.sideEffect === 'read') {
+      return {
+        kind: 'allow',
+        decisionReason: evidence.riskReason || '已证明为普通只读操作',
+        updatedInput: toolResult.kind === 'allow' ? toolResult.updatedInput : undefined,
+        evidence,
+        decisionSource: 'builtInBaseline',
+        matchedEvidenceIds,
+        overridable: true,
+      };
+    }
+
+    if (evidence) {
+      const message = evidence.sideEffect === 'sensitive-read'
+        ? '该操作可能读取敏感信息'
+        : evidence.sideEffect === 'write'
+          ? `工具 "${toolName}" 将产生写入或状态改变`
+          : `无法确定工具 "${toolName}" 的完整副作用`;
+      return {
+        kind: 'ask',
+        message,
+        decisionReason: evidence.riskReason || '结构化证据不足以自动放行',
+        evidence,
+        decisionSource: 'builtInBaseline',
+        matchedEvidenceIds,
+        overridable: true,
+      };
+    }
+
+    // 非 Shell 旧工具在完成证据迁移前，暂时兼容原有 allow/ask 建议。
+    if (toolResult.kind === 'allow') {
+      return {
+        kind: 'allow',
+        decisionReason: toolResult.decisionReason || '工具安全检查通过',
+        updatedInput: toolResult.updatedInput,
+        decisionSource: 'builtInBaseline',
+        matchedEvidenceIds,
+        overridable: true,
+      };
+    }
+    if (toolResult.kind === 'ask') {
+      return {
+        kind: 'ask',
+        message: toolResult.message ?? `工具 "${toolName}" 需要权限确认`,
+        decisionReason: toolResult.decisionReason ?? '工具检查要求权限确认',
+        decisionSource: 'builtInBaseline',
+        matchedEvidenceIds,
+        overridable: true,
+      };
+    }
+
+    if (isKnownReadOnlyTool(toolName)) {
+      return {
+        kind: 'allow',
+        decisionReason: `内置只读工具 "${toolName}"`,
+        decisionSource: 'builtInBaseline',
+        matchedEvidenceIds,
+        overridable: true,
+      };
+    }
+
+    return {
+      kind: 'ask',
+      message: `工具 "${toolName}" 需要权限确认`,
+      decisionReason: '没有显式规则，也没有足够证据自动放行',
+      decisionSource: 'builtInBaseline',
+      matchedEvidenceIds,
+      overridable: true,
+    };
   }
 
   // ── 模式后处理 ──
@@ -312,88 +420,89 @@ export class ToolPermissionService {
    * @param args - 工具参数
    * @returns 最终的权限决策
    */
-  private async handleModePostProcessing(
+  private async applyPermissionMode(
     decision: PermissionDecision,
     mode: PermissionMode,
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<PermissionDecision> {
-    // deny 决策直接返回，不受模式影响
+    // deny 永不降级；显式 allow 也不再被普通模式改写。
     if (decision.kind === 'deny') {
       return decision;
     }
-
-    // allow 决策直接返回
-    if (decision.kind === 'allow') {
+    if (decision.kind === 'allow' && decision.matchedRule) {
       return decision;
     }
 
-    // ask 决策受模式影响
-    if (decision.kind === 'ask') {
-      return this.processAskDecision(decision, mode, toolName, args);
+    // 显式 ask 必须保留，只有 dontAsk 或更严格的 Plan 禁写规则可以把它收紧为 deny。
+    if (decision.kind === 'ask' && decision.matchedRule) {
+      if (mode === 'dontAsk') {
+        return createModeDeny(
+          `dontAsk 模式: "${toolName}" 需要权限但不允许交互询问`,
+          decision,
+        );
+      }
+      if (mode === 'plan' && !this.isPlanSafeCall(toolName, decision.evidence) &&
+          decision.evidence?.sideEffect !== 'sensitive-read') {
+        return createModeDeny(`plan 模式不允许 "${toolName}" 的写入或未知操作`, decision);
+      }
+      return decision;
     }
 
-    return decision;
-  }
+    // Plan 会检查基线 allow 是否真的由只读证据支持，其它模式保留基线 allow。
+    if (decision.kind === 'allow') {
+      if (mode === 'plan' && !this.isPlanSafeCall(toolName, decision.evidence)) {
+        return createModeDeny(`plan 模式不允许 "${toolName}" 操作`, decision);
+      }
+      return decision;
+    }
 
-  /**
-   * 处理 ask 决策的模式后处理。
-   *
-   * @param decision - ask 决策
-   * @param mode - 当前模式
-   * @param toolName - 工具名称
-   * @param args - 工具参数
-   * @returns 可能被模式修改后的最终决策
-   */
-  private async processAskDecision(
-    decision: PermissionDecision & { kind: 'ask' },
-    mode: PermissionMode,
-    toolName: string,
-    args: Record<string, unknown>,
-  ): Promise<PermissionDecision> {
     switch (mode) {
       case 'acceptEdits': {
-        // acceptEdits 只对文件编辑/文件系统操作自动 allow
+        // acceptEdits 只放行专用编辑工具，不扩张到任意终端写入。
         if (isEditOperation(toolName, args)) {
           return {
             kind: 'allow',
             decisionReason: 'acceptEdits: 编辑操作自动允许',
             evidence: decision.evidence,
+            decisionSource: 'mode',
+            matchedEvidenceIds: decision.matchedEvidenceIds,
+            overridable: false,
           };
         }
         return decision;
       }
 
       case 'plan': {
-        // plan 模式只允许只读操作
-        if (this.isPlanSafeCall(toolName, args, decision.evidence)) {
-          return decision; // 保留 ask，让审批流程决定
+        // 普通读取直接 allow；敏感读取保留 ask；写入和未知操作 deny。
+        if (this.isPlanSafeCall(toolName, decision.evidence)) {
+          return {
+            kind: 'allow',
+            decisionReason: `plan 模式: 已证明 "${toolName}" 为只读操作`,
+            evidence: decision.evidence,
+            decisionSource: 'mode',
+            matchedEvidenceIds: decision.matchedEvidenceIds,
+            overridable: false,
+          };
         }
-        return {
-          kind: 'deny',
-          decisionReason: `plan 模式不允许 "${toolName}" 操作`,
-          evidence: decision.evidence,
-        };
+        if (decision.evidence?.sideEffect === 'sensitive-read') {
+          return decision;
+        }
+        return createModeDeny(`plan 模式不允许 "${toolName}" 的写入或未知操作`, decision);
       }
 
       case 'dontAsk': {
-        // dontAsk 将 ask 转为 deny
-        return {
-          kind: 'deny',
-          decisionReason: `dontAsk 模式: "${toolName}" 需要权限但未预先允许`,
-          evidence: decision.evidence,
-        };
+        return createModeDeny(`dontAsk 模式: "${toolName}" 需要权限但未预先允许`, decision);
       }
 
       case 'bypassPermissions': {
-        // bypass 将 ask 转为 allow，除非是不可绕过的操作
-        if (decision.decisionReason?.includes('显式 ask')) {
-          return decision; // 显式 ask 规则仍然触发审批
-        }
         return {
           kind: 'allow',
           decisionReason: `bypassPermissions 模式: "${toolName}" 已绕过询问`,
           evidence: decision.evidence,
+          decisionSource: 'mode',
+          matchedEvidenceIds: decision.matchedEvidenceIds,
+          overridable: false,
         };
       }
 
@@ -429,6 +538,9 @@ export class ToolPermissionService {
           kind: 'deny',
           decisionReason: `auto 模式: 分类器不可用且为 headless 模式，拒绝 "${toolName}"`,
           evidence: decision.evidence,
+          decisionSource: 'mode',
+          matchedEvidenceIds: decision.matchedEvidenceIds,
+          overridable: false,
         };
       }
       // 有交互环境：保留 ask 让用户判断
@@ -436,18 +548,24 @@ export class ToolPermissionService {
     }
 
     try {
-      const result = await this.autoClassifier.classify(toolName, args);
+      const result = await this.autoClassifier.classify(toolName, args, decision.evidence);
       if (result.allow) {
         return {
           kind: 'allow',
           decisionReason: `auto 分类器: ${result.reason}`,
           evidence: decision.evidence,
+          decisionSource: 'classifier',
+          matchedEvidenceIds: decision.matchedEvidenceIds,
+          overridable: false,
         };
       }
       return {
         kind: 'deny',
         decisionReason: `auto 分类器: ${result.reason}`,
         evidence: decision.evidence,
+        decisionSource: 'classifier',
+        matchedEvidenceIds: decision.matchedEvidenceIds,
+        overridable: false,
       };
     } catch {
       // 分类器异常
@@ -456,6 +574,9 @@ export class ToolPermissionService {
           kind: 'deny',
           decisionReason: `auto 模式: 分类器异常且为 headless 模式，拒绝 "${toolName}"`,
           evidence: decision.evidence,
+          decisionSource: 'mode',
+          matchedEvidenceIds: decision.matchedEvidenceIds,
+          overridable: false,
         };
       }
       return decision;
@@ -472,35 +593,163 @@ export class ToolPermissionService {
    */
   private isPlanSafeCall(
     toolName: string,
-    _args: Record<string, unknown>,
     evidence?: ToolPermissionEvidence,
   ): boolean {
-    const planSafeTools = new Set([
-      'Read',
-      'ReadManyFiles',
-      'Glob',
-      'Grep',
-      'Dir',
-      'Bash',
-      'PowerShell',
-      'WebFetch',
-      'WebSearch',
-    ]);
-
-    if (!planSafeTools.has(toolName)) {
-      return false;
+    if (evidence) {
+      return evidence.sideEffect === 'read';
     }
-
-    // Bash/PowerShell 需要额外检查是否为只读命令
-    if (toolName === 'Bash' || toolName === 'PowerShell') {
-      return evidence?.sideEffect === 'read' || evidence?.sideEffect === 'sensitive-read';
-    }
-
-    return true;
+    return isKnownReadOnlyTool(toolName);
   }
 }
 
 // ── 辅助函数 ──
+
+/** 根据完整调用、子命令、资源和操作类别生成规则候选。 */
+function createRuleCandidates(
+  toolName: string,
+  args: Record<string, unknown>,
+  evidence?: ToolPermissionEvidence,
+): RuleMatchCandidate[] {
+  const candidates: RuleMatchCandidate[] = [{
+    content: extractContentFromArgs(toolName, args),
+    kind: 'full',
+    evidenceId: 'call:full',
+  }];
+
+  evidence?.subcommands?.forEach((subcommand, index) => {
+    candidates.push({
+      content: subcommand.command,
+      kind: 'subcommand',
+      evidenceId: `subcommand:${index}`,
+    });
+  });
+
+  evidence?.resources?.forEach((resource, index) => {
+    if (!isStructuredResourceEvidence(resource)) {
+      return;
+    }
+    const evidenceId = resource.sourceNodeId || `resource:${index}`;
+    candidates.push({ content: resource.rawExpression, kind: 'resource', evidenceId });
+    if (resource.resolvedResource && resource.resolvedResource !== resource.rawExpression) {
+      candidates.push({ content: resource.resolvedResource, kind: 'resource', evidenceId });
+    }
+  });
+
+  if (evidence?.operationCategory) {
+    candidates.push({
+      content: evidence.operationCategory,
+      kind: 'operation',
+      evidenceId: `operation:${evidence.operationCategory}`,
+    });
+  }
+
+  return candidates;
+}
+
+/** 找出足以覆盖完整调用的 allow 命中，拒绝只覆盖复合命令一部分的 allow。 */
+function findCoveringAllowMatches(
+  candidates: readonly RuleMatchCandidate[],
+  allowMatches: readonly MatchedPermissionRule[],
+): MatchedPermissionRule[] {
+  const toolWideMatch = allowMatches.find((item) => item.rule.ruleValue.ruleContent === undefined);
+  if (toolWideMatch) {
+    return [toolWideMatch];
+  }
+
+  const wholeCallMatch = allowMatches.find((item) =>
+    item.candidate.kind === 'full' || item.candidate.kind === 'operation');
+  if (wholeCallMatch) {
+    return [wholeCallMatch];
+  }
+
+  const subcommandCandidates = candidates.filter((candidate) => candidate.kind === 'subcommand');
+  if (subcommandCandidates.length > 0) {
+    const coveringSubcommands = subcommandCandidates.map((candidate) =>
+      allowMatches.find((item) => item.candidate.evidenceId === candidate.evidenceId));
+    if (coveringSubcommands.every((item): item is MatchedPermissionRule => item !== undefined)) {
+      return coveringSubcommands;
+    }
+  }
+
+  const resourceCandidates = candidates.filter((candidate) => candidate.kind === 'resource');
+  if (subcommandCandidates.length === 0 && resourceCandidates.length > 0) {
+    const coveringResources = resourceCandidates.map((candidate) =>
+      allowMatches.find((item) => item.candidate.evidenceId === candidate.evidenceId));
+    if (coveringResources.every((item): item is MatchedPermissionRule => item !== undefined)) {
+      return coveringResources;
+    }
+  }
+
+  return [];
+}
+
+/** 将规则配置来源归并为稳定的最终决定来源。 */
+function getRuleDecisionSource(source: PermissionRuleSource): PermissionDecisionSource {
+  if (source === 'policySettings') {
+    return 'policyRule';
+  }
+  if (source === 'projectSettings' || source === 'localSettings') {
+    return 'projectRule';
+  }
+  return 'userRule';
+}
+
+/** 收集参与决定的结构化证据标识。 */
+function collectEvidenceIds(evidence?: ToolPermissionEvidence): string[] {
+  if (!evidence) {
+    return [];
+  }
+
+  const evidenceIds = [`operation:${evidence.operationCategory}`];
+  evidence.subcommands?.forEach((_subcommand, index) => evidenceIds.push(`subcommand:${index}`));
+  evidence.resources?.forEach((resource, index) => {
+    evidenceIds.push(isStructuredResourceEvidence(resource) && resource.sourceNodeId
+      ? resource.sourceNodeId
+      : `resource:${index}`);
+  });
+  return [...new Set(evidenceIds)];
+}
+
+/** 判断兼容资源记录是否已经采用正式的结构化资源契约。 */
+function isStructuredResourceEvidence(
+  resource: ToolPermissionResourceEvidence | Readonly<Record<string, unknown>>,
+): resource is ToolPermissionResourceEvidence {
+  return typeof resource.rawExpression === 'string' &&
+    typeof resource.sourceNodeId === 'string' &&
+    typeof resource.operation === 'string';
+}
+
+/** 创建由权限模式收紧后的拒绝决定。 */
+function createModeDeny(
+  reason: string,
+  originalDecision: PermissionDecision,
+): PermissionDecision {
+  return {
+    kind: 'deny',
+    decisionReason: reason,
+    evidence: originalDecision.evidence,
+    decisionSource: 'mode',
+    matchedEvidenceIds: originalDecision.matchedEvidenceIds,
+    overridable: false,
+  };
+}
+
+/** 判断没有结构化证据的旧工具是否明确为专用只读工具。 */
+function isKnownReadOnlyTool(toolName: string): boolean {
+  const readOnlyTools = new Set([
+    'Read',
+    'ReadManyFiles',
+    'Glob',
+    'Grep',
+    'Dir',
+    'WebFetch',
+    'WebSearch',
+    'GitStatus',
+    'GitLog',
+    'GitDiff',
+  ]);
+  return readOnlyTools.has(toolName);
+}
 
 /**
  * 从工具参数中提取内容 specifier。

@@ -89,6 +89,23 @@ describe('工具描述中性边界约束', () => {
     expect(bashDescription).toContain('无法表达的选项时使用终端搜索命令');
   });
 
+  test('终端工具描述应准确说明 cwd、Shell 生命周期和权限边界', () => {
+    const bashDescription = (new BashTool().definition.function as { description: string }).description;
+    const powerShellDescription = (new PowerShellTool().definition.function as { description: string }).description;
+
+    for (const description of [bashDescription, powerShellDescription]) {
+      expect(description).toContain('cwd 只是启动目录，不是文件系统沙盒');
+      expect(description).toContain('绝对路径可能访问工作区外资源');
+      expect(description).toContain('变量和函数不会跨调用保留');
+      expect(description).toContain('Shell 可执行标准复合语法');
+      expect(description).toContain('管道、条件链、重定向、后台操作符、嵌套结构');
+      expect(description).toContain('执行前可能');
+      expect(description).toContain('长时间服务请使用 isBackground');
+      expect(description).not.toContain('在工作区内执行');
+      expect(description).not.toContain('受限沙箱');
+    }
+  });
+
   test('系统工具工厂应始终注册 Bash，并仅在 Windows 能力可用时注册 PowerShell', () => {
     const names = buildSystemTools().map((tool) => tool.name);
     const shouldExposePowerShell = process.platform === 'win32' &&

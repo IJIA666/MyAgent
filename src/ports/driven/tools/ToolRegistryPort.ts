@@ -29,6 +29,16 @@ export interface ToolMetadata {
   readonly maxBytes?: number;
 }
 
+/** 工具获批后、真正执行前使用的准备钩子。 */
+export interface ToolExecutionLifecycleHooks {
+  /**
+   * 执行排队、加锁或备份等准备工作。
+   *
+   * @returns 准备完成后的可选清理函数
+   */
+  readonly prepareExecution?: () => Promise<(() => void) | void>;
+}
+
 /**
  * 工具注册表与调度管理器输出端口接口。
  * 提供大循环获取工具列表、路由工具调用、以及生命周期自毁关闭的抽象能力。
@@ -53,6 +63,7 @@ export interface ToolRegistryPort {
    * @param signal - 可选的 AbortSignal，用于物理取消工具执行
    * @param toolCallId - 可选的工具调用标识
    * @param timeoutMs - 获得权限后开始计算的工具执行超时
+   * @param lifecycleHooks - 获批后、执行前的可选生命周期钩子
    * @returns 携带实际副作用的工具执行结果
    */
   callTool(
@@ -63,6 +74,7 @@ export interface ToolRegistryPort {
     signal?: AbortSignal,
     toolCallId?: string,
     timeoutMs?: number,
+    lifecycleHooks?: ToolExecutionLifecycleHooks,
   ): Promise<ToolExecutionOutcome<unknown>>;
 
   /**

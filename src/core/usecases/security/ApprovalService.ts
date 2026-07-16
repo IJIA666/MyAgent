@@ -1,6 +1,23 @@
 import { logger } from '../../../utils/logger.js';
 import type { ApprovalChoice } from '../../../ports/shared/approval-types.js';
 import type { ApprovalPort, ApprovalDecision } from '../../../ports/driving/ApprovalPort.js';
+import { ToolLifecycleError } from '../../domain/tool-lifecycle-error.js';
+
+/** 单个挂起审批的内部控制信息。 */
+interface PendingApproval {
+  /** 可选会话标识。 */
+  sessionId?: string;
+  /** 完成审批等待。 */
+  resolve: (value: ApprovalDecision) => void;
+  /** 异常终止审批等待。 */
+  reject: (reason: Error) => void;
+  /** 显式配置审批超时时的定时器。 */
+  timeoutId?: NodeJS.Timeout;
+  /** 上游取消信号。 */
+  signal?: AbortSignal;
+  /** 从上游信号解除绑定的监听器。 */
+  abortHandler?: () => void;
+}
 
 /**
  * 人机协同审批协调服务。
@@ -13,15 +30,7 @@ import type { ApprovalPort, ApprovalDecision } from '../../../ports/driving/Appr
  */
 export class ApprovalService implements ApprovalPort {
   /** 挂起的审批项映射表，Key 为审批 ID */
-  private pendingApprovals = new Map<
-    string,
-    {
-      sessionId?: string;
-      resolve: (value: ApprovalDecision) => void;
-      reject: (reason: Error) => void;
-      timeoutId: NodeJS.Timeout;
-    }
-  >();
+  private pendingApprovals = new Map<string, PendingApproval>();
 
   /** 是否启用自动放行 (Bypass) 模式，常用于非 TTY 的 CI 自动化测试流水线 */
   private isBypassMode = false;
@@ -32,7 +41,8 @@ export class ApprovalService implements ApprovalPort {
     toolCall: { name: string; arguments: Record<string, unknown> },
     allowedPrefix?: string,
     message?: string,
-    choices?: ApprovalChoice[]
+    choices?: ApprovalChoice[],
+    signal?: AbortSignal,
   ) => void | Promise<void>;
 
   /** 当前是否有一个审批 UI 正在独占 stdin。用于防止多个审批提示并发渲染。 */
@@ -77,7 +87,10 @@ export class ApprovalService implements ApprovalPort {
    * @param toolCall - 触发审批的工具调用详情，包含名称和参数
    * @param allowedPrefix - 可选的自动放行命令前缀匹配
    * @param message - 可选的卡关提示信息，用于告知用户越界或风险类型
-   * @param timeoutMs - 审批超时限制毫秒数，默认 5 分钟 (300,000ms)
+   * @param timeoutMs - 可选审批超时限制；默认不设置人工审批超时
+   * @param sessionId - 可选会话标识
+   * @param choices - 可选审批选项
+   * @param signal - 可选上游取消信号
    * @returns 外部人机交互最终做出的审批决策
    */
   public async wait(
@@ -85,9 +98,10 @@ export class ApprovalService implements ApprovalPort {
     toolCall: { name: string; arguments: Record<string, unknown> },
     allowedPrefix?: string,
     message?: string,
-    timeoutMs = 300000,
+    timeoutMs?: number,
     sessionId?: string,
-    choices?: ApprovalChoice[]
+    choices?: ApprovalChoice[],
+    signal?: AbortSignal,
   ): Promise<ApprovalDecision> {
     // 若处于 Bypass 模式，立即以 call 单次放行回复，保障 CI/测试顺畅
     if (this.isBypassMode) {
@@ -95,18 +109,36 @@ export class ApprovalService implements ApprovalPort {
     }
 
     const waitPromise = new Promise<ApprovalDecision>((resolve, reject) => {
-      // 开启超时定时器，超时默认返回 deny 拒绝决策，保障系统不挂死
-      const timeoutId = setTimeout(() => {
-        this.pendingApprovals.delete(id);
-        resolve({ action: 'deny' });
-      }, timeoutMs);
+      const pending: PendingApproval = { resolve, reject, sessionId, signal };
+      if (timeoutMs !== undefined && timeoutMs > 0) {
+        pending.timeoutId = setTimeout(() => {
+          const expired = this.takePending(id);
+          expired?.resolve({ action: 'deny' });
+        }, timeoutMs);
+      }
+      if (signal) {
+        pending.abortHandler = () => {
+          this.reject(id, new ToolLifecycleError(
+            'cancelled_while_awaiting_approval',
+            '审批等待已被上游取消',
+            'authorization',
+            false,
+            signal.reason,
+          ));
+        };
+      }
 
-      // 将控制权 resolve/reject 以及定时器指针存入内存映射表中，并强绑定 sessionId
-      this.pendingApprovals.set(id, { resolve, reject, timeoutId, sessionId });
+      // 先登记再绑定取消，确保已经 aborted 的信号也能通过统一清理路径移除审批。
+      this.pendingApprovals.set(id, pending);
+      if (signal?.aborted) {
+        pending.abortHandler?.();
+      } else if (signal && pending.abortHandler) {
+        signal.addEventListener('abort', pending.abortHandler, { once: true });
+      }
     });
 
     // 先登记 pending，再串行分发 UI，避免“先提问后登记”导致的竞态与双提示问题。
-    this.dispatchApprovalRequest(id, toolCall, allowedPrefix, message, choices);
+    this.dispatchApprovalRequest(id, toolCall, allowedPrefix, message, choices, signal);
 
     return waitPromise;
   }
@@ -119,14 +151,10 @@ export class ApprovalService implements ApprovalPort {
    * @returns 唤醒是否成功，若返回 false 说明 ID 不存在或已超时失效
    */
   public resolve(id: string, decision: ApprovalDecision): boolean {
-    const pending = this.pendingApprovals.get(id);
+    const pending = this.takePending(id);
     if (!pending) {
       return false;
     }
-    // 清除超时定时器并从列表中移除
-    clearTimeout(pending.timeoutId);
-    this.pendingApprovals.delete(id);
-
     // 执行 resolve 唤醒挂起的 Promise
     pending.resolve(decision);
     return true;
@@ -140,13 +168,10 @@ export class ApprovalService implements ApprovalPort {
    * @returns 异常拒绝是否成功
    */
   public reject(id: string, error: Error): boolean {
-    const pending = this.pendingApprovals.get(id);
+    const pending = this.takePending(id);
     if (!pending) {
       return false;
     }
-    clearTimeout(pending.timeoutId);
-    this.pendingApprovals.delete(id);
-
     pending.reject(error);
     return true;
   }
@@ -160,9 +185,7 @@ export class ApprovalService implements ApprovalPort {
   public rejectBySessionId(sessionId: string, error: Error): void {
     for (const [id, pending] of this.pendingApprovals.entries()) {
       if (pending.sessionId === sessionId) {
-        clearTimeout(pending.timeoutId);
-        pending.reject(error);
-        this.pendingApprovals.delete(id);
+        this.takePending(id)?.reject(error);
       }
     }
   }
@@ -174,12 +197,15 @@ export class ApprovalService implements ApprovalPort {
    * @param reason - 全局释放的原因说明
    */
   public rejectAll(reason = 'Session is closing'): void {
-    const error = new Error(`Approval cancelled: ${reason}`);
-    for (const pending of this.pendingApprovals.values()) {
-      clearTimeout(pending.timeoutId);
-      pending.reject(error);
+    const error = new ToolLifecycleError(
+      'cancelled_while_awaiting_approval',
+      `Approval cancelled: ${reason}`,
+      'authorization',
+      false,
+    );
+    for (const id of [...this.pendingApprovals.keys()]) {
+      this.takePending(id)?.reject(error);
     }
-    this.pendingApprovals.clear();
   }
 
   /**
@@ -196,7 +222,8 @@ export class ApprovalService implements ApprovalPort {
     toolCall: { name: string; arguments: Record<string, unknown> },
     allowedPrefix?: string,
     message?: string,
-    choices?: ApprovalChoice[]
+    choices?: ApprovalChoice[],
+    signal?: AbortSignal,
   ): void {
     if (!this.onNeedApprovalHandler) {
       return;
@@ -209,7 +236,7 @@ export class ApprovalService implements ApprovalPort {
       }
 
       try {
-        await this.onNeedApprovalHandler?.(id, toolCall, allowedPrefix, message, choices);
+        await this.onNeedApprovalHandler?.(id, toolCall, allowedPrefix, message, choices, signal);
       } catch (err) {
         logger.error('Approval handler sync error:', err);
       }
@@ -241,5 +268,21 @@ export class ApprovalService implements ApprovalPort {
     void next().finally(() => {
       this.drainApprovalQueue();
     });
+  }
+
+  /** 移除挂起审批，并统一清理定时器和取消监听器。 */
+  private takePending(id: string): PendingApproval | undefined {
+    const pending = this.pendingApprovals.get(id);
+    if (!pending) {
+      return undefined;
+    }
+    this.pendingApprovals.delete(id);
+    if (pending.timeoutId) {
+      clearTimeout(pending.timeoutId);
+    }
+    if (pending.signal && pending.abortHandler) {
+      pending.signal.removeEventListener('abort', pending.abortHandler);
+    }
+    return pending;
   }
 }

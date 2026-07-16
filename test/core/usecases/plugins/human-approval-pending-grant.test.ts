@@ -42,12 +42,23 @@ describe('PermissionUpdate 授权生命周期', () => {
   });
 
   it('审批适配器只接受 ask 决策', () => {
-    expect(PermissionPromptAdapter.isAskDecision({ kind: 'allow' })).toBe(false);
-    expect(PermissionPromptAdapter.isAskDecision({ kind: 'deny', decisionReason: '拒绝' })).toBe(false);
+    // 测试样本也携带稳定来源，确保适配器面对真实 PermissionDecision 外形。
+    const provenance = {
+      decisionSource: 'builtInBaseline' as const,
+      matchedEvidenceIds: [] as const,
+      overridable: true,
+    };
+    expect(PermissionPromptAdapter.isAskDecision({ kind: 'allow', ...provenance })).toBe(false);
+    expect(PermissionPromptAdapter.isAskDecision({
+      kind: 'deny',
+      decisionReason: '拒绝',
+      ...provenance,
+    })).toBe(false);
     expect(PermissionPromptAdapter.isAskDecision({
       kind: 'ask',
       message: '确认',
       decisionReason: '需要确认',
+      ...provenance,
     })).toBe(true);
   });
 });

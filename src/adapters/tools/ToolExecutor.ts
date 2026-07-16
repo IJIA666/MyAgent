@@ -13,6 +13,10 @@ import type { InteractionPort } from '../../ports/driven/session/InteractionPort
 
 /** 已授权工具执行时使用的非权限运行时参数。 */
 export interface AuthorizedToolRuntime {
+  /** 当前工具调用的会话标识，用于关联脱敏诊断事件。 */
+  readonly sessionId?: string;
+  /** 当前工具调用标识，用作跨分析、权限和执行阶段的关联 ID。 */
+  readonly correlationId?: string;
   /** 会话或工具执行上下文。 */
   readonly context?: ToolExecutionContext | SessionEventPort;
   /** 上游主动取消信号，不应包含人工审批等待时间。 */
@@ -21,6 +25,8 @@ export interface AuthorizedToolRuntime {
   readonly timeoutMs?: number;
   /** 可选交互端口。 */
   readonly interactionPort?: InteractionPort;
+  /** 获得权限后、真正执行前运行的排队、加锁或备份准备。 */
+  readonly prepareExecution?: () => Promise<(() => void) | void>;
 }
 
 /** 在工具已获授权后创建实际执行使用的取消信号。 */

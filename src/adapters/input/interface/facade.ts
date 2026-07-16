@@ -81,10 +81,16 @@ export class CliFacade {
     this.session.setInteractionPort(this.interactionHandler);
 
     // 注册底座的审批卡关回调，实现实时非阻塞终端交互，防止 Generator 原地挂起造成死锁
-    this.session.registerApprovalHandler(async (id: string, toolCall: { name: string; arguments: Record<string, unknown> }, allowedPrefix?: string, message?: string, choices?: ApprovalChoice[]) => {
+    this.session.registerApprovalHandler(async (id: string, toolCall: { name: string; arguments: Record<string, unknown> }, allowedPrefix?: string, message?: string, choices?: ApprovalChoice[], signal?: AbortSignal) => {
       // 物理注销全局监听器，彻底隔离 Stdin，杜绝回显污染与事件穿透
       this.listener.close();
 
+      if (signal?.aborted) {
+        this.listener.start(true);
+        return;
+      }
+
+      let approvalAbortHandler: (() => void) | undefined;
       const decision = await new Promise<'call' | 'session' | 'persistent' | 'deny'>((resolve) => {
         // 创建临时接口前，显式唤醒 stdin 流，防止之前实例关闭导致流处于暂停状态
         if (typeof process.stdin.resume === 'function') {
@@ -94,6 +100,12 @@ export class CliFacade {
           input: process.stdin,
           output: process.stdout
         });
+        // 上游取消时关闭当前审批 UI；ApprovalService 负责撤销对应的挂起审批。
+        approvalAbortHandler = () => {
+          rl.close();
+          resolve('deny');
+        };
+        signal?.addEventListener('abort', approvalAbortHandler, { once: true });
         // 智能展示提示信息，增强文件越界卡关的可读性
         if (message) {
           console.log(`\n⚠️  ${theme.warning('[安全提示] ')}${message}`);
@@ -183,9 +195,14 @@ export class CliFacade {
           ask();
         }
       });
+      if (approvalAbortHandler) {
+        signal?.removeEventListener('abort', approvalAbortHandler);
+      }
 
       // Directly return external user decision back to ApprovalService to resume core
-      this.session.approvalService.resolve(id, { action: decision });
+      if (!signal?.aborted) {
+        this.session.approvalService.resolve(id, { action: decision });
+      }
 
       // Physical rebuild of global listener. Since generation is still busy, keep it paused to prevent stdin capture
       this.listener.start(true);

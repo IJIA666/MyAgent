@@ -608,10 +608,22 @@ describe('AgentLoop 动态安全特性测试', () => {
       ]),
       callTool: vi.fn().mockImplementation(async (name: string) => {
         if (name === 'primaryTool') {
-          return { content: [{ type: 'text', text: 'primary-result' }] };
+          return {
+            value: { content: [{ type: 'text', text: 'primary-result' }] },
+            effect: {
+              kind: 'read', executionStarted: true, completed: true,
+              resources: [], reason: 'declared_read_tool',
+            },
+          };
         }
         if (name === 'tailTool') {
-          return { content: [{ type: 'text', text: 'tail-result' }] };
+          return {
+            value: { content: [{ type: 'text', text: 'tail-result' }] },
+            effect: {
+              kind: 'read', executionStarted: true, completed: true,
+              resources: [], reason: 'declared_read_tool',
+            },
+          };
         }
         throw new Error(`unexpected tool: ${name}`);
       }),
@@ -674,7 +686,8 @@ describe('AgentLoop 动态安全特性测试', () => {
       undefined,
       expect.anything(),
       'call-primary',
-      30000
+      30000,
+      { prepareExecution: expect.any(Function) },
     );
     expect(registryMock.callTool).toHaveBeenNthCalledWith(
       2,
@@ -733,6 +746,88 @@ describe('AgentLoop 动态安全特性测试', () => {
     }
 
     expect(timeoutSpy).toHaveBeenCalledWith(1000);
+  });
+
+  it('8.1 工具调用应接收 chat 传入的真实上游取消信号', async () => {
+    let streamCallCount = 0;
+    mockLlmDriver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      abort: () => {},
+      streamChat: vi.fn().mockImplementation(async function* () {
+        streamCallCount++;
+        if (streamCallCount === 1) {
+          yield {
+            type: 'tool_calls',
+            toolCalls: [{
+              id: 'call-signal',
+              type: 'function',
+              function: { name: 'read_file', arguments: '{"path":"test.txt"}' },
+            }],
+            assistantMessage: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{
+                id: 'call-signal',
+                type: 'function',
+                function: { name: 'read_file', arguments: '{"path":"test.txt"}' },
+              }],
+            },
+          } as LlmStreamEvent;
+          return;
+        }
+        yield {
+          type: 'complete',
+          content: 'done',
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: 'done' },
+        } as LlmStreamEvent;
+      }),
+    };
+    const loop = new AgentLoop({
+      toolRegistry: mockToolRegistry as ToolRegistryPort,
+      context,
+      driver: mockLlmDriver as LlmPort,
+      contextAdapter: mockContextAdapter as ContextAdapter,
+      ruleManager: mockRuleManager as RuleManager,
+      contextRepo: mockContextRepo as ContextRepository,
+      toolDispatcher: mockToolDispatcher as ToolDispatcher,
+      contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
+      pluginRegistry,
+    });
+    const orchestrator = (loop as unknown as {
+      toolCallOrchestrator: { execute: (...args: unknown[]) => Promise<unknown> };
+    }).toolCallOrchestrator;
+    const executeSpy = vi.spyOn(orchestrator, 'execute').mockResolvedValue({
+      index: 0,
+      events: [],
+      toolMessage: { role: 'tool', tool_call_id: 'call-signal', content: 'ok' },
+      hasWrite: false,
+      effect: {
+        kind: 'read', executionStarted: true, completed: true,
+        resources: [], reason: 'declared_read_tool',
+      },
+      finalCallUpdate: { result: 'ok' },
+      interrupted: false,
+      aborted: false,
+    });
+    const controller = new AbortController();
+
+    for await (const event of loop.chat(
+      undefined,
+      new AgentTracer(process.cwd(), 'test-tool-signal'),
+      { model: 'mock-model' } as LlmConfig,
+      { signal: controller.signal },
+    )) {
+      void event;
+    }
+
+    expect(executeSpy).toHaveBeenCalledWith(
+      0,
+      expect.objectContaining({ id: 'call-signal' }),
+      controller.signal,
+      expect.any(Function),
+    );
   });
 
   it('9. 工具参数 JSON 非法时，应回填 tool 错误消息而不是静默丢失', async () => {

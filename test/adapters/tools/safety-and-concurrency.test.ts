@@ -113,6 +113,24 @@ describe('安全与并发增强特性测试', () => {
 
       expect(order).toEqual(['task1-start', 'task2-start', 'task1-end']);
     });
+
+    it('等待写锁时取消应移出队列且不得随后获得锁', async () => {
+      const lockManager = FileLockManager.getInstance();
+      const testPath = resolve(testWorkspace, 'temp_concurrency_cancel.txt');
+      const firstRelease = await lockManager.acquireLock(testPath, 'write');
+      const controller = new AbortController();
+      const cancelledRequest = lockManager.acquireLock(testPath, 'write', controller.signal);
+
+      controller.abort(new Error('用户取消任务'));
+      await expect(cancelledRequest).rejects.toMatchObject({
+        code: 'cancelled_while_queued',
+        executionStarted: false,
+      });
+
+      firstRelease();
+      const nextRelease = await lockManager.acquireLock(testPath, 'write');
+      nextRelease();
+    });
   });
 
   describe('3. 工具执行超时 Abort 物理强杀', () => {

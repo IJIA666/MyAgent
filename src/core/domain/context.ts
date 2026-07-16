@@ -19,6 +19,7 @@ import { AuthorizationState } from './authorization-state.js';
 import { PluginMutationLog } from './plugin-mutation-log.js';
 import type { PluginPatchGroup } from './plugin-mutation-log.js';
 import type { AskUserAnswer } from '../../ports/driven/session/InteractionPort.js';
+import type { ApprovalWaitOptions } from '../../ports/driven/session/ApprovalPort.js';
 
 // 从子状态文件重导出公开类型与函数（保持向后兼容）
 export { computeArgumentsDigest } from './call-capability.js';
@@ -430,7 +431,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
   public async waitApproval(
     approvalId: string,
     actionInfo: { name: string; arguments?: Record<string, unknown> },
-    options: unknown,
+    options?: string | ApprovalWaitOptions,
     warningMsg?: string
   ): Promise<{ action: 'approve' | 'deny'; reason?: string }> {
     return this.authorizationState.waitApproval(approvalId, actionInfo, options, warningMsg);

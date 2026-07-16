@@ -18,6 +18,7 @@ import { SecurityService } from '../../../../src/core/usecases/security/Security
 import type { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
 import type { PluginRegistry } from '../../../../src/core/usecases/plugins/plugin-registry.js';
 import type { AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
+import { ToolLifecycleError } from '../../../../src/core/domain/tool-lifecycle-error.js';
 
 describe('ToolCallOrchestrator', () => {
   let orchestrator: ToolCallOrchestrator;
@@ -195,6 +196,47 @@ describe('ToolCallOrchestrator', () => {
       expect(result.effect.reason).toBe('no_execution');
     });
 
+    it('审批拒绝应按稳定代码记录为执行前未发生副作用', async () => {
+      const rejectingRegistry: ToolRegistryPort = {
+        getTools: async () => [],
+        getTool: () => ({ name: 'PowerShell', securityCategory: 'write', executionMode: 'auto' }),
+        callTool: async () => {
+          // 展示文字故意不包含“审批拒绝”，验证编排器只读取稳定代码。
+          throw new ToolLifecycleError(
+            'approval_denied_before_execution',
+            'The user chose not to continue',
+            'authorization',
+            false,
+          );
+        },
+        close: async () => {},
+      } as unknown as ToolRegistryPort;
+      const rejectingOrchestrator = new ToolCallOrchestrator(
+        rejectingRegistry,
+        dispatcher,
+        { getPluginsForEvent: () => [] } as unknown as PluginRegistry,
+        context,
+      );
+
+      const result = await rejectingOrchestrator.execute(
+        0,
+        makeToolCall('PowerShell', { command: 'Get-ChildItem C:\\' }),
+        makeSignal(),
+        () => {},
+      );
+
+      expect(result.effect).toMatchObject({
+        kind: 'none',
+        executionStarted: false,
+        completed: false,
+        reason: 'approval_denied_before_execution',
+      });
+      expect(result.events).toContainEqual(expect.objectContaining({
+        type: 'error',
+        message: expect.stringContaining('工具执行前被拒绝'),
+      }));
+    });
+
     it('应正确标记写操作工具', async () => {
       // 构造一个 write 类工具的 mock
       const mockToolRegistryWithWrite: ToolRegistryPort = {
@@ -289,9 +331,13 @@ describe('ToolCallOrchestrator', () => {
         () => {}
       );
 
-      // abort 应被捕获为错误
+      // 执行前取消应使用稳定 effect，不再依赖错误文案包含 Abort。
       expect(result.finalCallUpdate.error).toBeDefined();
-      expect(result.finalCallUpdate.error).toContain('Abort');
+      expect(result.effect).toMatchObject({
+        executionStarted: false,
+        completed: false,
+        reason: 'cancelled_before_execution',
+      });
     });
   });
 });

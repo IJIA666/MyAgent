@@ -9,6 +9,7 @@
  */
 export const LOG_COMPONENT = {
   TOOL_EFFECT: 'tool_effect',
+  TOOL_DIAGNOSTICS: 'tool_diagnostics',
   DIRECTORY_MEASUREMENT: 'directory_measurement',
   SKILL_RELOAD: 'skill_reload',
   PLUGIN_RUNNER: 'plugin_runner',
@@ -20,6 +21,11 @@ export const LOG_COMPONENT = {
 export const LOG_EVENT = {
   // tool_effect
   TOOL_EFFECT_RESOLVED: 'tool_effect_resolved',
+  // tool_diagnostics
+  COMMAND_ANALYSIS_COMPLETED: 'command_analysis_completed',
+  PERMISSION_DECISION_RESOLVED: 'permission_decision_resolved',
+  APPROVAL_STATE_CHANGED: 'approval_state_changed',
+  TOOL_EXECUTION_STATE_CHANGED: 'tool_execution_state_changed',
   // directory_measurement
   DIRECTORY_MEASUREMENT_STARTED: 'directory_measurement_started',
   DIRECTORY_MEASUREMENT_FINISHED: 'directory_measurement_finished',

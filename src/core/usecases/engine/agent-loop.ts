@@ -431,8 +431,8 @@ export class AgentLoop {
               arguments: tc.function.arguments
             }));
 
-            // 此处只保留上游取消信号；工具执行超时在权限审批完成后由 Gateway 启动。
-            const toolCallSignal = new AbortController().signal;
+            // 全阶段传递真实上游取消；工具执行超时仍在权限审批完成后由 Gateway 单独启动。
+            const toolCallSignal = options?.signal ?? new AbortController().signal;
 
             // 实时事件队列挂载机制，桥接 Promise 并行调度与 Generator 异步流式 yield 抛出，防止审批挂起死锁
             let resolveNextEvent: (() => void) | null = null;

@@ -13,6 +13,7 @@ import type { ToolExecutionEffect } from '../../../adapters/tools/tool-types.js'
 import { deriveDefaultToolExecutionEffect } from '../../../adapters/tools/tool-types.js';
 import { logger, LOG_COMPONENT, LOG_EVENT } from '../../../utils/logger.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
+import { ToolLifecycleError, isToolLifecycleError } from '../../domain/tool-lifecycle-error.js';
 
 /**
  * 单次工具调用执行的结果载体。
@@ -166,7 +167,7 @@ export class ToolCallOrchestrator {
 
     try {
       if (signal.aborted) {
-        throw new Error("工具执行已被 Abort 阻断（超时）");
+        throw createCancellationError(signal, 'authorization', false);
       }
 
       // BeforeTool 管线
@@ -223,43 +224,59 @@ export class ToolCallOrchestrator {
       }
 
       if (signal.aborted) {
-        throw new Error("工具执行已被 Abort 阻断（超时）");
+        throw createCancellationError(signal, 'preparation', false);
       }
-
-      // BeforeTool 通过、参数解析完成、锁/备份开始前标记已进入执行
-      executionStarted = true;
 
       // 并发锁物理路径冲突排队编排
       const pathsToLock = resolveFilePaths(actualArgs, toolInstance?.filePathParamKey, this.context.appConfig?.workspace);
       const lockType = (toolInstance?.securityCategory === 'read') ? 'read' : 'write';
-      const releases: Array<() => void> = [];
-
-      if (toolInstance && toolInstance.securityCategory === 'write') {
-        const snapshotId = `snap_${this.context.getSessionId()}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-        const workspace = this.context.appConfig?.workspace || process.cwd();
-        const historyLength = this.context.getHistory().length;
-        for (const p of pathsToLock) {
-          FileBackupManager.captureSnapshot(snapshotId, p, historyLength, workspace);
+      const prepareExecution = async (): Promise<() => void> => {
+        const releases: Array<() => void> = [];
+        try {
+          for (const pathToLock of pathsToLock) {
+            const release = await FileLockManager.getInstance().acquireLock(pathToLock, lockType, signal);
+            releases.push(release);
+          }
+          if (signal.aborted) {
+            throw createCancellationError(signal, 'preparation', false);
+          }
+          if (toolInstance?.securityCategory === 'write') {
+            const snapshotId = `snap_${this.context.getSessionId()}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+            const workspace = this.context.appConfig?.workspace || process.cwd();
+            const historyLength = this.context.getHistory().length;
+            for (const pathToLock of pathsToLock) {
+              FileBackupManager.captureSnapshot(snapshotId, pathToLock, historyLength, workspace);
+            }
+          }
+          return () => {
+            for (let index = releases.length - 1; index >= 0; index--) {
+              releases[index]();
+            }
+          };
+        } catch (error) {
+          for (let index = releases.length - 1; index >= 0; index--) {
+            releases[index]();
+          }
+          throw error;
         }
-      }
+      };
 
       let toolResult = '';
       let outputResult: { content: string; originalPath?: string; isTruncated: boolean; } | null = null;
       // 超时值只向 Gateway 传递，Gateway 在权限审批完成后才创建计时信号。
       const executionTimeoutMs = this.context.appConfig?.runtimeLimits?.toolTimeoutMs ?? 30000;
       try {
-        for (const p of pathsToLock) {
-          const release = await FileLockManager.getInstance().acquireLock(p, lockType);
-          releases.push(release);
-        }
-
-        if (signal.aborted) {
-          throw new Error("工具执行已被 Abort 阻断（超时）");
-        }
-
         const outcome = await this.toolRegistry.callTool(
-          functionName, actualArgs, this.context, this.interactionPort, signal, toolCall.id, executionTimeoutMs
+          functionName,
+          actualArgs,
+          this.context,
+          this.interactionPort,
+          signal,
+          toolCall.id,
+          executionTimeoutMs,
+          { prepareExecution },
         );
+        executionStarted = outcome.effect.executionStarted;
         // 使用 outcome 中的 effect（工具可能已精化），供后续质量门禁消费
         if (outcome.effect) {
           resolvedEffect = outcome.effect;
@@ -268,22 +285,28 @@ export class ToolCallOrchestrator {
         outputResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
         toolResult = outputResult.content;
       } catch (toolError: unknown) {
+        if (isToolLifecycleError(toolError)) {
+          throw toolError;
+        }
         const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
         const isAbortError = toolError instanceof Error && (toolError.name === 'AbortError' || errorMsg.includes('Abort') || errorMsg.includes('abort'));
         if (isAbortError) {
-          throw new Error(`工具执行超时熔断阻断: ${errorMsg}`, { cause: toolError });
+          throw new ToolLifecycleError(
+            signal.aborted ? 'execution_cancelled_after_start' : 'execution_timed_out',
+            signal.aborted ? '工具执行已被上游取消' : `工具执行超时熔断阻断: ${errorMsg}`,
+            'execution',
+            true,
+            toolError,
+          );
         }
         throw toolError;
       } finally {
         // 消费 call capability 令牌（无论成功/失败/abort），含主调用和 tail call
         this.context.consumeCapability(toolCall.id);
-        for (let r = releases.length - 1; r >= 0; r--) {
-          releases[r]();
-        }
       }
 
       if (signal.aborted) {
-        throw new Error("工具执行已被 Abort 阻断（超时）");
+        throw createCancellationError(signal, 'execution', true);
       }
 
       // AfterTool 管线
@@ -330,7 +353,7 @@ export class ToolCallOrchestrator {
         const tailCall = afterToolResult.tailToolCallRequest;
         taskEvents.push({ type: 'thinking', content: `[尾随调用] 插件触发尾随工具链调用: ${tailCall.name}` });
         if (signal.aborted) {
-          throw new Error("工具执行已被 Abort 阻断（超时）");
+          throw createCancellationError(signal, 'execution', true);
         }
         // tail call 生成独立 toolCallId
         const tailCallId = randomUUID();
@@ -415,13 +438,33 @@ export class ToolCallOrchestrator {
       }
 
       const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
-      const isAbortError = toolError instanceof Error && (toolError.name === 'AbortError' || errorMsg.includes('Abort') || errorMsg.includes('abort'));
-      const finalErrorMsg = isAbortError ? `工具执行超时熔断阻断: ${errorMsg}` : `错误：${errorMsg}`;
+      const lifecycleError = isToolLifecycleError(toolError) ? toolError : undefined;
+      const finalExecutionStarted = lifecycleError?.executionStarted ?? executionStarted;
+      const finalErrorMsg = lifecycleError?.code === 'execution_timed_out'
+        ? `工具执行超时熔断阻断: ${errorMsg}`
+        : `错误：${errorMsg}`;
       taskFinalCallUpdate.error = finalErrorMsg;
-      taskEvents.push({ type: 'error', message: isAbortError ? `工具执行超时阻断` : `工具执行失败：${errorMsg}`, cause: toolError });
+      taskEvents.push({
+        type: 'error',
+        message: formatLifecycleEventMessage(lifecycleError, errorMsg),
+        cause: toolError,
+      });
       taskEvents.push({ type: 'tool_call_result', functionName, result: finalErrorMsg });
-      // 执行失败时根据 executionStarted 和安全类别推导 effect
-      resolvedEffect = deriveDefaultToolExecutionEffect(toolSecurityCategory, executionStarted, false);
+      // 生命周期错误携带真实执行事实，不再从展示文案反推是否已经启动。
+      resolvedEffect = lifecycleError && !finalExecutionStarted
+        ? {
+            kind: 'none',
+            executionStarted: false,
+            completed: false,
+            resources: [],
+            reason: lifecycleError.code,
+          }
+        : lifecycleError
+          ? {
+              ...deriveDefaultToolExecutionEffect(toolSecurityCategory, finalExecutionStarted, false),
+              reason: lifecycleError.code,
+            }
+          : deriveDefaultToolExecutionEffect(toolSecurityCategory, executionStarted, false);
       toolMessage = {
         role: 'tool',
         tool_call_id: toolCall.id,
@@ -430,7 +473,7 @@ export class ToolCallOrchestrator {
       };
     }
 
-    // 记录 effect 解析结果（DEBUG 级，只含 kind、reason、资源数量）
+    // 记录 effect 解析结果（DEBUG 级，只含执行事实和脱敏资源数量）
     logger.debug('[ToolOrchestrator] tool_effect_resolved', {
       component: LOG_COMPONENT.TOOL_EFFECT,
       event: LOG_EVENT.TOOL_EFFECT_RESOLVED,
@@ -438,6 +481,8 @@ export class ToolCallOrchestrator {
       correlationId: toolCall.id,
       kind: resolvedEffect.kind,
       reason: resolvedEffect.reason,
+      executionStarted: resolvedEffect.executionStarted,
+      completed: resolvedEffect.completed,
       resourceCount: resolvedEffect.resources.length,
     });
 
@@ -451,6 +496,47 @@ export class ToolCallOrchestrator {
       interrupted: false,
       aborted: false
     };
+  }
+}
+
+/** 根据取消发生阶段创建带真实执行事实的生命周期错误。 */
+function createCancellationError(
+  signal: AbortSignal,
+  phase: 'authorization' | 'queue' | 'preparation' | 'execution',
+  executionStarted: boolean,
+): ToolLifecycleError {
+  return new ToolLifecycleError(
+    executionStarted ? 'execution_cancelled_after_start' : 'cancelled_before_execution',
+    executionStarted ? '工具执行已被上游取消' : '工具调用在执行前被上游取消',
+    phase,
+    executionStarted,
+    signal.reason,
+  );
+}
+
+/** 根据稳定生命周期代码生成用户可读事件文字。 */
+function formatLifecycleEventMessage(
+  error: ToolLifecycleError | undefined,
+  fallbackMessage: string,
+): string {
+  switch (error?.code) {
+    case 'permission_denied_before_execution':
+    case 'approval_denied_before_execution':
+      return `工具执行前被拒绝：${fallbackMessage}`;
+    case 'cancelled_while_awaiting_approval':
+      return '等待审批时已取消工具调用';
+    case 'cancelled_while_queued':
+      return '等待文件锁时已取消工具调用';
+    case 'cancelled_before_execution':
+      return '工具开始执行前已取消';
+    case 'failed_during_preparation':
+      return '工具执行前的准备工作失败';
+    case 'execution_timed_out':
+      return '工具执行超时阻断';
+    case 'execution_cancelled_after_start':
+      return '工具执行过程中被取消';
+    default:
+      return `工具执行失败：${fallbackMessage}`;
   }
 }
 

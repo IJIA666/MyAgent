@@ -80,11 +80,11 @@ export function scanShellCommandStructure(
   let invalid = command.trim().length === 0;
   let nested = false;
 
-  // 显式启动第二层 Shell 会让引号内文本重新成为可执行语法，阶段 3 不做近似解包。
+  // 显式启动第二层 Shell 会让引号内文本重新成为可执行语法，当前分析器不做不可靠的近似解包。
   const nestedShellPattern = /^(?:bash|sh)\b[^\r\n]*\s-c\s|^(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]*\s(?:-c|-Command)\s|^cmd(?:\.exe)?\b[^\r\n]*\s\/[ck]\s/i;
   if (nestedShellPattern.test(command.trim())) {
     nested = true;
-    addRisk(risks, 'structure.nested-shell', '当前阶段不支持嵌套 Shell 执行');
+    addRisk(risks, 'structure.nested-shell', '命令启动了嵌套 Shell，内部执行内容需要额外确认');
   }
 
   /** 提交一个由支持连接符分隔的原子片段。 */
@@ -161,34 +161,34 @@ export function scanShellCommandStructure(
 
     if (char === '\r' || char === '\n') {
       current += char;
-      addRisk(risks, 'structure.newline', '当前阶段不支持换行连接命令');
+      addRisk(risks, 'structure.newline', '命令包含换行连接的多个语句，需要结合完整结构确认行为');
       continue;
     }
 
     if (char === '$' && next === '(') {
       nested = true;
       current += char;
-      addRisk(risks, 'structure.command-substitution', '当前阶段不支持命令替换');
+      addRisk(risks, 'structure.command-substitution', '命令包含动态命令替换，实际执行内容需要额外确认');
       continue;
     }
 
     if (profile.shellKind === 'posix' && char === '`') {
       nested = true;
       current += char;
-      addRisk(risks, 'structure.backtick-substitution', '当前阶段不支持反引号命令替换');
+      addRisk(risks, 'structure.backtick-substitution', '命令包含反引号命令替换，实际执行内容需要额外确认');
       continue;
     }
 
     if (char === '(' || char === ')' || char === '{' || char === '}') {
       nested = true;
       current += char;
-      addRisk(risks, 'structure.nested', '当前阶段不支持子 Shell、脚本块或控制流结构');
+      addRisk(risks, 'structure.nested', '命令包含子 Shell、脚本块或控制流，嵌套行为需要额外确认');
       continue;
     }
 
     if (char === '<' || char === '>') {
       current += char;
-      addRisk(risks, 'structure.redirection', '当前阶段不支持输入或输出重定向');
+      addRisk(risks, 'structure.redirection', '命令包含输入或输出重定向，目标资源需要额外确认');
       continue;
     }
 
@@ -207,14 +207,14 @@ export function scanShellCommandStructure(
           acceptConnector('&&');
         } else {
           current += '&&';
-          addRisk(risks, 'structure.and-connector', '当前 Shell 暂不支持 && 连接符');
+          addRisk(risks, 'structure.and-connector', '命令包含 && 条件连接符，分支执行行为需要额外确认');
         }
         index += 1;
       } else if (isAllowedConnector('&', profile)) {
         acceptConnector('&');
       } else {
         current += char;
-        addRisk(risks, 'structure.background', '当前阶段不支持后台执行或单 & 连接符');
+        addRisk(risks, 'structure.background', '命令包含后台执行或单 & 连接符，异步行为需要额外确认');
       }
       continue;
     }
@@ -225,7 +225,7 @@ export function scanShellCommandStructure(
           acceptConnector('||');
         } else {
           current += '||';
-          addRisk(risks, 'structure.or-connector', '当前 Shell 暂不支持 || 连接符');
+          addRisk(risks, 'structure.or-connector', '命令包含 || 条件连接符，分支执行行为需要额外确认');
         }
         index += 1;
       } else if (next === '&') {
@@ -233,14 +233,14 @@ export function scanShellCommandStructure(
           acceptConnector('|&');
         } else {
           current += '|&';
-          addRisk(risks, 'structure.pipeline', '当前阶段不支持标准错误管道');
+          addRisk(risks, 'structure.pipeline', '命令包含标准错误管道，跨命令数据流需要额外确认');
         }
         index += 1;
       } else if (isAllowedConnector('|', profile)) {
         acceptConnector('|');
       } else {
         current += char;
-        addRisk(risks, 'structure.pipeline', '当前阶段不支持管道');
+        addRisk(risks, 'structure.pipeline', '命令包含管道，跨命令数据流需要额外确认');
       }
       continue;
     }

@@ -5,6 +5,7 @@ import type { CallCapability } from './call-capability.js';
 import { computeArgumentsDigest } from './call-capability.js';
 import type { TemporaryWhitelistAccess } from './whitelist-access.js';
 import type { SafetyResource } from '../usecases/security/SafetyResource.js';
+import type { ApprovalWaitOptions } from '../../ports/driven/session/ApprovalPort.js';
 
 /**
  * 授权状态管理。
@@ -36,14 +37,19 @@ export class AuthorizationState implements TemporaryWhitelistAccess {
   async waitApproval(
     approvalId: string,
     actionInfo: { name: string; arguments?: Record<string, unknown> },
-    options: unknown,
+    options?: string | ApprovalWaitOptions,
     warningMsg?: string
   ): Promise<{ action: 'approve' | 'deny'; reason?: string }> {
+    const waitOptions = typeof options === 'object' && options !== null ? options : undefined;
     const decision = await this.approvalService.wait(
       approvalId,
       { name: actionInfo.name, arguments: actionInfo.arguments || {} },
       typeof options === 'string' ? options : undefined,
-      warningMsg
+      warningMsg,
+      waitOptions?.timeoutMs,
+      waitOptions?.sessionId,
+      undefined,
+      waitOptions?.signal,
     );
     return {
       action: (

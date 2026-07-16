@@ -1,6 +1,6 @@
 /**
  * Shell 命令分析契约测试。
- * 覆盖阶段 3 的有限复合语法、保守拒绝和 hardline 不可降级规则。
+ * 覆盖复合语法、PowerShell AST 权威分析、保守拒绝和 hardline 不可降级规则。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -33,6 +33,15 @@ describe('Shell 命令分析', () => {
       .resolves.toMatchObject({ parseStatus: 'unsupported', permission: 'deny' });
   });
 
+  it('分析能力不足时应说明风险事实，不应声称 Shell 不支持该语法', async () => {
+    const analysis = await analyzeShellCommand('cat a.txt | grep x', 'posix', disabledFeatures);
+    const reasons = analysis.riskSignals.map(signal => signal.reason);
+
+    expect(reasons).toContain('命令包含管道，跨命令数据流需要额外确认');
+    expect(reasons.join('\n')).not.toContain('当前阶段不支持');
+    expect(reasons.join('\n')).not.toContain('当前 Shell 暂不支持');
+  });
+
   it('提取 POSIX 单级、多级和标准错误管道并保留顺序', async () => {
     const analysis = await analyzeShellCommand('cat a.txt | grep x b.txt |& cat', 'posix', pipelineFeatures);
 
@@ -47,6 +56,111 @@ describe('Shell 命令分析', () => {
     expect(analysis).toMatchObject({ parseStatus: 'parsed', commandShape: 'compound', sideEffect: 'read', permission: 'allow' });
     expect(analysis.subcommands.map(segment => segment.executable)).toEqual(['get-content', 'select-string']);
     expect(analysis.subcommands.map(segment => segment.pipelineIndex)).toEqual([0, 1]);
+  });
+
+  it('使用原生 AST 分析计算属性，不把哈希表内分号切成顶层命令', async () => {
+    const command = `Write-Host "=== C: Disk Info ==="; Get-PSDrive C | Select-Object Name, Used, Free, @{N='TotalGB';E={[math]::Round(($_.Used+$_.Free)/1GB,2)}}, @{N='UsedGB';E={[math]::Round($_.Used/1GB,2)}}, @{N='FreeGB';E={[math]::Round($_.Free/1GB,2)}}, @{N='FreePct';E={[math]::Round($_.Free/($_.Used+$_.Free)*100,1)}}`;
+
+    const analysis = await analyzeShellCommand(command, 'powershell');
+
+    expect(analysis).toMatchObject({
+      parseStatus: 'parsed',
+      commandShape: 'nested',
+      sideEffect: 'read',
+      permission: 'allow',
+    });
+    expect(analysis.subcommands.map(segment => segment.executable)).toEqual([
+      'write-host',
+      'get-psdrive',
+      'select-object',
+    ]);
+    expect(analysis.riskSignals).toEqual([]);
+    expect(analysis.executionEffects?.possibleEffects).toEqual(expect.arrayContaining([
+      'systemRead',
+      'pureTransform',
+    ]));
+  });
+
+  it('允许没有动态表达式的等价 PowerShell 展示管道', async () => {
+    const command = 'Write-Host "=== C: Disk Info ==="; Get-PSDrive C | Select-Object Name, Used, Free';
+
+    const analysis = await analyzeShellCommand(command, 'powershell');
+
+    expect(analysis).toMatchObject({
+      parseStatus: 'parsed',
+      commandShape: 'compound',
+      sideEffect: 'read',
+      permission: 'allow',
+    });
+    expect(analysis.subcommands.map(segment => segment.executable)).toEqual([
+      'write-host',
+      'get-psdrive',
+      'select-object',
+    ]);
+  });
+
+  it('递归动态路径的磁盘调查命令仅产生一条动态结构风险', async () => {
+    const command = `Write-Host "=== C: Root Top-Level Folders (Size in GB) ==="; Get-ChildItem -Path C:\\ -Directory -ErrorAction SilentlyContinue | ForEach-Object { $folder = $_; $size = (Get-ChildItem -Path $folder.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum; if ($size -gt 0) { [PSCustomObject]@{ Folder = $folder.Name; SizeGB = [math]::Round($size/1GB, 2); ItemCount = (Get-ChildItem -Path $folder.FullName -Recurse -ErrorAction SilentlyContinue | Measure-Object).Count } }} | Sort-Object SizeGB -Descending | Select-Object -First 20`;
+    const analysis = await analyzeShellCommand(command, 'powershell');
+
+    expect(analysis).toMatchObject({ parseStatus: 'parsed', permission: 'ask' });
+    expect(analysis.riskSignals).toEqual([
+      expect.objectContaining({ code: 'powershell.dynamic-structure' }),
+    ]);
+    expect(analysis.subcommands.length).toBeLessThan(10);
+  });
+
+  it('允许可静态证明的磁盘枚举、计算属性和格式化管道', async () => {
+    const command = `Write-Host "=== C: Large Files at Root ==="; Get-ChildItem -Path C:\\ -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object Name, @{N='SizeMB';E={[math]::Round($_.Length/1MB,2)}} | Format-Table -AutoSize`;
+    const analysis = await analyzeShellCommand(command, 'powershell');
+
+    expect(analysis).toMatchObject({
+      parseStatus: 'parsed',
+      sideEffect: 'read',
+      permission: 'allow',
+    });
+    expect(analysis.riskSignals).toEqual([]);
+    expect(analysis.executionEffects?.possibleEffects).toEqual(expect.arrayContaining([
+      'filesystemRead',
+      'pureTransform',
+    ]));
+  });
+
+  it('将 ForEach-Object 成员调用保守归为单次 ask', async () => {
+    const analysis = await analyzeShellCommand(
+      'Get-ChildItem C:\\ | ForEach-Object { $_.Delete() }',
+      'powershell',
+    );
+
+    expect(analysis).toMatchObject({ parseStatus: 'parsed', sideEffect: 'unknown', permission: 'ask' });
+    expect(analysis.riskSignals).toEqual([
+      expect.objectContaining({ code: 'powershell.dynamic-structure' }),
+    ]);
+    expect(analysis.riskReason).toContain('成员调用');
+  });
+
+  it.each([
+    ['Write-Output --% Remove-Item C:\\temp.txt', '停止解析标记'],
+    ['while ($true) { Get-Process }', '控制流'],
+  ])('动态 PowerShell 结构保守 ask: %s', async (command, expectedReason) => {
+    const analysis = await analyzeShellCommand(command, 'powershell');
+
+    expect(analysis).toMatchObject({ parseStatus: 'parsed', permission: 'ask' });
+    expect(analysis.riskSignals).toEqual([
+      expect.objectContaining({ code: 'powershell.dynamic-structure' }),
+    ]);
+    expect(analysis.riskReason).toContain(expectedReason);
+  });
+
+  it('允许可静态证明的字面量表达式进入只读管道', async () => {
+    const analysis = await analyzeShellCommand("'diagnostic' | Write-Output", 'powershell');
+
+    expect(analysis).toMatchObject({
+      parseStatus: 'parsed',
+      sideEffect: 'read',
+      permission: 'allow',
+    });
+    expect(analysis.riskSignals).toEqual([]);
   });
 
   it('管道按最高风险聚合，且不拆分引号内管道文本', async () => {
@@ -223,7 +337,11 @@ describe('Shell 命令分析', () => {
   });
 
   it('将不平衡引号标记为 invalid', async () => {
-    await expect(analyzeShellCommand('grep "unfinished', 'posix')).resolves.toMatchObject({ parseStatus: 'invalid', permission: 'deny' });
+    await expect(analyzeShellCommand('grep "unfinished', 'posix')).resolves.toMatchObject({
+      parseStatus: 'invalid',
+      sideEffect: 'unknown',
+      permission: 'ask',
+    });
   });
 
   it('拒绝超过 50 个子命令的输入', async () => {
@@ -265,6 +383,43 @@ describe('Shell 命令分析', () => {
     expect(calls).toBe(1);
     expect(second).toBe(first);
     expect(first.nodes.map(node => node.nodePath)).toEqual([[0], [0, 0]]);
+  });
+
+  it('保留复杂 PowerShell 的 statement、变量、类型和嵌套命令归属', async () => {
+    const parser = new PowerShellAstParser();
+    const result = await parser.parse(
+      `Get-ChildItem C:\\ | ForEach-Object { $size = (Get-ChildItem $_ -File | Measure-Object Length -Sum).Sum; if ($size -gt 0) { [PSCustomObject]@{ SizeGB = [math]::Round($size/1GB, 2) } } } | Sort-Object SizeGB`,
+    );
+
+    expect(result.parseStatus).toBe('parsed');
+    expect(result.powershellProgram).toBeDefined();
+    expect(result.powershellProgram?.statements.map(statement => statement.statementType)).toEqual(
+      expect.arrayContaining(['PipelineAst', 'AssignmentStatementAst', 'IfStatementAst']),
+    );
+    expect(result.powershellProgram?.variables.map(variable => variable.path)).toEqual(
+      expect.arrayContaining(['size', '_']),
+    );
+    expect(result.powershellProgram?.typeLiterals.map(type => type.toLowerCase())).toEqual(
+      expect.arrayContaining(['pscustomobject', 'math']),
+    );
+    expect(result.powershellProgram?.statements.some(statement => (
+      statement.nestedCommands.some(command => command.name === 'Get-ChildItem')
+    ))).toBe(true);
+    expect(new Set(result.nodes.map(node => `${node.statementIndex}:${node.command}`)).size).toBe(result.nodes.length);
+  });
+
+  it('保留 PowerShell 冒号绑定参数的直接表达式子节点', async () => {
+    const parser = new PowerShellAstParser();
+    const result = await parser.parse('Write-Output -InputObject:$env:PATH');
+    const command = result.powershellProgram?.statements
+      .flatMap(statement => statement.commands)
+      .find(item => item.name === 'Write-Output');
+    const parameter = command?.elements.find(element => element.astType === 'CommandParameterAst');
+
+    expect(parameter).toMatchObject({ text: '-InputObject:$env:PATH' });
+    expect(parameter?.children).toEqual([
+      expect.objectContaining({ astType: 'VariableExpressionAst', text: '$env:PATH' }),
+    ]);
   });
 
   it('将 PowerShell 解析超时和输出越界转换为 unsupported', async () => {

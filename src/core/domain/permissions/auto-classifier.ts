@@ -5,6 +5,7 @@
  */
 
 import type { AutoClassifier } from './tool-permission-service.js';
+import type { ToolPermissionEvidence } from './permission-types.js';
 
 /** 分类器拒绝次数限制 */
 const MAX_REJECTION_COUNT = 3;
@@ -34,18 +35,31 @@ export class AutoPermissionClassifier implements AutoClassifier {
    *
    * @param toolName - 工具名称
    * @param _args - 工具参数
+   * @param evidence - 工具分析产生的结构化证据
    * @returns 分类结果
    */
   async classify(
     toolName: string,
     _args: Record<string, unknown>,
+    evidence?: ToolPermissionEvidence,
   ): Promise<{ allow: boolean; reason: string }> {
     // 拒绝次数达到限制，转为 ask（让用户判断）
     if (this.isRejectionLimitReached()) {
       return { allow: false, reason: '分类器拒绝次数达到限制，保留 ask 让用户判断' };
     }
 
-    // 简化实现：只对已知的安全工具自动放行
+    // Shell 等复杂工具必须按实际命令证据判断，不能只看工具名称。
+    if (evidence?.sideEffect === 'read') {
+      return { allow: true, reason: '结构化证据证明该调用为普通只读操作' };
+    }
+    if (evidence) {
+      return {
+        allow: false,
+        reason: evidence.riskReason || `结构化证据表明副作用为 ${evidence.sideEffect}`,
+      };
+    }
+
+    // 尚未迁移证据的旧工具暂时按专用工具名称处理。
     if (this.isSafeTool(toolName)) {
       return { allow: true, reason: `工具 "${toolName}" 在安全工具列表中` };
     }
@@ -94,8 +108,6 @@ export class AutoPermissionClassifier implements AutoClassifier {
     'Glob',
     'Grep',
     'Dir',
-    'Bash',
-    'PowerShell',
     'WebSearch',
     'WebFetch',
   ]);

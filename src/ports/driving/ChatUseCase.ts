@@ -132,7 +132,8 @@ export interface ChatUseCase {
       toolCall: { name: string; arguments: Record<string, unknown> },
       allowedPrefix?: string,
       message?: string,
-      choices?: ApprovalChoice[]
+      choices?: ApprovalChoice[],
+      signal?: AbortSignal,
     ) => void | Promise<void>
   ): void;
 

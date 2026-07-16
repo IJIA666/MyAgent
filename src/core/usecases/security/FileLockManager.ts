@@ -1,23 +1,47 @@
-
+import { ToolLifecycleError } from '../../domain/tool-lifecycle-error.js';
 
 interface LockRequest {
   type: 'read' | 'write';
   resolve: () => void;
+  reject: (error: Error) => void;
+  signal?: AbortSignal;
+  abortHandler?: () => void;
 }
 
+/** 单个物理路径对应的可取消读写锁。 */
 class PathLock {
   private activeCount = 0;
   private activeType: string | null = null;
   private queue: LockRequest[] = [];
 
-  public async acquire(type: 'read' | 'write'): Promise<void> {
+  public async acquire(type: 'read' | 'write', signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      throw createQueueCancellationError(signal);
+    }
     if (this.canAcquire(type)) {
       this.activeCount++;
       this.activeType = type;
       return;
     }
-    return new Promise<void>((resolve) => {
-      this.queue.push({ type, resolve });
+    return new Promise<void>((resolve, reject) => {
+      const request: LockRequest = { type, resolve, reject, signal };
+      if (signal) {
+        request.abortHandler = () => {
+          const requestIndex = this.queue.indexOf(request);
+          if (requestIndex < 0) {
+            return;
+          }
+          this.queue.splice(requestIndex, 1);
+          request.reject(createQueueCancellationError(signal));
+          this.processQueue();
+        };
+      }
+      this.queue.push(request);
+      if (signal?.aborted) {
+        request.abortHandler?.();
+      } else if (signal && request.abortHandler) {
+        signal.addEventListener('abort', request.abortHandler, { once: true });
+      }
     });
   }
 
@@ -47,17 +71,25 @@ class PathLock {
         this.queue.shift();
         this.activeCount++;
         this.activeType = 'read';
-        next.resolve();
+        this.resolveRequest(next);
       } else {
         if (this.activeCount === 0) {
           this.queue.shift();
           this.activeCount++;
           this.activeType = 'write';
-          next.resolve();
+          this.resolveRequest(next);
         }
         break;
       }
     }
+  }
+
+  /** 完成一个排队请求，并解除它的取消监听。 */
+  private resolveRequest(request: LockRequest): void {
+    if (request.signal && request.abortHandler) {
+      request.signal.removeEventListener('abort', request.abortHandler);
+    }
+    request.resolve();
   }
 }
 
@@ -103,13 +135,29 @@ export class FileLockManager {
    *
    * @param absolutePath - 物理绝对路径
    * @param type - 锁类型
+   * @param signal - 可选的上游取消信号
    * @returns 释放锁的函数 Promise
    */
-  public async acquireLock(absolutePath: string, type: 'read' | 'write'): Promise<() => void> {
+  public async acquireLock(
+    absolutePath: string,
+    type: 'read' | 'write',
+    signal?: AbortSignal,
+  ): Promise<() => void> {
     const lock = this.getOrCreateLock(absolutePath);
-    await lock.acquire(type);
+    await lock.acquire(type, signal);
     return () => {
       lock.release();
     };
   }
+}
+
+/** 创建排队阶段的稳定取消错误。 */
+function createQueueCancellationError(signal: AbortSignal): ToolLifecycleError {
+  return new ToolLifecycleError(
+    'cancelled_while_queued',
+    '等待文件锁时已被上游取消',
+    'queue',
+    false,
+    signal.reason,
+  );
 }

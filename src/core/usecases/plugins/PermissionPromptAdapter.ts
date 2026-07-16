@@ -28,6 +28,7 @@ export class PermissionPromptAdapter {
   private readonly promptHandler?: (
     decision: PermissionDecision & { kind: 'ask' },
     mode: PermissionMode,
+    signal?: AbortSignal,
   ) => Promise<PromptResponse>;
 
   constructor(
@@ -35,6 +36,7 @@ export class PermissionPromptAdapter {
     promptHandler?: (
       decision: PermissionDecision & { kind: 'ask' },
       mode: PermissionMode,
+      signal?: AbortSignal,
     ) => Promise<PromptResponse>,
   ) {
     this.ruleStore = ruleStore;
@@ -46,17 +48,19 @@ export class PermissionPromptAdapter {
    *
    * @param _decision - `ask` 类型的权限决策
    * @param _mode - 当前权限模式（仅用于上下文，不做判断）
+   * @param signal - 可选上游取消信号
    * @returns 用户响应
    */
   async promptForPermission(
     _decision: PermissionDecision & { kind: 'ask' },
     _mode: PermissionMode,
+    signal?: AbortSignal,
   ): Promise<PromptResponse | null> {
     if (!this.promptHandler) {
       // 未配置 UI 时必须安全拒绝，禁止把缺失交互误当作批准。
       return { approved: false, scope: 'once' };
     }
-    return this.promptHandler(_decision, _mode);
+    return this.promptHandler(_decision, _mode, signal);
   }
 
   /**

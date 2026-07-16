@@ -41,7 +41,8 @@ describe('ApprovalService Unit Tests', () => {
       toolCall,
       'rm',
       '警告：敏感指令',
-      undefined  // choices 参数（未传入时默认为 undefined）
+      undefined, // choices 参数（未传入时默认为 undefined）
+      undefined, // signal 参数（未传入时默认为 undefined）
     );
 
     // 手动执行 resolve 传入 session 决策
@@ -68,6 +69,61 @@ describe('ApprovalService Unit Tests', () => {
     expect(result.action).toBe('deny');
   });
 
+  it('未显式配置时人工审批不应自动超时', async () => {
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      const waitPromise = service.wait(
+        'task-no-timeout',
+        { name: 'PowerShell', arguments: { command: 'Get-ChildItem' } },
+      );
+      void waitPromise.finally(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(300001);
+      expect(settled).toBe(false);
+
+      service.resolve('task-no-timeout', { action: 'call' });
+      await expect(waitPromise).resolves.toMatchObject({ action: 'call' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('上游取消应撤销挂起审批并返回稳定生命周期错误', async () => {
+    const controller = new AbortController();
+    const handler = vi.fn();
+    service.registerApprovalHandler(handler);
+    const waitPromise = service.wait(
+      'task-cancelled',
+      { name: 'PowerShell', arguments: { command: 'Set-Content a.txt value' } },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      controller.signal,
+    );
+
+    controller.abort(new Error('用户终止任务'));
+
+    await expect(waitPromise).rejects.toMatchObject({
+      name: 'ToolLifecycleError',
+      code: 'cancelled_while_awaiting_approval',
+      executionStarted: false,
+    });
+    expect(service.resolve('task-cancelled', { action: 'call' })).toBe(false);
+    expect(handler).toHaveBeenCalledWith(
+      'task-cancelled',
+      expect.any(Object),
+      undefined,
+      undefined,
+      undefined,
+      controller.signal,
+    );
+  });
+
   it('应该能够成功物理异常拒绝 (reject) 并能 rejectAll 强制释放所有挂起凭证', async () => {
     const waitPromise1 = service.wait(
       'task-reject-1',
@@ -84,7 +140,11 @@ describe('ApprovalService Unit Tests', () => {
 
     // 验证：垃圾回收排空全部任务 (rejectAll)
     service.rejectAll('会话紧急注销');
-    await expect(waitPromise2).rejects.toThrow('Approval cancelled: 会话紧急注销');
+    await expect(waitPromise2).rejects.toMatchObject({
+      code: 'cancelled_while_awaiting_approval',
+      message: 'Approval cancelled: 会话紧急注销',
+      executionStarted: false,
+    });
   });
 
   it('应该支持通过 sessionId 执行级联熔断 (rejectBySessionId) 且并发会话隔离不被干扰', async () => {

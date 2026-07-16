@@ -34,6 +34,40 @@ describe('ToolPermissionService', () => {
       const result = await service.checkPermissions('UnknownTool', {}, 'default');
       expect(result.kind).toBe('ask');
     });
+
+    it('Shell 语法错误应按未知证据处理而不是成为不可绕过拒绝', async () => {
+      const store = new PermissionRuleStore();
+      const service = new ToolPermissionService({ ruleStore: store });
+      const toolChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return {
+            kind: 'passthrough',
+            evidence: {
+              operationCategory: 'command-execute',
+              sideEffect: 'unknown',
+              riskReason: '引号未闭合',
+              parseStatus: 'invalid',
+            },
+          };
+        },
+      };
+
+      const defaultResult = await service.checkPermissions(
+        'Bash',
+        { command: 'grep "unfinished' },
+        'default',
+        toolChecker,
+      );
+      const bypassResult = await service.checkPermissions(
+        'Bash',
+        { command: 'grep "unfinished' },
+        'bypassPermissions',
+        toolChecker,
+      );
+
+      expect(defaultResult).toMatchObject({ kind: 'ask', decisionSource: 'builtInBaseline' });
+      expect(bypassResult).toMatchObject({ kind: 'allow', decisionSource: 'mode' });
+    });
   });
 
   // ── 全局规则匹配 ──
@@ -216,6 +250,115 @@ describe('ToolPermissionService', () => {
       expect(result.evidence).toBe(evidence);
       expect(checkCount).toBe(1);
     });
+
+    it('未知命令的精确 allow 规则应覆盖普通工具 ask', async () => {
+      const store = new PermissionRuleStore();
+      store.addRule('session', {
+        source: 'session',
+        ruleBehavior: 'allow',
+        ruleValue: { toolName: 'PowerShell', ruleContent: 'Invoke-CustomCheck' },
+      });
+      const service = new ToolPermissionService({ ruleStore: store });
+      const evidence = {
+        operationCategory: 'command-execute',
+        sideEffect: 'unknown' as const,
+        riskReason: '无法静态识别自定义命令',
+      };
+      const toolChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return { kind: 'ask', decisionReason: '工具无法判断', evidence };
+        },
+      };
+
+      const result = await service.checkPermissions(
+        'PowerShell',
+        { command: 'Invoke-CustomCheck' },
+        'default',
+        toolChecker,
+      );
+
+      expect(result).toMatchObject({ kind: 'allow', decisionSource: 'userRule' });
+    });
+
+    it('只允许管道前半段时不得连带放行后半段写入', async () => {
+      const store = new PermissionRuleStore();
+      store.addRule('session', {
+        source: 'session',
+        ruleBehavior: 'allow',
+        ruleValue: { toolName: 'Bash', ruleContent: 'cat a.txt' },
+      });
+      const service = new ToolPermissionService({ ruleStore: store });
+      const evidence = {
+        operationCategory: 'command-execute',
+        sideEffect: 'write' as const,
+        riskReason: '管道包含写入子命令',
+        subcommands: [
+          { command: 'cat a.txt', sideEffect: 'read' as const, permission: 'allow' as const, reason: '读取文件' },
+          { command: 'rm output.txt', sideEffect: 'write' as const, permission: 'ask' as const, reason: '删除文件' },
+        ],
+      };
+      const toolChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return { kind: 'passthrough', evidence };
+        },
+      };
+
+      const result = await service.checkPermissions(
+        'Bash',
+        { command: 'cat a.txt | rm output.txt' },
+        'default',
+        toolChecker,
+      );
+
+      expect(result).toMatchObject({ kind: 'ask', decisionSource: 'builtInBaseline' });
+    });
+
+    it('资源命中显式 ask 时应覆盖命令的普通只读基线', async () => {
+      const store = new PermissionRuleStore();
+      store.addRule('userSettings', {
+        source: 'userSettings',
+        ruleBehavior: 'ask',
+        ruleValue: { toolName: 'Bash', ruleContent: 'secret.txt' },
+      });
+      const service = new ToolPermissionService({ ruleStore: store });
+      const evidence = {
+        operationCategory: 'command-execute',
+        sideEffect: 'read' as const,
+        riskReason: '普通文件读取',
+        subcommands: [
+          { command: 'cat secret.txt', sideEffect: 'read' as const, permission: 'allow' as const, reason: '读取文件' },
+        ],
+        resources: [{
+          kind: 'file' as const,
+          operation: 'read' as const,
+          rawExpression: 'secret.txt',
+          resolvedResource: 'D:\\workspace\\secret.txt',
+          baseContext: 'D:\\workspace',
+          scope: 'workspace' as const,
+          certainty: 'exact' as const,
+          sourceNodeId: 'resource:secret',
+          reason: '命令参数中的文件',
+        }],
+      };
+      const toolChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return { kind: 'passthrough', evidence };
+        },
+      };
+
+      const result = await service.checkPermissions(
+        'Bash',
+        { command: 'cat secret.txt' },
+        'default',
+        toolChecker,
+      );
+
+      expect(result).toMatchObject({
+        kind: 'ask',
+        decisionSource: 'userRule',
+        matchedEvidenceIds: ['resource:secret'],
+      });
+    });
   });
 
   // ── dontAsk 模式 ──
@@ -278,12 +421,12 @@ describe('ToolPermissionService', () => {
       expect(result.decisionReason).toContain('plan');
     });
 
-    it('plan 模式应对只读操作保留 ask', async () => {
+    it('plan 模式应直接允许已知只读工具', async () => {
       const store = new PermissionRuleStore();
       const service = new ToolPermissionService({ ruleStore: store });
 
       const result = await service.checkPermissions('Read', { path: '/workspace/file.ts' }, 'plan');
-      expect(result.kind).toBe('ask');
+      expect(result.kind).toBe('allow');
     });
   });
 
@@ -309,6 +452,21 @@ describe('ToolPermissionService', () => {
 
       const result = await service.checkPermissions('Bash', { command: 'ls' }, 'bypassPermissions');
       expect(result.kind).toBe('deny');
+    });
+
+    it('bypass 不应绕过显式 ask，且不依赖原因文案', async () => {
+      const store = new PermissionRuleStore();
+      store.addRule('userSettings', {
+        source: 'userSettings',
+        ruleBehavior: 'ask',
+        ruleValue: { toolName: 'Bash' },
+      });
+      const service = new ToolPermissionService({ ruleStore: store });
+
+      const result = await service.checkPermissions('Bash', { command: 'ls' }, 'bypassPermissions');
+
+      expect(result).toMatchObject({ kind: 'ask', decisionSource: 'userRule' });
+      expect(result.decisionReason).not.toContain('显式 ask');
     });
 
     it('bypass 不应绕过工具 deny', async () => {
@@ -358,7 +516,13 @@ describe('ToolPermissionService', () => {
       const store = new PermissionRuleStore();
       const service = new ToolPermissionService({ ruleStore: store });
 
-      const ctx = service.createAuthorizedContext('Bash', { command: 'ls' }, { kind: 'allow', decisionReason: '已授权' });
+      const ctx = service.createAuthorizedContext('Bash', { command: 'ls' }, {
+        kind: 'allow',
+        decisionReason: '已授权',
+        decisionSource: 'userApproval',
+        matchedEvidenceIds: [],
+        overridable: false,
+      });
       expect(ctx).not.toBeNull();
       expect(ctx!.toolName).toBe('Bash');
       expect(ctx!.nonce).toMatch(/^auth_/);
@@ -368,7 +532,13 @@ describe('ToolPermissionService', () => {
       const store = new PermissionRuleStore();
       const service = new ToolPermissionService({ ruleStore: store });
 
-      const ctx = service.createAuthorizedContext('Bash', { command: 'ls' }, { kind: 'deny', decisionReason: '拒绝' });
+      const ctx = service.createAuthorizedContext('Bash', { command: 'ls' }, {
+        kind: 'deny',
+        decisionReason: '拒绝',
+        decisionSource: 'invariant',
+        matchedEvidenceIds: [],
+        overridable: false,
+      });
       expect(ctx).toBeNull();
     });
 
@@ -403,6 +573,63 @@ describe('ToolPermissionService', () => {
 
       const result = await service.checkPermissions('Bash', { command: 'ls' }, 'auto');
       expect(result.kind).toBe('deny');
+    });
+  });
+
+  describe('auto 模式证据传递', () => {
+    it('同一 PowerShell 工具应根据实际命令证据得到不同结果', async () => {
+      const store = new PermissionRuleStore();
+      let receivedSideEffect: string | undefined;
+      const service = new ToolPermissionService({
+        ruleStore: store,
+        autoClassifier: {
+          async classify(_toolName, _args, evidence) {
+            receivedSideEffect = evidence?.sideEffect;
+            return { allow: false, reason: '写入证据不允许自动执行' };
+          },
+        },
+      });
+      const readChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return {
+            kind: 'passthrough',
+            evidence: {
+              operationCategory: 'command-execute',
+              sideEffect: 'read',
+              riskReason: '读取 package.json',
+            },
+          };
+        },
+      };
+      const writeChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return {
+            kind: 'passthrough',
+            evidence: {
+              operationCategory: 'command-execute',
+              sideEffect: 'write',
+              riskReason: '写入 output.txt',
+            },
+          };
+        },
+      };
+
+      const readResult = await service.checkPermissions(
+        'PowerShell',
+        { command: 'Get-Content package.json' },
+        'auto',
+        readChecker,
+      );
+      const writeResult = await service.checkPermissions(
+        'PowerShell',
+        { command: 'Set-Content output.txt done' },
+        'auto',
+        writeChecker,
+      );
+
+      expect(readResult).toMatchObject({ kind: 'allow', decisionSource: 'builtInBaseline' });
+      expect(writeResult).toMatchObject({ kind: 'deny', decisionSource: 'classifier' });
+      expect(receivedSideEffect).toBe('write');
     });
   });
 });

@@ -21,6 +21,8 @@ import {
 import { analyzeShellCommand } from '../../../src/adapters/tools/impl/system/command-analysis/index.js';
 import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand, detectAdvisoryWarnings } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
 import type { ToolPermissionCheckResult } from '../../../src/core/domain/permissions/permission-types.js';
+import { PermissionRuleStore } from '../../../src/core/domain/permissions/rule-store.js';
+import { ToolPermissionService } from '../../../src/core/domain/permissions/tool-permission-service.js';
 
 describe('Terminal Tool 单元测试', () => {
   const mockRootDir = mkdtempSync(join(tmpdir(), 'authorized-terminal-test-'));
@@ -235,9 +237,9 @@ describe('Terminal Tool 单元测试', () => {
     await expect(validateCommand('git checkout -b branch')).rejects.toThrow('严禁执行除只读查看外的任何 Git 变更操作');
     await expect(validateCommand('git add .')).rejects.toThrow('严禁执行除只读查看外的任何 Git 变更操作');
 
-    // 只读 Git 查看命令不属于 hardline，并携带 read evidence。
+    // 只读 Git 查看命令不属于 hardline，只向统一权限服务提交 read evidence。
     const logDecision = await executeCommandToolInstance.checkPermissions({ command: 'git log' });
-    expect(logDecision.kind).toBe('allow');
+    expect(logDecision.kind).toBe('passthrough');
     expect(logDecision.evidence?.sideEffect).toBe('read');
   });
 
@@ -321,31 +323,65 @@ describe('ShellTool.checkPermissions', () => {
     const powershell = new PowerShellTool(pipelineFeatures);
 
     await expect(bash.checkPermissions({ command: 'cat a.txt | grep x' }))
-      .resolves.toMatchObject({ kind: 'allow', evidence: { sideEffect: 'read' } });
+      .resolves.toMatchObject({ kind: 'passthrough', evidence: { sideEffect: 'read' } });
     await expect(bash.checkPermissions({ command: 'cat a.txt | rm output.txt' }))
-      .resolves.toMatchObject({ kind: 'ask', evidence: { sideEffect: 'write' } });
+      .resolves.toMatchObject({ kind: 'passthrough', evidence: { sideEffect: 'write' } });
     await expect(powershell.checkPermissions({ command: 'Get-Content a.txt | Select-String x' }))
-      .resolves.toMatchObject({ kind: 'allow', evidence: { sideEffect: 'read' } });
+      .resolves.toMatchObject({ kind: 'passthrough', evidence: { sideEffect: 'read' } });
     await expect(new BashTool(disabledFeatures).checkPermissions({ command: 'cat a.txt | grep x' }))
-      .resolves.toMatchObject({ kind: 'ask', evidence: { parseStatus: 'unsupported' } });
+      .resolves.toMatchObject({ kind: 'passthrough', evidence: { parseStatus: 'unsupported' } });
   });
 
-  test('合法只读命令应返回 allow', async () => {
+  test('PowerShell 只读管道经统一权限服务后应直接 allow', async () => {
+    const powershell = new PowerShellTool(pipelineFeatures);
+    const service = new ToolPermissionService({ ruleStore: new PermissionRuleStore() });
+
+    const result = await service.checkPermissions(
+      'PowerShell',
+      { command: 'Get-Content package.json | Select-String "scripts"' },
+      'default',
+      { checkPermissions: (input) => powershell.checkPermissions(input.args) },
+    );
+
+    expect(result).toMatchObject({
+      kind: 'allow',
+      decisionSource: 'builtInBaseline',
+      evidence: { sideEffect: 'read' },
+    });
+  });
+
+  test('合法只读命令应返回 passthrough 和 read evidence', async () => {
     const result = await tool.checkPermissions!({ command: 'git log' }) as ToolPermissionCheckResult;
-    expect(result.kind).toBe('allow');
+    expect(result.kind).toBe('passthrough');
     expect(result.evidence?.sideEffect).toBe('read');
+    expect(result.evidence?.resources).toContainEqual(expect.objectContaining({
+      kind: 'directory',
+      operation: 'read',
+      scope: 'workspace',
+      certainty: 'exact',
+    }));
   });
 
-  test('未分类命令应返回 ask 并携带 unknown evidence', async () => {
+  test('未分类命令应返回 passthrough 并携带 unknown evidence', async () => {
     const result = await tool.checkPermissions!({ command: 'npm run build' }) as ToolPermissionCheckResult;
-    expect(result.kind).toBe('ask');
+    expect(result.kind).toBe('passthrough');
     expect(result.evidence?.sideEffect).toBe('unknown');
   });
 
-  test('未分类环境命令也应保守返回 ask', async () => {
+  test('未分类环境命令也应交给统一权限服务处理', async () => {
     const result = await tool.checkPermissions!({ command: 'env' }) as ToolPermissionCheckResult;
-    expect(result.kind).toBe('ask');
+    expect(result.kind).toBe('passthrough');
     expect(result.evidence?.sideEffect).toBe('unknown');
+  });
+
+  test('Shell 语法错误应交给统一权限服务而不是直接 deny', async () => {
+    const bash = new BashTool();
+    const result = await bash.checkPermissions({ command: 'grep "unfinished' });
+
+    expect(result).toMatchObject({
+      kind: 'passthrough',
+      evidence: { parseStatus: 'invalid', sideEffect: 'unknown' },
+    });
   });
 
   test('危险命令应返回 deny', async () => {
@@ -364,14 +400,14 @@ describe('ShellTool.checkPermissions', () => {
     expect(tool.checkPermissions!.length).toBeLessThanOrEqual(1);
   });
 
-  test('复合命令一次分析聚合 ask，不拆分多次询问', async () => {
+  test('复合命令一次分析聚合证据，不在工具层询问', async () => {
     const bash = new BashTool({
       pipelines: true, conditionals: false,
       redirections: false, background: false, nested: false,
     });
-    // 管道中混合只读和写命令，聚合为一次 ask
+    // 管道中混合只读和写命令，聚合为一次 passthrough 证据。
     const mixed = await bash.checkPermissions({ command: 'cat a.txt | rm output.txt' });
-    expect(mixed.kind).toBe('ask');
+    expect(mixed.kind).toBe('passthrough');
     expect(mixed.evidence?.parseStatus).toBe('parsed');
     expect(mixed.evidence?.subcommands).toHaveLength(2);
     // 每个子命令独立评估
@@ -385,12 +421,18 @@ describe('ShellTool.checkPermissions', () => {
       redirections: true, background: false, nested: false,
     });
     const result = await bash.checkPermissions({ command: 'cat package.json > backup.json' });
-    // 重定向使整体提升为 write/ask
-    expect(result.kind).toBe('ask');
+    // 重定向使整体提升为 write，但最终行为仍由统一权限服务决定。
+    expect(result.kind).toBe('passthrough');
     expect(result.evidence?.sideEffect).toBe('write');
     // 子命令证据携带重定向风险说明
     const sub = result.evidence?.subcommands?.[0];
     expect(sub?.sideEffect).toBeTruthy();
     expect(sub?.reason).toContain('重定向');
+    expect(result.evidence?.resources).toContainEqual(expect.objectContaining({
+      kind: 'file',
+      operation: 'write',
+      rawExpression: 'backup.json',
+      scope: 'workspace',
+    }));
   });
 });
