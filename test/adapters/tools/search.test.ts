@@ -94,6 +94,73 @@ describe('GrepSearchTool & GlobSearchTool 异步与剪枝集成测试', () => {
     expect(files).not.toContain('.venv/lib.ts');
   });
 
+  test('GrepSearchTool 应支持单文件搜索、忽略大小写、上下文与 offset 分页', async () => {
+    const tool = new GrepSearchTool();
+    writeFileSync(join(normalDir, 'app.ts'), [
+      'const beforeFirst = true;',
+      'const target = "Alpha";',
+      'const between = true;',
+      'const targetAgain = "ALPHA";',
+      'const afterSecond = true;',
+    ].join('\n'));
+
+    const resultJson = await tool.execute({
+      query: 'alpha',
+      searchPath: 'src/app.ts',
+      ignoreCase: true,
+      context: 1,
+      limit: 1,
+      offset: 1,
+    });
+
+    const result = JSON.parse(resultJson);
+    expect(result.totalMatches).toBe(2);
+    expect(result.shownMatches).toBe(1);
+    expect(result.matches[0]).toMatchObject({
+      file: 'src/app.ts',
+      line: 4,
+      before: ['const between = true;'],
+      after: ['const afterSecond = true;'],
+    });
+    expect(result.isTruncated).toBe(false);
+  });
+
+  test('GrepSearchTool 应支持匹配文件列表模式与 nextOffset', async () => {
+    const tool = new GrepSearchTool();
+    writeFileSync(join(normalDir, 'app.ts'), 'const marker = "FILE_MODE_MARKER";\n');
+    writeFileSync(join(normalDir, 'second.ts'), 'const marker = "FILE_MODE_MARKER";\n');
+
+    const resultJson = await tool.execute({
+      query: 'FILE_MODE_MARKER',
+      outputMode: 'files_with_matches',
+      limit: 1,
+    });
+
+    const result = JSON.parse(resultJson);
+    expect(result.totalFiles).toBe(2);
+    expect(result.shownFiles).toBe(1);
+    expect(result.nextOffset).toBe(1);
+    expect(result.isTruncated).toBe(true);
+  });
+
+  test('GrepSearchTool 应按总字节预算截断内容并保留继续读取位置', async () => {
+    const tool = new GrepSearchTool();
+    const longLine = `BYTE_BUDGET_MARKER_${'x'.repeat(600)}`;
+    writeFileSync(join(normalDir, 'app.ts'), [longLine, longLine, longLine].join('\n'));
+
+    const resultJson = await tool.execute({
+      query: 'BYTE_BUDGET_MARKER',
+      maxBytes: 1_000,
+      limit: 10,
+    });
+
+    const result = JSON.parse(resultJson);
+    expect(result.totalMatches).toBe(3);
+    expect(result.shownMatches).toBeLessThan(3);
+    expect(result.nextOffset).toBe(result.shownMatches);
+    expect(result.isTruncated).toBe(true);
+  });
+
   test('GlobSearchTool 应该能基于异步流式和排除剪枝定位匹配文件', async () => {
     const tool = new GlobSearchTool();
     const mockContext = {

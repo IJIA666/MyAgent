@@ -72,6 +72,23 @@ describe('工具描述中性边界约束', () => {
     expect(powerShellDefinition.parameters.properties).not.toHaveProperty('shellKind');
   });
 
+  test('搜索工具应暴露有界分页参数，终端工具应保留软引导而非硬禁令', () => {
+    const grepDefinition = new GrepSearchTool().definition.function as {
+      parameters: { properties: Record<string, unknown> };
+    };
+    const bashDefinition = new BashTool().definition.function as { description: string };
+    const powerShellDefinition = new PowerShellTool().definition.function as { description: string };
+    const bashDescription = bashDefinition.description;
+    const powerShellDescription = powerShellDefinition.description;
+
+    expect(grepDefinition.parameters.properties).toHaveProperty('outputMode');
+    expect(grepDefinition.parameters.properties).toHaveProperty('offset');
+    expect(grepDefinition.parameters.properties).toHaveProperty('maxBytes');
+    expect(bashDescription).toContain('优先使用 grepSearch/globSearch');
+    expect(powerShellDescription).toContain('优先使用 grepSearch/globSearch');
+    expect(bashDescription).toContain('无法表达的选项时使用终端搜索命令');
+  });
+
   test('系统工具工厂应始终注册 Bash，并仅在 Windows 能力可用时注册 PowerShell', () => {
     const names = buildSystemTools().map((tool) => tool.name);
     const shouldExposePowerShell = process.platform === 'win32' &&

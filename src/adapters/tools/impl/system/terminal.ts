@@ -35,6 +35,9 @@ interface ShellToolOptions {
   features: Readonly<ShellCompoundFeatureConfig>;
 }
 
+/** 引导模型优先使用结构化文件工具，同时为 Shell 专用能力保留终端入口。 */
+const FILE_SEARCH_TOOL_GUIDANCE = '搜索文件内容或路径时优先使用 grepSearch/globSearch；仅在需要专用 Shell 语义或这些工具无法表达的选项时使用终端搜索命令。';
+
 /**
  * 创建 Shell 工具的 OpenAI Function Calling 定义。
  * 固定 Shell 的新工具不再向模型暴露 shellKind 参数，避免一次调用混用多种语义。
@@ -342,7 +345,7 @@ export class BashTool extends BaseShellTool {
     super({
       name: 'Bash',
       shellKind: 'posix',
-      description: '在工作区内执行 Bash 命令。命令的读写和风险属性由统一权限策略判断。',
+      description: `在工作区内执行 Bash 命令。命令的读写和风险属性由统一权限策略判断。${FILE_SEARCH_TOOL_GUIDANCE}`,
       features,
     });
   }
@@ -362,7 +365,7 @@ export class PowerShellTool extends BaseShellTool {
     super({
       name: 'PowerShell',
       shellKind: 'powershell',
-      description: '在工作区内执行 PowerShell 命令。该工具仅在 Windows 平台且 PowerShell 可用时提供。',
+      description: `在工作区内执行 PowerShell 命令。该工具仅在 Windows 平台且 PowerShell 可用时提供。${FILE_SEARCH_TOOL_GUIDANCE}`,
       features,
     });
   }
