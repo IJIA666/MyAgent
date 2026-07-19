@@ -50,7 +50,7 @@ export class CreateDirectoryTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 目录创建由 ToolPermissionService 统一决策。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -133,7 +133,7 @@ export class DeletePathTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 路径删除由 ToolPermissionService 统一决策。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -217,7 +217,7 @@ export class MovePathTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 路径移动由 ToolPermissionService 统一决策。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -323,7 +323,7 @@ export class CopyPathTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 路径复制由 ToolPermissionService 统一决策。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {

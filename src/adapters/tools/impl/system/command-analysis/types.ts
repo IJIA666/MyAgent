@@ -223,6 +223,8 @@ export interface PowerShellCommandElementSyntax {
 export interface PowerShellCommandSyntax {
   /** PowerShell 静态解析出的命令名；动态命令不设置。 */
   readonly name?: string;
+  /** 命令名在原始语法中的表达形式。 */
+  readonly nameType: 'bareword' | 'string' | 'expression' | 'unknown';
   /** 完整命令片段。 */
   readonly text: string;
   /** 命令在原始输入中的起始偏移。 */
@@ -473,6 +475,8 @@ export interface PowerShellSecurityFlags {
   readonly hasScriptBlocks: boolean;
   /** 是否包含子表达式或括号执行表达式。 */
   readonly hasSubExpressions: boolean;
+  /** 是否包含会执行嵌套 pipeline 的 $() 命令子表达式。 */
+  readonly hasCommandSubExpressions: boolean;
   /** 是否包含 .NET 成员或方法调用。 */
   readonly hasMemberInvocations: boolean;
   /** 是否包含赋值 statement。 */
@@ -539,8 +543,6 @@ export interface CommandSegmentAnalysis {
   readonly permission: CommandPermissionSuggestion;
   /** 当前子命令风险说明。 */
   readonly reason: string;
-  /** 可用于生成细粒度授权规则的命令文本。 */
-  readonly ruleSuggestion?: string;
 }
 
 /** 完整 Shell 命令的不可变分析结果。 */
@@ -565,6 +567,8 @@ export interface ShellCommandAnalysis {
   readonly riskReason: string;
   /** PowerShell 专属的完整 AST 领域投影。 */
   readonly powershellProgram?: Readonly<PowerShellProgramSyntax>;
+  /** PowerShell parser 派生的安全结构标志。 */
+  readonly powershellSecurity?: Readonly<PowerShellSecurityFlags>;
   /** 复合命令按 AST 树聚合出的执行行为证据。 */
   readonly executionEffects?: Readonly<ExecutionEffectSummary>;
   /** 按有效 cwd、provider 和变量来源解析出的资源访问证据。 */

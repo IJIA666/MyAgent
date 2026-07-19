@@ -1,14 +1,13 @@
 /**
  * 终端执行安全防护拦截网关。
  * 核心职责：
- * 1. 基于硬编码正则防御复合连接符与注入式命令；
- * 2. 校验进程的当前工作目录（cwd）在沙箱保护区内的合法边界；
- * 3. 剥离前导环境变量与嵌套外壳（env/sudo/sh/bash等），识别核心子命令。
+ * 1. 对毁灭级命令提供执行期硬红线兜底；
+ * 2. 校验进程的当前工作目录边界；
+ * 3. 剥离前导环境变量与冗余 Shell wrapper，生成非阻断提醒。
  */
 
 import { resolve, sep, isAbsolute } from 'path';
 import { getAuthorizedDir, getPhysicalRealPath } from '../base.js';
-import { analyzeShellCommand } from './command-analysis/index.js';
 import type { ResolvedShellKind } from './terminal-types.js';
 
 /**
@@ -23,10 +22,6 @@ export async function validateCommand(
   command: string,
   shellKind?: ResolvedShellKind,
 ): Promise<void> {
-  const unboxed = unboxNestedCommand(command, shellKind).trim();
-  if (isDangerousGitCommand(unboxed)) {
-    throw new Error('拒绝执行：严禁执行除只读查看外的任何 Git 变更操作。');
-  }
   if (isHardlineDangerous(command, shellKind)) {
     throw new Error('拒绝执行：命令命中硬红线安全规则。');
   }
@@ -57,150 +52,6 @@ export function validateCwd(cwd?: string): string {
   return targetCwd;
 }
 
-/**
- * 明确安全的无副作用只读白名单命令字开头（不能带有管道符及写重定向符号）
- * @deprecated 使用 `READONLY_COMMAND_WHITELISTS[shellKind]` 替代。
- */
-export const READONLY_COMMAND_WHITELIST = [
-  'git status',
-  'git diff',
-  'git log',
-  'vitest',
-  'npm run test',
-  'npm test',
-  'dir',
-  'ls'
-];
-
-/** PowerShell 只读白名单 */
-const POSH_READONLY_WHITELIST: string[] = [
-  'git status', 'git diff', 'git log',
-  'vitest', 'npm run test', 'npm test',
-  'dir', 'ls',
-  'wmic logicaldisk',
-  'Get-PSDrive',
-  'Get-ChildItem', 'Get-Content', 'Select-String',
-];
-
-/** POSIX shell 只读白名单 */
-const POSIX_READONLY_WHITELIST: string[] = [
-  'git status', 'git diff', 'git log',
-  'vitest', 'npm run test', 'npm test',
-  'ls', 'cat', 'grep', 'head', 'tail', 'wc',
-  'find', 'which', 'type', 'echo', 'pwd',
-  'node -v', 'npm -v', 'npx -v',
-];
-
-/** cmd 只读白名单 */
-const CMD_READONLY_WHITELIST: string[] = [
-  'git status', 'git diff', 'git log',
-  'vitest', 'npm run test', 'npm test',
-  'wmic logicaldisk',
-  'dir', 'type', 'findstr',
-  'echo', 'cd', 'where',
-];
-
-/** 按 shell family 分发的只读命令白名单查找表 */
-export const READONLY_COMMAND_WHITELISTS: Record<ResolvedShellKind, string[]> = {
-  powershell: POSH_READONLY_WHITELIST,
-  posix: POSIX_READONLY_WHITELIST,
-  cmd: CMD_READONLY_WHITELIST,
-};
-
-/** PowerShell 敏感动作及常见写倾向别名正则（包含 del, rm, rd, rmdir, ri, Remove-Item 等） */
-const POSH_DANGEROUS_WRITE_REGEX = /\b(Remove-Item|del|rd|rm|rmdir|ri|mv|Move-Item|cp|Copy-Item|Set-Content|Add-Content|Out-File|New-Item|mkdir|md)\b/i;
-
-/** POSIX shell 敏感动作及常见写倾向命令正则（包含 rm, dd, mkfs, chmod, chown, mv, cp, mkdir 等） */
-const POSIX_DANGEROUS_WRITE_REGEX = /\b(rm|dd|mkfs|chmod|chown|mv|cp|mkdir|tee|touch|ln|tar|gzip|gunzip|zip|unzip)\b/i;
-
-/** cmd 敏感动作及常见写倾向命令正则（Windows 命令提示符原生命令） */
-const CMD_DANGEROUS_WRITE_REGEX = /\b(del|erase|rd|rmdir|ren|rename|move|copy|xcopy|robocopy|mkdir|md|mklink|fsutil|icacls|cacls|takeown|diskpart|format|chkdsk|sfc)\b/i;
-
-/**
- * 按 shell family 分发的危险写操作正则查找表。
- * 旧版 `DANGEROUS_WRITE_COMMAND_REGEX` 已被此表替代，保留导出以兼容旧引用。
- */
-export const DANGEROUS_WRITE_PATTERNS: Record<ResolvedShellKind, RegExp> = {
-  powershell: POSH_DANGEROUS_WRITE_REGEX,
-  posix: POSIX_DANGEROUS_WRITE_REGEX,
-  cmd: CMD_DANGEROUS_WRITE_REGEX,
-};
-
-/** @deprecated 使用 `DANGEROUS_WRITE_PATTERNS[shellKind]` 替代；默认使用 PowerShell 正则保持向后兼容。 */
-export const DANGEROUS_WRITE_COMMAND_REGEX = POSH_DANGEROUS_WRITE_REGEX;
-
-/**
- * 校验命令行安全评级。
- * 按已决议的 shell family 语义执行”宁错杀不放过”的安全降级判定。
- *
- * @param command - 待执行的完整命令行文本
- * @param shellKind - 可选的已决议 shell family；未提供时默认使用 PowerShell 语义（向后兼容）
- * @returns 判定结果：'allow' 表示允许进入白名单规则校验，'ask' 表示强制安全降级到人工确认，不允许进入白名单匹配
- */
-export function checkCommandSafetyLevel(command: string, shellKind?: ResolvedShellKind): 'allow' | 'ask' {
-  const kind = shellKind ?? 'powershell';
-  const trimmed = unboxNestedCommand(command, kind).trim();
-  const whitelist = READONLY_COMMAND_WHITELISTS[kind];
-
-  // 1. 特征判定：如果包含任何危险写动作的指令或别名，强制降级为 ask，严禁静默放行
-  if (containsDangerousWriteToken(trimmed, kind)) {
-    return 'ask';
-  }
-
-  // 2. 白名单判定：如果完全吻合或以只读白名单字开头，允许去匹配本地的配置白名单规则
-  for (const rule of whitelist) {
-    if (trimmed === rule || trimmed.startsWith(rule + ' ')) {
-      return 'allow';
-    }
-  }
-
-  // 3. 安全退路：任何未被识别为绝对安全只读的命令，默认一律降级为 ask
-  return 'ask';
-}
-
-/** 非只读 Git 写/变更操作正则 */
-export const DANGEROUS_GIT_WRITE_REGEX = /\b(add|commit|checkout|reset|push|pull|rebase|merge|stash|revert)\b/i;
-
-/**
- * 校验 unboxed 核心命令是否属于高危的非只读 Git 变更操作。
- * 
- * @param unboxedCmd - 已经剥除嵌套外壳的核心命令行文本
- * @returns 若命中非只读 Git 变更操作则返回 true，否则返回 false
- */
-export function isDangerousGitCommand(unboxedCmd: string): boolean {
-  const parts = unboxedCmd.split(/\s+/);
-  if (parts.length < 2) {
-    return false;
-  }
-  if (parts[0].toLowerCase() !== 'git') {
-    return false;
-  }
-
-  // 扫描 Git 子命令，跳过全局配置标志以精准判定首个真实子命令
-  let i = 1;
-  while (i < parts.length) {
-    const part = parts[i];
-    // 跳过 -c 和 -C 及其后面的对应参数值
-    if (part === '-c' || part === '-C') {
-      i += 2;
-      continue;
-    }
-    // 跳过其他形式 of 全局 flags
-    if (part.startsWith('-')) {
-      i++;
-      continue;
-    }
-    
-    // 取得清除引号包裹后的子命令
-    const cleanSub = part.replace(/['"`]/g, '').toLowerCase();
-    if (DANGEROUS_GIT_WRITE_REGEX.test(cleanSub)) {
-      return true;
-    }
-    break;
-  }
-  return false;
-}
-
 /** POSIX 毁灭性高危命令黑名单：`rm -rf /`、`dd` 覆写块设备、`mkfs` 格式化、fork bomb 等 */
 const POSIX_HARDLINE_REGEX = /\b(rm\s+-(?:[rR][fF]|[fF][rR])\s+(\/|\*|~))|\bdd\s+if=.*of=\/dev\/|\bmkfs\b|\bchmod\s+-[Rr]\s+777\s+\/|\b:\(\)\s*\{/i;
 
@@ -210,82 +61,16 @@ const POSH_HARDLINE_REGEX = /\b(Remove-Item\s+-Recurse\s+-Force\s+[Cc]:\\|Format
 /** cmd 毁灭性高危命令黑名单：强制递归删除系统盘、格式化系统盘、diskpart 等 */
 const CMD_HARDLINE_REGEX = /\b(del\s+\/[fF]\s+\/[sS]\s+\/[qQ]\s+[Cc]:\\|format\s+[Cc]:|diskpart)\b/i;
 
-/**
- * 按 shell family 分发的毁灭性高危命令绝对黑名单查找表。
- * 旧版 `HARDLINE_PATTERNS` 已被此表替代，保留导出以兼容旧引用。
- */
+/** 按 shell family 分发的毁灭性高危命令绝对黑名单查找表。 */
 export const HARDLINE_PATTERNS_BY_SHELL: Record<ResolvedShellKind, RegExp> = {
   powershell: POSH_HARDLINE_REGEX,
   posix: POSIX_HARDLINE_REGEX,
   cmd: CMD_HARDLINE_REGEX,
 };
 
-/** @deprecated 使用 `HARDLINE_PATTERNS_BY_SHELL[shellKind]` 替代；默认使用 POSIX 正则保持最大覆盖。 */
-export const HARDLINE_PATTERNS = POSIX_HARDLINE_REGEX;
-
-/**
- * 敏感文件路径模式列表（仅匹配 basename）。
- * 与 ApprovalPolicy 中的 SENSITIVE_FILE_PATTERNS 保持同构。
- */
-const SENSITIVE_READ_PATTERNS: RegExp[] = [
-  /\.env$/i,
-  /\.env\./i,
-  /\.ssh[/\\]/i,
-  /id_rsa$/i,
-  /id_ed25519$/i,
-  /\.gitconfig$/i,
-  /\.aws[/\\]/i,
-  /\.kube[/\\]/i,
-  /\.docker[/\\]/i,
-  /credentials$/i,
-  /secrets[/\\]/i,
-];
-
-/** 各 shell family 用于读取文件内容的核心命令列表。 */
-const READ_CONTENT_COMMANDS: Record<ResolvedShellKind, RegExp> = {
-  posix: /\b(cat|less|more|head|tail|nl|od|xxd)\b/i,
-  powershell: /\b(Get-Content|cat|type|gc|Select-String)\b/i,
-  cmd: /\b(type|more|findstr)\b/i,
-};
-
-/**
- * 检测命令是否存在敏感文件的读取行为。
- * 先验证命令结构为原子只读，再检查操作目标是否涉及敏感路径。
- *
- * @param command - 已解包的核心命令文本
- * @param shellKind - 已决议的 shell family
- * @returns 若命令为只读但目标路径涉及敏感文件则返回 true
- */
-export function isSensitiveReadCommand(command: string, shellKind: ResolvedShellKind): boolean {
-  const trimmed = command.trim();
-
-  // 1. 必须是只读命令
-  const readPattern = READ_CONTENT_COMMANDS[shellKind];
-  if (!readPattern.test(trimmed)) {
-    return false;
-  }
-
-  // 2. 提取路径参数（命令后的第一个非选项参数）
-  const parts = trimmed.split(/\s+/).filter(p => p.length > 0);
-  const pathArg = parts.find(p => !p.startsWith('-'));
-  if (!pathArg) {
-    return false;
-  }
-
-  // 3. 检查路径是否落入敏感模式
-  const cleanedPath = pathArg.replace(/^['"`]|['"`]$/g, '');
-  for (const pattern of SENSITIVE_READ_PATTERNS) {
-    if (pattern.test(cleanedPath)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 /**
  * 校验命令行是否命中绝对黑名单。
- * Git 阻断规则跨 shell 通用保持不变，毁灭级命令跨所有 shell family 做最大安全覆盖。
+ * 毁灭级命令跨所有 shell family 做最大安全覆盖。
  *
  * @param command - 待执行的命令行文本
  * @param shellKind - 可选的已决议 shell family；未提供时使用 POSIX 正则（最大安全覆盖）
@@ -300,41 +85,7 @@ export function isHardlineDangerous(command: string, shellKind?: ResolvedShellKi
       return true;
     }
   }
-  return isDangerousGitCommand(unboxed);
-}
-
-/**
- * Plan 模式下的统一安全判定函数。
- * 确保前置安全评级与执行期结构校验（{@link validateCommand}）在允许集合上严格同构。
- *
- * **同构约束（复用 validateCommand 的结构校验）**：
- * Plan 模式的前置通过集合必须与执行期 {@link validateCommand} 的实际允许集合保持一致，
- * 否则会出现"审批通过但执行失败"的假阳性，或"执行期可通过但前置被误杀"的假阴性。
- *
- * 判定条件（全部满足才返回 true）：
- * 1. 在当前已决议 shell family 下命中只读白名单前缀（{@link checkCommandSafetyLevel} 返回 'allow'）
- * 2. 未命中绝对黑名单（{@link isHardlineDangerous} 返回 false）
- * 3. 能通过 {@link validateCommand} 的结构安全校验（含引号感知与原子命令约束）
- *
- * @param command - 待判定的原始命令行文本
- * @param shellKind - 可选的已决议 shell family；未提供时默认按 PowerShell 语义判定
- * @returns 若命令可静态证明为安全的只读查询则返回 true，否则返回 false
- */
-/**
- * 判断完整命令是否属于安全只读操作。
- * 复合命令只有在所有子命令均为安全读取时才会返回 true。
- *
- * @param command - 待判定的原始命令行文本
- * @param shellKind - 可选的已决议 shell family；未提供时按 PowerShell 语义判定
- * @returns 是否可静态证明为只读操作
- */
-export async function isPlanSafeCommand(
-  command: string,
-  shellKind?: ResolvedShellKind,
-): Promise<boolean> {
-  const analysis = await analyzeShellCommand(command, shellKind ?? 'powershell');
-  return analysis.parseStatus === 'parsed'
-    && (analysis.sideEffect === 'read' || analysis.sideEffect === 'sensitive-read');
+  return false;
 }
 
 /**
@@ -532,19 +283,6 @@ export function detectAdvisoryWarnings(command: string, shellKind?: ResolvedShel
   }
 
   return warnings;
-}
-
-/** 仅按首个真实命令 token 判定写操作，避免把只读参数误伤为危险命令。 */
-export function containsDangerousWriteToken(command: string, shellKind: ResolvedShellKind): boolean {
-  const unboxed = unboxNestedCommand(command, shellKind).trim();
-  const parts = unboxed.split(/\s+/).map(part => part.replace(/^['"`]|['"`]$/g, ''));
-  const executable = parts.find(part => part.length > 0 && !isShellOptionToken(part, shellKind));
-  if (!executable) {
-    return false;
-  }
-
-  const normalized = executable.replace(/\\|\//g, sep).split(sep).pop() || executable;
-  return DANGEROUS_WRITE_PATTERNS[shellKind].test(normalized);
 }
 
 /** 识别当前 shell family 下的命令开关，避免把参数误判为文件路径。 */

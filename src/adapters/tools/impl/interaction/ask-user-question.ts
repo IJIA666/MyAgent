@@ -198,7 +198,7 @@ export class AskUserQuestionTool implements NativeTool {
    * @returns 安全评估结论
    */
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 用户提问是安全的交互操作。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {

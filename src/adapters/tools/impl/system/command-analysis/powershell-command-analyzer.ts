@@ -1,6 +1,6 @@
 /**
  * PowerShell 命令分析器。
- * 简单原子命令使用轻量快速路径，复杂结构以原生 PowerShell AST 为唯一结构事实并保守聚合权限。
+ * 原生 PowerShell AST 是结构事实源；effect 摘要仅用于日志证据，不产生最终权限。
  */
 
 import { analyzeAtomicCommand } from './atomic-command-analyzer.js';
@@ -28,11 +28,6 @@ const SIDE_EFFECT_RANK: Readonly<Record<CommandSideEffect, number>> = {
   unknown: 4,
   hardline: 5,
 };
-
-/** 判断命令是否可由轻量原子分类器完整覆盖。 */
-function isSimpleAtomicCommand(command: string): boolean {
-  return !command.includes('--%') && !/[;|&<>{}()[\]$@`\r\n]/.test(command);
-}
 
 /** 聚合子命令副作用。 */
 function aggregateSideEffect(subcommands: readonly CommandSegmentAnalysis[]): CommandSideEffect {
@@ -110,9 +105,7 @@ const POLICY_RELEVANT_EFFECTS = new Set([
 /** 将完整执行摘要投影为旧 sideEffect。 */
 function projectExecutionSideEffect(
   summary: Readonly<ExecutionEffectSummary>,
-  subcommands: readonly CommandSegmentAnalysis[],
 ): CommandSideEffect {
-  if (subcommands.some(segment => segment.sideEffect === 'hardline')) return 'hardline';
   if (summary.possibleEffects.includes('filesystemWrite')) return 'write';
   if (summary.possibleEffects.includes('sensitiveDisclosure')) return 'sensitive-read';
   if (
@@ -175,7 +168,7 @@ function analyzeParsedPowerShell(
     ? [...structure.riskSignals, { code: 'powershell.dynamic-structure', reason: uncertaintyReason }]
     : [...structure.riskSignals];
   const sideEffect: CommandSideEffect = executionEffects
-    ? projectExecutionSideEffect(executionEffects, subcommands)
+    ? projectExecutionSideEffect(executionEffects)
     : subcommands.length > 0 ? aggregateSideEffect(subcommands) : 'unknown';
   const permission: CommandPermissionSuggestion = sideEffect === 'hardline'
     ? 'deny'
@@ -199,6 +192,7 @@ function analyzeParsedPowerShell(
     riskSignals,
     riskReason: uncertaintyReason ?? aggregateReason ?? uniqueReasons.join('；'),
     powershellProgram,
+    powershellSecurity: structure.powershellSecurity,
     executionEffects,
   };
 }
@@ -229,24 +223,16 @@ export const powershellCommandAnalyzer: ShellCommandAnalyzer = {
       ...(features.conditionals ? [';', '&&', '||'] as const : [';'] as const),
       ...(features.pipelines ? ['|'] as const : [] as const),
     ];
-    const analysis = analyzeWithProfile(command, 'powershell', allowedConnectors);
-    // 无动态语法的简单原子命令可由轻量分类器完整证明，无需启动 PowerShell 子进程。
-    if (analysis.commandShape === 'atomic' && analysis.parseStatus === 'parsed' && isSimpleAtomicCommand(command)) {
-      return analysis;
-    }
-    // hardline 是不可被后续结构分析降级的确定结论。
-    if (analysis.sideEffect === 'hardline') {
-      return analysis;
-    }
     const structure = await powershellAstParser.parse(command);
-    if (structure.parseStatus !== 'parsed') {
-      // PowerShell 不可用或语法无效时，轻量扫描仅作为保守降级证据。
-      return mergeStructureEvidence(analysis, structure);
+    if (structure.parseStatus === 'parsed') {
+      const parsedAnalysis = analyzeParsedPowerShell(command, structure);
+      const disabledReason = describeDisabledStructure(structure, features);
+      return disabledReason === undefined
+        ? parsedAnalysis
+        : rejectDisabledStructure(parsedAnalysis, disabledReason);
     }
-    const parsedAnalysis = analyzeParsedPowerShell(command, structure);
-    const disabledReason = describeDisabledStructure(structure, features);
-    return disabledReason === undefined
-      ? parsedAnalysis
-      : rejectDisabledStructure(parsedAnalysis, disabledReason);
+    // 只有原生解析不可用或失败时，才用字符扫描保留最低限度危险命令兜底。
+    const fallbackAnalysis = analyzeWithProfile(command, 'powershell', allowedConnectors);
+    return mergeStructureEvidence(fallbackAnalysis, structure);
   },
 };

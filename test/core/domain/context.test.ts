@@ -110,7 +110,7 @@ describe('SessionContext Token & Hash Tests', () => {
     context.isProcessing = false;
   });
 
-  it('应该在 waitApproval 兼容层中将 persistent 决策映射为 approve', async () => {
+  it('应该在 waitApproval 中保留 persistent 决策供调用方继续选择范围', async () => {
     context.approvalService.setBypassMode(false);
     const approvalId = 'approval-persistent-001';
     const pending = context.waitApproval(
@@ -123,6 +123,6 @@ describe('SessionContext Token & Hash Tests', () => {
     context.approvalService.resolve(approvalId, { action: 'persistent' });
     const result = await pending;
 
-    expect(result.action).toBe('approve');
+    expect(result.action).toBe('persistent');
   });
 });

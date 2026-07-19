@@ -4,6 +4,7 @@
  */
 
 import type { ResolvedShellKind } from '../terminal-types.js';
+import { resolvePowerShellAlias } from '../../../../../core/domain/permissions/powershell-command-normalization.js';
 import type {
   AtomicArgumentEvidence,
   AtomicCommandEffect,
@@ -49,29 +50,6 @@ interface CommandCapability {
   readonly resources?: readonly ResourceRule[];
   readonly validate?: (arguments_: readonly string[]) => CapabilityValidationResult;
 }
-
-const POWERSHELL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
-  cp: 'copy-item',
-  cat: 'get-content',
-  cd: 'set-location',
-  del: 'remove-item',
-  dir: 'get-childitem',
-  echo: 'write-output',
-  gc: 'get-content',
-  gci: 'get-childitem',
-  gps: 'get-process',
-  ls: 'get-childitem',
-  md: 'new-item',
-  move: 'move-item',
-  mv: 'move-item',
-  ni: 'new-item',
-  pwd: 'get-location',
-  ri: 'remove-item',
-  rm: 'remove-item',
-  rmdir: 'remove-item',
-  type: 'get-content',
-  where: 'where-object',
-});
 
 const POSIX_BUILTINS = new Set(['cd', 'echo', 'printf', 'pwd', 'type']);
 const CMD_BUILTINS = new Set(['cd', 'chdir', 'dir', 'echo', 'set', 'type']);
@@ -149,7 +127,7 @@ export function resolveAtomicCommandIdentity(
   }
 
   if (shellKind === 'powershell') {
-    const alias = POWERSHELL_ALIASES[lower];
+    const alias = resolvePowerShellAlias(lower);
     if (alias) {
       return {
         rawName: unquoted,
@@ -381,8 +359,11 @@ function validateGit(arguments_: readonly string[]): CapabilityValidationResult 
   }
   const flagArguments = arguments_.slice(subcommandIndex + 1).filter(argument => argument.startsWith('-'));
   const safeFlags = new Set(GIT_SAFE_FLAGS[subcommand]);
-  const validatedFlags = flagArguments.map(normalizeFlag).filter(flag => safeFlags.has(flag));
-  const unknownFlags = flagArguments.map(normalizeFlag).filter(flag => !safeFlags.has(flag));
+  const normalizedFlags = flagArguments.map(normalizeFlag);
+  const isSafeFlag = (flag: string): boolean => safeFlags.has(flag) ||
+    (subcommand === 'log' && /^-\d+$/.test(flag));
+  const validatedFlags = normalizedFlags.filter(isSafeFlag);
+  const unknownFlags = normalizedFlags.filter(flag => !isSafeFlag(flag));
   return {
     status: unknownFlags.length > 0 ? 'partial' : 'validated',
     matchedSubcommand: subcommand,

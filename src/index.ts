@@ -1,6 +1,11 @@
 import * as path from 'path';
 import { SessionManager } from './core/usecases/engine/session.js';
-import { McpToolManager, ToolRegistry, initWorkspace } from './adapters/tools/index.js';
+import {
+  McpToolManager,
+  PermissionSettingsStore,
+  ToolRegistry,
+  initWorkspace,
+} from './adapters/tools/index.js';
 import { loadConfig, ensureConfigFiles } from './config/index.js';
 import { startCli } from './adapters/input/interface/index.js';
 import { theme } from './adapters/input/interface/views/theme.js';
@@ -52,6 +57,7 @@ async function main() {
     LifecycleManager.register('mcp-manager', () => mcpManager.close());
     const { BrowserSession } = await import('./adapters/tools/impl/browser/browser-action.js');
     LifecycleManager.register('browser-session', () => BrowserSession.close());
+    const permissionSettingsStore = new PermissionSettingsStore(appConfig.workspace);
     const toolRegistry = new ToolRegistry(mcpManager, {
       loadSkill: (name: string) => {
         const skillsDir = path.join(appConfig.workspace, '.agent/skills');
@@ -69,7 +75,7 @@ async function main() {
         }
         return null;
       }
-    });
+    }, permissionSettingsStore);
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
     const contextAdapter = new DefaultContextAdapter(tokenEstimator);

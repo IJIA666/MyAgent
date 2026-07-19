@@ -1,6 +1,6 @@
 /**
  * @file 权限模型核心类型定义。
- * 定义 Claude Code 同构的 PermissionMode、PermissionBehavior、PermissionRule、
+ * 定义 PermissionMode、PermissionBehavior、PermissionRule、
  * PermissionDecision、PermissionUpdate 及工具内部检查结果类型。
  * 这是全链路权限决策的单一类型来源，各层必须消费此处定义的类型。
  */
@@ -8,7 +8,7 @@
 // ── PermissionMode ──
 
 /**
- * Claude Code 同构的权限模式。
+ * 会话权限模式。
  * 统一模式选择器中的一种，不得拆分为 TaskPhase × ApprovalMode 组合。
  *
  * - `default`：默认模式，未被规则覆盖且需要确认的工具调用进入询问。
@@ -30,14 +30,14 @@ export type PermissionMode =
 
 /**
  * 规则的权限行为。
- * 固定为 Claude Code 的三种行为，不得引入新的行为枚举。
+ * 固定为三种最终行为，不得引入新的行为枚举。
  */
 export type PermissionBehavior = 'allow' | 'deny' | 'ask';
 
 // ── PermissionRuleSource ──
 
 /**
- * 规则来源，保持 Claude Code 的分层语义。
+ * 权限规则来源。
  * 每个来源具有固定的生命周期和可修改性：
  * - `userSettings`：用户级持久配置（全局），用户可修改。
  * - `projectSettings`：项目级持久配置，项目所有者可修改。
@@ -61,7 +61,7 @@ export type PermissionRuleSource =
 // ── PermissionRule ──
 
 /**
- * Claude Code 同构的权限规则。
+ * 分层权限规则。
  * 规则采用 `Tool` 或 `Tool(specifier)` 语法。
  *
  * @example
@@ -110,8 +110,6 @@ export interface ToolPermissionSubcommandEvidence {
   readonly permission: PermissionBehavior;
   /** 风险说明。 */
   readonly reason: string;
-  /** 可选的细粒度规则建议。 */
-  readonly ruleSuggestion?: string;
 }
 
 /**
@@ -163,6 +161,23 @@ export interface ToolPermissionResourceEvidence {
 // ── ToolPermissionCheckResult（工具内部检查结果）──
 
 /**
+ * 工具权限检查附带的稳定元数据。
+ * 权限服务必须原样透传这些字段，不得从提示文字或通用证据重新推导。
+ */
+export interface ToolPermissionCheckMetadata {
+  /** 产生当前候选结果的稳定原因代码。 */
+  readonly decisionCode?: string;
+  /** 可安全保存的完整规则内容；空数组表示本次不提供持久授权。 */
+  readonly ruleSuggestions?: readonly string[];
+  /** 工具内部已经命中的显式规则。 */
+  readonly matchedRule?: PermissionRule;
+  /** 工具分析阶段生成并绑定到原始输入的只读分析结果。 */
+  readonly analysis?: unknown;
+  /** 仅供日志和执行 effect 使用的通用证据。 */
+  readonly evidence?: ToolPermissionEvidence;
+}
+
+/**
  * 工具 `checkPermissions` 的内部检查结果。
  * 这是工具层级的中间结果，不是最终执行决策。
  * 统一权限服务消费此结果并产生最终的 `PermissionDecision`。
@@ -172,11 +187,12 @@ export interface ToolPermissionResourceEvidence {
  * - `deny`：工具认为本次调用危险，直接拒绝。
  * - `passthrough`：工具不做最终判断，交由统一权限流程继续处理。
  */
-export type ToolPermissionCheckResult =
-  | { kind: 'allow'; decisionReason?: string; updatedInput?: Record<string, unknown>; evidence?: ToolPermissionEvidence }
-  | { kind: 'ask'; message?: string; decisionReason?: string; evidence?: ToolPermissionEvidence }
-  | { kind: 'deny'; decisionReason: string; evidence?: ToolPermissionEvidence }
-  | { kind: 'passthrough'; evidence?: ToolPermissionEvidence };
+export type ToolPermissionCheckResult = ToolPermissionCheckMetadata & (
+  | { kind: 'allow'; decisionReason?: string; updatedInput?: Record<string, unknown> }
+  | { kind: 'ask'; message?: string; decisionReason?: string }
+  | { kind: 'deny'; decisionReason: string }
+  | { kind: 'passthrough' }
+);
 
 // ── PermissionDecision ──
 
@@ -207,12 +223,22 @@ export interface PermissionDecisionProvenance {
   readonly overridable: boolean;
 }
 
+/** 工具候选结果在最终权限阶段必须保留的元数据。 */
+export interface PermissionDecisionMetadata {
+  /** 工具提供的稳定原因代码。 */
+  readonly decisionCode?: string;
+  /** 可安全保存的完整规则内容。 */
+  readonly ruleSuggestions?: readonly string[];
+  /** 与获批输入绑定并供执行期复用的分析结果。 */
+  readonly analysis?: unknown;
+}
+
 /**
  * 统一权限服务的最终决策结果。
  * 只包含 `allow`、`ask`、`deny` 三种最终结果，
  * 禁止引入 `pass`、`suspend`、`PlanSideEffect` 或新的风险枚举。
  */
-export type PermissionDecision = PermissionDecisionProvenance & (
+export type PermissionDecision = PermissionDecisionProvenance & PermissionDecisionMetadata & (
   | {
       kind: 'allow';
       /** 可选的可执行原因描述 */
@@ -246,7 +272,7 @@ export type PermissionDecision = PermissionDecisionProvenance & (
 
 /**
  * 规则更新操作类型。
- * 对应 Claude 风格的 add/replace/remove/set 操作。
+ * 权限规则的 add/replace/remove/set 更新操作。
  */
 export type PermissionUpdateOperation = 'add' | 'replace' | 'remove' | 'set';
 
@@ -269,7 +295,7 @@ export interface PermissionUpdate {
 
 // ── 辅助函数与常量 ──
 
-/** 默认的权限模式，对应 Claude Code 的 Manual / default */
+/** 默认权限模式，对应需要时请求审批的 default 行为。 */
 export const DEFAULT_PERMISSION_MODE: PermissionMode = 'default';
 
 /** 默认规则来源优先级顺序（从高到底） */

@@ -105,8 +105,16 @@ function Convert-Command($command, $statement) {
   )) {
     $owner = $owner.Parent
   }
+  $firstElement = @($command.CommandElements)[0]
+  $nameType = 'unknown'
+  if ($firstElement -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+    $nameType = if ($firstElement.StringConstantType -eq [System.Management.Automation.Language.StringConstantType]::BareWord) { 'bareword' } else { 'string' }
+  } elseif ($null -ne $firstElement) {
+    $nameType = 'expression'
+  }
   @{
     name = $command.GetCommandName()
+    nameType = $nameType
     text = $command.Extent.Text
     start = $command.Extent.StartOffset
     end = $command.Extent.EndOffset
@@ -172,6 +180,7 @@ $allCommands = @($ast.FindAll({ param($node) $node -is [System.Management.Automa
 $security = @{
   hasScriptBlocks = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }, $true)).Count -gt 0
   hasSubExpressions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.SubExpressionAst] -or $node -is [System.Management.Automation.Language.ParenExpressionAst] }, $true)).Count -gt 0
+  hasCommandSubExpressions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.SubExpressionAst] }, $true)).Count -gt 0
   hasMemberInvocations = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true)).Count -gt 0
   hasAssignments = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)).Count -gt 0
   hasSplatting = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] -and $node.Splatted }, $true)).Count -gt 0
@@ -349,6 +358,7 @@ interface RawPowerShellRedirection {
 
 interface RawPowerShellCommand {
   readonly name?: unknown;
+  readonly nameType?: unknown;
   readonly text?: unknown;
   readonly start?: unknown;
   readonly end?: unknown;
@@ -508,6 +518,12 @@ function normalizePowerShellCommand(raw: unknown): PowerShellCommandSyntax | und
   }
   return {
     name: typeof command.name === 'string' && command.name.length > 0 ? command.name : undefined,
+    nameType:
+      command.nameType === 'bareword' ||
+      command.nameType === 'string' ||
+      command.nameType === 'expression'
+        ? command.nameType
+        : 'unknown',
     text: command.text,
     start: command.start,
     end: command.end,
@@ -808,7 +824,7 @@ export class PowerShellAstParser {
   /** 执行一次未缓存解析并将异常转换为保守结果。 */
   private async parseUncached(command: string): Promise<ShellStructureParseResult> {
     try {
-      const rawText = await runWithTimeout(this.runner(command, this.limits), this.limits.timeoutMs);
+      const rawText = await this.runParserWithRetry(command);
       if (Buffer.byteLength(rawText, 'utf8') > this.limits.maxOutputBytes) {
         throw new PowerShellParserError('parser.powershell-output-limit', 'PowerShell AST 输出超过安全上限');
       }
@@ -817,6 +833,22 @@ export class PowerShellAstParser {
       const code = error instanceof PowerShellParserError ? error.code : 'parser.powershell-failed';
       const reason = error instanceof Error ? error.message : 'PowerShell AST 解析失败';
       return { parseStatus: 'unsupported', nodes: [], riskSignals: [{ code, reason }] };
+    }
+  }
+
+  /** 仅对明确的解析超时执行一次扩大预算的重试。 */
+  private async runParserWithRetry(command: string): Promise<string> {
+    try {
+      return await runWithTimeout(this.runner(command, this.limits), this.limits.timeoutMs);
+    } catch (error) {
+      if (!(error instanceof PowerShellParserError) || error.code !== 'parser.powershell-timeout') {
+        throw error;
+      }
+      const retryLimits: Readonly<PowerShellParserLimits> = {
+        ...this.limits,
+        timeoutMs: this.limits.timeoutMs * 2,
+      };
+      return await runWithTimeout(this.runner(command, retryLimits), retryLimits.timeoutMs);
     }
   }
 
@@ -914,6 +946,7 @@ export class PowerShellAstParser {
     const powershellSecurity: PowerShellSecurityFlags = {
       hasScriptBlocks: rawSecurity.hasScriptBlocks === true,
       hasSubExpressions: rawSecurity.hasSubExpressions === true,
+      hasCommandSubExpressions: rawSecurity.hasCommandSubExpressions === true,
       hasMemberInvocations: rawSecurity.hasMemberInvocations === true,
       hasAssignments: rawSecurity.hasAssignments === true,
       hasSplatting: rawSecurity.hasSplatting === true,

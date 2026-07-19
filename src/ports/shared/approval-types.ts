@@ -4,7 +4,7 @@
  */
 
 /** 审批选择项标识联合类型。 */
-export type ApprovalChoiceId = 'call' | 'session' | 'persistent' | 'deny';
+export type ApprovalChoiceId = 'call' | 'session' | 'project' | 'user' | 'persistent' | 'deny';
 
 /** 审批选择项接口。 */
 export interface ApprovalChoice {
@@ -14,4 +14,11 @@ export interface ApprovalChoice {
   label: string;
   /** 可选的详细描述 */
   description?: string;
+  /** 可选的下一层选择，用于先确认规则内容、再选择生效范围。 */
+  followUp?: {
+    /** 下一层选择的提示文字。 */
+    prompt: string;
+    /** 下一层可选项。 */
+    choices: readonly ApprovalChoice[];
+  };
 }

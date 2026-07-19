@@ -62,7 +62,7 @@ export class ApplyPatchTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 补丁操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {

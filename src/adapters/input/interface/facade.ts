@@ -91,7 +91,7 @@ export class CliFacade {
       }
 
       let approvalAbortHandler: (() => void) | undefined;
-      const decision = await new Promise<'call' | 'session' | 'persistent' | 'deny'>((resolve) => {
+      const decision = await new Promise<ApprovalChoice['choiceId']>((resolve) => {
         // 创建临时接口前，显式唤醒 stdin 流，防止之前实例关闭导致流处于暂停状态
         if (typeof process.stdin.resume === 'function') {
           process.stdin.resume();
@@ -117,34 +117,49 @@ export class CliFacade {
           if (!message) {
             console.log(`\n⚠️  ${theme.warning('[安全提示] Agent 企图执行以下终端命令：')}`);
           }
+          // description 只帮助用户理解本次调用，不参与权限分析或规则生成。
+          const rawCommandDescription = toolCall.arguments?.description;
+          const commandDescription = typeof rawCommandDescription === 'string'
+            ? rawCommandDescription.trim().replace(/\s+/g, ' ')
+            : '';
+          if (commandDescription) {
+            console.log(`   📝  ${commandDescription}`);
+          }
           console.log(`   👉  \x1b[33m${command}\x1b[0m`);
         }
 
         // 优先使用策略层下发的 choices（任务 5.1、5.2）
         if (choices && choices.length > 0) {
-          console.log('选择操作:');
-          const choiceMap = new Map<string, ApprovalChoice>();
-          choices.forEach((c, i) => {
-            const num = i + 1;
-            const desc = c.description ? ` — ${c.description}` : '';
-            console.log(`  [${num}] ${c.label}${desc}`);
-            choiceMap.set(String(num), c);
-          });
-
-          const ask = () => {
-            rl.question(`请选择 [1-${choices.length}]: `, (answer) => {
-              const ans = answer.trim();
-              const selected = choiceMap.get(ans);
-              if (selected) {
-                rl.close();
-                resolve(selected.choiceId); // 仅返回 choiceId（任务 5.3）
-              } else {
-                console.log('无效选择，请重新输入。');
-                ask();
-              }
+          /** 渲染一层受信选择；存在 followUp 时继续展示下一层而不提前结束审批。 */
+          const askChoices = (prompt: string, availableChoices: readonly ApprovalChoice[]): void => {
+            console.log(prompt);
+            const choiceMap = new Map<string, ApprovalChoice>();
+            availableChoices.forEach((choice, index) => {
+              const number = index + 1;
+              const description = choice.description ? ` — ${choice.description}` : '';
+              console.log(`  [${number}] ${choice.label}${description}`);
+              choiceMap.set(String(number), choice);
             });
+
+            const ask = (): void => {
+              rl.question(`请选择 [1-${availableChoices.length}]: `, (answer) => {
+                const selected = choiceMap.get(answer.trim());
+                if (!selected) {
+                  console.log('无效选择，请重新输入。');
+                  ask();
+                  return;
+                }
+                if (selected.followUp) {
+                  askChoices(selected.followUp.prompt, selected.followUp.choices);
+                  return;
+                }
+                rl.close();
+                resolve(selected.choiceId);
+              });
+            };
+            ask();
           };
-          ask();
+          askChoices('选择操作:', choices);
         } else if (allowedPrefix) {
           // 降级逻辑：choices 缺失时使用 allowedPrefix 推导（任务 5.4）
           console.log('选择操作:');

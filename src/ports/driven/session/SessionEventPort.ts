@@ -30,18 +30,11 @@ export interface SessionEventPort {
    * @returns 当前的安全工作模式配置
    */
   /**
-   * 获取当前会话的权限模式（Claude Code 同构）。
+   * 获取当前会话的权限模式。
    *
    * @returns 当前权限模式
    */
   getPermissionMode(): ConfigPermissionMode;
-
-  /**
-   * 获取当前有效的安全命令白名单列表。
-   *
-   * @returns 安全命令白名单规则列表
-   */
-  getSecurityAllowlist(): string[];
 
   /**
    * 检查指定绝对物理路径是否处于临时只读授权白名单中。

@@ -3,12 +3,12 @@
  * @description 端口层拥有的审批交互契约。消除 ChatUseCase 对 core 中 ApprovalService 类的直接引用。
  */
 
-import type { ApprovalChoice } from '../shared/approval-types.js';
+import type { ApprovalChoice, ApprovalChoiceId } from '../shared/approval-types.js';
 
 /** 审批决策结果。 */
 export interface ApprovalDecision {
-  /** 决策动作：call (单次放行), session (本次会话始终放行), persistent (持久化白名单), deny (拒绝执行) */
-  action: 'call' | 'session' | 'persistent' | 'deny';
+  /** 审批界面最终返回的选择标识。 */
+  action: ApprovalChoiceId;
 }
 
 /**

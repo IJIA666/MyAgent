@@ -1,7 +1,7 @@
 /**
- * @file Claude 权限行为参考夹具的类型定义。
+ * @file 权限行为夹具的类型定义。
  * 定义可序列化的规则集合、PermissionMode、工具输入、预期决策和 PermissionUpdate
- * 格式，用于对比 Claude Code 参考实现与 MyAgent 同构实现的权限决策一致性。
+ * 格式，用于验证 MyAgent 权限决策的一致性。
  */
 
 import type {
@@ -63,7 +63,7 @@ export interface PermissionFixtureExpected {
 export interface PermissionFixture {
   input: PermissionFixtureInput;
   expected: PermissionFixtureExpected;
-  /** 可选：Claude Code 参考实现的实际决策（用于回归验证） */
+  /** 可选：已确认的实际决策（用于回归验证）。 */
   referenceDecision?: PermissionDecision;
 }
 

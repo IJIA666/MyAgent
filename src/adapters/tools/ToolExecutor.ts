@@ -101,9 +101,12 @@ export class ToolExecutor {
     }
     // 此处已经完成权限审批，执行超时从实际调用工具前才开始计算。
     const executionSignal = createAuthorizedExecutionSignal(runtime);
+    const executionContext = runtime.context && 'toolCallId' in runtime.context
+      ? { ...runtime.context, permissionAnalysis: authorizedContext.analysis }
+      : runtime.context;
     const resultText = await tool.execute(
       authorizedContext.args,
-      runtime.context,
+      executionContext,
       executionSignal,
       runtime.interactionPort,
     );

@@ -122,7 +122,6 @@ describe('ToolCallGateway', () => {
         sideEffect: 'write' as const,
         permission: 'ask' as const,
         reason: '写操作',
-        ruleSuggestion: 'touch marker.txt',
       }],
     };
     const tool = new MockTool('AskTool', {
@@ -381,13 +380,17 @@ describe('ToolCallGateway', () => {
       kind: 'ask',
       message: '确认复合命令',
       decisionReason: '包含写操作',
+      ruleSuggestions: ['touch marker.txt'],
+      analysis: { source: 'shell-permission-candidate' },
       evidence: {
         operationCategory: 'command-execute',
         sideEffect: 'write',
         riskReason: '包含写操作',
+        shellKind: 'posix',
+        parseStatus: 'parsed',
         subcommands: [
           { command: 'cat a.txt', sideEffect: 'read', permission: 'allow', reason: '只读' },
-          { command: 'touch marker.txt', connectorBefore: ';', sideEffect: 'write', permission: 'ask', reason: '写操作', ruleSuggestion: 'touch marker.txt' },
+          { command: 'touch marker.txt', connectorBefore: ';', sideEffect: 'write', permission: 'ask', reason: '写操作' },
         ],
       },
     });

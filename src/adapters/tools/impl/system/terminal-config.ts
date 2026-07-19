@@ -1,8 +1,7 @@
 /**
- * 终端配置与命令白名单管理模块。
+ * 终端 Shell 与 PermissionMode 配置管理模块。
  *
- * 该模块只负责 shell、命令白名单和 PermissionMode 配置的持久化，
- * 权限决策统一由会话 PermissionMode 负责。
+ * 命令内容权限统一由 PermissionRuleStore 管理，本模块不维护额外白名单。
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
@@ -41,14 +40,6 @@ function resolveEnvShellKind(raw: string | undefined): ShellKind | null {
 function getAgentConfigPath(): string {
   const rootDir = getAuthorizedDir();
   return rootDir ? resolve(rootDir, '.agent/config.json') : resolve('.agent/config.json');
-}
-
-/** 获取命令白名单文件路径。 */
-function getAllowedCommandsPath(): string {
-  const rootDir = getAuthorizedDir();
-  return rootDir
-    ? resolve(rootDir, '.agent/allowed_commands.json')
-    : resolve('.agent/allowed_commands.json');
 }
 
 /** 获取当前默认 shell family。 */
@@ -110,51 +101,6 @@ export function saveDefaultShellFamily(kind: ShellKind): void {
     writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
   } catch (error: unknown) {
     logger.error('保存默认 shell family 失败:', error);
-  }
-}
-
-/** 加载允许执行的命令白名单。 */
-export function loadAllowedCommands(): string[] {
-  const path = getAllowedCommandsPath();
-  const defaultCommands = [
-    'git status:*',
-    'git diff:*',
-    'git log:*',
-    'vitest:*',
-    'npm test:*',
-    'npm run test:*',
-  ];
-
-  try {
-    if (existsSync(path)) {
-      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
-      if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string') && parsed.length > 0) {
-        return parsed;
-      }
-    }
-  } catch {
-    // 读取异常时回退到默认白名单。
-  }
-
-  try {
-    saveAllowedCommands(defaultCommands);
-  } catch {
-    // 持久化失败不影响当前进程使用默认白名单。
-  }
-  return defaultCommands;
-}
-
-/** 持久化命令白名单。 */
-export function saveAllowedCommands(commands: string[]): void {
-  try {
-    const path = getAllowedCommandsPath();
-    const directory = dirname(path);
-    if (!existsSync(directory)) {
-      mkdirSync(directory, { recursive: true });
-    }
-    writeFileSync(path, JSON.stringify(commands, null, 2), 'utf-8');
-  } catch (error: unknown) {
-    logger.error('保存命令白名单失败:', error);
   }
 }
 
@@ -245,17 +191,6 @@ export function extractSafePrefix(command: string): string | null {
     return `${root} ${sub}`;
   }
   return null;
-}
-
-/** 判断命令是否命中当前命令白名单。 */
-export function checkWhitelist(command: string): boolean {
-  const unboxed = unboxNestedCommand(command).trim();
-  return loadAllowedCommands().some((rule) => {
-    if (rule.endsWith(':*')) {
-      return unboxed.startsWith(rule.slice(0, -2));
-    }
-    return unboxed === rule;
-  });
 }
 
 /** 终端后台任务状态。 */

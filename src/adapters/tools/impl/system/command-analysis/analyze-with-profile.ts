@@ -100,6 +100,47 @@ export function analyzeWithProfile(
 }
 
 /**
+ * 从 Shell 专用解析结果直接构造统一分析，避免成功路径再次进行字符结构扫描。
+ *
+ * @param command - 原始命令文本
+ * @param shellKind - 已决议 Shell family
+ * @param structure - Shell 专用 parser 产生的结构结果
+ * @returns 以 parser nodes 为唯一结构事实源的统一分析
+ */
+export function analyzeParsedStructure(
+  command: string,
+  shellKind: ResolvedShellKind,
+  structure: ShellStructureParseResult,
+): ShellCommandAnalysis {
+  const subcommands = structure.nodes.map(node => ({
+    ...analyzeAtomicCommand(node.command, shellKind),
+    connectorBefore: node.connectorBefore,
+    nodePath: node.nodePath,
+    pipelineIndex: node.pipelineIndex,
+    statementIndex: node.statementIndex,
+    statementType: node.statementType,
+    nested: node.nested,
+    elementTypes: node.elementTypes,
+    background: node.background,
+    redirections: node.redirections,
+  }));
+  const base: ShellCommandAnalysis = {
+    command,
+    shellKind,
+    parseStatus: structure.parseStatus,
+    commandShape: structure.nodes.some(node => node.nested)
+      ? 'nested'
+      : structure.nodes.length > 1 ? 'compound' : 'atomic',
+    subcommands,
+    sideEffect: 'read',
+    permission: 'allow',
+    riskSignals: structure.riskSignals,
+    riskReason: structure.riskSignals.map(risk => risk.reason).join('；'),
+  };
+  return mergeStructureEvidence(base, structure);
+}
+
+/**
  * 将 Shell 专用解析器证据合并到统一命令分析结果。
  *
  * @param analysis - 旧扫描器和原子分类器生成的基础结果
@@ -176,7 +217,7 @@ export function mergeStructureEvidence(
     parseStatus: structure.parseStatus,
     subcommands,
     sideEffect: hasHardline ? 'hardline' : 'unknown',
-    permission: hasHardline ? 'deny' : 'deny',
+    permission: hasHardline ? 'deny' : 'ask',
     riskSignals,
     riskReason: riskSignals.map(risk => risk.reason).join('；'),
   };

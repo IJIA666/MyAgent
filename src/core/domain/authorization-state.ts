@@ -6,6 +6,7 @@ import { computeArgumentsDigest } from './call-capability.js';
 import type { TemporaryWhitelistAccess } from './whitelist-access.js';
 import type { SafetyResource } from '../usecases/security/SafetyResource.js';
 import type { ApprovalWaitOptions } from '../../ports/driven/session/ApprovalPort.js';
+import type { ApprovalChoiceId } from '../../ports/shared/approval-types.js';
 
 /**
  * 授权状态管理。
@@ -39,7 +40,7 @@ export class AuthorizationState implements TemporaryWhitelistAccess {
     actionInfo: { name: string; arguments?: Record<string, unknown> },
     options?: string | ApprovalWaitOptions,
     warningMsg?: string
-  ): Promise<{ action: 'approve' | 'deny'; reason?: string }> {
+  ): Promise<{ action: ApprovalChoiceId; reason?: string }> {
     const waitOptions = typeof options === 'object' && options !== null ? options : undefined;
     const decision = await this.approvalService.wait(
       approvalId,
@@ -48,16 +49,10 @@ export class AuthorizationState implements TemporaryWhitelistAccess {
       warningMsg,
       waitOptions?.timeoutMs,
       waitOptions?.sessionId,
-      undefined,
+      waitOptions?.choices ? [...waitOptions.choices] : undefined,
       waitOptions?.signal,
     );
-    return {
-      action: (
-        decision.action === 'call' ||
-        decision.action === 'session' ||
-        decision.action === 'persistent'
-      ) ? 'approve' : 'deny'
-    };
+    return { action: decision.action };
   }
 
   // ── Call Capability 令牌生命周期 ──
@@ -140,13 +135,6 @@ export class AuthorizationState implements TemporaryWhitelistAccess {
         return false;
       }
     );
-  }
-
-  // ── 安全白名单 ──
-
-  /** 获取当前有效的安全命令白名单列表 */
-  getSecurityAllowlist(): string[] {
-    return SecurityService.getInstance().getSecurityAllowlist();
   }
 
   // ── TemporaryWhitelistAccess 实现 ──

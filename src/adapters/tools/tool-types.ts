@@ -10,6 +10,7 @@ import type { ToolExecutionContext } from '../../core/usecases/plugins/plugin-ty
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import type { ToolPermissionCheckResult } from '../../core/domain/permissions/permission-types.js';
+import type { ToolPermissionChecker } from '../../core/domain/permissions/tool-permission-service.js';
 
 export type { ResourceExtractor };
 
@@ -69,7 +70,7 @@ export interface NativeTool {
   ): Promise<string> | string;
 
   /**
-   * Claude 风格的工具权限检查。
+   * 工具级权限检查。
    * 工具通过此方法返回 allow/ask/deny/passthrough，
    * 由统一权限服务产生最终 PermissionDecision。
    *
@@ -78,6 +79,7 @@ export interface NativeTool {
    */
   checkPermissions?(
     args: Record<string, unknown>,
+    context?: Parameters<ToolPermissionChecker['checkPermissions']>[1],
   ): Promise<ToolPermissionCheckResult> | ToolPermissionCheckResult;
 
   /**

@@ -58,6 +58,31 @@ describe('Shell 命令分析', () => {
     expect(analysis.subcommands.map(segment => segment.pipelineIndex)).toEqual([0, 1]);
   });
 
+  it('PowerShell cmdlet 别名应投影为规范命令身份', async () => {
+    const analysis = await analyzeShellCommand('gci C:\\ -Force', 'powershell');
+
+    expect(analysis.subcommands).toHaveLength(1);
+    expect(analysis.subcommands[0]).toMatchObject({
+      executable: 'get-childitem',
+    });
+  });
+
+  it('动态参数应保留在 PowerShell AST 安全标志中', async () => {
+    const analysis = await analyzeShellCommand('Write-Host "$value"', 'powershell');
+
+    expect(analysis.subcommands).toHaveLength(1);
+    expect(analysis.powershellSecurity?.hasDynamicArguments).toBe(true);
+  });
+
+  it('外部 CLI 应保留命令身份和已有子命令参数', async () => {
+    const analysis = await analyzeShellCommand('docker ps', 'powershell');
+
+    expect(analysis.subcommands[0]).toMatchObject({
+      executable: 'docker',
+      arguments: ['ps'],
+    });
+  });
+
   it('使用原生 AST 分析计算属性，不把哈希表内分号切成顶层命令', async () => {
     const command = `Write-Host "=== C: Disk Info ==="; Get-PSDrive C | Select-Object Name, Used, Free, @{N='TotalGB';E={[math]::Round(($_.Used+$_.Free)/1GB,2)}}, @{N='UsedGB';E={[math]::Round($_.Used/1GB,2)}}, @{N='FreeGB';E={[math]::Round($_.Free/1GB,2)}}, @{N='FreePct';E={[math]::Round($_.Free/($_.Used+$_.Free)*100,1)}}`;
 
@@ -233,11 +258,11 @@ describe('Shell 命令分析', () => {
     expect(analysis.subcommands.map(segment => segment.connectorBefore)).toEqual([undefined, ';', '&&', '||']);
   });
 
-  it('条件链中 hardline 分支导致整体 deny、ask 分支导致整体 ask', async () => {
-    const hardlineBranch = await analyzeShellCommand('cat a.txt; git commit -m blocked', 'posix');
+  it('条件链中的普通写操作按整体最高风险进入 ask', async () => {
+    const gitWriteBranch = await analyzeShellCommand('cat a.txt; git commit -m message', 'posix');
     const askBranch = await analyzeShellCommand('cat a.txt; rm output.txt', 'posix');
 
-    expect(hardlineBranch).toMatchObject({ sideEffect: 'hardline', permission: 'deny' });
+    expect(gitWriteBranch).toMatchObject({ sideEffect: 'unknown', permission: 'ask' });
     expect(askBranch).toMatchObject({ sideEffect: 'write', permission: 'ask' });
   });
 
@@ -344,21 +369,21 @@ describe('Shell 命令分析', () => {
     });
   });
 
-  it('拒绝超过 50 个子命令的输入', async () => {
+  it('超过 50 个子命令时停止完整分析并保守询问', async () => {
     const command = Array.from({ length: 51 }, () => 'pwd').join(';');
     const analysis = await analyzeShellCommand(command, 'posix');
 
-    expect(analysis).toMatchObject({ parseStatus: 'unsupported', permission: 'deny' });
+    expect(analysis).toMatchObject({ parseStatus: 'unsupported', permission: 'ask' });
     expect(analysis.riskSignals.some(signal => signal.code === 'structure.too-many-subcommands')).toBe(true);
   });
 
-  it('hardline 在支持和未支持结构中都保持 deny', async () => {
-    const supported = await analyzeShellCommand('echo safe; git commit -m blocked', 'posix');
-    const unsupported = await analyzeShellCommand('echo safe | git commit -m blocked', 'posix', disabledFeatures);
-    const quotedLiteral = await analyzeShellCommand('echo "git commit -m literal"', 'posix');
+  it('成功解析记录根删除写入事实，降级扫描保留 hardline 且不误判字面量', async () => {
+    const supported = await analyzeShellCommand('echo safe; rm -rf /', 'posix');
+    const unsupported = await analyzeShellCommand('echo safe | rm -rf /', 'posix', disabledFeatures);
+    const quotedLiteral = await analyzeShellCommand('echo "rm -rf /"', 'posix');
 
-    expect(supported).toMatchObject({ sideEffect: 'hardline', permission: 'deny' });
-    expect(unsupported).toMatchObject({ parseStatus: 'unsupported', sideEffect: 'hardline', permission: 'deny' });
+    expect(supported).toMatchObject({ sideEffect: 'write', permission: 'ask' });
+    expect(unsupported).toMatchObject({ parseStatus: 'unsupported', sideEffect: 'hardline' });
     expect(quotedLiteral).toMatchObject({ sideEffect: 'read', permission: 'allow' });
   });
 
@@ -408,6 +433,17 @@ describe('Shell 命令分析', () => {
     expect(new Set(result.nodes.map(node => `${node.statementIndex}:${node.command}`)).size).toBe(result.nodes.length);
   });
 
+  it('区分 PowerShell 命令名的裸词、字符串和动态表达式', async () => {
+    const parser = new PowerShellAstParser();
+    const bareword = await parser.parse('Get-Process');
+    const string = await parser.parse("& 'Get-Process'");
+    const expression = await parser.parse('& $commandName');
+
+    expect(bareword.powershellProgram?.statements[0]?.commands[0]?.nameType).toBe('bareword');
+    expect(string.powershellProgram?.statements[0]?.commands[0]?.nameType).toBe('string');
+    expect(expression.powershellProgram?.statements[0]?.commands[0]?.nameType).toBe('expression');
+  });
+
   it('保留 PowerShell 冒号绑定参数的直接表达式子节点', async () => {
     const parser = new PowerShellAstParser();
     const result = await parser.parse('Write-Output -InputObject:$env:PATH');
@@ -448,5 +484,12 @@ describe('Shell 命令分析', () => {
 
     expect(result).toMatchObject({ parseStatus: 'invalid', nodes: [] });
     expect(result.riskSignals).toContainEqual(expect.objectContaining({ code: 'parser.powershell-invalid' }));
+  });
+
+  it('PowerShell 解析失败时保守询问而不是直接拒绝', async () => {
+    await expect(analyzeShellCommand('Write-Output $(', 'powershell')).resolves.toMatchObject({
+      parseStatus: 'invalid',
+      permission: 'ask',
+    });
   });
 });

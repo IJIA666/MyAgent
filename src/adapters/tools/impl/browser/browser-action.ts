@@ -410,7 +410,7 @@ export class BrowserNavigateTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -473,7 +473,7 @@ export class BrowserClickTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -547,7 +547,7 @@ export class BrowserTypeTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -626,7 +626,7 @@ export class BrowserScrollTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -686,7 +686,7 @@ export class BrowserBackTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -805,7 +805,7 @@ export class BrowserVisionTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -950,7 +950,7 @@ export class BrowserEnsureLoginTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -1061,7 +1061,7 @@ export class BrowserGetTextTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 浏览器操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {

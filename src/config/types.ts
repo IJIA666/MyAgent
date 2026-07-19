@@ -114,7 +114,7 @@ export interface McpConfig {
 }
 
 /**
- * Claude Code 同构的权限模式（配置层引用）。
+ * 配置层使用的权限模式。
  * 完整类型见 `src/core/domain/permissions/permission-types.ts` 的 `PermissionMode`。
  * 这里作为配置层的独立字面量类型以避免跨层类型依赖。
  */
@@ -126,7 +126,7 @@ export type ConfigPermissionMode =
   | 'dontAsk'
   | 'bypassPermissions';
 
-/** 默认的 Claude 权限模式 */
+/** 默认权限模式。 */
 export const DEFAULT_PERMISSION_MODE: ConfigPermissionMode = 'default';
 
 /** 诊断制品允许使用的内容采集策略。 */
@@ -182,7 +182,7 @@ export interface AppConfig {
   workspace: string;
   /** MCP Server 连接配置（可能为空对象） */
   mcp: McpConfig;
-  /** Claude Code 同构权限配置 */
+  /** 分层权限配置。 */
   permission?: {
     /** 默认权限模式 */
     defaultMode: ConfigPermissionMode;

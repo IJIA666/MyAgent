@@ -23,6 +23,30 @@ const CONNECTORS = new Map<string, CommandConnector>([
 ]);
 const REDIRECTION_OPERATORS = new Set(['<', '>', '>>', '<&', '>&', '<<<']);
 
+/** 检查 POSIX 引号是否完整闭合，不参与 token 或权限判断。 */
+function findUnclosedQuote(command: string): "'" | '"' | '`' | undefined {
+  let quote: "'" | '"' | '`' | undefined;
+  let escaped = false;
+  for (const char of command) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+    }
+  }
+  return quote;
+}
+
 /** 检测是否为反引号包裹的命令替换字符串。 */
 function isBacktickSubstitution(text: string): boolean {
   return text.startsWith('`') && text.endsWith('`') && text.length >= 2;
@@ -57,6 +81,17 @@ function createRedirection(operator: string, target?: string): CommandRedirectio
  */
 export function parsePosixStructure(command: string, enableNested: boolean = false): ShellStructureParseResult {
   const risks: CommandRiskSignal[] = [];
+  const unclosedQuote = findUnclosedQuote(command);
+  if (unclosedQuote) {
+    return {
+      parseStatus: 'invalid',
+      nodes: [],
+      riskSignals: [{
+        code: 'parser.posix-unclosed-quote',
+        reason: `POSIX 命令包含未闭合的 ${unclosedQuote} 引号`,
+      }],
+    };
+  }
   let tokens: ReturnType<typeof parse>;
   try {
     // 返回原样变量占位，禁止解析器读取当前进程环境。

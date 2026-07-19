@@ -9,6 +9,7 @@ import { ToolPermissionService } from '../../src/core/domain/permissions/tool-pe
 import { adaptOpenAiToolCall, batchCheckOpenAiToolCalls } from '../../src/core/domain/permissions/openai-adapter.js';
 import type { OpenAiToolCall } from '../../src/core/domain/permissions/openai-adapter.js';
 import { BashTool } from '../../src/adapters/tools/impl/system/terminal.js';
+import { initWorkspace } from '../../src/adapters/tools/impl/base.js';
 import type { ToolExecutionContext } from '../../src/core/domain/permissions/tool-permission-service.js';
 
 describe('MCP 权限规则', () => {
@@ -88,7 +89,7 @@ describe('OpenAI tool call 适配', () => {
       { id: 'call_2', type: 'function', function: { name: 'Write', arguments: '{}' } },
     ];
     const results = await batchCheckOpenAiToolCalls(calls, service, 'default');
-    expect(results.get('call_1')?.kind).toBe('ask');
+    expect(results.get('call_1')?.kind).toBe('allow');
     expect(results.get('call_2')?.kind).toBe('ask');
   });
 });
@@ -119,6 +120,7 @@ describe('tail call 权限验证', () => {
 
 describe('Terminal 权限证据', () => {
   it('应将复合命令的有序子命令证据传入最终决策', async () => {
+    initWorkspace(process.env.AUTHORIZED_WORKSPACE_DIR ?? process.cwd());
     const store = new PermissionRuleStore();
     const service = new ToolPermissionService({ ruleStore: store });
     const tool = new BashTool();
@@ -142,6 +144,7 @@ describe('Terminal 权限证据', () => {
   });
 
   it('任一写子命令应使整体进入 ask', async () => {
+    initWorkspace(process.env.AUTHORIZED_WORKSPACE_DIR ?? process.cwd());
     const store = new PermissionRuleStore();
     const service = new ToolPermissionService({ ruleStore: store });
     const tool = new BashTool();
@@ -160,5 +163,37 @@ describe('Terminal 权限证据', () => {
 
     expect(result.kind).toBe('ask');
     expect(result.evidence?.sideEffect).toBe('write');
+  });
+});
+
+describe('Shell 候选决定透传', () => {
+  it('不会根据 read evidence 把 Shell ask 重新计算为 allow', async () => {
+    const analysis = { command: 'custom inspect', shellKind: 'powershell' };
+    const service = new ToolPermissionService({ ruleStore: new PermissionRuleStore() });
+    const decision = await service.checkPermissions(
+      'PowerShell',
+      { command: 'custom inspect' },
+      'default',
+      {
+        checkPermissions: () => ({
+          kind: 'ask',
+          message: '需要确认',
+          decisionReason: '命令未进入自动允许目录',
+          decisionCode: 'shell.requires-approval',
+          ruleSuggestions: ['custom inspect'],
+          analysis,
+          evidence: {
+            operationCategory: 'command-execute',
+            sideEffect: 'read',
+            riskReason: '只读证据仅供日志使用',
+            shellKind: 'powershell',
+          },
+        }),
+      },
+    );
+
+    expect(decision.kind).toBe('ask');
+    expect(decision.ruleSuggestions).toEqual(['custom inspect']);
+    expect(decision.analysis).toBe(analysis);
   });
 });

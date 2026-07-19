@@ -8,7 +8,7 @@ import {
   analyzeAtomicCommandEvidence,
   type AtomicCommandSyntaxContext,
 } from './atomic-command-capabilities.js';
-import { scanHardlineCommand, tokenizeAtomicCommand } from './hardline-command-scanner.js';
+import { tokenizeAtomicCommand } from './hardline-command-scanner.js';
 import { isSensitiveFilesystemPath } from './resource-access-analyzer.js';
 import type {
   AtomicCommandEvidence,
@@ -17,7 +17,7 @@ import type {
   CommandSideEffect,
 } from './types.js';
 
-interface LegacyAtomicDecision {
+interface AtomicEvidenceSummary {
   readonly sideEffect: CommandSideEffect;
   readonly permission: CommandPermissionSuggestion;
   readonly reason: string;
@@ -34,18 +34,14 @@ function hasSensitiveReadOperand(evidence: Readonly<AtomicCommandEvidence>): boo
 }
 
 /**
- * 将行为证据投影为旧权限契约。
- * 该兼容层会在资源分析和统一权限策略完成后删除。
+ * 将行为证据压缩为日志和执行 effect 使用的摘要。
+ * 这里的 permission 是通用证据摘要字段，不参与 Bash/PowerShell 最终裁决。
  */
-function projectLegacyDecision(
+function summarizeAtomicEvidence(
   evidence: Readonly<AtomicCommandEvidence>,
-  hardlineReason?: string,
-): LegacyAtomicDecision {
-  if (hardlineReason !== undefined) {
-    return { sideEffect: 'hardline', permission: 'deny', reason: hardlineReason };
-  }
+): AtomicEvidenceSummary {
   if (hasSensitiveReadOperand(evidence)) {
-    return { sideEffect: 'sensitive-read', permission: 'ask', reason: '兼容策略检测到敏感资源读取' };
+    return { sideEffect: 'sensitive-read', permission: 'ask', reason: '资源证据包含敏感读取路径' };
   }
   if (evidence.possibleEffects.includes('filesystemWrite')) {
     return { sideEffect: 'write', permission: 'ask', reason: evidence.evidenceReason };
@@ -81,20 +77,8 @@ export function analyzeAtomicCommand(
   const tokens = tokenizeAtomicCommand(command, shellKind);
   const rawExecutable = syntax?.powershellCommand?.name ?? tokens[0] ?? '';
   const arguments_ = tokens.slice(1);
-  const hardline = scanHardlineCommand(command, shellKind);
-  const baseEvidence = analyzeAtomicCommandEvidence(rawExecutable, arguments_, shellKind, syntax);
-  const hardlineReason = hardline.length > 0
-    ? hardline.map(risk => risk.reason).join('；')
-    : undefined;
-  const evidence: AtomicCommandEvidence = hardlineReason === undefined
-    ? baseEvidence
-    : {
-        ...baseEvidence,
-        validation: { ...baseEvidence.validation, status: 'rejected' },
-        possibleEffects: [...new Set([...baseEvidence.possibleEffects, 'codeExecution' as const, 'unknown' as const])],
-        evidenceReason: hardlineReason,
-      };
-  const decision = projectLegacyDecision(evidence, hardlineReason);
+  const evidence = analyzeAtomicCommandEvidence(rawExecutable, arguments_, shellKind, syntax);
+  const decision = summarizeAtomicEvidence(evidence);
   return {
     command,
     executable: evidence.identity.canonicalName,
@@ -103,6 +87,5 @@ export function analyzeAtomicCommand(
     sideEffect: decision.sideEffect,
     permission: decision.permission,
     reason: decision.reason,
-    ruleSuggestion: command,
   };
 }

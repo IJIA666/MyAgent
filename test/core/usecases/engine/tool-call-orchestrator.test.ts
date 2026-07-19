@@ -231,6 +231,7 @@ describe('ToolCallOrchestrator', () => {
         completed: false,
         reason: 'approval_denied_before_execution',
       });
+      expect(result.userDenied).toBe(true);
       expect(result.events).toContainEqual(expect.objectContaining({
         type: 'error',
         message: expect.stringContaining('工具执行前被拒绝'),

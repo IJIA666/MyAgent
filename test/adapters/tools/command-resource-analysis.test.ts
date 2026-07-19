@@ -6,6 +6,22 @@
 import { win32 } from 'path';
 import { describe, expect, it } from 'vitest';
 import { analyzeShellCommand } from '../../../src/adapters/tools/impl/system/command-analysis/index.js';
+import { PowerShellAstParser } from '../../../src/adapters/tools/impl/system/command-analysis/powershell-ast-parser.js';
+import { validatePowerShellPaths } from '../../../src/adapters/tools/impl/system/command-analysis/powershell-path-validation.js';
+import { PermissionRuleStore } from '../../../src/core/domain/permissions/rule-store.js';
+import type { PowerShellProgramSyntax } from '../../../src/adapters/tools/impl/system/command-analysis/types.js';
+
+/** 共享原生解析器，减少路径用例重复启动进程。 */
+const powershellParser = new PowerShellAstParser();
+
+/** 解析路径测试所需的 PowerShell 程序投影。 */
+async function parsePowerShellProgram(command: string): Promise<PowerShellProgramSyntax> {
+  const parsed = await powershellParser.parse(command);
+  if (!parsed.powershellProgram) {
+    throw new Error(`测试命令未产生 PowerShell AST：${command}`);
+  }
+  return parsed.powershellProgram;
+}
 
 describe('Shell 命令资源与路径分析', () => {
   const context = {
@@ -254,5 +270,49 @@ describe('Shell 命令资源与路径分析', () => {
       baseContext: win32.normalize('D:\\projects\\MyAgent\\src'),
       resolvedResource: win32.normalize('D:\\projects\\MyAgent\\src\\index.ts'),
     }));
+  });
+
+  it('普通项目外只读路径不因缺少沙盒而自动 ask', async () => {
+    const program = await parsePowerShellProgram('Get-ChildItem C:\\Windows -Directory');
+
+    expect(validatePowerShellPaths(program, context.cwd, new PermissionRuleStore())).toEqual([]);
+  });
+
+  it('递归强制删除文件系统根目录始终 deny', async () => {
+    const program = await parsePowerShellProgram('Remove-Item C:\\ -Recurse -Force');
+
+    expect(validatePowerShellPaths(program, context.cwd, new PermissionRuleStore())).toContainEqual(
+      expect.objectContaining({ behavior: 'deny', code: 'powershell.root-removal' }),
+    );
+  });
+
+  it('显式路径 deny 规则优先于同一命令中的普通 ask', async () => {
+    const rules = new PermissionRuleStore();
+    const deniedPath = win32.normalize('D:\\projects\\MyAgent\\package.json');
+    rules.addRule('userSettings', {
+      source: 'userSettings',
+      ruleBehavior: 'deny',
+      ruleValue: { toolName: 'Read', ruleContent: deniedPath },
+    });
+    const program = await parsePowerShellProgram('Get-Content .\\package.json; Get-Content $dynamicPath');
+    const results = validatePowerShellPaths(program, context.cwd, rules);
+
+    expect(results[0]).toMatchObject({ behavior: 'deny', code: 'powershell.path-rule-deny' });
+    expect(results).toContainEqual(expect.objectContaining({ behavior: 'ask', code: 'powershell.dynamic-path' }));
+  });
+
+  it.each([
+    ['Get-Item HKLM:\\Software', 'powershell.provider-path'],
+    ['Get-Content "\\\\server\\share\\file.txt"', 'powershell.unc-path'],
+    ['Get-Content -Path $target', 'powershell.dynamic-path'],
+    ['New-Item link -ItemType SymbolicLink -Target target', 'powershell.link-creation'],
+    ['git --git-dir .git status', 'powershell.git-path-control'],
+    ['Set-Content .git\\hooks\\pre-commit value', 'powershell.git-internal-path'],
+    ['Get-Content input.txt > output.txt', 'powershell.output-redirection'],
+  ] as const)('识别路径与状态风险：%s', async (command, code) => {
+    const program = await parsePowerShellProgram(command);
+    const results = validatePowerShellPaths(program, context.cwd, new PermissionRuleStore());
+
+    expect(results).toContainEqual(expect.objectContaining({ behavior: 'ask', code }));
   });
 });

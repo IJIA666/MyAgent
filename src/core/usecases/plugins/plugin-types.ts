@@ -84,4 +84,6 @@ export interface ToolExecutionContext {
   argumentsDigest: string;
   /** 本次调用已领取的授权资源。 */
   claimedResources: SafetyResource[];
+  /** 权限阶段生成并绑定到本次调用的工具专用分析结果。 */
+  permissionAnalysis?: unknown;
 }

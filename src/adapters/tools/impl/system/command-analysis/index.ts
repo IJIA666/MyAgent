@@ -4,6 +4,9 @@
  */
 
 export { analyzeShellCommand } from './analyze-shell-command.js';
+export { createBashPermissionCandidate } from './bash-permissions.js';
+export { createShellPermissionEvidence } from './shell-permission-evidence.js';
+export { createPowerShellPermissionCandidate } from './powershell-permissions.js';
 export { analyzeCommandResources, isSensitiveFilesystemPath } from './resource-access-analyzer.js';
 export { DEFAULT_SHELL_COMPOUND_FEATURES } from './types.js';
 export type {

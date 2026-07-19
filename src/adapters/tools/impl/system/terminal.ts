@@ -5,6 +5,9 @@
 
 import {
   analyzeShellCommand,
+  createBashPermissionCandidate,
+  createPowerShellPermissionCandidate,
+  createShellPermissionEvidence,
   DEFAULT_SHELL_COMPOUND_FEATURES,
   type ShellCommandAnalysis,
   type ShellCompoundFeatureConfig,
@@ -21,8 +24,9 @@ import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plu
 import type { EventNotificationPort } from '../../../../ports/driven/session/EventNotificationPort.js';
 import type {
   ToolPermissionCheckResult,
-  ToolPermissionEvidence,
 } from '../../../../core/domain/permissions/permission-types.js';
+import type { ToolPermissionChecker } from '../../../../core/domain/permissions/tool-permission-service.js';
+import { PermissionRuleStore } from '../../../../core/domain/permissions/rule-store.js';
 
 /** Shell 工具构造参数。 */
 interface ShellToolOptions {
@@ -61,7 +65,7 @@ function createShellToolDescription(
   features: Readonly<ShellCompoundFeatureConfig>,
   platformNote = '',
 ): string {
-  return `以工作区为默认 cwd 启动一条独立的 ${shellLabel} 命令。cwd 只是启动目录，不是文件系统沙盒；绝对路径可能访问工作区外资源。每次调用使用新的 Shell，变量和函数不会跨调用保留。${describeCompoundFeatures(features)}执行前可能根据命令行为和访问资源请求授权；长时间服务请使用 isBackground。${platformNote}${FILE_SEARCH_TOOL_GUIDANCE}`;
+  return `以工作区为默认 cwd 启动一条独立的 ${shellLabel} 命令。每次调用请提供清晰、简短的 description，说明命令要完成什么；不要为了说明用途向 command 前插入 Shell 注释。cwd 只是启动目录，不是文件系统沙盒；绝对路径可能访问工作区外资源。每次调用使用新的 Shell，变量和函数不会跨调用保留。${describeCompoundFeatures(features)}执行前可能根据命令行为和访问资源请求授权；长时间服务请使用 isBackground。${platformNote}${FILE_SEARCH_TOOL_GUIDANCE}`;
 }
 
 /**
@@ -84,6 +88,10 @@ function createShellToolDefinition(
       type: 'string',
       description: `要执行的 ${shellLabel} 命令字符串（例如 'npm run test'）。`,
     },
+    description: {
+      type: 'string',
+      description: '清晰、简短地说明这条命令要完成什么；仅用于向用户解释本次调用，不参与权限判断。',
+    },
     cwd: {
       type: 'string',
       description: '命令执行的子目录路径（可选，相对于工作区根目录）。',
@@ -103,7 +111,7 @@ function createShellToolDefinition(
     type: 'function',
     function: {
       name,
-      description: description ?? `以工作区为默认 cwd 启动一条独立的 ${shellLabel} 命令。cwd 不是文件系统沙盒，执行前可能根据命令行为和访问资源请求授权。`,
+      description: description ?? `以工作区为默认 cwd 启动一条独立的 ${shellLabel} 命令。请为每次调用提供清晰、简短的 description。cwd 不是文件系统沙盒，执行前可能根据命令行为和访问资源请求授权。`,
       parameters: {
         type: 'object',
         properties,
@@ -113,24 +121,18 @@ function createShellToolDefinition(
   };
 }
 
-/** 将 Shell 专用分析结果投影为核心权限层可消费的通用证据。 */
-function createPermissionEvidence(analysis: ShellCommandAnalysis): ToolPermissionEvidence {
-  return {
-    operationCategory: 'command-execute',
-    sideEffect: analysis.sideEffect,
-    riskReason: analysis.riskReason,
-    shellKind: analysis.shellKind,
-    parseStatus: analysis.parseStatus,
-    subcommands: analysis.subcommands.map(segment => ({
-      command: segment.command,
-      connectorBefore: segment.connectorBefore,
-      sideEffect: segment.sideEffect,
-      permission: segment.permission,
-      reason: segment.reason,
-      ruleSuggestion: segment.ruleSuggestion,
-    })),
-    resources: analysis.resourceAccesses ?? [],
-  };
+/** 判断权限阶段 analysis 是否与当前待执行命令和 Shell 完整绑定。 */
+function isBoundShellAnalysis(
+  analysis: unknown,
+  command: string,
+  shellKind: ShellKind,
+): analysis is ShellCommandAnalysis {
+  if (!analysis || typeof analysis !== 'object') {
+    return false;
+  }
+  const candidate = analysis as Partial<ShellCommandAnalysis>;
+  return candidate.command === command && candidate.shellKind === shellKind &&
+    Array.isArray(candidate.subcommands);
 }
 
 /**
@@ -193,15 +195,15 @@ class BaseShellTool implements NativeTool {
   }
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
-   * 只执行工具专属的命令分析和不可绕过检查。
-   * 普通读写或未知命令仅返回结构化证据，最终决定由 ToolPermissionService 统一产生。
+   * 执行工具级权限检查。
+   * Shell 专属分析器在此产生唯一候选决定，通用权限服务只处理外层规则和模式。
    *
    * @param args - 工具调用参数
    * @returns 工具内部检查结果
    */
   async checkPermissions(
     args: Record<string, unknown>,
+    context?: Parameters<ToolPermissionChecker['checkPermissions']>[1],
   ): Promise<ToolPermissionCheckResult> {
     const command = args.command;
     if (typeof command !== 'string') {
@@ -233,20 +235,35 @@ class BaseShellTool implements NativeTool {
       this.compoundFeatures,
       { cwd: targetCwd, workspaceRoot, resolvePhysicalPath: getPhysicalRealPath },
     );
-    const planSideEffect = commandAnalysis.sideEffect;
-    const evidence = createPermissionEvidence(commandAnalysis);
-
-    // 硬红线检查（工具级 deny）
-    if (planSideEffect === 'hardline') {
-      return {
-        kind: 'deny',
-        decisionReason: commandAnalysis.riskReason || '拒绝执行毁灭性系统破坏命令',
-        evidence,
-      };
+    const rules = context?.rules ?? new PermissionRuleStore();
+    if (resolvedShellKind === 'powershell') {
+      return createPowerShellPermissionCandidate(
+        command,
+        commandAnalysis,
+        rules,
+        context?.mode ?? 'default',
+        targetCwd,
+      );
     }
-
-    // 语法错误和无法分析的结构也只上交证据；授权后由真实 Shell 返回自身错误。
-    return { kind: 'passthrough', evidence };
+    if (resolvedShellKind === 'posix') {
+      return createBashPermissionCandidate(
+        command,
+        commandAnalysis,
+        rules,
+        context?.mode ?? 'default',
+        targetCwd,
+      );
+    }
+    // 当前公开工具不会配置为 cmd；异常回退必须请求确认且不能生成持久规则。
+    return {
+      kind: 'ask',
+      decisionCode: 'shell.unsupported-family',
+      message: `${this.name} 命令需要权限确认`,
+      decisionReason: '当前工具没有对应 Shell 的专用权限分析器',
+      ruleSuggestions: [],
+      analysis: commandAnalysis,
+      evidence: createShellPermissionEvidence(commandAnalysis),
+    };
   }
 
   /**
@@ -274,8 +291,14 @@ class BaseShellTool implements NativeTool {
     // 0. 生成 ShellExecutionPlan；固定 Shell 语义必须与权限证据保持一致。
     const rawShellKind = this.getShellKind();
     const plan = this.createPlan(command, rawShellKind);
-    // 1. 安全网关：使用已决议 Shell 语义验证统一分析结论。
-    await validateCommand(command, plan.shellKind);
+    // 1. 经统一网关授权时复用权限阶段 analysis，避免授权后重新分析产生漂移。
+    const permissionAnalysis = _context && typeof _context === 'object' && 'toolCallId' in _context
+      ? _context.permissionAnalysis
+      : undefined;
+    if (!isBoundShellAnalysis(permissionAnalysis, command, plan.shellKind)) {
+      // 兼容仍直接调用工具的内部测试；正式运行入口必须携带已授权 analysis。
+      await validateCommand(command, plan.shellKind);
+    }
 
     // 2. 沙箱隔离：校验 cwd 范围并获取规范绝对路径
     const targetCwd = validateCwd(cwd);
@@ -290,7 +313,6 @@ class BaseShellTool implements NativeTool {
         watch_patterns,
         signal,
         onNotification: (event) => {
-          process.stdout.write(`\n[事件通知] 任务 ${event.taskId} 触发通知: ${event.type}${event.pattern ? `, 模式: ${event.pattern}` : ''}\n`);
           if (sessionContext) {
             let summary = `Background command "${command}" triggered ${event.type} notification.`;
             if (event.type === 'stalled') {
@@ -383,10 +405,7 @@ export {
   setPermissionMode,
   loadPermissionMode,
   savePermissionMode,
-  loadAllowedCommands,
-  saveAllowedCommands,
   extractSafePrefix,
-  checkWhitelist,
   getDefaultShellFamily,
   setDefaultShellFamily,
   loadDefaultShellFamily,

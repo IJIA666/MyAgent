@@ -40,7 +40,7 @@ export class ReadManyFilesTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 批量读取操作由 ToolPermissionService 统一决策。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {

@@ -45,6 +45,28 @@ export class ConversationState {
     this.messageHistory.push(message);
   }
 
+  /**
+   * 判断历史中是否存在尚未收到对应工具结果的 assistant tool call。
+   * OpenAI 协议要求一组 tool call 的全部结果闭合后才能插入普通消息。
+   *
+   * @returns 存在未闭合工具调用时返回 true
+   */
+  hasUnresolvedToolCalls(): boolean {
+    const unresolvedToolCallIds = new Set<string>();
+    for (const message of this.messageHistory) {
+      if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+        for (const toolCall of message.tool_calls) {
+          unresolvedToolCallIds.add(toolCall.id);
+        }
+        continue;
+      }
+      if (message.role === 'tool' && message.tool_call_id) {
+        unresolvedToolCallIds.delete(message.tool_call_id);
+      }
+    }
+    return unresolvedToolCallIds.size > 0;
+  }
+
   /** 弹出末尾一条消息 */
   popMessage(): StoredChatMessage | undefined {
     return this.messageHistory.pop();

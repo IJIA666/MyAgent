@@ -1,9 +1,13 @@
 /**
  * POSIX Shell 命令分析器。
- * 阶段 3 仅支持顶层分号、逻辑与和逻辑或连接符。
+ * POSIX parser 是成功路径的结构事实源；字符扫描只用于降级兜底。
  */
 
-import { analyzeWithProfile, mergeStructureEvidence } from './analyze-with-profile.js';
+import {
+  analyzeParsedStructure,
+  analyzeWithProfile,
+  mergeStructureEvidence,
+} from './analyze-with-profile.js';
 import { parsePosixStructure } from './posix-structure-parser.js';
 import type { CommandConnector, ShellCommandAnalysis, ShellCommandAnalyzer, ShellCompoundFeatureConfig } from './types.js';
 
@@ -19,11 +23,15 @@ export const posixCommandAnalyzer: ShellCommandAnalyzer = {
       ...(features.pipelines ? ['|', '|&'] as const : []),
       ...(features.background ? ['&'] as const : []),
     ];
-    const analysis = analyzeWithProfile(command, 'posix', allowedConnectors);
     if (!Object.values(features).some(Boolean)) {
-      return analysis;
+      return analyzeWithProfile(command, 'posix', allowedConnectors);
     }
     const structure = parsePosixStructure(command, features.nested);
-    return mergeStructureEvidence(analysis, structure);
+    if (structure.parseStatus === 'parsed') {
+      return analyzeParsedStructure(command, 'posix', structure);
+    }
+    // 解析失败时保留最小字符扫描，避免毁灭级命令在降级路径中失去兜底。
+    const fallbackAnalysis = analyzeWithProfile(command, 'posix', allowedConnectors);
+    return mergeStructureEvidence(fallbackAnalysis, structure);
   },
 };

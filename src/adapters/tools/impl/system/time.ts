@@ -26,7 +26,7 @@ export class GetCurrentTimeTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 时间查询是安全的只读操作。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {

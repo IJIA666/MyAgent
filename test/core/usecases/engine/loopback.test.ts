@@ -107,6 +107,44 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
     expect(history[history.length - 1].content).toBe('test-notification-1');
   });
 
+  it('工具结果未全部闭合时不得把异步通知插入消息历史', () => {
+    const context = new SessionContext('test-session');
+    const initialHistoryLength = context.getHistory().length;
+    context.addMessage({
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        {
+          id: 'call-1',
+          type: 'function',
+          function: { name: 'PowerShell', arguments: '{}' }
+        },
+        {
+          id: 'call-2',
+          type: 'function',
+          function: { name: 'PowerShell', arguments: '{}' }
+        }
+      ]
+    });
+    context.addMessage({ role: 'tool', tool_call_id: 'call-1', content: 'result-1' });
+    context.addNotification({ role: 'user', content: '<system_notification />' });
+
+    context.flushPendingNotifications();
+    expect(context.getHistory().slice(initialHistoryLength).map(message => message.role)).toEqual([
+      'assistant',
+      'tool'
+    ]);
+
+    context.addMessage({ role: 'tool', tool_call_id: 'call-2', content: 'result-2' });
+    context.flushPendingNotifications();
+    expect(context.getHistory().slice(initialHistoryLength).map(message => message.role)).toEqual([
+      'assistant',
+      'tool',
+      'tool',
+      'user'
+    ]);
+  });
+
   it('应该在 terminal 工具触发 onNotification 时，灌入正确的 XML 数据并 emit 事件', async () => {
     const context = new SessionContext('test-session');
     const tool = new BashTool();
@@ -308,5 +346,96 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
     // 验证熔断生效：计数器不再累加，且广播了熔断错误事件
     expect(privateSession.autoWakeupCount).toBe(3);
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('连续自动唤醒次数已达上限'));
+  });
+
+  it('连续异步事件不得并发启动多轮模型生成', async () => {
+    let activeGenerations = 0;
+    let maximumConcurrentGenerations = 0;
+    let completedGenerations = 0;
+    const mockDriver = {
+      getModelName: () => 'MockModel',
+      switchModel: () => { },
+      abort: () => { },
+      streamChat: async function* () {
+        // 本用例直接替换 AgentLoop；底层模型端口不会被调用。
+        yield {
+          type: 'complete',
+          content: '',
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: '' }
+        };
+      }
+    } as unknown as LlmPort;
+    const session = new SessionManager(
+      { model: 'mock-model' } as unknown as LlmConfig,
+      mockDriver,
+      {
+        countTokens: () => 0,
+        estimateMessageTokens: () => 0,
+        estimateSnapshotTokens: () => ({
+          total: 0, system: 0, rules: 0, transient: 0, history: 0, isEstimated: true
+        }),
+        estimateRequestTokens: () => ({
+          total: 0, inputTotal: 0, system: 0, rules: 0, transient: 0,
+          history: 0, tools: 0, outputReserve: 0, isEstimated: true
+        }),
+        getCompactionThreshold: () => 100000
+      } as unknown as TokenEstimatorPort,
+      {
+        getTools: async () => [],
+        callTool: async () => ({}),
+        getTool: () => undefined,
+        close: async () => { }
+      } as unknown as ToolRegistryPort,
+      { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter,
+      {
+        add: vi.fn().mockResolvedValue(undefined),
+        search: vi.fn().mockResolvedValue([]),
+        clear: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        count: vi.fn().mockResolvedValue(0)
+      } as unknown as VectorDbPort,
+      {
+        generateEmbedding: vi.fn().mockResolvedValue([]),
+        generateEmbeddings: vi.fn().mockResolvedValue([])
+      } as unknown as EmbeddingPort,
+      createMockAppConfig()
+    );
+    const privateSession = session as unknown as {
+      agentLoop: {
+        chat: () => AsyncGenerator<AgentEvent, void, unknown>;
+      };
+      __testEmitAsyncEvent: (event: unknown) => void;
+    };
+    privateSession.agentLoop = {
+      chat: async function* () {
+        activeGenerations++;
+        maximumConcurrentGenerations = Math.max(maximumConcurrentGenerations, activeGenerations);
+        // 保持第一轮生成处于运行状态，让第二个事件稳定命中忙碌缓冲路径。
+        await new Promise(resolve => setTimeout(resolve, 20));
+        yield { type: 'content', content: '' };
+        activeGenerations--;
+        completedGenerations++;
+      }
+    };
+    const generationErrors: string[] = [];
+    const completed = new Promise<void>((resolve) => {
+      session.on('agent_event', (event: AgentEvent) => {
+        if (event.type === 'error') {
+          generationErrors.push(event.message);
+        }
+        if (event.type === 'complete') {
+          resolve();
+        }
+      });
+    });
+
+    privateSession.__testEmitAsyncEvent({ type: 'completed', taskId: 'task-1' });
+    privateSession.__testEmitAsyncEvent({ type: 'completed', taskId: 'task-2' });
+    await completed;
+
+    expect(generationErrors).toEqual([]);
+    expect(completedGenerations).toBe(2);
+    expect(maximumConcurrentGenerations).toBe(1);
   });
 });

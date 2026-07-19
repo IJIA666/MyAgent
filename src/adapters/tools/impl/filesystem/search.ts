@@ -281,7 +281,7 @@ export class GrepSearchTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 只执行工具专属的路径安全检查。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -545,7 +545,7 @@ export class GlobSearchTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 通配符搜索始终是安全的只读操作。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {

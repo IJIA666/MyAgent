@@ -619,6 +619,7 @@ export async function runCommandEngine(
 
   // 挂载清理退出动作
   let resolved = false;
+  let cleanupStarted = false;
   let shouldNotifyCompletion = false;
   let resolvePromise: (value: string) => void;
 
@@ -627,6 +628,11 @@ export async function runCommandEngine(
   });
 
   function cleanup() {
+    // close、超时和强杀回调可能同时到达；清理与完成通知必须保持单次语义。
+    if (cleanupStarted) {
+      return;
+    }
+    cleanupStarted = true;
     clearTimers();
     logStream.end();
 

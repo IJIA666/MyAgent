@@ -153,7 +153,7 @@ ${foldedText}`;
             // 忽略异常，安全过滤
           }
         }
-        // 第一 project-level 优先级匹配成功后，跳出不再向上追溯（对齐 Opencode 机制）
+        // 第一条 project-level 优先级规则匹配成功后，跳出且不再向上追溯。
         break;
       }
 

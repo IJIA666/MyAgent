@@ -79,7 +79,7 @@ export class LoadSkillTool implements NativeTool {
    * @returns 安全评估结论
    */
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 技能加载是安全的只读操作。
    */
   checkPermissions(): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {

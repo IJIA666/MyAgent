@@ -1,5 +1,5 @@
 /**
- * @file Claude 参考行为夹具测试。
+ * @file 权限行为夹具测试。
  * 覆盖工具级规则、内容规则、deny/ask/allow 冲突、Bash/PowerShell 复合命令、
  * 路径、MCP、Plan、Auto、dontAsk、bypass 和规则更新。
  */

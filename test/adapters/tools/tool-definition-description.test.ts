@@ -52,16 +52,16 @@ describe('工具描述中性边界约束', () => {
     }
   });
 
-  test('Bash 与 PowerShell 应作为独立工具暴露且不携带 shellKind 参数', () => {
+  test('Bash 与 PowerShell 应作为独立工具暴露并支持可选的调用说明', () => {
     const bashTool = new BashTool();
     const powerShellTool = new PowerShellTool();
     const bashDefinition = bashTool.definition.function as {
       name: string;
-      parameters: { properties: Record<string, unknown> };
+      parameters: { properties: Record<string, unknown>; required: string[] };
     };
     const powerShellDefinition = powerShellTool.definition.function as {
       name: string;
-      parameters: { properties: Record<string, unknown> };
+      parameters: { properties: Record<string, unknown>; required: string[] };
     };
 
     expect(bashTool.name).toBe('Bash');
@@ -70,6 +70,11 @@ describe('工具描述中性边界约束', () => {
     expect(powerShellDefinition.name).toBe('PowerShell');
     expect(bashDefinition.parameters.properties).not.toHaveProperty('shellKind');
     expect(powerShellDefinition.parameters.properties).not.toHaveProperty('shellKind');
+    // 调用说明保持可选，缺失时不能阻断不同模型发起终端调用。
+    expect(bashDefinition.parameters.properties).toHaveProperty('description');
+    expect(powerShellDefinition.parameters.properties).toHaveProperty('description');
+    expect(bashDefinition.parameters.required).toEqual(['command']);
+    expect(powerShellDefinition.parameters.required).toEqual(['command']);
   });
 
   test('搜索工具应暴露有界分页参数，终端工具应保留软引导而非硬禁令', () => {
@@ -100,6 +105,7 @@ describe('工具描述中性边界约束', () => {
       expect(description).toContain('Shell 可执行标准复合语法');
       expect(description).toContain('管道、条件链、重定向、后台操作符、嵌套结构');
       expect(description).toContain('执行前可能');
+      expect(description).toContain('不要为了说明用途向 command 前插入 Shell 注释');
       expect(description).toContain('长时间服务请使用 isBackground');
       expect(description).not.toContain('在工作区内执行');
       expect(description).not.toContain('受限沙箱');

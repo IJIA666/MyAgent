@@ -167,7 +167,7 @@ describe('安全与并发增强特性测试', () => {
 
       expect(result).toContain('Task ID');
       await new Promise(resolve => setTimeout(resolve, 900));
-      expect(notifications.some(event => event.type === 'completed')).toBe(true);
+      expect(notifications.filter(event => event.type === 'completed')).toHaveLength(1);
     });
 
     it('调用 runCommandEngine 时，如果 signal 被 abort 应当能迅速强杀进程释放', async () => {

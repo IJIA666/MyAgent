@@ -11,15 +11,12 @@ import {
   BashTool,
   PowerShellTool,
   extractSafePrefix,
-  checkWhitelist,
-  saveAllowedCommands,
-  loadAllowedCommands,
   setPermissionMode,
   savePermissionMode,
   loadPermissionMode
 } from '../../../src/adapters/tools/impl/system/terminal.js';
 import { analyzeShellCommand } from '../../../src/adapters/tools/impl/system/command-analysis/index.js';
-import { validateCommand, validateCwd, unboxNestedCommand, isPlanSafeCommand, detectAdvisoryWarnings } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
+import { validateCommand, validateCwd, unboxNestedCommand, detectAdvisoryWarnings } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
 import type { ToolPermissionCheckResult } from '../../../src/core/domain/permissions/permission-types.js';
 import { PermissionRuleStore } from '../../../src/core/domain/permissions/rule-store.js';
 import { ToolPermissionService } from '../../../src/core/domain/permissions/tool-permission-service.js';
@@ -44,9 +41,6 @@ describe('Terminal Tool 单元测试', () => {
     // 每次测试前，将工作模式重置为 YOLO，防止测试由于人工交互阻断卡死
     setPermissionMode('bypassPermissions');
     savePermissionMode('bypassPermissions');
-
-    // 清空白名单
-    saveAllowedCommands([]);
 
     // 按当前平台实例化对应的公开 Shell 工具
     executeCommandToolInstance = process.platform === 'win32'
@@ -95,7 +89,7 @@ describe('Terminal Tool 单元测试', () => {
     await expect(executeCommandToolInstance.execute({ command: 'npm run build', cwd: maliciousCwd })).rejects.toThrow('Operation not permitted');
   });
 
-  test('4. 工作模式与白名单持久化配置测试', () => {
+  test('4. 工作模式持久化配置测试', () => {
     // 工作模式存取测试
     savePermissionMode('default');
     expect(loadPermissionMode()).toBe('default');
@@ -103,19 +97,6 @@ describe('Terminal Tool 单元测试', () => {
     savePermissionMode('auto');
     expect(loadPermissionMode()).toBe('auto');
 
-    // 白名单存取测试
-    const mockRules = ['npm run:*', 'git add:*'];
-    saveAllowedCommands(mockRules);
-
-    const loaded = loadAllowedCommands();
-    expect(loaded).toContain('npm run:*');
-    expect(loaded).toContain('git add:*');
-
-    // 白名单命中匹配校验
-    expect(checkWhitelist('npm run build')).toBe(true);
-    expect(checkWhitelist('powershell -Command "npm run build"')).toBe(true); // 剥壳后能够匹配
-    expect(checkWhitelist('git add src/a.ts')).toBe(true);
-    expect(checkWhitelist('npm publish')).toBe(false); // 没在白名单内
   });
 
   test('5. YOLO 模式下命令的执行及首尾截断防爆测试', async () => {
@@ -195,22 +176,15 @@ describe('Terminal Tool 单元测试', () => {
     expect(unboxNestedCommand(withBraceParamsCmd)).toBe(withBraceParamsCmd);
   });
 
-  test('11. 自动初始化与剥壳前缀提取测试', () => {
-    // A. 自动配置初始化测试：因为 beforeEach 把允许命令清空为空数组，
-    // 调用 loadAllowedCommands 应自动触发配置初始化，写入并返回默认常用规则
-    const defaultLoaded = loadAllowedCommands();
-    expect(defaultLoaded).toContain('git status:*');
-    expect(defaultLoaded).toContain('npm run test:*');
-
-    // B. 剥壳前缀提取测试
+  test('11. 剥壳前缀提取测试', () => {
     expect(extractSafePrefix('powershell -Command "npm run build"')).toBe('npm run');
     expect(extractSafePrefix('powershell -ExecutionPolicy Bypass -Command "git add src/index.ts"')).toBe('git add');
 
   });
 
   test('12. validateCommand 仅检测硬红线，结构安全性由 checkPermissions 负责', async () => {
-    // 硬红线仍然拦截（运行时兜底）
-    await expect(validateCommand('git commit -m "update"')).rejects.toThrow('严禁执行除只读查看外的任何 Git 变更操作');
+    // 普通写操作交给权限候选处理，执行期只保留毁灭级硬红线兜底。
+    await expect(validateCommand('git commit -m "update"')).resolves.toBeUndefined();
     await expect(validateCommand('rm -rf /')).rejects.toThrow('命中硬红线');
 
     // 分号、管道等复合结构现在放行——结构分析已由 checkPermissions 在授权阶段完成
@@ -222,66 +196,23 @@ describe('Terminal Tool 单元测试', () => {
     expect(correctPath).toBe(join(mockRootDir, 'src'));
   });
 
-  test('13. 终端 Git 写变更操作绝对硬阻断测试', async () => {
-    // 工具级权限证据必须把 Git 写操作标记为不可降级的 hardline deny。
+  test('13. Git 写操作请求授权且执行守卫不再二次拒绝', async () => {
+    // Git 写操作由 Shell 专用权限管线请求用户确认。
     const commitDecision = await executeCommandToolInstance.checkPermissions({ command: 'git commit -m "update"' });
-    expect(commitDecision.kind).toBe('deny');
-    expect(commitDecision.evidence?.sideEffect).toBe('hardline');
+    expect(commitDecision.kind).toBe('ask');
 
     const checkoutDecision = await executeCommandToolInstance.checkPermissions({ command: 'git checkout main' });
-    expect(checkoutDecision.kind).toBe('deny');
-    expect(checkoutDecision.evidence?.sideEffect).toBe('hardline');
+    expect(checkoutDecision.kind).toBe('ask');
 
-    // validateCommand 物理执行阶段同样直接抛错阻断
-    await expect(validateCommand('git commit -m "update"')).rejects.toThrow('严禁执行除只读查看外的任何 Git 变更操作');
-    await expect(validateCommand('git checkout -b branch')).rejects.toThrow('严禁执行除只读查看外的任何 Git 变更操作');
-    await expect(validateCommand('git add .')).rejects.toThrow('严禁执行除只读查看外的任何 Git 变更操作');
+    // 获得授权后，物理执行守卫不得再次拒绝普通 Git 写操作。
+    await expect(validateCommand('git commit -m "update"')).resolves.toBeUndefined();
+    await expect(validateCommand('git checkout -b branch')).resolves.toBeUndefined();
+    await expect(validateCommand('git add .')).resolves.toBeUndefined();
 
-    // 只读 Git 查看命令不属于 hardline，只向统一权限服务提交 read evidence。
+    // 只读 Git 查看命令由专用目录直接放行。
     const logDecision = await executeCommandToolInstance.checkPermissions({ command: 'git log' });
-    expect(logDecision.kind).toBe('passthrough');
+    expect(logDecision.kind).toBe('allow');
     expect(logDecision.evidence?.sideEffect).toBe('read');
-  });
-
-  test('14. isPlanSafeCommand 统一安全判定函数测试', async () => {
-    // A. 只读白名单命令无复合字符 → 返回 true
-    expect(await isPlanSafeCommand('dir C:\\Windows\\Temp', 'cmd')).toBe(true);
-    expect(await isPlanSafeCommand('type package.json', 'cmd')).toBe(true);
-    expect(await isPlanSafeCommand('wmic logicaldisk where caption="C:" get caption,size,freespace /format:value', 'cmd')).toBe(true);
-    expect(await isPlanSafeCommand('Get-PSDrive C', 'powershell')).toBe(true);
-    expect(await isPlanSafeCommand('powershell Get-PSDrive C', 'powershell')).toBe(false);
-    expect(await isPlanSafeCommand('git status', 'powershell')).toBe(true);
-    expect(await isPlanSafeCommand('git diff', 'powershell')).toBe(true);
-    expect(await isPlanSafeCommand('git log', 'powershell')).toBe(true);
-    expect(await isPlanSafeCommand('ls', 'powershell')).toBe(true);
-    expect(await isPlanSafeCommand('cat file.txt', 'posix')).toBe(true);
-    expect(await isPlanSafeCommand('git log --grep="feat;fix"', 'powershell')).toBe(true);
-    expect(await isPlanSafeCommand('echo ">"', 'posix')).toBe(true);
-
-    // B. 复合命令按子命令聚合：纯读取可安全判定，重定向和未知命令不能放行
-    expect(await isPlanSafeCommand('dir /-C | findstr "txt"', 'cmd')).toBe(false); // Cmd 复合语法未开放
-    expect(await isPlanSafeCommand('type a.txt > b.txt', 'cmd')).toBe(false); // 文件重定向
-    expect(await isPlanSafeCommand('git log; whoami', 'powershell')).toBe(false); // 未知子命令
-    expect(await isPlanSafeCommand('cat file; echo done', 'posix')).toBe(true); // 两个只读子命令
-    expect(await isPlanSafeCommand('cat file && echo done', 'posix')).toBe(true); // 支持短路连接符
-    expect(await isPlanSafeCommand('cat file & echo done', 'posix')).toBe(true); // 已托管的只读后台结构
-    expect(await isPlanSafeCommand('cat file; rm output.txt', 'posix')).toBe(false); // 写子命令
-
-    // C. 非白名单命令 → 返回 false
-    expect(await isPlanSafeCommand('wmic logicaldisk', 'cmd')).toBe(true);
-    expect(await isPlanSafeCommand('wmic process', 'cmd')).toBe(false);
-    expect(await isPlanSafeCommand('netstat -an', 'powershell')).toBe(false);
-    expect(await isPlanSafeCommand('rm -rf /', 'posix')).toBe(false);           // 硬红线
-
-    // D. 危险写命令 → 返回 false
-    expect(await isPlanSafeCommand('del file.txt', 'cmd')).toBe(false);
-    expect(await isPlanSafeCommand('rm file.txt', 'posix')).toBe(false);
-
-    // E. shell family 约束：只在当前已决议 shell 下真实可执行的只读命令才允许进入审批
-    expect(await isPlanSafeCommand('dir', 'cmd')).toBe(true);
-    expect(await isPlanSafeCommand('dir', 'powershell')).toBe(true);
-    expect(await isPlanSafeCommand('dir', 'posix')).toBe(false);
-    expect(await isPlanSafeCommand('cat file.txt', 'cmd')).toBe(false);
   });
 
   test('17. advisory warning 解析应跳过当前 shell 的命令开关', () => {
@@ -298,9 +229,20 @@ describe('Terminal Tool 单元测试', () => {
 // ── checkPermissions 测试（5.5 工具迁移测试）──
 
 describe('ShellTool.checkPermissions', () => {
+  const permissionRootDir = mkdtempSync(join(tmpdir(), 'permission-terminal-test-'));
   const tool = process.platform === 'win32'
     ? new PowerShellTool()
     : new BashTool();
+
+  beforeAll(() => {
+    // 该测试组独立初始化工作区，避免依赖前一个 describe 的全局副作用。
+    initWorkspace(permissionRootDir);
+  });
+
+  afterAll(() => {
+    // 清理本组专用目录，保持筛选运行与全量运行行为一致。
+    rmSync(permissionRootDir, { recursive: true, force: true });
+  });
 
   const pipelineFeatures = {
     pipelines: true,
@@ -323,13 +265,13 @@ describe('ShellTool.checkPermissions', () => {
     const powershell = new PowerShellTool(pipelineFeatures);
 
     await expect(bash.checkPermissions({ command: 'cat a.txt | grep x' }))
-      .resolves.toMatchObject({ kind: 'passthrough', evidence: { sideEffect: 'read' } });
+      .resolves.toMatchObject({ kind: 'allow', evidence: { sideEffect: 'read' } });
     await expect(bash.checkPermissions({ command: 'cat a.txt | rm output.txt' }))
-      .resolves.toMatchObject({ kind: 'passthrough', evidence: { sideEffect: 'write' } });
+      .resolves.toMatchObject({ kind: 'ask', evidence: { sideEffect: 'write' } });
     await expect(powershell.checkPermissions({ command: 'Get-Content a.txt | Select-String x' }))
-      .resolves.toMatchObject({ kind: 'passthrough', evidence: { sideEffect: 'read' } });
+      .resolves.toMatchObject({ kind: 'allow', evidence: { sideEffect: 'read' } });
     await expect(new BashTool(disabledFeatures).checkPermissions({ command: 'cat a.txt | grep x' }))
-      .resolves.toMatchObject({ kind: 'passthrough', evidence: { parseStatus: 'unsupported' } });
+      .resolves.toMatchObject({ kind: 'ask', evidence: { parseStatus: 'unsupported' } });
   });
 
   test('PowerShell 只读管道经统一权限服务后应直接 allow', async () => {
@@ -350,9 +292,9 @@ describe('ShellTool.checkPermissions', () => {
     });
   });
 
-  test('合法只读命令应返回 passthrough 和 read evidence', async () => {
+  test('合法只读命令应返回 allow 和 read evidence', async () => {
     const result = await tool.checkPermissions!({ command: 'git log' }) as ToolPermissionCheckResult;
-    expect(result.kind).toBe('passthrough');
+    expect(result.kind).toBe('allow');
     expect(result.evidence?.sideEffect).toBe('read');
     expect(result.evidence?.resources).toContainEqual(expect.objectContaining({
       kind: 'directory',
@@ -362,32 +304,33 @@ describe('ShellTool.checkPermissions', () => {
     }));
   });
 
-  test('未分类命令应返回 passthrough 并携带 unknown evidence', async () => {
+  test('未分类命令应返回 ask 并携带 unknown evidence', async () => {
     const result = await tool.checkPermissions!({ command: 'npm run build' }) as ToolPermissionCheckResult;
-    expect(result.kind).toBe('passthrough');
+    expect(result.kind).toBe('ask');
     expect(result.evidence?.sideEffect).toBe('unknown');
   });
 
-  test('未分类环境命令也应交给统一权限服务处理', async () => {
+  test('未分类环境命令应由专用管线请求确认', async () => {
     const result = await tool.checkPermissions!({ command: 'env' }) as ToolPermissionCheckResult;
-    expect(result.kind).toBe('passthrough');
+    expect(result.kind).toBe('ask');
     expect(result.evidence?.sideEffect).toBe('unknown');
   });
 
-  test('Shell 语法错误应交给统一权限服务而不是直接 deny', async () => {
+  test('Shell 语法错误应请求确认而不是直接 deny', async () => {
     const bash = new BashTool();
     const result = await bash.checkPermissions({ command: 'grep "unfinished' });
 
+    // passthrough 分支没有原因字段，失败消息只在候选实际携带原因时展示。
+    const decisionReason = 'decisionReason' in result ? result.decisionReason : undefined;
+    expect(result.kind, decisionReason).toBe('ask');
     expect(result).toMatchObject({
-      kind: 'passthrough',
       evidence: { parseStatus: 'invalid', sideEffect: 'unknown' },
     });
   });
 
   test('危险命令应返回 deny', async () => {
-    const result = await tool.checkPermissions!({ command: 'rm -rf /' }) as ToolPermissionCheckResult;
+    const result = await new BashTool().checkPermissions({ command: 'rm -rf /' });
     expect(result.kind).toBe('deny');
-    expect(result.evidence?.sideEffect).toBe('hardline');
   });
 
   test('空 command 应返回 deny', async () => {
@@ -395,19 +338,14 @@ describe('ShellTool.checkPermissions', () => {
     expect(result.kind).toBe('deny');
   });
 
-  test('checkPermissions 不应读取 PermissionMode（无 sessionContext 参数）', () => {
-    // checkPermissions 的签名不包含 sessionContext，证明工具检查与模式转换相互独立。
-    expect(tool.checkPermissions!.length).toBeLessThanOrEqual(1);
-  });
-
-  test('复合命令一次分析聚合证据，不在工具层询问', async () => {
+  test('复合命令一次分析并由工具层返回完整候选', async () => {
     const bash = new BashTool({
       pipelines: true, conditionals: false,
       redirections: false, background: false, nested: false,
     });
-    // 管道中混合只读和写命令，聚合为一次 passthrough 证据。
+    // 管道中混合只读和写命令，专用管线聚合为一次 ask 候选。
     const mixed = await bash.checkPermissions({ command: 'cat a.txt | rm output.txt' });
-    expect(mixed.kind).toBe('passthrough');
+    expect(mixed.kind).toBe('ask');
     expect(mixed.evidence?.parseStatus).toBe('parsed');
     expect(mixed.evidence?.subcommands).toHaveLength(2);
     // 每个子命令独立评估
@@ -421,8 +359,8 @@ describe('ShellTool.checkPermissions', () => {
       redirections: true, background: false, nested: false,
     });
     const result = await bash.checkPermissions({ command: 'cat package.json > backup.json' });
-    // 重定向使整体提升为 write，但最终行为仍由统一权限服务决定。
-    expect(result.kind).toBe('passthrough');
+    // 重定向使整体提升为 write，并由专用管线直接请求确认。
+    expect(result.kind).toBe('ask');
     expect(result.evidence?.sideEffect).toBe('write');
     // 子命令证据携带重定向风险说明
     const sub = result.evidence?.subcommands?.[0];

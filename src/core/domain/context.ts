@@ -20,6 +20,7 @@ import { PluginMutationLog } from './plugin-mutation-log.js';
 import type { PluginPatchGroup } from './plugin-mutation-log.js';
 import type { AskUserAnswer } from '../../ports/driven/session/InteractionPort.js';
 import type { ApprovalWaitOptions } from '../../ports/driven/session/ApprovalPort.js';
+import type { ApprovalChoiceId } from '../../ports/shared/approval-types.js';
 
 // 从子状态文件重导出公开类型与函数（保持向后兼容）
 export { computeArgumentsDigest } from './call-capability.js';
@@ -278,7 +279,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
    *
    * @param mode - 目标工作安全模式
    */
-  /** 获取当前会话的权限模式（Claude Code 同构） */
+  /** 获取当前会话的权限模式。 */
   public getPermissionMode(): ConfigPermissionMode {
     return this.permissionModeManager.getMode();
   }
@@ -313,22 +314,16 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
     });
   }
 
-  // ── 安全白名单（委托给 AuthorizationState + busy 检查）──
-
-  /** 获取当前有效的安全命令白名单列表（委托给 AuthorizationState） */
-  public getSecurityAllowlist(): string[] {
-    return this.authorizationState.getSecurityAllowlist();
-  }
-
   // ── 通知缓冲与人机中断（委托给 InteractionState，跨对象编排由 façade 完成）──
 
   /**
-   * 追加一条系统通知消息。若忙锁状态下则暂存于 InteractionState 缓冲区，否则直接写入历史。
+   * 追加一条系统通知消息。
+   * Hook 忙碌或工具调用结果尚未闭合时暂存，避免破坏模型协议消息顺序。
    *
    * @param message - 系统通知消息对象
    */
   public addNotification(message: StoredChatMessage): void {
-    if (this.isProcessing) {
+    if (this.isProcessing || this.conversationState.hasUnresolvedToolCalls()) {
       this.interactionState.bufferNotification(message);
     } else {
       this.conversationState.addMessage(message);
@@ -336,9 +331,13 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
   }
 
   /**
-   * 将 InteractionState 缓冲区中暂存的系统通知物理刷入 ConversationState 消息历史并清空缓冲。
+   * 在 Hook 空闲且工具调用结果全部闭合后，将暂存通知刷入消息历史。
+   * 不满足安全边界时保留原队列，等待后续生命周期检查点再次刷新。
    */
   public flushPendingNotifications(): void {
+    if (this.isProcessing || this.conversationState.hasUnresolvedToolCalls()) {
+      return;
+    }
     const notifications = this.interactionState.drainPendingNotifications();
     if (notifications.length > 0) {
       for (const n of notifications) {
@@ -433,7 +432,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
     actionInfo: { name: string; arguments?: Record<string, unknown> },
     options?: string | ApprovalWaitOptions,
     warningMsg?: string
-  ): Promise<{ action: 'approve' | 'deny'; reason?: string }> {
+  ): Promise<{ action: ApprovalChoiceId; reason?: string }> {
     return this.authorizationState.waitApproval(approvalId, actionInfo, options, warningMsg);
   }
 

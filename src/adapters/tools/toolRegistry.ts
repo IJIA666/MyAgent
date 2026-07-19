@@ -4,6 +4,7 @@ import { McpToolManager } from './mcp-client.js';
 import { ToolCatalog } from './ToolCatalog.js';
 import { ToolExecutor } from './ToolExecutor.js';
 import { ToolCallGateway } from './ToolCallGateway.js';
+import { PermissionSettingsStore } from './PermissionSettingsStore.js';
 import { PermissionRuleStore } from '../../core/domain/permissions/rule-store.js';
 import { ToolPermissionService } from '../../core/domain/permissions/tool-permission-service.js';
 import { PermissionPromptAdapter } from '../../core/usecases/plugins/PermissionPromptAdapter.js';
@@ -11,6 +12,7 @@ import type { ToolPermissionCheckResult, ToolPermissionEvidence } from '../../co
 import { isToolLifecycleError } from '../../core/domain/tool-lifecycle-error.js';
 import { ToolAccessMetadataProvider } from './ToolAccessMetadataProvider.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
+import type { ApprovalChoice } from '../../ports/shared/approval-types.js';
 import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabilityPort.js';
 import type { EventNotificationPort } from '../../ports/driven/session/EventNotificationPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
@@ -39,6 +41,8 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
   private permissionRuleStore: PermissionRuleStore;
   /** 当前注册表对应的权限服务。 */
   private permissionService: ToolPermissionService;
+  /** 可选的权限规则磁盘仓库；测试默认不注入以保持隔离。 */
+  private readonly permissionSettingsStore?: PermissionSettingsStore;
   // 工具访问元数据聚合器（委托资源提取器查询）
   private metadataProvider: ToolAccessMetadataProvider;
   // 可选的外部 MCP 工具管理器实例
@@ -49,8 +53,13 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
    *
    * @param mcpManager - 外部的 MCP 工具管理器（可选）
    * @param options - 本地工具装配选项（可选）
+   * @param permissionSettingsStore - 可选的权限规则磁盘仓库
    */
-  constructor(mcpManager?: McpToolManager, options?: BuildNativeToolsOptions) {
+  constructor(
+    mcpManager?: McpToolManager,
+    options?: BuildNativeToolsOptions,
+    permissionSettingsStore?: PermissionSettingsStore,
+  ) {
     // 注入可选的外部 MCP 工具管理器
     this.mcpManager = mcpManager;
     // 通过唯一装配源构建本地工具列表
@@ -59,6 +68,8 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     this.catalog = new ToolCatalog(allTools, mcpManager);
     // 构建执行器与权限网关，网关只使用本实例签发的授权上下文。
     this.permissionRuleStore = new PermissionRuleStore();
+    this.permissionSettingsStore = permissionSettingsStore;
+    this.permissionSettingsStore?.loadInto(this.permissionRuleStore);
     this.permissionService = new ToolPermissionService({ ruleStore: this.permissionRuleStore });
     this.executor = new ToolExecutor(
       this.catalog,
@@ -219,18 +230,67 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     if (!sessionContext) {
       return undefined;
     }
-    return new PermissionPromptAdapter(
+    const promptAdapter = new PermissionPromptAdapter(
       this.permissionRuleStore,
       async (decision, _mode, signal) => {
+        const ruleSuggestions = promptAdapter.getRuleSuggestions(toolName, args, decision);
+        const ruleDescriptions = ruleSuggestions.map(ruleContent => (
+          ruleContent === undefined ? toolName : `${toolName}(${ruleContent})`
+        ));
+        const choices: ApprovalChoice[] = [
+          {
+            choiceId: 'call',
+            label: '单次放行 (Allow Once)',
+            description: '只允许当前这一次调用',
+          },
+          ...(ruleDescriptions.length > 0 ? [{
+            choiceId: 'persistent' as const,
+            label: '允许并创建规则',
+            description: ruleDescriptions.join('；'),
+            followUp: {
+              prompt: '规则保存到哪里？',
+              choices: [
+                {
+                  choiceId: 'session' as const,
+                  label: '当前会话',
+                  description: '退出本次 MyAgent 会话后自动失效',
+                },
+                {
+                  choiceId: 'project' as const,
+                  label: '当前项目',
+                  description: '仅本机当前项目生效，保存到 .myagent/settings.local.json',
+                },
+                {
+                  choiceId: 'user' as const,
+                  label: '当前用户',
+                  description: '本机所有项目生效，保存到 ~/.myagent/settings.json',
+                },
+              ],
+            },
+          }] : []),
+          {
+            choiceId: 'deny',
+            label: '拒绝执行 (Deny)',
+          },
+        ];
         const approval = await sessionContext.waitApproval(
           `permission_${Date.now()}_${toolName}`,
           { name: toolName, arguments: args },
-          { signal },
+          { signal, choices },
           `${decision.message}（${decision.decisionReason}）`,
         );
-        return { approved: approval.action === 'approve', scope: 'once' };
+        const scope = approval.action === 'session'
+          ? 'session'
+          : approval.action === 'project'
+            ? 'project'
+            : approval.action === 'user' || approval.action === 'persistent'
+              ? 'user'
+              : 'once';
+        return { approved: approval.action !== 'deny', scope };
       },
+      (update) => this.permissionSettingsStore?.persist(update),
     );
+    return promptAdapter;
   }
 
   /** 根据外部工具访问声明生成保守权限证据。 */
@@ -297,6 +357,8 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
    * 优雅断开并清理工具注册表内管理的所有物理连接（如 MCP 子进程）。
    */
   public async close(): Promise<void> {
+    // session 来源规则只能存活到当前注册表对应的会话关闭，禁止泄漏到后续会话。
+    this.permissionRuleStore.clearSessionRules();
     if (this.mcpManager) {
       await this.mcpManager.close();
     }

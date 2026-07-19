@@ -473,6 +473,7 @@ export class AgentLoop {
 
             // 按原本的工具调用顺序，依次结算并触发 UI 事件流和数据链追加
             let pausedForInteraction = false;
+            let stoppedByUserDenial = false;
             for (let i = 0; i < settledResults.length; i++) {
               const res = settledResults[i];
               if (res.status === 'fulfilled') {
@@ -483,6 +484,9 @@ export class AgentLoop {
 
                 if (taskRes.interrupted) {
                   pausedForInteraction = true;
+                }
+                if (taskRes.userDenied) {
+                  stoppedByUserDenial = true;
                 }
 
                 if (taskRes.finalCallUpdate.error) {
@@ -546,6 +550,11 @@ export class AgentLoop {
               actual_tokens: event.usage as ApiUsage,
               systemPromptHash: traceSystemPromptHash
             });
+
+            // 用户拒绝表示本轮不再尝试等价工具调用；回执与审计已经在上方完整保留。
+            if (stoppedByUserDenial) {
+              return;
+            }
 
           } else if (event.type === 'complete') {
             // 触发 AfterModel 钩子，对模型返回的助理消息做拦截和改写

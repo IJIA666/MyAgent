@@ -3,12 +3,16 @@
  * 验证权限 evidence 经统一映射进入执行 effect，并覆盖内置工具注册与调用链。
  */
 
-import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { ToolRegistry } from '../../src/adapters/tools/toolRegistry.js';
 import { ToolCatalog } from '../../src/adapters/tools/ToolCatalog.js';
 import { buildNativeTools } from '../../src/adapters/tools/tool-factory.js';
 import { BashTool, PowerShellTool } from '../../src/adapters/tools/impl/system/terminal.js';
 import { createExecutionEffectFromEvidence } from '../../src/adapters/tools/ToolExecutor.js';
+import { initWorkspace } from '../../src/adapters/tools/tools.js';
 
 // 使用与当前平台公开工具一致的 Shell，确保 effect 生命周期测试不依赖旧的动态 shellKind 参数。
 const platformReadCase = process.platform === 'win32'
@@ -21,9 +25,20 @@ const platformCompositeCase = process.platform === 'win32'
   : { command: 'ls; pwd', shellKind: 'posix' as const };
 
 describe('运行时 effect 生命周期集成验证（8.1-8.4）', () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'runtime-effect-test-'));
   const tool = process.platform === 'win32'
     ? new PowerShellTool()
     : new BashTool();
+
+  beforeAll(() => {
+    // 本文件独立初始化终端权限检查所需的工作区边界。
+    initWorkspace(workspaceRoot);
+  });
+
+  afterAll(() => {
+    // 清理测试专用目录，避免集成测试依赖其它文件的全局 setup。
+    rmSync(workspaceRoot, { recursive: true, force: true });
+  });
 
   it('8.1 原子和纯只读复合命令的 evidence 均映射为 read effect', async () => {
     const atomicDecision = await tool.checkPermissions(platformReadCase);

@@ -243,7 +243,7 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   const mcp = loadMcpConfig(env);
 
   // 5. 组装配置对象，只读加载默认 PermissionMode。
-  // 加载 Claude 同构权限模式。
+  // 加载分层权限模式。
   const permissionMode = loadDefaultPermissionMode(env);
 
   const maxIterations = parseEnvInt(env.AGENT_MAX_ITERATIONS, 20);
@@ -374,7 +374,7 @@ export function updateMcpServerStatus(name: string, enabled: boolean): void {
   writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
 }
 
-/** 缓存当前配置加载期计算出的 Claude 同构默认权限模式 */
+/** 缓存当前配置加载期计算出的默认权限模式。 */
 let cachedDefaultPermissionMode: ConfigPermissionMode = 'default';
 
 /**

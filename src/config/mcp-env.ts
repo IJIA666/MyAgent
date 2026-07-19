@@ -12,7 +12,7 @@ import { getRuntimeEnv } from './env.js';
 
 /**
  * 允许透传给 MCP 子进程的系统环境变量白名单。
- * 参照 hermes-agent 的严格白名单策略，仅允许操作系统级的基础变量通过，
+ * 使用严格白名单策略，仅允许操作系统级的基础变量通过，
  * 杜绝 API Key、Token 等敏感凭据的意外泄露。
  */
 export const SAFE_ENV_WHITELIST: ReadonlyArray<string> = [
@@ -47,7 +47,7 @@ export const SAFE_ENV_WHITELIST: ReadonlyArray<string> = [
 /**
  * 构建 MCP 子进程的安全环境变量集。
  *
- * 采用白名单策略（参照 hermes-agent）：
+ * 采用白名单策略：
  * 1. 从 process.env 中仅提取 SAFE_ENV_WHITELIST 中列出的系统基础变量
  * 2. 强制注入 Python 编码相关变量（解决 Windows 下 Python MCP Server 的编码问题）
  * 3. 合并用户在 mcp_config.json 中显式声明的自定义 env（最高优先级）
@@ -69,7 +69,7 @@ export function buildSubprocessEnv(userEnv?: Record<string, string>): Record<str
     }
   }
 
-  // 同时允许 XDG_ 前缀的 Linux 标准目录变量通过（参照 hermes-agent）
+  // 同时允许 XDG_ 前缀的 Linux 标准目录变量通过。
   for (const [key, value] of Object.entries(runtimeEnv)) {
     if (key.startsWith('XDG_') && value !== undefined) {
       env[key] = value;

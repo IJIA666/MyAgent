@@ -410,7 +410,20 @@ describe('CliFacade', () => {
       id: string,
       toolCall: { name: string; arguments: Record<string, unknown> },
       allowedPrefix?: string,
-      message?: string
+      message?: string,
+      choices?: Array<{
+        choiceId: 'call' | 'session' | 'project' | 'user' | 'persistent' | 'deny';
+        label: string;
+        description?: string;
+        followUp?: {
+          prompt: string;
+          choices: Array<{
+            choiceId: 'call' | 'session' | 'project' | 'user' | 'persistent' | 'deny';
+            label: string;
+            description?: string;
+          }>;
+        };
+      }>
     ) => Promise<void>;
 
     beforeEach(() => {
@@ -428,7 +441,12 @@ describe('CliFacade', () => {
         callback('1');
       });
 
-      await handler('req-1', { name: 'run_cmd', arguments: { command: 'dir' } }, 'dir', '测试警告');
+      await handler(
+        'req-1',
+        { name: 'run_cmd', arguments: { command: 'dir', description: '  列出\n当前目录  ' } },
+        'dir',
+        '测试警告',
+      );
 
       expect(closeSpy).toHaveBeenCalled();
       expect(resumeStdinSpy).toHaveBeenCalled();
@@ -437,6 +455,8 @@ describe('CliFacade', () => {
       
       const output = getCleanedOutput();
       expect(output).toContain('[安全提示] 测试警告');
+      // 调用说明应作为独立单行展示文本出现，不能混入真实命令。
+      expect(output).toContain('📝  列出 当前目录');
       expect(output).toContain('dir');
     });
 
@@ -460,6 +480,42 @@ describe('CliFacade', () => {
       await handler('req-3', { name: 'run_cmd', arguments: { command: 'dir' } }, 'dir');
 
       expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-3', { action: 'deny' });
+    });
+
+    it('当受信选项包含下一层范围时，应当先确认规则再返回项目范围', async () => {
+      const answers = ['2', '2'];
+      mockRlInterface.question = vi.fn().mockImplementation((_query: string, callback: (ans: string) => void) => {
+        callback(answers.shift() ?? '');
+      });
+
+      await handler(
+        'req-nested',
+        { name: 'PowerShell', arguments: { command: 'Get-CimInstance Win32_OperatingSystem' } },
+        undefined,
+        '需要权限确认',
+        [
+          { choiceId: 'call', label: '仅本次允许' },
+          {
+            choiceId: 'persistent',
+            label: '允许并创建规则',
+            description: 'PowerShell(Get-CimInstance Win32_OperatingSystem)',
+            followUp: {
+              prompt: '规则保存到哪里？',
+              choices: [
+                { choiceId: 'session', label: '当前会话' },
+                { choiceId: 'project', label: '当前项目' },
+                { choiceId: 'user', label: '当前用户' },
+              ],
+            },
+          },
+          { choiceId: 'deny', label: '拒绝' },
+        ],
+      );
+
+      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-nested', { action: 'project' });
+      const output = getCleanedOutput();
+      expect(output).toContain('PowerShell(Get-CimInstance Win32_OperatingSystem)');
+      expect(output).toContain('规则保存到哪里？');
     });
 
     it('当有 allowedPrefix 且用户输入无效值时，应当提示无效并递归提问，直到输入有效值为止', async () => {

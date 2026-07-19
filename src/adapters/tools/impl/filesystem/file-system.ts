@@ -518,7 +518,7 @@ export class ReadFileTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 只执行工具专属的路径安全检查，不处理 PermissionMode 逻辑。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -685,7 +685,7 @@ export class WriteFileTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 写入操作由 ToolPermissionService 统一决策，工具只做敏感文件检测。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -789,7 +789,7 @@ export class EditFileTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 编辑操作由 ToolPermissionService 统一决策，工具只做敏感文件检测。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
@@ -981,7 +981,7 @@ export class ListFilesTool implements NativeTool {
   };
 
   /**
-   * Claude 风格的 tool-level checkPermissions。
+   * 执行工具级权限检查。
    * 只执行工具专属的路径安全检查，不处理 PermissionMode 逻辑。
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {

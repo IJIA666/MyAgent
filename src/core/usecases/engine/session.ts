@@ -663,7 +663,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
         if (!hasError && !waitingForInteraction && !this.isGenerating && this.hasPendingAsyncNotification) {
           const previousPendingState = this.hasPendingAsyncNotification;
           this.hasPendingAsyncNotification = false;
-          logger.info('[SessionManager] async_notification_wakeup_scheduled', {
+          logger.debug('[SessionManager] async_notification_wakeup_scheduled', {
             component: 'session',
             event: 'async_notification_wakeup_scheduled',
             sessionId: this.context.getSessionId(),
@@ -707,7 +707,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       // 忙碌状态：仅记录积压标识，避免产生竞态并发
       const previousPendingState = this.hasPendingAsyncNotification;
       this.hasPendingAsyncNotification = true;
-      logger.info('[SessionManager] async_event_buffered', {
+      logger.debug('[SessionManager] async_event_buffered', {
         component: 'session',
         event: 'async_event_buffered',
         sessionId: this.context.getSessionId(),
@@ -740,7 +740,9 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
 
     const previousWakeupCount = this.autoWakeupCount;
     this.autoWakeupCount++;
-    logger.info('[SessionManager] auto_wakeup_triggered', {
+    // 必须在启动异步生成前同步加锁，防止同一事件循环中的后续通知并发启动模型。
+    this.isGenerating = true;
+    logger.debug('[SessionManager] auto_wakeup_triggered', {
       component: 'session',
       event: 'auto_wakeup_triggered',
       sessionId: this.context.getSessionId(),
@@ -854,7 +856,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    * @param mode - 目标工作模式
    */
   /**
-   * 获取当前智能体的权限模式（Claude Code 同构）。
+   * 获取当前智能体的权限模式。
    *
    * @returns 当前权限模式
    */

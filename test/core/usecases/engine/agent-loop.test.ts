@@ -810,6 +810,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       finalCallUpdate: { result: 'ok' },
       interrupted: false,
       aborted: false,
+      userDenied: false,
     });
     const controller = new AbortController();
 
@@ -828,6 +829,75 @@ describe('AgentLoop 动态安全特性测试', () => {
       controller.signal,
       expect.any(Function),
     );
+  });
+
+  it('8.2 用户拒绝工具审批后应结束当前对话轮次', async () => {
+    const streamChat = vi.fn().mockImplementation(async function* () {
+      yield {
+        type: 'tool_calls',
+        toolCalls: [{
+          id: 'call-denied',
+          type: 'function',
+          function: { name: 'PowerShell', arguments: '{"command":"wevtutil el"}' },
+        }],
+        assistantMessage: {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call-denied',
+            type: 'function',
+            function: { name: 'PowerShell', arguments: '{"command":"wevtutil el"}' },
+          }],
+        },
+      } as LlmStreamEvent;
+    });
+    mockLlmDriver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      abort: () => {},
+      streamChat,
+    };
+    const loop = createLoop();
+    const orchestrator = (loop as unknown as {
+      toolCallOrchestrator: { execute: (...args: unknown[]) => Promise<unknown> };
+    }).toolCallOrchestrator;
+    vi.spyOn(orchestrator, 'execute').mockResolvedValue({
+      index: 0,
+      events: [{ type: 'error', message: '工具执行前被拒绝' }],
+      toolMessage: {
+        role: 'tool',
+        tool_call_id: 'call-denied',
+        content: 'Error: 工具执行前被拒绝',
+      },
+      hasWrite: false,
+      effect: {
+        kind: 'none',
+        executionStarted: false,
+        completed: false,
+        resources: [],
+        reason: 'approval_denied_before_execution',
+      },
+      finalCallUpdate: { error: '工具执行前被拒绝' },
+      interrupted: false,
+      aborted: false,
+      userDenied: true,
+    });
+
+    const events: AgentEvent[] = [];
+    for await (const event of loop.chat(
+      undefined,
+      new AgentTracer(process.cwd(), 'test-user-denial-stops-turn'),
+      { model: 'mock-model' } as LlmConfig,
+    )) {
+      events.push(event);
+    }
+
+    // 拒绝回执仍会保留，但不会再次调用模型尝试等价命令。
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      message: '工具执行前被拒绝',
+    }));
+    expect(streamChat).toHaveBeenCalledTimes(1);
   });
 
   it('9. 工具参数 JSON 非法时，应回填 tool 错误消息而不是静默丢失', async () => {

@@ -3,6 +3,8 @@
  * @description 人机协同确权审批的输出端口接口契约。
  */
 
+import type { ApprovalChoice, ApprovalChoiceId } from '../../shared/approval-types.js';
+
 /** 人工审批等待的可选运行参数。 */
 export interface ApprovalWaitOptions {
   /** 上游任务或会话取消信号。 */
@@ -11,6 +13,8 @@ export interface ApprovalWaitOptions {
   readonly timeoutMs?: number;
   /** 可选会话标识，用于会话关闭时批量取消。 */
   readonly sessionId?: string;
+  /** 由权限策略提供的可选审批范围。 */
+  readonly choices?: readonly ApprovalChoice[];
 }
 
 /**
@@ -25,12 +29,12 @@ export interface ApprovalPort {
    * @param actionInfo - 触发审批的动作与参数信息
    * @param options - 旧命令前缀或附加的审批等待配置
    * @param warningMsg - 可选的向用户展示的安全警示信息
-   * @returns 包含用户决策动作（approve/deny）与原因的结果
+   * @returns 包含用户选择的授权范围或拒绝动作
    */
   waitApproval(
     approvalId: string,
     actionInfo: { name: string; arguments?: Record<string, unknown> },
     options?: string | ApprovalWaitOptions,
     warningMsg?: string
-  ): Promise<{ action: 'approve' | 'deny'; reason?: string }>;
+  ): Promise<{ action: ApprovalChoiceId; reason?: string }>;
 }

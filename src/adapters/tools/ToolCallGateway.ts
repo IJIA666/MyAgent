@@ -117,7 +117,7 @@ export class ToolCallGateway {
 
     // 构造工具检查器（如果工具有 checkPermissions 则使用）
     const toolChecker: ToolPermissionChecker | undefined = tool.checkPermissions
-      ? { checkPermissions: (input) => tool.checkPermissions!(input.args)  }
+      ? { checkPermissions: (input, context) => tool.checkPermissions!(input.args, context) }
       : undefined;
 
     const decision = await this.authorize(
@@ -284,6 +284,9 @@ export class ToolCallGateway {
         kind: 'allow',
         decisionReason: '用户完成权限确认',
         evidence: decision.evidence,
+        decisionCode: decision.decisionCode,
+        ruleSuggestions: decision.ruleSuggestions,
+        analysis: decision.analysis,
         decisionSource: 'userApproval',
         matchedEvidenceIds: decision.matchedEvidenceIds,
         overridable: false,
@@ -316,9 +319,12 @@ export class ToolCallGateway {
         return await this.executor.executeAuthorized(authorizedContext, runtime);
       }
       const executionSignal = createAuthorizedExecutionSignal(runtime);
+      const executionContext = runtime.context && 'toolCallId' in runtime.context
+        ? { ...runtime.context, permissionAnalysis: authorizedContext.analysis }
+        : runtime.context;
       const result = await tool.execute(
         authorizedContext.args,
-        runtime.context,
+        executionContext,
         executionSignal,
         runtime.interactionPort,
       );

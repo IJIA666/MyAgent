@@ -4,4 +4,5 @@
  */
 export * from './tools.js';
 export * from './toolRegistry.js';
+export * from './PermissionSettingsStore.js';
 export * from './mcp-client.js';

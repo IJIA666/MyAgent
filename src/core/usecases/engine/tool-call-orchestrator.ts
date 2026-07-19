@@ -36,6 +36,8 @@ export interface ToolExecutionResult {
   };
   /** 是否因 InteractionRequestError 挂起等待人机交互 */
   interrupted: boolean;
+  /** 是否由用户在执行前明确拒绝审批。 */
+  userDenied: boolean;
   /** 是否因插件 abort 而被阻断 */
   aborted: boolean;
   /** abort 阻断的原因说明 */
@@ -120,6 +122,7 @@ export class ToolCallOrchestrator {
     const taskFinalCallUpdate: { error?: string; result?: string } = {};
     let hasWrite = false;
     let toolMessage: StoredChatMessage | undefined;
+    let userDenied = false;
     let executionStarted = false;
     let toolSecurityCategory: 'read' | 'write' = 'read';
     let resolvedEffect: ToolExecutionEffect = {
@@ -158,6 +161,7 @@ export class ToolCallOrchestrator {
         effect: noExecEffect,
         finalCallUpdate: taskFinalCallUpdate,
         interrupted: false,
+        userDenied: false,
         aborted: false
       };
     }
@@ -208,6 +212,7 @@ export class ToolCallOrchestrator {
           effect: abortEffect,
           finalCallUpdate: taskFinalCallUpdate,
           interrupted: false,
+          userDenied: false,
           aborted: false
         };
       }
@@ -335,6 +340,7 @@ export class ToolCallOrchestrator {
           effect: resolvedEffect,
           finalCallUpdate: taskFinalCallUpdate,
           interrupted: false,
+          userDenied: false,
           aborted: true,
           abortReason: afterToolResult.control.reason ?? '无原因'
         };
@@ -433,12 +439,14 @@ export class ToolCallOrchestrator {
           effect: interactionEffect,
           finalCallUpdate: taskFinalCallUpdate,
           interrupted: true,
+          userDenied: false,
           aborted: false
         };
       }
 
       const errorMsg = toolError instanceof Error ? toolError.message : String(toolError);
       const lifecycleError = isToolLifecycleError(toolError) ? toolError : undefined;
+      userDenied = lifecycleError?.code === 'approval_denied_before_execution';
       const finalExecutionStarted = lifecycleError?.executionStarted ?? executionStarted;
       const finalErrorMsg = lifecycleError?.code === 'execution_timed_out'
         ? `工具执行超时熔断阻断: ${errorMsg}`
@@ -494,6 +502,7 @@ export class ToolCallOrchestrator {
       effect: resolvedEffect,
       finalCallUpdate: taskFinalCallUpdate,
       interrupted: false,
+      userDenied,
       aborted: false
     };
   }

@@ -6,10 +6,6 @@
 import type { ResolvedShellKind } from '../terminal-types.js';
 import type { CommandRiskSignal } from './types.js';
 
-const GIT_WRITE_COMMANDS = new Set([
-  'add', 'commit', 'checkout', 'reset', 'push', 'pull', 'rebase', 'merge', 'stash', 'revert',
-]);
-
 const POSIX_HARDLINE = /^(?:rm\s+-(?:[rR][fF]|[fF][rR])\s+(?:\/|\*|~)(?:\s|$)|dd\s+.*\bof=\/dev\/|mkfs(?:\s|$)|chmod\s+-[Rr]\s+777\s+\/)/i;
 const POWERSHELL_HARDLINE = /^(?:Remove-Item\s+.*(?:-Recurse.*-Force|-Force.*-Recurse).*\b[Cc]:\\|Format-Volume\s+.*-DriveLetter\s+[Cc]\b|Clear-Disk(?:\s|$))/i;
 const CMD_HARDLINE = /^(?:del\s+.*\/[fF].*\/[sS].*\/[qQ].*\b[Cc]:\\|format\s+[Cc]:|diskpart(?:\s|$))/i;
@@ -155,27 +151,19 @@ function findExecutableIndex(tokens: readonly string[]): number {
   return index;
 }
 
-/** 判断候选命令是否为禁止的 Git 写操作。 */
-function isGitWrite(tokens: readonly string[]): boolean {
-  let index = findExecutableIndex(tokens);
-  const executable = tokens[index]?.replace(/^.*[/\\]/, '').toLowerCase();
-  if (executable !== 'git' && executable !== 'git.exe') {
+/** 判断 PowerShell 命令是否递归强制删除文件系统根目录。 */
+function isPowerShellRootRemoval(tokens: readonly string[]): boolean {
+  const executableIndex = findExecutableIndex(tokens);
+  const executable = tokens[executableIndex]?.replace(/^.*[/\\]/, '').toLowerCase();
+  if (executable !== 'remove-item') {
     return false;
   }
-  index += 1;
-  while (index < tokens.length) {
-    const token = tokens[index];
-    if (token === '-c' || token === '-C') {
-      index += 2;
-      continue;
-    }
-    if (token.startsWith('-')) {
-      index += 1;
-      continue;
-    }
-    return GIT_WRITE_COMMANDS.has(token.toLowerCase());
-  }
-  return false;
+  const arguments_ = tokens.slice(executableIndex + 1);
+  const normalizedFlags = arguments_.map(argument => argument.toLowerCase());
+  const recursive = normalizedFlags.includes('-recurse') || normalizedFlags.includes('-r');
+  const forced = normalizedFlags.includes('-force');
+  const hasRootTarget = arguments_.some(argument => /^(?:[a-z]:[\\/]?|[\\/])$/i.test(argument));
+  return recursive && forced && hasRootTarget;
 }
 
 /**
@@ -194,8 +182,8 @@ export function scanHardlineCommand(
 
   for (const candidate of splitPotentialCommands(command, shellKind)) {
     const tokens = tokenizeAtomicCommand(candidate, shellKind);
-    if (isGitWrite(tokens)) {
-      risks.push({ code: 'hardline.git-write', reason: '严禁执行 Git 写操作' });
+    if (shellKind === 'powershell' && isPowerShellRootRemoval(tokens)) {
+      risks.push({ code: 'hardline.destructive-command', reason: '拒绝递归强制删除文件系统根目录' });
       continue;
     }
     if (patterns.some(pattern => pattern.test(candidate.trim()))) {
@@ -203,22 +191,8 @@ export function scanHardlineCommand(
       continue;
     }
 
-    // 动态执行结构无法静态分析其真实执行命令，一律 deny
-    const executable = tokens[findExecutableIndex(tokens)]?.replace(/^.*[/\\]/, '').toLowerCase();
-    if (executable === 'eval') {
-      risks.push({ code: 'hardline.dynamic-execution', reason: 'eval 执行动态构造的代码，无法静态分析' });
-      continue;
-    }
-    if (executable === 'invoke-expression' || executable === 'iex') {
-      risks.push({ code: 'hardline.dynamic-execution', reason: 'Invoke-Expression 执行动态构造的代码，无法静态分析' });
-      continue;
-    }
-    // EncodedCommand 传递 Base64 编码命令，完全绕过静态分析
-    if (/encodedcommand/i.test(candidate) && shellKind === 'powershell') {
-      risks.push({ code: 'hardline.encoded-command', reason: 'PowerShell EncodedCommand 绕过静态分析' });
-    }
+    // 普通动态执行和编码命令由 Shell 安全分析器归为 ask，不属于不可绕过边界。
   }
 
   return risks;
 }
-

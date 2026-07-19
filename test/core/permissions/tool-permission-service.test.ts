@@ -41,11 +41,17 @@ describe('ToolPermissionService', () => {
       const toolChecker = {
         checkPermissions(): ToolPermissionCheckResult {
           return {
-            kind: 'passthrough',
+            kind: 'ask',
+            message: 'Shell 命令需要权限确认',
+            decisionReason: '引号未闭合',
+            decisionCode: 'shell.bash.analysis-incomplete',
+            ruleSuggestions: [],
+            analysis: { command: 'grep "unfinished', shellKind: 'posix' },
             evidence: {
               operationCategory: 'command-execute',
               sideEffect: 'unknown',
               riskReason: '引号未闭合',
+              shellKind: 'posix',
               parseStatus: 'invalid',
             },
           };
@@ -156,7 +162,7 @@ describe('ToolPermissionService', () => {
         },
       };
 
-      const result = await service.checkPermissions('Bash', { command: 'ls' }, 'default', toolChecker);
+      const result = await service.checkPermissions('UnknownTool', {}, 'default', toolChecker);
       expect(result.kind).toBe('allow');
     });
 
@@ -170,7 +176,7 @@ describe('ToolPermissionService', () => {
         },
       };
 
-      const result = await service.checkPermissions('Bash', { command: 'ls' }, 'default', toolChecker);
+      const result = await service.checkPermissions('UnknownTool', {}, 'default', toolChecker);
       // passthrough + 无规则 → ask
       expect(result.kind).toBe('ask');
     });
@@ -251,7 +257,41 @@ describe('ToolPermissionService', () => {
       expect(checkCount).toBe(1);
     });
 
-    it('未知命令的精确 allow 规则应覆盖普通工具 ask', async () => {
+    it('Shell 候选决定不得被日志 evidence 重新计算', async () => {
+      const service = new ToolPermissionService({ ruleStore: new PermissionRuleStore() });
+      const analysis = { command: 'git status', shellKind: 'posix' };
+      const toolChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return {
+            kind: 'allow',
+            decisionCode: 'shell.bash.read-only-test',
+            decisionReason: '专属分析器已证明只读',
+            analysis,
+            evidence: {
+              operationCategory: 'command-execute',
+              sideEffect: 'hardline',
+              riskReason: '故意构造的冲突日志证据',
+              shellKind: 'posix',
+            },
+          };
+        },
+      };
+
+      const result = await service.checkPermissions(
+        'Bash',
+        { command: 'git status' },
+        'default',
+        toolChecker,
+      );
+
+      expect(result).toMatchObject({
+        kind: 'allow',
+        decisionCode: 'shell.bash.read-only-test',
+        analysis,
+      });
+    });
+
+    it('未知命令的精确 allow 由 Shell 分析器匹配后应原样透传', async () => {
       const store = new PermissionRuleStore();
       store.addRule('session', {
         source: 'session',
@@ -266,7 +306,15 @@ describe('ToolPermissionService', () => {
       };
       const toolChecker = {
         checkPermissions(): ToolPermissionCheckResult {
-          return { kind: 'ask', decisionReason: '工具无法判断', evidence };
+          return {
+            kind: 'allow',
+            decisionCode: 'shell.powershell.rule-allow',
+            decisionReason: '命令已由精确规则完整覆盖',
+            matchedRule: store.getMatchingRules('PowerShell', 'Invoke-CustomCheck')[0],
+            ruleSuggestions: [],
+            analysis: { command: 'Invoke-CustomCheck', shellKind: 'powershell' },
+            evidence: { ...evidence, shellKind: 'powershell' },
+          };
         },
       };
 
@@ -277,10 +325,14 @@ describe('ToolPermissionService', () => {
         toolChecker,
       );
 
-      expect(result).toMatchObject({ kind: 'allow', decisionSource: 'userRule' });
+      expect(result).toMatchObject({
+        kind: 'allow',
+        decisionSource: 'userRule',
+        decisionCode: 'shell.powershell.rule-allow',
+      });
     });
 
-    it('只允许管道前半段时不得连带放行后半段写入', async () => {
+    it('中央层不得用前半段内容规则覆盖 Shell 复合命令 ask', async () => {
       const store = new PermissionRuleStore();
       store.addRule('session', {
         source: 'session',
@@ -299,7 +351,15 @@ describe('ToolPermissionService', () => {
       };
       const toolChecker = {
         checkPermissions(): ToolPermissionCheckResult {
-          return { kind: 'passthrough', evidence };
+          return {
+            kind: 'ask',
+            message: 'Bash 命令需要权限确认',
+            decisionCode: 'shell.bash.requires-approval',
+            decisionReason: '后半段包含写入操作',
+            ruleSuggestions: ['rm output.txt'],
+            analysis: { command: 'cat a.txt | rm output.txt', shellKind: 'posix' },
+            evidence: { ...evidence, shellKind: 'posix' },
+          };
         },
       };
 
@@ -313,7 +373,176 @@ describe('ToolPermissionService', () => {
       expect(result).toMatchObject({ kind: 'ask', decisionSource: 'builtInBaseline' });
     });
 
-    it('资源命中显式 ask 时应覆盖命令的普通只读基线', async () => {
+    it('中央层不得用 PowerShell 前缀规则覆盖后续危险子命令 ask', async () => {
+      const store = new PermissionRuleStore();
+      store.addRule('session', {
+        source: 'session',
+        ruleBehavior: 'allow',
+        ruleValue: { toolName: 'PowerShell', ruleContent: 'Get-ChildItem *' },
+      });
+      const service = new ToolPermissionService({ ruleStore: store });
+      const evidence = {
+        operationCategory: 'command-execute',
+        sideEffect: 'write' as const,
+        riskReason: '管道包含删除操作',
+        shellKind: 'powershell',
+        subcommands: [
+          {
+            command: 'Get-ChildItem C:\\',
+            sideEffect: 'read' as const,
+            permission: 'allow' as const,
+            reason: '读取目录',
+          },
+          {
+            command: 'Remove-Item C:\\temp -Recurse',
+            sideEffect: 'write' as const,
+            permission: 'ask' as const,
+            reason: '删除目录',
+          },
+        ],
+      };
+      const toolChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return {
+            kind: 'ask',
+            message: 'PowerShell 命令需要权限确认',
+            decisionCode: 'shell.powershell.requires-approval',
+            decisionReason: '管道包含删除操作',
+            ruleSuggestions: [],
+            analysis: {
+              command: 'Get-ChildItem C:\\ | Remove-Item C:\\temp -Recurse',
+              shellKind: 'powershell',
+            },
+            evidence,
+          };
+        },
+      };
+
+      const result = await service.checkPermissions(
+        'PowerShell',
+        { command: 'Get-ChildItem C:\\ | Remove-Item C:\\temp -Recurse' },
+        'default',
+        toolChecker,
+      );
+
+      expect(result).toMatchObject({ kind: 'ask', decisionSource: 'builtInBaseline' });
+    });
+
+    it('PowerShell 别名规则由专用分析器匹配后应原样透传', async () => {
+      const store = new PermissionRuleStore();
+      store.addRule('session', {
+        source: 'session',
+        ruleBehavior: 'allow',
+        ruleValue: { toolName: 'PowerShell', ruleContent: 'Get-ChildItem *' },
+      });
+      const service = new ToolPermissionService({ ruleStore: store });
+      const evidence = {
+        operationCategory: 'command-execute',
+        sideEffect: 'unknown' as const,
+        riskReason: '测试规则复用',
+        shellKind: 'powershell',
+        subcommands: [{
+          command: 'GCI C:\\',
+          sideEffect: 'unknown' as const,
+          permission: 'ask' as const,
+          reason: '需要规则授权',
+        }],
+      };
+      const toolChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return {
+            kind: 'allow',
+            decisionCode: 'shell.powershell.rule-allow',
+            decisionReason: '规范命令身份已命中允许规则',
+            matchedRule: store.getMatchingRules('PowerShell', 'Get-ChildItem C:\\')[0],
+            ruleSuggestions: [],
+            analysis: { command: 'GCI C:\\', shellKind: 'powershell' },
+            evidence,
+          };
+        },
+      };
+
+      const result = await service.checkPermissions(
+        'PowerShell',
+        { command: 'GCI C:\\' },
+        'default',
+        toolChecker,
+      );
+
+      expect(result).toMatchObject({
+        kind: 'allow',
+        decisionSource: 'userRule',
+        decisionCode: 'shell.powershell.rule-allow',
+      });
+    });
+
+    it('逐子命令规则由分析器覆盖后中央层不得再次要求白名单', async () => {
+      const store = new PermissionRuleStore();
+      store.addRule('session', {
+        source: 'session',
+        ruleBehavior: 'allow',
+        ruleValue: {
+          toolName: 'PowerShell',
+          ruleContent: 'Get-CimInstance Win32_OperatingSystem',
+        },
+      });
+      const service = new ToolPermissionService({ ruleStore: store });
+      const evidence = {
+        operationCategory: 'command-execute',
+        sideEffect: 'unknown' as const,
+        riskReason: 'Get-CimInstance 缺少静态语义',
+        subcommands: [
+          {
+            command: 'Get-CimInstance Win32_OperatingSystem',
+            sideEffect: 'unknown' as const,
+            permission: 'ask' as const,
+            reason: '需要用户确认',
+          },
+          {
+            command: 'Select-Object Caption, Version',
+            sideEffect: 'read' as const,
+            permission: 'allow' as const,
+            reason: '只选择输出字段',
+          },
+        ],
+      };
+      const toolChecker = {
+        checkPermissions(): ToolPermissionCheckResult {
+          return {
+            kind: 'allow',
+            decisionCode: 'shell.powershell.rule-allow',
+            decisionReason: '待审批子命令已由规则覆盖',
+            matchedRule: store.getMatchingRules(
+              'PowerShell',
+              'Get-CimInstance Win32_OperatingSystem',
+            )[0],
+            ruleSuggestions: [],
+            analysis: {
+              command: 'Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version',
+              shellKind: 'powershell',
+            },
+            evidence: { ...evidence, shellKind: 'powershell' },
+          };
+        },
+      };
+
+      const result = await service.checkPermissions(
+        'PowerShell',
+        {
+          command: 'Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version',
+        },
+        'default',
+        toolChecker,
+      );
+
+      expect(result).toMatchObject({
+        kind: 'allow',
+        decisionSource: 'userRule',
+        decisionCode: 'shell.powershell.rule-allow',
+      });
+    });
+
+    it('资源 ask 由 Shell 分析器匹配后应原样透传', async () => {
       const store = new PermissionRuleStore();
       store.addRule('userSettings', {
         source: 'userSettings',
@@ -342,7 +571,16 @@ describe('ToolPermissionService', () => {
       };
       const toolChecker = {
         checkPermissions(): ToolPermissionCheckResult {
-          return { kind: 'passthrough', evidence };
+          return {
+            kind: 'ask',
+            message: 'Bash 命令需要权限确认',
+            decisionCode: 'shell.bash.path-rule-ask',
+            decisionReason: '资源命中显式询问规则',
+            matchedRule: store.getMatchingRules('Bash', 'secret.txt')[0],
+            ruleSuggestions: [],
+            analysis: { command: 'cat secret.txt', shellKind: 'posix' },
+            evidence: { ...evidence, shellKind: 'posix' },
+          };
         },
       };
 
@@ -356,7 +594,7 @@ describe('ToolPermissionService', () => {
       expect(result).toMatchObject({
         kind: 'ask',
         decisionSource: 'userRule',
-        matchedEvidenceIds: ['resource:secret'],
+        decisionCode: 'shell.bash.path-rule-ask',
       });
     });
   });
@@ -577,7 +815,7 @@ describe('ToolPermissionService', () => {
   });
 
   describe('auto 模式证据传递', () => {
-    it('同一 PowerShell 工具应根据实际命令证据得到不同结果', async () => {
+    it('普通工具应根据实际命令证据得到不同结果', async () => {
       const store = new PermissionRuleStore();
       let receivedSideEffect: string | undefined;
       const service = new ToolPermissionService({
@@ -615,14 +853,14 @@ describe('ToolPermissionService', () => {
       };
 
       const readResult = await service.checkPermissions(
-        'PowerShell',
-        { command: 'Get-Content package.json' },
+        'ExternalCommand',
+        { command: 'read package.json' },
         'auto',
         readChecker,
       );
       const writeResult = await service.checkPermissions(
-        'PowerShell',
-        { command: 'Set-Content output.txt done' },
+        'ExternalCommand',
+        { command: 'write output.txt' },
         'auto',
         writeChecker,
       );

@@ -1,6 +1,6 @@
 /**
  * @file 权限规则存储。
- * 实现 Claude 风格的 PermissionRuleStore，支持多来源规则的生命周期管理、
+ * 实现 PermissionRuleStore，支持多来源规则的生命周期管理、
  * 增删改查和 deny → ask → allow 匹配顺序。
  */
 
@@ -13,6 +13,7 @@ import type {
 import {
   RULE_BEHAVIOR_MATCH_ORDER,
 } from './permission-types.js';
+import { normalizePowerShellCommandContent } from './powershell-command-normalization.js';
 
 // ── 工具名称解析常量 ──
 
@@ -378,31 +379,49 @@ export function matchRuleContent(
   rulePattern: string,
   actualContent: string,
 ): boolean {
+  const powerShellRule = toolName.toLowerCase() === 'powershell';
+  const normalizedRulePattern = powerShellRule
+    ? normalizePowerShellCommandContent(rulePattern)
+    : rulePattern;
+  const normalizedActualContent = powerShellRule
+    ? normalizePowerShellCommandContent(actualContent)
+    : actualContent;
+
   // 通配符 `*` 匹配任意内容
-  if (rulePattern === '*') {
+  if (normalizedRulePattern === '*') {
     return true;
   }
 
   // 处理带通配符的模式
-  if (rulePattern.includes('*')) {
-    const escaped = rulePattern
+  const wildcardPattern = normalizedRulePattern.endsWith(':*')
+    ? `${normalizedRulePattern.slice(0, -2)} *`
+    : normalizedRulePattern;
+  if (wildcardPattern.includes('*')) {
+    // 尾部 ` *` 同时匹配命令本身和其后以空格分隔的参数，避免 `ls*` 误匹配 `lsof`。
+    const trailingWordWildcard = wildcardPattern.endsWith(' *');
+    const patternBody = trailingWordWildcard ? wildcardPattern.slice(0, -2) : wildcardPattern;
+    const escaped = patternBody
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
       .replace(/\*/g, '.*');
-    return new RegExp(`^${escaped}$`).test(actualContent);
+    const suffix = trailingWordWildcard ? '(?: .*)?' : '';
+    return new RegExp(`^${escaped}${suffix}$`, powerShellRule ? 'i' : undefined)
+      .test(normalizedActualContent);
   }
 
   // MCP 工具的规则内容匹配
   if (isMcpRule(toolName)) {
-    return rulePattern === actualContent;
+    return normalizedRulePattern === normalizedActualContent;
   }
 
   // 路径匹配（支持前缀/相对/绝对路径）
   if (isPathTool(toolName)) {
-    return matchPathContent(rulePattern, actualContent);
+    return matchPathContent(normalizedRulePattern, normalizedActualContent);
   }
 
   // 默认：精确匹配
-  return rulePattern === actualContent;
+  return powerShellRule
+    ? normalizedRulePattern.toLowerCase() === normalizedActualContent.toLowerCase()
+    : normalizedRulePattern === normalizedActualContent;
 }
 
 /** 文件系统路径工具名称列表 */
@@ -441,14 +460,20 @@ export function isPathTool(toolName: string): boolean {
  * @returns 是否匹配
  */
 export function matchPathContent(pattern: string, actual: string): boolean {
+  const slashPattern = pattern.replace(/\\/g, '/');
+  const slashActual = actual.replace(/\\/g, '/');
+  const windowsPaths = /^[A-Za-z]:\//u.test(slashPattern) && /^[A-Za-z]:\//u.test(slashActual);
+  const normalizedPattern = windowsPaths ? slashPattern.toLowerCase() : slashPattern;
+  const normalizedActual = windowsPaths ? slashActual.toLowerCase() : slashActual;
   // 通配符匹配
-  if (pattern.includes('*')) {
-    const escaped = pattern
+  if (normalizedPattern.includes('*')) {
+    const escaped = normalizedPattern
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
       .replace(/\*/g, '.*');
-    return new RegExp(`^${escaped}$`).test(actual);
+    return new RegExp(`^${escaped}$`).test(normalizedActual);
   }
 
   // 精确匹配实际路径（或者以 pattern 为前缀）
-  return actual === pattern || actual.startsWith(pattern.endsWith('/') ? pattern : pattern + '/');
+  return normalizedActual === normalizedPattern ||
+    normalizedActual.startsWith(normalizedPattern.endsWith('/') ? normalizedPattern : normalizedPattern + '/');
 }

@@ -8,6 +8,9 @@
 import type { PermissionDecision, PermissionUpdate, PermissionMode } from '../../domain/permissions/permission-types.js';
 import { PermissionRuleStore } from '../../domain/permissions/rule-store.js';
 
+/** 用户可以选择的授权生效范围。 */
+export type PermissionGrantScope = 'once' | 'session' | 'project' | 'user';
+
 /**
  * 用户对权限提示的响应。
  */
@@ -15,7 +18,7 @@ export interface PromptResponse {
   /** 用户是否批准 */
   approved: boolean;
   /** 授权范围 */
-  scope: 'once' | 'session' | 'persistent';
+  scope: PermissionGrantScope;
 }
 
 /**
@@ -30,6 +33,8 @@ export class PermissionPromptAdapter {
     mode: PermissionMode,
     signal?: AbortSignal,
   ) => Promise<PromptResponse>;
+  /** 可选的持久化回调，由外层适配器提供磁盘实现。 */
+  private readonly persistUpdate?: (update: PermissionUpdate) => void;
 
   constructor(
     ruleStore: PermissionRuleStore,
@@ -38,9 +43,11 @@ export class PermissionPromptAdapter {
       mode: PermissionMode,
       signal?: AbortSignal,
     ) => Promise<PromptResponse>,
+    persistUpdate?: (update: PermissionUpdate) => void,
   ) {
     this.ruleStore = ruleStore;
     this.promptHandler = promptHandler;
+    this.persistUpdate = persistUpdate;
   }
 
   /**
@@ -69,6 +76,8 @@ export class PermissionPromptAdapter {
    * @param update - 规则更新
    */
   applyUpdate(update: PermissionUpdate): void {
+    // 必须先确认磁盘保存成功，再更新内存，避免界面宣称持久化但重启后规则消失。
+    this.persistUpdate?.(update);
     this.ruleStore.applyUpdate(update);
   }
 
@@ -83,7 +92,7 @@ export class PermissionPromptAdapter {
   buildUpdate(
     toolName: string,
     ruleContent: string | undefined,
-    scope: 'once' | 'session' | 'persistent',
+    scope: PermissionGrantScope,
   ): PermissionUpdate | null {
     switch (scope) {
       case 'once':
@@ -97,7 +106,17 @@ export class PermissionPromptAdapter {
             ruleValue: { toolName, ruleContent },
           }],
         };
-      case 'persistent':
+      case 'project':
+        return {
+          operation: 'add',
+          targetSource: 'localSettings',
+          rules: [{
+            source: 'localSettings',
+            ruleBehavior: 'allow',
+            ruleValue: { toolName, ruleContent },
+          }],
+        };
+      case 'user':
         return {
           operation: 'add',
           targetSource: 'userSettings',
@@ -126,44 +145,68 @@ export class PermissionPromptAdapter {
     toolName: string,
     args: Record<string, unknown>,
     decision: PermissionDecision & { kind: 'ask' },
-    scope: 'once' | 'session' | 'persistent',
+    scope: PermissionGrantScope,
   ): PermissionUpdate | null {
     if (scope === 'once') {
       return null;
     }
 
-    const subcommands = decision.evidence?.subcommands ?? [];
-    const isCompound = subcommands.length > 1;
-    const suggestedContents = Array.from(new Set(
-      subcommands
-        .filter(subcommand => subcommand.permission === 'ask')
-        .map(subcommand => subcommand.ruleSuggestion)
-        .filter((content): content is string => typeof content === 'string' && content.length > 0),
-    )).slice(0, 5);
-
-    if (isCompound && suggestedContents.length === 0) {
+    const ruleContents = this.getRuleSuggestions(toolName, args, decision);
+    if (ruleContents.length === 0) {
       return null;
     }
-
-    const fallbackContent = typeof args.command === 'string'
-      ? args.command
-      : typeof args.path === 'string'
-        ? args.path
-        : undefined;
-    const ruleContents = suggestedContents.length > 0
-      ? suggestedContents
-      : [fallbackContent];
-    const source = scope === 'session' ? 'session' : 'userSettings';
+    const source = scope === 'session'
+      ? 'session'
+      : scope === 'project'
+        ? 'localSettings'
+        : 'userSettings';
 
     return {
       operation: 'add',
-      targetSource: scope === 'persistent' ? 'userSettings' : undefined,
+      targetSource: scope === 'project'
+        ? 'localSettings'
+        : scope === 'user'
+          ? 'userSettings'
+          : undefined,
       rules: ruleContents.map(ruleContent => ({
         source,
         ruleBehavior: 'allow',
         ruleValue: { toolName, ruleContent },
       })),
     };
+  }
+
+  /**
+   * 生成将向用户展示并保存的规则内容。
+   * 复合命令只选择需要审批的原子子命令，最多返回五条去重规则。
+   *
+   * @param args - 原始工具参数
+   * @param decision - 最终 ask 决策
+   * @returns 规则限定内容；无法安全生成时返回空数组
+   */
+  getRuleSuggestions(
+    toolName: string,
+    args: Record<string, unknown>,
+    decision: PermissionDecision & { kind: 'ask' },
+  ): Array<string | undefined> {
+    const isShellCall = decision.evidence?.shellKind !== undefined || ['Bash', 'PowerShell'].includes(toolName);
+    // Shell 规则只能由专用分析器生成；空建议表示本次不允许创建持久规则。
+    if (isShellCall) {
+      return [...new Set(decision.ruleSuggestions ?? [])]
+        .filter(content => content.length > 0)
+        .slice(0, 5);
+    }
+    if (decision.ruleSuggestions !== undefined) {
+      return [...new Set(decision.ruleSuggestions)]
+        .filter(content => content.length > 0)
+        .slice(0, 5);
+    }
+    const fallbackContent = typeof args.command === 'string'
+      ? args.command
+      : typeof args.path === 'string'
+        ? args.path
+        : undefined;
+    return fallbackContent === undefined ? [] : [fallbackContent];
   }
 
   /**
