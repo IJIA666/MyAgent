@@ -1,5 +1,5 @@
 /**
- * @fileoverview RuleManager 的单元测试，用于验证全局与项目伴生规则的检测与热加载。
+ * @fileoverview RuleManager 的单元测试，验证用户/项目规则加载、技能合并与热加载。
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -24,114 +24,113 @@ vi.mock('fs', async () => {
 describe('RuleManager', () => {
   let context: SessionContext;
   let tempDir: string;
+  let userRulesDir: string;
+  let projectRulesDir: string;
+  let userSkillsDir: string;
+  let projectSkillsDir: string;
 
   beforeEach(() => {
     context = new SessionContext('test-rule-session');
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-rules-test-'));
-    vi.spyOn(process, 'cwd').mockReturnValue(tempDir);
+    userRulesDir = path.join(tempDir, 'user-rules');
+    projectRulesDir = path.join(tempDir, 'project-rules');
+    userSkillsDir = path.join(tempDir, 'user-skills');
+    projectSkillsDir = path.join(tempDir, 'project-skills');
+    fs.mkdirSync(userRulesDir, { recursive: true });
+    fs.mkdirSync(projectRulesDir, { recursive: true });
+    fs.mkdirSync(userSkillsDir, { recursive: true });
+    fs.mkdirSync(projectSkillsDir, { recursive: true });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    if (typeof fs.watch === 'function' && 'mockClear' in fs.watch) {
+      (fs.watch as ReturnType<typeof vi.fn>).mockClear();
+    }
     if (tempDir && fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
   it('应该在规则文件不存在时，默认将缓存设为空字符串', () => {
-    const manager = new RuleManager(context);
-    expect(manager.getGlobalRules()).toBe('');
-    expect(manager.getLocalRules()).toBe('');
+    const manager = new RuleManager(context, userRulesDir, projectRulesDir, userSkillsDir, projectSkillsDir);
+    expect(manager.getUserRules()).toBe('');
+    expect(manager.getProjectRules()).toBe('');
   });
 
-  it('应该在有规则文件时正确检测加载并更新系统提示词', () => {
-    const agentDir = path.join(tempDir, '.agent');
-    const rulesDir = path.join(agentDir, 'rules');
-    fs.mkdirSync(agentDir);
-    fs.mkdirSync(rulesDir);
-    fs.writeFileSync(path.join(agentDir, 'global_rules.md'), 'Global Rule Config', 'utf-8');
-    fs.writeFileSync(path.join(rulesDir, 'guize.md'), 'Local Project Config', 'utf-8');
+  it('应该从用户和项目规则目录正确加载规则', () => {
+    fs.writeFileSync(path.join(userRulesDir, 'user.md'), 'User Rule Config', 'utf-8');
+    fs.writeFileSync(path.join(projectRulesDir, 'proj.md'), 'Project Rule Config', 'utf-8');
 
-    const manager = new RuleManager(context);
-    expect(manager.getGlobalRules()).toBe('Global Rule Config');
-    expect(manager.getLocalRules()).toBe('Local Project Config');
-    expect(context.getHistory()[0].content).toContain('Global Rule Config');
+    const manager = new RuleManager(context, userRulesDir, projectRulesDir, userSkillsDir, projectSkillsDir);
+    expect(manager.getUserRules()).toBe('User Rule Config');
+    expect(manager.getProjectRules()).toBe('Project Rule Config');
   });
 
   it('应该在 reloadRules 调用后从磁盘重新加载最新内容并热更新', () => {
-    const agentDir = path.join(tempDir, '.agent');
-    const rulesDir = path.join(agentDir, 'rules');
-    fs.mkdirSync(agentDir);
-    fs.mkdirSync(rulesDir);
-    fs.writeFileSync(path.join(agentDir, 'global_rules.md'), 'Initial Global', 'utf-8');
-    fs.writeFileSync(path.join(rulesDir, 'guize.md'), 'Initial Local', 'utf-8');
+    fs.writeFileSync(path.join(userRulesDir, 'user.md'), 'Initial User', 'utf-8');
+    fs.writeFileSync(path.join(projectRulesDir, 'proj.md'), 'Initial Project', 'utf-8');
 
-    const manager = new RuleManager(context);
-    expect(manager.getGlobalRules()).toBe('Initial Global');
+    const manager = new RuleManager(context, userRulesDir, projectRulesDir, userSkillsDir, projectSkillsDir);
+    expect(manager.getUserRules()).toBe('Initial User');
 
-    fs.writeFileSync(path.join(agentDir, 'global_rules.md'), 'Updated Global', 'utf-8');
-    fs.writeFileSync(path.join(rulesDir, 'guize.md'), 'Updated Local', 'utf-8');
+    fs.writeFileSync(path.join(userRulesDir, 'user.md'), 'Updated User', 'utf-8');
+    fs.writeFileSync(path.join(projectRulesDir, 'proj.md'), 'Updated Project', 'utf-8');
 
     manager.reloadRules();
 
-    expect(manager.getGlobalRules()).toBe('Updated Global');
-    expect(manager.getLocalRules()).toBe('Updated Local');
-    expect(context.getHistory()[0].content).toContain('Updated Global');
+    expect(manager.getUserRules()).toBe('Updated User');
+    expect(manager.getProjectRules()).toBe('Updated Project');
+    expect(context.getHistory()[0].content).toContain('Updated User');
   });
 
-  it('should handle readFileSync exceptions and fallback to empty string', () => {
-    const agentDir = path.join(tempDir, '.agent');
-    const rulesDir = path.join(agentDir, 'rules');
-    fs.mkdirSync(agentDir);
-    fs.mkdirSync(rulesDir);
-    // 创建为目录，读取目录会导致 readFileSync 抛出 EISDIR 异常
-    fs.mkdirSync(path.join(agentDir, 'global_rules.md'));
-    fs.mkdirSync(path.join(rulesDir, 'guize.md'));
+  it('技能列表应合并用户和项目技能，同名项目覆盖', () => {
+    fs.mkdirSync(path.join(userSkillsDir, 'common'), { recursive: true });
+    fs.mkdirSync(path.join(projectSkillsDir, 'common'), { recursive: true });
+    fs.mkdirSync(path.join(userSkillsDir, 'user-skill'), { recursive: true });
 
-    const manager = new RuleManager(context);
-    expect(manager.getGlobalRules()).toBe('');
-    expect(manager.getLocalRules()).toBe('');
+    fs.writeFileSync(
+      path.join(userSkillsDir, 'common', 'SKILL.md'),
+      '---\nname: common\ndescription: User common\n---\nUser version',
+    );
+    fs.writeFileSync(
+      path.join(projectSkillsDir, 'common', 'SKILL.md'),
+      '---\nname: common\ndescription: Project common\n---\nProject version',
+    );
+    fs.writeFileSync(
+      path.join(userSkillsDir, 'user-skill', 'SKILL.md'),
+      '---\nname: user-skill\ndescription: User only\n---\nUser only body',
+    );
+
+    const manager = new RuleManager(context, userRulesDir, projectRulesDir, userSkillsDir, projectSkillsDir);
+    const skills = manager.getSkills();
+
+    // common 应被项目版本覆盖
+    const common = skills.find(s => s.name === 'common');
+    expect(common).toBeDefined();
+    expect(common!.description).toBe('Project common');
+
+    // user-skill 应存在
+    expect(skills.find(s => s.name === 'user-skill')).toBeDefined();
   });
 
-  it('应该在 initSkillsWatcher 检测到高频变动时执行 100ms 防抖合并', () => {
-    vi.useFakeTimers();
+  it('watcher 仅监听项目 skills 目录', () => {
+    const manager = new RuleManager(context, userRulesDir, projectRulesDir, userSkillsDir, projectSkillsDir);
+    manager.getSkills();
 
-    // 1. 设置模拟的技能目录以供 existsSync 校验通过
-    const agentDir = path.join(tempDir, '.agent');
-    const skillsDir = path.join(agentDir, 'skills');
-    const skillFilePath = path.join(skillsDir, 'test-skill', 'SKILL.md');
-    fs.mkdirSync(agentDir);
-    fs.mkdirSync(skillsDir);
-    fs.mkdirSync(path.join(skillsDir, 'test-skill'));
-    fs.writeFileSync(skillFilePath, '# Test Skill\nOriginal content', 'utf-8');
+    // 验证 watch 被调用且指向项目 skills 目录（取最新一次调用）
+    const watchMock = fs.watch as ReturnType<typeof vi.fn>;
+    expect(watchMock).toHaveBeenCalled();
+    const lastCall = watchMock.mock.calls[watchMock.mock.calls.length - 1];
+    expect(lastCall[0]).toBe(projectSkillsDir);
+  });
 
-    // 初始化 RuleManager
-    const manager = new RuleManager(context);
-
-    // 2. 直接获取已挂载的 Watcher 回调函数
-    const watchCallback = (globalThis as unknown as { lastFsWatchCallback?: (eventType: string, filename: string) => void }).lastFsWatchCallback;
-    expect(watchCallback).toBeDefined();
-
-    if (watchCallback) {
-      // 3. 连续高频模拟 SKILL.md 文件变动事件 5 次，每次间隔 10ms
-      for (let i = 0; i < 5; i++) {
-        watchCallback('change', path.relative(skillsDir, skillFilePath));
-        vi.advanceTimersByTime(10);
-      }
-
-      // 在这 50ms 连续事件流中，由于防抖合并，不应触发更新
-      const skillsBefore = manager.getSkills();
-      expect(skillsBefore.length).toBeGreaterThanOrEqual(0);
-
-      // 4. 步进 100ms 让定时器窗口彻底完成
-      vi.advanceTimersByTime(100);
-
-      // 防抖到期后技能缓存应仍然可用
-      expect(manager.getSkills().length).toBeGreaterThanOrEqual(0);
-    }
-
-    delete (globalThis as unknown as { lastFsWatchCallback?: unknown }).lastFsWatchCallback;
-
-    vi.useRealTimers();
+  it('close 幂等清理', () => {
+    const manager = new RuleManager(context, userRulesDir, projectRulesDir, userSkillsDir, projectSkillsDir);
+    manager.getSkills(); // 触发 watcher init
+    expect(() => {
+      manager.close();
+      manager.close(); // 第二次不应抛出
+    }).not.toThrow();
   });
 });

@@ -44,7 +44,7 @@ describe('ToolDispatcher', () => {
       }
     } as unknown as ToolRegistryPort;
 
-    dispatcher = new ToolDispatcher(context, mockToolRegistry, tempDir);
+    dispatcher = new ToolDispatcher(context, mockToolRegistry, tempDir, tempDir);
   });
 
   afterEach(() => {
@@ -76,14 +76,14 @@ describe('ToolDispatcher', () => {
       expect(result.isTruncated).toBe(true);
       expect(result.content).toContain('警告：工具 "testTool" 的输出内容已超标');
       expect(result.content).toContain('[以下为对折截断后的预览]');
-      expect(result.originalPath).toContain('.myagent/tool-outputs/tool_');
+      expect(result.originalPath).toContain('tool_');
+      expect(result.originalPath).toContain(tempDir);
 
-      const tempPath = path.join(tempDir, '.myagent/tool-outputs');
-      expect(fs.existsSync(tempPath)).toBe(true);
-      const files = fs.readdirSync(tempPath);
-      expect(files.length).toBe(1);
-      
-      const fileContent = fs.readFileSync(path.join(tempPath, files[0]), 'utf-8');
+      const files = fs.readdirSync(tempDir);
+      const logFiles = files.filter(f => f.startsWith('tool_') && f.endsWith('.log'));
+      expect(logFiles.length).toBe(1);
+
+      const fileContent = fs.readFileSync(path.join(tempDir, logFiles[0]), 'utf-8');
       expect(fileContent).toBe(longOutput);
     });
 

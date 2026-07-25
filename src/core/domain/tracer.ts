@@ -20,6 +20,8 @@ import { cleanupDiagnosticFiles } from './diagnostic-retention.js';
 export class AgentTracer {
   private readonly traceFile: string;
   private readonly auditFile: string;
+  private readonly tracesDir: string;
+  private readonly auditsDir: string;
   private hasWrittenMeta = false;
   private readonly promptDefinitionHashes = new Set<string>();
   /** 当前 trace/audit 的采集与脱敏配置。 */
@@ -28,10 +30,19 @@ export class AgentTracer {
   /**
    * 实例化追踪器。
    *
-   * @param workspaceDir - 当前工作区根目录。
+   * @param tracesDir - trace 目录绝对路径（来自 {@link ApplicationPaths.tracesDir}）。
+   * @param auditsDir - audit 目录绝对路径（来自 {@link ApplicationPaths.auditsDir}）。
    * @param sessionId - 本次会话的唯一标识。
+   * @param diagnostics - 诊断治理配置。
    */
-  constructor(workspaceDir: string, sessionId: string, diagnostics?: DiagnosticDataConfig) {
+  constructor(
+    tracesDir: string,
+    auditsDir: string,
+    sessionId: string,
+    diagnostics?: DiagnosticDataConfig,
+  ) {
+    this.tracesDir = tracesDir;
+    this.auditsDir = auditsDir;
     this.diagnostics = diagnostics ?? {
       operationalEnabled: true,
       auditEnabled: true,
@@ -42,13 +53,15 @@ export class AgentTracer {
       auditRetentionDays: 7,
       auditRetentionSessions: 20
     };
-    const traceDir = resolve(workspaceDir, '.myagent', 'traces');
-    if (!existsSync(traceDir)) {
-      mkdirSync(traceDir, { recursive: true });
+    if (!existsSync(tracesDir)) {
+      mkdirSync(tracesDir, { recursive: true });
     }
-    this.traceFile = resolve(traceDir, `trace_${sessionId}.jsonl`);
-    this.auditFile = resolve(traceDir, `audit_${sessionId}.jsonl`);
-    cleanupDiagnosticFiles(traceDir, sessionId, this.diagnostics);
+    if (!existsSync(auditsDir)) {
+      mkdirSync(auditsDir, { recursive: true });
+    }
+    this.traceFile = resolve(tracesDir, `trace_${sessionId}.jsonl`);
+    this.auditFile = resolve(auditsDir, `audit_${sessionId}.jsonl`);
+    cleanupDiagnosticFiles(tracesDir, sessionId, this.diagnostics);
   }
 
   /**

@@ -41,8 +41,24 @@ export interface SnapshotManifest {
  * 负责智能体在大循环中执行敏感写操作前的物理冷备份记录、新增文件拦截、双轨倒退覆写还原与生命周期清理。
  */
 export class FileBackupManager {
+  /** 可选的显式备份目录覆盖（来自 ApplicationPaths.backupsDir）。 */
+  private static _backupsDir: string | null = null;
+
+  /**
+   * 设置显式备份目录。由组合根注入 ApplicationPaths.backupsDir。
+   * 设置后所有操作使用此目录而非从 workspacePath 推导。
+   *
+   * @param dir - 备份目录绝对路径
+   */
+  public static setBackupsDir(dir: string): void {
+    FileBackupManager._backupsDir = dir;
+  }
+
   private static getBackupsDir(workspacePath: string): string {
-    return join(workspacePath, '.myagent/backups');
+    if (!FileBackupManager._backupsDir) {
+      throw new Error(`备份目录尚未通过 ApplicationPaths 注入，拒绝回退到 workspace: ${workspacePath}`);
+    }
+    return FileBackupManager._backupsDir;
   }
 
   private static getManifestPath(workspacePath: string): string {

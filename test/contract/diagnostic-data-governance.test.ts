@@ -8,18 +8,16 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { reset as resetLogTape } from '@logtape/logtape';
 import { AgentTracer } from '../../src/core/domain/tracer.js';
-import { initLogger, disposeLogger, logger } from '../../src/utils/logger.js';
+import { initLogger, configureFileSink, disposeLogger, logger } from '../../src/utils/logger.js';
 import { TracerLogPlugin } from '../../src/core/usecases/plugins/TracerLogPlugin.js';
 import { HookEventName, type HookContext } from '../../src/core/usecases/plugins/plugin-types.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 
 describe('diagnostic data governance integration', () => {
-  const originalCwd = process.cwd();
   const originalVitest = process.env.VITEST;
   const originalTestLog = process.env.MYAGENT_TEST_LOG;
 
   afterEach(async () => {
-    process.chdir(originalCwd);
     if (originalVitest === undefined) delete process.env.VITEST;
     else process.env.VITEST = originalVitest;
     if (originalTestLog === undefined) delete process.env.MYAGENT_TEST_LOG;
@@ -29,18 +27,21 @@ describe('diagnostic data governance integration', () => {
 
   it('should keep secrets and raw prompt/tool/patch values out of default files', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'diagnostic-governance-contract-'));
-    process.chdir(tempDir);
+    const logDir = join(tempDir, 'project-data', 'logs');
     process.env.VITEST = 'true';
     process.env.MYAGENT_TEST_LOG = '1';
 
     try {
       await initLogger();
+      await configureFileSink(logDir);
       logger.info('password=run-log-secret\njsonl-injection', {
         headers: { Authorization: 'Bearer logger-secret' },
         content: 'prompt raw content'
       });
 
-      const tracer = new AgentTracer(tempDir, 'contract-session', {
+      const tracesDir = join(tempDir, 'logs', 'traces');
+      const auditsDir = join(tempDir, 'logs', 'audits');
+      const tracer = new AgentTracer(tracesDir, auditsDir, 'contract-session', {
         operationalEnabled: true,
         auditEnabled: true,
         replayEnabled: false,
@@ -80,9 +81,9 @@ describe('diagnostic data governance integration', () => {
       await auditPlugin.hooks[HookEventName.BeforeTool](hookContext, async () => undefined);
       await disposeLogger();
 
-      const runLog = join(tempDir, '.myagent', 'run.log');
-      const traceFile = join(tempDir, '.myagent', 'traces', 'trace_contract-session.jsonl');
-      const auditFile = join(tempDir, '.myagent', 'traces', 'audit_contract-session.jsonl');
+      const runLog = join(logDir, 'run.log');
+      const traceFile = join(tracesDir, 'trace_contract-session.jsonl');
+      const auditFile = join(auditsDir, 'audit_contract-session.jsonl');
       expect(existsSync(runLog)).toBe(true);
       expect(existsSync(traceFile)).toBe(true);
       expect(existsSync(auditFile)).toBe(true);
@@ -107,7 +108,6 @@ describe('diagnostic data governance integration', () => {
       expect(combined).not.toContain('raw-tool-result');
       expect(JSON.parse(traceContent.split(/\r?\n/)[0]).captureMode).toBe('metadata-only');
     } finally {
-      process.chdir(originalCwd);
       rmSync(tempDir, { recursive: true, force: true });
     }
   });

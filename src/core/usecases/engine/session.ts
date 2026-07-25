@@ -107,9 +107,13 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.context.appConfig = appConfig;
     this.maxIterations = appConfig.runtimeLimits.maxIterations;
     this.driver = driver;
-    const baseDir = appConfig.workspace;
-    // 实例化主跟踪仪，支持沙箱环境变量重定向
-    this.tracer = new AgentTracer(baseDir, this.context.getSessionId(), appConfig.diagnostics);
+    // 实例化主跟踪仪，使用应用路径中的 traces/audits 目录
+    this.tracer = new AgentTracer(
+      appConfig.applicationPaths.tracesDir,
+      appConfig.applicationPaths.auditsDir,
+      this.context.getSessionId(),
+      appConfig.diagnostics,
+    );
     if (appConfig.diagnostics.replayEnabled) {
       logger.warn('[诊断] replay_mode_enabled', {
         component: 'diagnostic_governance',
@@ -122,9 +126,20 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.contextAdapter = contextAdapter;
 
     // 初始化领域服务集群
-    this.ruleManager = new RuleManager(this.context);
-    this.contextRepo = new ContextRepository(this.context);
-    this.toolDispatcher = new ToolDispatcher(this.context, this.toolRegistry);
+    const paths = appConfig.applicationPaths;
+    this.ruleManager = new RuleManager(
+      this.context,
+      paths.userRulesDir,
+      paths.projectRulesDir,
+      paths.userSkillsDir,
+      paths.projectSkillsDir,
+    );
+    this.contextRepo = new ContextRepository(this.context, paths.sessionsDir);
+    this.toolDispatcher = new ToolDispatcher(this.context, this.toolRegistry, paths.toolOutputsDir);
+    // 工具输出位于 workspace 外，仅向当前会话开放该精确目录树的只读访问。
+    this.context.addTemporaryDirectoryScopeReadWhitelist(paths.toolOutputsDir);
+    // 回滚备份必须使用当前项目的应用数据目录，禁止从 workspace 推导旧路径。
+    FileBackupManager.setBackupsDir(paths.backupsDir);
     const compactionService = new CompactionService(this.context, this.driver, this.contextRepo, estimator);
     const contextHistoryPruner = new ContextHistoryPruner(estimator);
     const contextBudgetPlanner = new ContextBudgetPlanner(estimator, contextHistoryPruner);
@@ -270,9 +285,18 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   public async loadState(targetSessionId: string): Promise<boolean> {
     const success = await this.contextRepo.loadState(targetSessionId);
     if (success) {
-      const baseDir = this.context.appConfig ? this.context.appConfig.workspace : process.cwd();
+      const appConfig = this.context.appConfig;
+      if (!appConfig) {
+        throw new Error('会话状态恢复后缺少 AppConfig，无法重建 tracer');
+      }
+      const paths = appConfig.applicationPaths;
       // 状态恢复成功后，重置跟踪记录仪以绑定新的 Session ID 目录
-      this.tracer = new AgentTracer(baseDir, this.context.getSessionId(), this.context.appConfig?.diagnostics);
+      this.tracer = new AgentTracer(
+        paths.tracesDir,
+        paths.auditsDir,
+        this.context.getSessionId(),
+        appConfig.diagnostics,
+      );
       this.agentLoop.resetTraceState();
     }
     return success;

@@ -48,27 +48,74 @@ export function readAndLimitFile(filePath: string): string {
 }
 
 /**
- * 加载全局规则 (Global Rules)。
- * 
- * @param workspacePath - 工作区根路径
- * @param customPath - 可选的自定义规则文件物理路径
- * @returns 成功读取时返回全局规则内容的字符串，否则返回空字符串
+ * 加载用户级规则（来自用户 rules 目录下的全部 `.md` 文件）。
+ *
+ * @param userRulesDir - 用户 rules 目录绝对路径
+ * @returns 合并后的用户规则内容；目录不存在返回空字符串
  */
-export function loadGlobalRules(workspacePath: string, customPath?: string): string {
-  const targetPath = customPath ?? join(workspacePath, '.agent/global_rules.md');
-  return readAndLimitFile(targetPath);
+export function loadUserRules(userRulesDir: string): string {
+  return loadRulesFromDir(userRulesDir);
 }
 
 /**
- * 加载局部/工作区规则 (Local Rules)。
- * 
- * @param workspacePath - 工作区根路径
- * @param customPath - 可选的自定义规则文件物理路径
- * @returns 成功读取时返回局部规则内容的字符串，否则返回空字符串
+ * 加载项目级规则（来自项目 rules 目录下的全部 `.md` 文件）。
+ *
+ * @param projectRulesDir - 项目 rules 目录绝对路径
+ * @returns 合并后的项目规则内容；目录不存在返回空字符串
  */
-export function loadLocalRules(workspacePath: string, customPath?: string): string {
-  const targetPath = customPath ?? join(workspacePath, '.agent/rules/guize.md');
-  return readAndLimitFile(targetPath);
+export function loadProjectRules(projectRulesDir: string): string {
+  return loadRulesFromDir(projectRulesDir);
+}
+
+/**
+ * 从指定目录中加载全部 `.md` 规则文件，按稳定顺序合并。
+ *
+ * @param dir - 规则目录绝对路径
+ * @returns 合并后的规则内容
+ */
+function loadRulesFromDir(dir: string): string {
+  try {
+    if (!existsSync(dir)) {
+      return '';
+    }
+    const files = readdirSync(dir)
+      .filter(f => f.endsWith('.md'))
+      .sort();
+
+    const parts: string[] = [];
+    for (const file of files) {
+      const content = readAndLimitFile(join(dir, file));
+      if (content) {
+        parts.push(content);
+      }
+    }
+    return parts.join('\n\n');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 扫描用户和项目两个技能目录，合并技能列表。
+ * 同名技能以项目级定义覆盖用户级定义。
+ *
+ * @param userSkillsDir - 用户 skills 目录绝对路径
+ * @param projectSkillsDir - 项目 skills 目录绝对路径
+ * @returns 合并后的技能元数据数组
+ */
+export function scanSkills(userSkillsDir: string, projectSkillsDir: string): SkillMetadata[] {
+  const userSkills = scanSkillsFromDir(userSkillsDir);
+  const projectSkills = scanSkillsFromDir(projectSkillsDir);
+
+  // 项目技能覆盖同名用户技能
+  const merged = new Map<string, SkillMetadata>();
+  for (const skill of userSkills) {
+    merged.set(skill.name, skill);
+  }
+  for (const skill of projectSkills) {
+    merged.set(skill.name, skill);
+  }
+  return Array.from(merged.values());
 }
 
 /**
@@ -131,32 +178,38 @@ export function findSkillFiles(dir: string, fileList: string[] = [], currentDept
 }
 
 /**
- * 扫描指定工作区目录下的所有扩展技能元数据。
- * 
- * @param workspacePath - 工作区根路径
- * @returns 扫描并解析出的技能元数据数组
+ * 从单个目录扫描并解析技能文件。
+ *
+ * @param dir - 技能目录绝对路径
+ * @returns 解析出的技能元数据数组
  */
-export function scanSkills(workspacePath: string): SkillMetadata[] {
-  const skillsDir = join(workspacePath, '.agent/skills');
-  const skillFiles = findSkillFiles(skillsDir);
-  const list: SkillMetadata[] = [];
-
-  for (const file of skillFiles) {
-    try {
-      const rawContent = readFileSync(file, 'utf-8');
-      const parsed = parseSkillFrontmatter(rawContent);
-      if (parsed.name !== 'unknown') {
-        list.push({
-          name: parsed.name,
-          description: parsed.description,
-          filePath: file
-        });
-      }
-    } catch (e) {
-      logger.warn(`[ContextLoader] 解析技能文件失败: ${file}, 错误: ${e}`);
+function scanSkillsFromDir(dir: string): SkillMetadata[] {
+  try {
+    if (!existsSync(dir)) {
+      return [];
     }
+    const skillFiles = findSkillFiles(dir);
+    const list: SkillMetadata[] = [];
+
+    for (const file of skillFiles) {
+      try {
+        const rawContent = readFileSync(file, 'utf-8');
+        const parsed = parseSkillFrontmatter(rawContent);
+        if (parsed.name !== 'unknown') {
+          list.push({
+            name: parsed.name,
+            description: parsed.description,
+            filePath: file
+          });
+        }
+      } catch (e) {
+        logger.warn(`[ContextLoader] 解析技能文件失败: ${file}, 错误: ${e}`);
+      }
+    }
+    return list;
+  } catch {
+    return [];
   }
-  return list;
 }
 
 /**

@@ -1,19 +1,22 @@
 import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
-import { existsSync, rmSync } from 'fs';
-import { resolve } from 'path';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { join, resolve } from 'path';
+import { tmpdir } from 'os';
 import { BrowserContext, Page } from 'playwright';
 import { SessionContext } from '../../../src/core/domain/context.js';
 import {
   BrowserSession,
   generateAriaSnapshot,
   BrowserEnsureLoginTool,
-  BrowserGetTextTool
+  BrowserGetTextTool,
+  setBrowserPaths,
 } from '../../../src/adapters/tools/impl/browser/browser-action.js';
 
 describe('BrowserSession 多租户隔离集成测试', () => {
-  const testBaseDir = resolve(process.cwd(), `.myagent/browser-session-multitenant-test-${Date.now()}`);
+  const testBaseDir = mkdtempSync(join(tmpdir(), 'browser-session-multitenant-test-'));
 
   beforeAll(() => {
+    setBrowserPaths(testBaseDir, resolve(testBaseDir, 'screenshots'));
     // 强制设定测试专用的隔离基础路径
     process.env.BROWSER_USER_DATA_DIR = testBaseDir;
   });

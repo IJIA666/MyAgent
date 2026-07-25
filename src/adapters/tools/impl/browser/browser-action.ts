@@ -24,6 +24,39 @@ function unwrapSessionContext(context?: unknown): unknown {
   return context;
 }
 
+/** 可注入的浏览器数据目录（来自 ApplicationPaths.browserDir）。 */
+let _browserDir: string | null = null;
+/** 可注入的截图目录（来自 ApplicationPaths.screenshotsDir）。 */
+let _screenshotsDir: string | null = null;
+
+/**
+ * 注入浏览器数据目录和截图目录路径。
+ * 应在应用启动组合根中调用一次。
+ *
+ * @param browserDir - 浏览器持久状态目录（ApplicationPaths.browserDir）
+ * @param screenshotsDir - 截图目录（ApplicationPaths.screenshotsDir）
+ */
+export function setBrowserPaths(browserDir: string, screenshotsDir: string): void {
+  _browserDir = browserDir;
+  _screenshotsDir = screenshotsDir;
+}
+
+/** 获取已由组合根注入的浏览器目录，禁止回退 workspace。 */
+function getBrowserDir(): string {
+  if (!_browserDir) {
+    throw new Error('浏览器目录尚未通过 ApplicationPaths 注入');
+  }
+  return _browserDir;
+}
+
+/** 获取已由组合根注入的截图目录，禁止回退 workspace。 */
+function getScreenshotsDir(): string {
+  if (!_screenshotsDir) {
+    throw new Error('截图目录尚未通过 ApplicationPaths 注入');
+  }
+  return _screenshotsDir;
+}
+
 /**
  * 浏览器会话生命周期管理类。
  * 核心职责：
@@ -122,7 +155,7 @@ export class BrowserSession {
       this.contextsMap.set(tenantId, page.context());
     } else {
       // 2. 本地持久化上下文通道
-      const baseDir = runtimeEnv.BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
+      const baseDir = runtimeEnv.BROWSER_USER_DATA_DIR || getBrowserDir();
       const userDataDir = resolve(baseDir, tenantId);
       const executablePath = BrowserDetector.detectExecutablePath() || undefined;
       const isHeadless = runtimeEnv.BROWSER_HEADLESS !== 'false';
@@ -176,11 +209,24 @@ export class BrowserSession {
     }
 
     if (cleanup) {
-      const baseDir = getRuntimeEnv().BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
+      const baseDir = getRuntimeEnv().BROWSER_USER_DATA_DIR || getBrowserDir();
       const userDataDir = resolve(baseDir, tenantId);
+      // 安全校验：确保 userDataDir 是 baseDir 的精确后代，防止 .. 或符号链接越界
+      const normalizedBase = resolve(baseDir);
+      const normalizedTarget = resolve(userDataDir);
+      if (!normalizedTarget.startsWith(normalizedBase + (process.platform === 'win32' ? '\\' : '/')) &&
+          normalizedTarget !== normalizedBase) {
+        logger.error(`[BrowserSession] 越界清理拒绝：目标 ${normalizedTarget} 不在浏览器根 ${normalizedBase} 下`);
+        return;
+      }
       try {
-        if (existsSync(userDataDir)) {
-          rmSync(userDataDir, { recursive: true, force: true });
+        // 只有在 Page 和 Context 都已关闭后才执行物理删除
+        if (!this.pagesMap.has(tenantId) && !this.contextsMap.has(tenantId)) {
+          if (existsSync(normalizedTarget)) {
+            rmSync(normalizedTarget, { recursive: true, force: true });
+          }
+        } else {
+          logger.warn(`[BrowserSession] 租户 [${tenantId}] 仍有活跃 Page/Context，跳过物理清理`);
         }
       } catch (err) {
         logger.error(`[BrowserSession] 清理租户 [${tenantId}] 的 Profile 文件夹失败:`, err);
@@ -194,7 +240,7 @@ export class BrowserSession {
    * @param tenantId - 租户标识
    */
   public static async killTenantProcesses(tenantId: string): Promise<void> {
-    const baseDir = getRuntimeEnv().BROWSER_USER_DATA_DIR || resolve(process.cwd(), '.myagent/browser-session');
+    const baseDir = getRuntimeEnv().BROWSER_USER_DATA_DIR || getBrowserDir();
     const userDataDir = resolve(baseDir, tenantId);
     const targetDirPattern = userDataDir.replace(/\\/g, '/');
 
@@ -817,7 +863,7 @@ export class BrowserVisionTool implements NativeTool {
         operationCategory: 'browser-screenshot',
         sideEffect: 'write',
         riskReason: '将网页截图写入本地目录',
-        resources: [{ kind: 'directory-scope', access: 'write', normalizedPath: resolve(process.cwd(), '.myagent/screenshots') }],
+        resources: [{ kind: 'directory-scope', access: 'write', normalizedPath: getScreenshotsDir() }],
       },
     };
   }
@@ -834,7 +880,7 @@ export class BrowserVisionTool implements NativeTool {
     const annotate = typeof args.annotate === 'boolean' ? args.annotate : false;
 
     // 建立专用的临时截图存放目录
-    const screenshotsDir = resolve(process.cwd(), '.myagent/screenshots');
+    const screenshotsDir = getScreenshotsDir();
     const { mkdirSync, existsSync } = await import('fs');
     if (!existsSync(screenshotsDir)) {
       mkdirSync(screenshotsDir, { recursive: true });

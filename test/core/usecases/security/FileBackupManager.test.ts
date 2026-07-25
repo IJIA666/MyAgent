@@ -10,10 +10,13 @@ import { FileBackupManager } from '../../../../src/core/usecases/security/FileBa
 
 describe('FileBackupManager', () => {
   let tempWorkspace: string;
+  let backupsDir: string;
   const snapshotId = 'test-snapshot-123';
 
   beforeEach(() => {
     tempWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'backup-manager-test-'));
+    backupsDir = path.join(tempWorkspace, 'app-data', 'backups');
+    FileBackupManager.setBackupsDir(backupsDir);
   });
 
   afterEach(() => {
@@ -31,7 +34,6 @@ describe('FileBackupManager', () => {
     FileBackupManager.captureSnapshot(snapshotId, 'hello.txt', 5, tempWorkspace);
 
     // 校验备份目录和清单是否存在
-    const backupsDir = path.join(tempWorkspace, '.myagent/backups');
     expect(fs.existsSync(backupsDir)).toBe(true);
 
     const manifestPath = path.join(backupsDir, 'snapshot_manifest.json');
@@ -58,7 +60,6 @@ describe('FileBackupManager', () => {
     // 捕获快照
     FileBackupManager.captureSnapshot(snapshotId, newFile, 8, tempWorkspace);
 
-    const backupsDir = path.join(tempWorkspace, '.myagent/backups');
     const manifestPath = path.join(backupsDir, 'snapshot_manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
 
@@ -105,7 +106,6 @@ describe('FileBackupManager', () => {
     FileBackupManager.captureSnapshot(snapshotId, 'important.txt', 10, tempWorkspace);
 
     // 模拟物理删除备份文件
-    const backupsDir = path.join(tempWorkspace, '.myagent/backups');
     const manifestPath = path.join(backupsDir, 'snapshot_manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
     const backupPath = manifest.snapshots[0].backupFiles[0].backupPath;
@@ -127,7 +127,6 @@ describe('FileBackupManager', () => {
 
     FileBackupManager.captureSnapshot(snapshotId, 'test.txt', 1, tempWorkspace);
 
-    const backupsDir = path.join(tempWorkspace, '.myagent/backups');
     expect(fs.existsSync(backupsDir)).toBe(true);
 
     // 执行清理

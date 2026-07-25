@@ -1,3 +1,6 @@
+import { resolve } from 'path';
+import { createApplicationPaths } from '../../src/config/application-paths.js';
+import { SettingsRepository } from '../../src/config/settings-repository.js';
 import type { AppConfig } from '../../src/config/types.js';
 
 /**
@@ -8,6 +11,22 @@ import type { AppConfig } from '../../src/config/types.js';
  * @returns 完整的 AppConfig 配置对象
  */
 export function createMockAppConfig(custom?: Partial<AppConfig>): AppConfig {
+  const workspace = custom?.workspace
+    ?? process.env.AUTHORIZED_WORKSPACE_DIR
+    ?? process.cwd();
+  const applicationPaths = custom?.applicationPaths ?? createApplicationPaths(workspace, {
+    appDataRoot: resolve(workspace, '.test-app-data'),
+  });
+  const settingsRepository = custom?.settingsRepository ?? new SettingsRepository(
+    applicationPaths.userConfigDir,
+    applicationPaths.projectConfigDir,
+    {
+      userSettingsPath: applicationPaths.userSettingsPath,
+      projectSettingsPath: applicationPaths.projectSettingsPath,
+      projectLocalSettingsPath: applicationPaths.projectLocalSettingsPath,
+    },
+  );
+
   return {
     llm: {
       model: 'mock-model',
@@ -23,7 +42,6 @@ export function createMockAppConfig(custom?: Partial<AppConfig>): AppConfig {
         defaultModel: 'mock-model',
       },
     },
-    workspace: process.env.AUTHORIZED_WORKSPACE_DIR || process.cwd(),
     mcp: {
       mcpServers: {},
     },
@@ -54,5 +72,8 @@ export function createMockAppConfig(custom?: Partial<AppConfig>): AppConfig {
       auditRetentionSessions: 20,
     },
     ...custom,
+    workspace,
+    applicationPaths,
+    settingsRepository,
   };
 }

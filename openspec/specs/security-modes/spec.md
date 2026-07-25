@@ -1,36 +1,37 @@
 ## 新增需求
 
 ### 需求: 权限持久化与静态前缀提取 (Always Allow & Static Prefix Abstraction)
-当终端引擎拦截了一个命令并向用户发起确认提问时，系统会尝试自动提取该命令的安全前缀，并将其作为“始终放行”的选项。用户若选择“始终放行 (Always Allow)”，该规则将被持久化存储 to 配置文件中（如 `.agent/allowed_commands.json`）。
-- **根与子命令双重校验 (Root + Subcommand Extraction)**：系统绝不自动生成对单一根命令的通配符（如禁止提取 `git:*` 或 `npm:*`）。提取算法必须且只提取**前两段**（Root Command + Sub Command，且 Sub Command 必须为纯字母数字，不能是 `-flag` 或 `文件路径`）。
-- **即时抽象放行**：例如，当拦截到 `git add src/a.ts` 时，系统自动提取出 `git add` 并询问是否放行 `git add:*`。一旦用户同意，以后所有 `git add` 开头的命令都将自动放行，无需多次融合。
-- **解包剥壳比对与提取 (Unbox-based Matching & Extraction)**：在进行前缀提取（`extractSafePrefix`）与白名单规则校验（`checkSafety`）前，系统必须（MUST）先对终端命令进行递归解包剥壳（`unboxNestedCommand`），还原出其实际内核命令，再以该内核命令进行前缀抽象和白名单比对。
-- **配置自动初始化**：如果 `.agent/allowed_commands.json` 配置文件不存在或内容为空，系统应当（SHALL）在本地自动写入一份常用且相对安全的规则列表（即预设模板，包含 `git status:*`、`git diff:*`、`git log:*`、`vitest:*`、`npm test:*`、`npm run test:*`）进行初始化。
-- **透明审批真实核心指令告知**：在安全审查拦截挂起阶段，如果解包后的实际核心指令与原始命令行不一致，系统在返回的审批提示信息中必须（MUST）显式展示“解包后实际核心指令”，确保用户在知情的前提下进行确权审批。
+当统一权限服务对终端命令产生 `ask` 决策时，系统 MUST 基于解包后的真实子命令生成安全、有限的规则建议。用户选择”始终放行”后，系统 MUST 将对应 `PermissionRule` 原子写入项目 `.myagent/settings.local.json` 的 `permission.allow`，并保留同文件中的其他配置字段。系统不得读取、创建或初始化 `.agent/allowed_commands.json`。
 
-#### 场景: 安全前缀的提取与放行
-- **WHEN** 模型发起 `npm run build` 命令，触发安全拦截
-- **THEN** 系统提取出 `npm run`，并在人工审批弹窗中提供“始终放行 npm run:*”的选项。
-- **WHEN** 用户点击同意放行
-- **THEN** `.agent/allowed_commands.json` 记录 `"npm run:*"`。当模型紧接着发起 `npm run lint` 时，匹配到前缀白名单自动放行。
-- **WHEN** 模型接着发起 `npm publish`
-- **THEN** 系统由于只匹配前缀，发现 `npm publish` 不在白名单中，必须拦截并抛出人工确认交互。
+- 系统不得自动生成只包含根命令的宽泛通配规则。
+- 系统必须先递归解包解释器外壳，再进行真实子命令匹配与规则建议。
+- 安全可泛化时生成有边界的 prefix 规则；不适合泛化时生成 exact 规则，同一批准不得同时生成两个作用域。
+- 解包后的真实命令与原始命令不同时，审批提示必须披露真实命令。
 
-#### 场景: 解释器包裹命令下的剥壳匹配与放行
-- **WHEN** 用户已经在白名单中授权了 `"npm run:*"`，此时模型通过解释器包裹发起了 `powershell -Command "npm run test"`
-- **THEN** 系统在安全校验时对其进行解包剥壳，提取出内核命令 `npm run test`，比对白名单中存在匹配规则 `"npm run:*"`，进而静默自动放行执行。
+#### Scenario: 安全子命令规则的提取与持久化
 
-#### 场景: 本地白名单配置缺失时的自动初始化预设
-- **WHEN** 终端配置加载时检测到配置文件 `.agent/allowed_commands.json` 不存在
-- **THEN** 系统自动在本地创建该文件并写入初始化的常用安全规则列表，随后以此预设作为运行时的首日白名单。
+- **WHEN** 模型发起 `npm run build` 并得到 `ask` 决策，用户选择始终放行建议的 `npm run` 范围
+- **THEN** 系统把对应 allow 规则写入项目 `.myagent/settings.local.json`，后续匹配该规则的命令按统一权限优先级评估，而 `npm publish` 不得因该规则自动放行
 
-#### 场景: 审批弹窗披露解包后实际执行指令
-- **WHEN** 模型发起了未经授权的包裹命令 `powershell -Command "npm run dev"`，触发安全拦截
-- **THEN** 终端引擎将其判定为 `suspend` 挂起，且在审批弹窗中呈现 message，明确指示“外壳包装为 'powershell -Command "npm run dev"'，实际执行的核心命令为 'npm run dev'”，告知用户真实执行意图。
+#### Scenario: 更新权限规则时保留其他设置
 
-#### 场景: 解包后未命中白名单的拦截与告知行为
-- **WHEN** 用户已在白名单中授权了 `"git status:*"`，此时模型发起了包裹命令 `powershell -Command "npm run lint"`
-- **THEN** 终端引擎将其判定为只读级别命令，进行解包剥壳得到内核命令 `npm run lint`，提取安全前缀为 `npm run`。由于其未命中任何已放行的白名单前缀规则，系统将其判定为 `suspend` 挂起，且在审批弹窗中呈现 message，明确指示：“外壳包装为 'powershell -Command "npm run lint"'，实际执行的核心命令为 'npm run lint'”以触发人工确认交互。
+- **WHEN** 项目本机 settings 已包含 permission default mode 或 terminal default shell family
+- **THEN** 新增 allow 规则后这些字段保持不变，且文件替换要么完整成功要么保留原文件
+
+#### Scenario: 解释器包裹命令下的剥壳匹配
+
+- **WHEN** 已有规则允许真实命令 `npm run test`，模型发起 `powershell -Command “npm run test”`
+- **THEN** 系统解包得到真实命令后按相同权限规则评估，不把外壳本身误当作被授权命令
+
+#### Scenario: 审批提示披露真实执行指令
+
+- **WHEN** 未授权的包裹命令与解包后的真实命令不同并产生 `ask`
+- **THEN** 审批提示同时展示原始命令和解包后的真实命令，用户据此决定本次允许或持久化规则
+
+#### Scenario: 旧白名单文件存在
+
+- **WHEN** workspace 中存在 `.agent/allowed_commands.json`，但新 settings 中没有对应规则
+- **THEN** 系统不得加载或迁移该白名单，也不得自动写入预设 allow 规则
 
 ### 需求: 动态安全工作模式 (Work Modes)
 

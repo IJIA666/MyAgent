@@ -4,6 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { join } from 'path';
 import { SessionManager } from '../../../../src/core/usecases/engine/session.js';
 import { LlmConfig } from '../../../../src/config/index.js';
 import { LlmPort, ChatMessage } from '../../../../src/ports/driven/llm/LlmPort.js';
@@ -13,6 +14,7 @@ import { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdap
 import { AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
 import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
+import { SecurityService } from '../../../../src/core/usecases/security/SecurityService.js';
 
 interface VirtualAgentLoop {
   checkCacheAndCalibrate: (usage: unknown) => Generator<AgentEvent, void, unknown>;
@@ -71,14 +73,24 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     } as unknown as ToolRegistryPort;
     const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
 
+    const appConfig = createMockAppConfig();
     const session = new SessionManager(
       mockLlmConfig,
       mockDriver,
       mockEstimator,
       mockToolRegistry,
       mockContextAdapter,
-      createMockAppConfig(),
+      appConfig,
     );
+
+    expect(SecurityService.getInstance().hasTemporaryReadWhitelist(
+      session.getSessionId(),
+      join(appConfig.applicationPaths.toolOutputsDir, 'tool-output.log'),
+    )).toBe(true);
+    expect(SecurityService.getInstance().hasTemporaryReadWhitelist(
+      session.getSessionId(),
+      join(appConfig.applicationPaths.artifactsDir, 'outside.log'),
+    )).toBe(false);
 
     expect(session.getIsGenerating()).toBe(false);
     expect(session.getLastApiUsage()).toBeNull();

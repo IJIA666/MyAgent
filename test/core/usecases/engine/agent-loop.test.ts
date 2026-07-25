@@ -20,6 +20,18 @@ import { PluginRegistry } from '../../../../src/core/usecases/plugins/plugin-reg
 import { HookEventName, type HookContext } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { AgentTracer } from '../../../../src/core/domain/tracer.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
+import { mkdtempSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+
+/** 测试用的临时 traces/audits 目录。 */
+const testTracesDir = join(mkdtempSync(join(tmpdir(), 'agent-loop-traces-')), 'traces');
+const testAuditsDir = join(mkdtempSync(join(tmpdir(), 'agent-loop-audits-')), 'audits');
+
+/** 创建测试用的 AgentTracer，使用隔离的临时目录。 */
+function createTestTracer(sessionId: string): AgentTracer {
+  return new AgentTracer(testTracesDir, testAuditsDir, sessionId);
+}
 
 /** 创建溢出恢复测试使用的最小请求消息。 */
 function makeRequestMessages(): ChatMessage[] {
@@ -113,7 +125,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     };
 
     mockRuleManager = {
-      getLocalRules: () => ''
+      getProjectRules: () => ''
     };
 
     mockContextRepo = {
@@ -226,7 +238,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       });
 
     const events: AgentEvent[] = [];
-    for await (const event of createLoop().chat(undefined, new AgentTracer(process.cwd(), 'overflow-recovery'), { model: 'mock-model' } as LlmConfig)) {
+    for await (const event of createLoop().chat(undefined, createTestTracer('overflow-recovery'), { model: 'mock-model' } as LlmConfig)) {
       events.push(event);
     }
 
@@ -275,7 +287,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       });
 
     const events: AgentEvent[] = [];
-    for await (const event of createLoop().chat(undefined, new AgentTracer(process.cwd(), 'overflow-stop'), { model: 'mock-model' } as LlmConfig)) {
+    for await (const event of createLoop().chat(undefined, createTestTracer( 'overflow-stop'), { model: 'mock-model' } as LlmConfig)) {
       events.push(event);
     }
 
@@ -298,7 +310,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     try {
       for await (const event of createLoop().chat(
         undefined,
-        new AgentTracer(process.cwd(), 'ordinary-provider-error'),
+        createTestTracer( 'ordinary-provider-error'),
         { model: 'mock-model' } as LlmConfig
       )) {
         events.push(event);
@@ -390,7 +402,7 @@ describe('AgentLoop 动态安全特性测试', () => {
 
     for await (const event of createLoop().chat(
       undefined,
-      new AgentTracer(process.cwd(), 'compaction-reset-after-tool'),
+      createTestTracer( 'compaction-reset-after-tool'),
       { model: 'mock-model' } as LlmConfig
     )) {
       void event;
@@ -413,7 +425,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'test-session');
+    const tracer = createTestTracer( 'test-session');
     for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
       void event;
     }
@@ -453,7 +465,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'test-session');
+    const tracer = createTestTracer( 'test-session');
     for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
       void event;
     }
@@ -484,7 +496,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'test-session');
+    const tracer = createTestTracer( 'test-session');
     for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
       void event;
     }
@@ -517,7 +529,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'test-session');
+    const tracer = createTestTracer( 'test-session');
     for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
       void event;
     }
@@ -548,7 +560,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'trace-reset-session');
+    const tracer = createTestTracer( 'trace-reset-session');
     for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
       void event;
     }
@@ -667,7 +679,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'test-tail-aftertool');
+    const tracer = createTestTracer( 'test-tail-aftertool');
     for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
       void event;
     }
@@ -716,7 +728,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'test-no-config');
+    const tracer = createTestTracer( 'test-no-config');
 
     await expect(async () => {
       for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
@@ -740,7 +752,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'test-model-timeout');
+    const tracer = createTestTracer( 'test-model-timeout');
     for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
       void event;
     }
@@ -816,7 +828,7 @@ describe('AgentLoop 动态安全特性测试', () => {
 
     for await (const event of loop.chat(
       undefined,
-      new AgentTracer(process.cwd(), 'test-tool-signal'),
+      createTestTracer( 'test-tool-signal'),
       { model: 'mock-model' } as LlmConfig,
       { signal: controller.signal },
     )) {
@@ -886,7 +898,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     const events: AgentEvent[] = [];
     for await (const event of loop.chat(
       undefined,
-      new AgentTracer(process.cwd(), 'test-user-denial-stops-turn'),
+      createTestTracer( 'test-user-denial-stops-turn'),
       { model: 'mock-model' } as LlmConfig,
     )) {
       events.push(event);
@@ -965,7 +977,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'test-bad-tool-args');
+    const tracer = createTestTracer( 'test-bad-tool-args');
     for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
       void event;
     }
@@ -1073,7 +1085,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'test-diagnostic-complex-command-block');
+    const tracer = createTestTracer( 'test-diagnostic-complex-command-block');
     for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
       void event;
     }
@@ -1149,7 +1161,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
 
-    const tracer = new AgentTracer(process.cwd(), 'test-diagnostic-listfiles-budget');
+    const tracer = createTestTracer( 'test-diagnostic-listfiles-budget');
     for await (const event of loop.chat(undefined, tracer, { model: 'mock-model' } as LlmConfig)) {
       void event;
     }
@@ -1195,7 +1207,7 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry
     });
     const events: AgentEvent[] = [];
-    for await (const event of loop.chat(undefined, new AgentTracer(process.cwd(), 't-diag-gate'), { model: 'mock-model' } as LlmConfig)) {
+    for await (const event of loop.chat(undefined, createTestTracer( 't-diag-gate'), { model: 'mock-model' } as LlmConfig)) {
       events.push(event);
     }
 

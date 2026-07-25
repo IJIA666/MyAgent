@@ -14,17 +14,19 @@ export class ToolDispatcher {
    *
    * @param context - 会话上下文管理实例
    * @param toolRegistry - 可选的工具注册端口实例，用于动态获取工具的配额
-   * @param workspacePath - 可选的工作区根路径，用于重定向大文本拦截缓存与 JIT 规则寻路
+   * @param toolOutputsDir - 工具输出产物目录绝对路径（来自 ApplicationPaths.toolOutputsDir）
+   * @param workspacePath - 可选的工作区根路径，用于 JIT 规则寻路
    */
   constructor(
     private context: SessionContext,
-    private toolRegistry?: ToolRegistryPort,
+    private toolRegistry: ToolRegistryPort | undefined,
+    private toolOutputsDir: string,
     private workspacePath?: string
   ) {}
 
   /**
    * 拦截并处理超大工具输出。
-   * 若输出超出去中心化行数与字节配额，执行同步落盘到 .myagent/tool-outputs/ 目录，
+   * 若输出超出去中心化行数与字节配额，执行同步落盘到当前项目的应用数据产物目录，
    * 触发双向行级及字节对折算法，产生大文本折叠预览并返回包含原始路径等元数据的复合结果。
    * 
    * @param functionName - 被调用的工具名称
@@ -48,21 +50,21 @@ export class ToolDispatcher {
       return { content: toolResult, isTruncated: false };
     }
 
-    // 确定临时落盘目录，并确保目录存在
-    const tempDir = join(this.workspacePath || process.cwd(), '.myagent/tool-outputs');
-    if (!existsSync(tempDir)) {
-      mkdirSync(tempDir, { recursive: true });
+    // 确定工具输出落盘目录，并确保目录存在
+    const outputDir = this.toolOutputsDir;
+    if (!existsSync(outputDir)) {
+      mkdirSync(outputDir, { recursive: true });
     }
 
     // 产生唯一的随机文件名
     const randomId = Math.random().toString(36).substring(2, 10);
     const timestamp = Date.now();
     const tempFileName = `tool_${timestamp}_${randomId}.log`;
-    const fullPath = join(tempDir, tempFileName);
+    const fullPath = join(outputDir, tempFileName);
 
     // 将完整的原始大文本写入本地物理文件，保障原始日志 100% 物理保全
     writeFileSync(fullPath, toolResult, 'utf-8');
-    const relativePath = `.myagent/tool-outputs/${tempFileName}`;
+    const relativePath = fullPath;
 
     // 双向行对半对折算法
     const headLines = Math.ceil(maxLines / 2);

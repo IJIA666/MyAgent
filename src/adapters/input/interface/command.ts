@@ -23,6 +23,35 @@ export type { CommandContext, CommandResult };
 /**
  * Slash 命令注册与路由分发器。
  */
+
+/** 当前用户的 skills 目录路径（由组合根注入）。 */
+let _userSkillsDir = '';
+/** 当前项目的 skills 目录路径（由组合根注入）。 */
+let _projectSkillsDir = '';
+/** 当前项目的 sessions 目录路径（由组合根注入）。 */
+let _sessionsDir = '';
+
+/**
+ * 注入技能目录路径供交互式菜单使用。
+ * 应在应用启动组合根中调用。
+ *
+ * @param userSkillsDir - 用户 skills 绝对路径
+ * @param projectSkillsDir - 项目 skills 绝对路径
+ */
+export function setSkillPaths(userSkillsDir: string, projectSkillsDir: string): void {
+  _userSkillsDir = userSkillsDir;
+  _projectSkillsDir = projectSkillsDir;
+}
+
+/**
+ * 注入会话目录路径供 history 命令使用。
+ *
+ * @param sessionsDir - 会话快照目录绝对路径
+ */
+export function setSessionsDir(sessionsDir: string): void {
+  _sessionsDir = sessionsDir;
+}
+
 class CommandRegistry {
   private commands: Map<string, ICommand> = new Map();
 
@@ -30,7 +59,7 @@ class CommandRegistry {
     this.register(new CompactCommand());
     this.register(new ReloadRulesCommand());
     this.register(new RollbackCommand());
-    this.register(new HistoryCommand());
+    this.register(new HistoryCommand(_sessionsDir));
     this.register(new ResumeCommand());
     this.register(new HelpCommand());
     this.register(new SkillCommand());
@@ -102,7 +131,7 @@ export async function showInteractiveMenu(): Promise<string | null> {
   }
 
   if (mainAction === 'skill') {
-    const allSkills = scanSkills(process.cwd());
+    const allSkills = scanSkills(_userSkillsDir, _projectSkillsDir);
     if (allSkills.length === 0) {
       p.outro(theme.info('未发现任何可用技能。'));
       return null;

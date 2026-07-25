@@ -87,7 +87,7 @@ describe('ModelRequestAssembler', () => {
 
     // Mock RuleManager
     const mockRuleManager = {
-      getLocalRules: () => null
+      getProjectRules: () => null
     };
 
     assembler = new ModelRequestAssembler(
@@ -157,7 +157,7 @@ describe('ModelRequestAssembler', () => {
       assembler = new ModelRequestAssembler(
         mockToolRegistry,
         mockContextAdapter,
-        { getLocalRules: () => null },
+        { getProjectRules: () => null },
         mockPluginRegistry,
         context,
         mockBudgetCoordinator
@@ -183,7 +183,7 @@ describe('ModelRequestAssembler', () => {
 
       assembler = new ModelRequestAssembler(
         mockToolRegistry, mockContextAdapter,
-        { getLocalRules: () => null },
+        { getProjectRules: () => null },
         mockPluginRegistry, context, mockBudgetCoordinator
       );
 
@@ -202,7 +202,7 @@ describe('ModelRequestAssembler', () => {
       } as unknown as ContextAdapter;
 
       assembler = new ModelRequestAssembler(
-        mockToolRegistry, mockContextAdapter, { getLocalRules: () => null },
+        mockToolRegistry, mockContextAdapter, { getProjectRules: () => null },
         mockPluginRegistry, context, mockBudgetCoordinator
       );
 

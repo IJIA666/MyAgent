@@ -4,6 +4,9 @@
  * 纯类型定义文件，无副作用。
  */
 
+import type { ApplicationPaths } from './application-paths.js';
+import type { SettingsRepository } from './settings-repository.js';
+
 /**
  * 大语言模型特化配置档案。
  */
@@ -171,6 +174,10 @@ export interface AppConfig {
   runtimeLimits: RuntimeLimitsConfig;
   /** 运行日志、trace 与 audit 的诊断治理配置。 */
   diagnostics: DiagnosticDataConfig;
+  /** 统一的应用路径解析集合（在 workspace 确认后创建）。 */
+  applicationPaths: ApplicationPaths;
+  /** 统一 settings 文件仓储。 */
+  settingsRepository: SettingsRepository;
 }
 
 /**

@@ -2,6 +2,11 @@
  * @file 集中统一的智能体运行诊断日志管理系统（ Logger ）。
  * 提供分级拦截、 Console 终端彩色输出、文件安全异步 RotatingFile 滚动落盘，
  * 以及针对 Vitest 单元测试静音和进程异常退出时的刷盘防丢失机制。
+ *
+ * 采用两阶段初始化：
+ * 1. 模块加载期（bootstrap）：只配置控制台 sink，不创建任何文件。
+ * 2. 授权 workspace 确认后：通过 {@link configureFileSink} 幂等地添加文件 sink，
+ *    写入 `<project-data>/logs/run.log`。
  */
 
 /**
@@ -40,7 +45,7 @@ export const LOG_EVENT = {
   MODEL_SAVE_DEFAULT_FAILED: 'model_save_default_failed',
 } as const;
 
-import { configure, getConsoleSink, getJsonLinesFormatter, getLogger, dispose, withFilter } from "@logtape/logtape";
+import { configure, getConsoleSink, getJsonLinesFormatter, getLogger, dispose, reset, withFilter } from "@logtape/logtape";
 import type { LogLevel } from "@logtape/logtape";
 import { getRotatingFileSink } from "@logtape/file";
 import { existsSync, mkdirSync } from "fs";
@@ -103,31 +108,21 @@ export const logger = {
 };
 
 let isInitialized = false;
+/** 是否已配置文件 sink，确保幂等。 */
+let fileSinkConfigured = false;
 
 /**
- * 确保运行时日志根目录 `.myagent` 存在。
- * 这是启动链路最早访问 `.myagent` 的位置，必须先自愈目录，再配置文件 Sink。
- */
-function ensureLoggerRuntimeDir(): void {
-  const runtimeDir = resolve(".myagent");
-  if (!existsSync(runtimeDir)) {
-    mkdirSync(runtimeDir, { recursive: true });
-  }
-}
-
-/**
- * 初始化全局日志系统配置。
- * 根据环境变量配置 Console 终端彩色输出和文件落盘轮转写入，并自动处理测试静音。
- * 
- * @returns 异步初始化结果的 Promise 
+ * 初始化全局日志系统引导阶段。
+ * 只配置控制台终端输出，不创建任何日志文件。
+ * 在授权 workspace 确认前调用，确保启动日志有控制台输出通道。
+ *
+ * @returns 异步初始化结果的 Promise
  */
 export async function initLogger(): Promise<void> {
   if (isInitialized) {
     return;
   }
   isInitialized = true;
-  // 日志文件 Sink 会写入 `.myagent/run.log`。若用户删掉整个 `.myagent`，这里必须先重建根目录。
-  ensureLoggerRuntimeDir();
   const isTest = process.env.VITEST === "true";
   const hasTestLogEnv = process.env.MYAGENT_TEST_LOG === "1";
 
@@ -150,45 +145,102 @@ export async function initLogger(): Promise<void> {
     return;
   }
 
-  // 正常环境或测试中强制开启日志时
-  // 终端 ConsoleSink 根据 LOG_LEVEL 过滤（ 默认 INFO 级 ），而文件落盘全量捕获（ 包含 DEBUG 及以上 ）
+  // 正常环境：只配置控制台 sink（LOG_LEVEL 过滤，默认 INFO）
   const rawLogLevel = (process.env.LOG_LEVEL || "info").toLowerCase();
-
-  // 校验并映射合法的 LogTape 级别，避免非法配置崩溃
   const validLevels: LogLevel[] = ["debug", "info", "warning", "error", "fatal"];
   const consoleLevel = (validLevels.includes(rawLogLevel as LogLevel) ? rawLogLevel : "info") as LogLevel;
 
   await configure({
     sinks: {
       console: withFilter(getConsoleSink(), consoleLevel),
-      file: getRotatingFileSink(".myagent/run.log", {
-        maxSize: 10 * 1024 * 1024, // 10MB
-        maxFiles: 5,
-        formatter: getJsonLinesFormatter({
-          message: "rendered",
-          properties: "flatten"
-        }),
-      }),
     },
     loggers: [
       {
         category: ["logtape", "meta"],
         lowestLevel: "warning",
-        sinks: ["console", "file"],
+        sinks: ["console"],
       },
       {
         category: [],
         lowestLevel: "debug",
-        sinks: ["console", "file"],
+        sinks: ["console"],
       },
     ],
   });
 }
 
 /**
+ * 在授权 workspace 确认后，幂等地配置文件日志 sink。
+ * 将完整诊断日志（DEBUG 及以上级别）写入 `<logDir>/run.log`，
+ * 支持 10MB/5 文件的自动轮转。
+ *
+ * 该函数是幂等的：多次调用只生效一次。
+ * 如果日志目录创建失败，输出控制台错误但不阻止应用继续运行。
+ *
+ * @param logDir - 项目日志目录的绝对路径（如 `ApplicationPaths.logsDir`）
+ * @returns 文件 sink 配置成功时 resolve true，目录不可写时 resolve false
+ */
+export async function configureFileSink(logDir: string): Promise<boolean> {
+  if (fileSinkConfigured) {
+    return true;
+  }
+
+  try {
+    if (!existsSync(logDir)) {
+      mkdirSync(logDir, { recursive: true });
+    }
+
+    // LogTape 的 configure() 不能重复调用，必须先 reset。
+    // reset 会清空所有 sink 和 logger 配置，因此 console sink 也需要在此重新配置。
+    await reset();
+
+    const runLogPath = resolve(logDir, 'run.log');
+    const rawLogLevel = (process.env.LOG_LEVEL || "info").toLowerCase();
+    const validLevels: LogLevel[] = ["debug", "info", "warning", "error", "fatal"];
+    const consoleLevel = (validLevels.includes(rawLogLevel as LogLevel) ? rawLogLevel : "info") as LogLevel;
+
+    await configure({
+      sinks: {
+        console: withFilter(getConsoleSink(), consoleLevel),
+        file: getRotatingFileSink(runLogPath, {
+          maxSize: 10 * 1024 * 1024, // 10MB
+          maxFiles: 5,
+          formatter: getJsonLinesFormatter({
+            message: "rendered",
+            properties: "flatten"
+          }),
+        }),
+      },
+      loggers: [
+        {
+          category: ["logtape", "meta"],
+          lowestLevel: "warning",
+          sinks: ["console", "file"],
+        },
+        {
+          category: [],
+          lowestLevel: "debug",
+          sinks: ["console", "file"],
+        },
+      ],
+    });
+
+    fileSinkConfigured = true;
+    return true;
+  } catch {
+    logger.warn('[Logger] 无法创建日志目录或配置文件 sink', {
+      component: 'logger',
+      event: 'file_sink_config_failed',
+      logDir,
+    });
+    return false;
+  }
+}
+
+/**
  * 异步释放日志系统持有的所有资源，强制刷盘内存中的缓存数据。
- * 
- * @returns 异步刷盘释放结果的 Promise 
+ *
+ * @returns 异步刷盘释放结果的 Promise
  */
 export async function disposeLogger(): Promise<void> {
   await dispose();

@@ -16,12 +16,12 @@ export class ContextRepository {
    * 创建仓储实例。
    *
    * @param context - 会话上下文实例。
-   * @param workspacePath - 可选的工作区根路径。
+   * @param sessionsDir - 会话快照目录绝对路径（来自 {@link ApplicationPaths.sessionsDir}）。
    * @param isTransient - 是否为临时会话；为真时跳过落盘。
    */
   constructor(
     private context: SessionContext,
-    private workspacePath?: string,
+    private sessionsDir: string,
     private isTransient = false
   ) {}
 
@@ -115,8 +115,7 @@ export class ContextRepository {
       return;
     }
 
-    const baseDir = this.workspacePath || this.context.appConfig?.workspace || process.cwd();
-    const dir = path.join(baseDir, '.myagent', 'sessions');
+    const dir = this.sessionsDir;
     const sessionId = this.normalizeSessionId(this.context.getSessionId());
     const file = path.join(dir, `session_${sessionId}.json`);
     const tempFile = path.join(dir, `.session_${sessionId}.${process.pid}.${Date.now()}.tmp`);
@@ -318,14 +317,13 @@ export class ContextRepository {
   }
 
   /**
-   * 构造读取候选路径，兼容新旧文件名。
+   * 构造读取候选路径。
    *
    * @param targetSessionId - 目标会话 ID。
    * @returns 候选文件路径列表。
    */
   private async getStateFileCandidates(targetSessionId: string): Promise<string[]> {
-    const baseDir = this.workspacePath || this.context.appConfig?.workspace || process.cwd();
-    const dir = path.join(baseDir, '.myagent', 'sessions');
+    const dir = this.sessionsDir;
     const sessionId = this.normalizeSessionId(targetSessionId);
     const candidates = new Set<string>();
 

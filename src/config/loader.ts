@@ -15,6 +15,8 @@ import { getModelConfig } from './models.js';
 import { getRuntimeEnv, interpolateEnvVars } from './env.js';
 import { logger, setDiagnosticSanitizerPatterns } from '../utils/logger.js';
 import { validateDiagnosticPatterns } from '../utils/diagnostic-sanitizer.js';
+import { createApplicationPaths } from './application-paths.js';
+import { SettingsRepository } from './settings-repository.js';
 
 /** Node.js 定时器稳定支持的最大延迟，单位为毫秒。 */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -239,12 +241,18 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   // ====================================================================================
   const workspace = realpathSync(resolve(env.AUTHORIZED_WORKSPACE_DIR || process.cwd()));
 
-  // 4. 加载 MCP 配置（含环境变量插值）
+  // 4. 创建统一应用路径与 settings 仓储
+  const applicationPaths = createApplicationPaths(workspace);
+  const settingsRepository = new SettingsRepository(
+    applicationPaths.userConfigDir,
+    applicationPaths.projectConfigDir,
+  );
+
+  // 5. 加载 MCP 配置（含环境变量插值）
   const mcp = loadMcpConfig(env);
 
-  // 5. 组装配置对象，只读加载默认 PermissionMode。
-  // 加载分层权限模式。
-  const permissionMode = loadDefaultPermissionMode(env);
+  // 6. 组装配置对象，从统一 settings 仓储读取默认 PermissionMode。
+  const permissionMode = loadDefaultPermissionMode(env, settingsRepository);
 
   const maxIterations = parseEnvInt(env.AGENT_MAX_ITERATIONS, 20);
   const largeToolOutputLimit = parseEnvInt(env.AGENT_LARGE_TOOL_OUTPUT_LIMIT, 8000);
@@ -278,6 +286,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
     permission: {
       defaultMode: permissionMode,
     },
+    applicationPaths,
+    settingsRepository,
     enablePlanToolStripping,
     runtimeLimits: {
       maxIterations,
@@ -297,10 +307,10 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   };
 
 
-  // 6. 深度冻结，防止业务代码意外修改
-  Object.freeze(config);
+  // 6. 深度冻结，防止业务代码意外修改配置数据
   Object.freeze(config.llm);
   Object.freeze(config.mcp);
+  Object.freeze(config.applicationPaths);
   Object.freeze(config.runtimeLimits);
   Object.freeze(config.diagnostics);
   Object.freeze(config.diagnostics.customPatterns);
@@ -354,50 +364,38 @@ export function getDefaultPermissionMode(): ConfigPermissionMode {
 }
 
 /**
- * 辅助获取当前工作区配置文件的绝对路径。
- *
- * @param env - 环境配置字典
- * @returns 配置文件的绝对物理路径
- */
-function getAgentConfigPath(env: Record<string, string | undefined> = getRuntimeEnv()): string {
-  const rootDir = env.AUTHORIZED_WORKSPACE_DIR || process.cwd();
-  return resolve(rootDir, '.agent/config.json');
-}
-
-/**
- * 从环境变量或配置文件只读加载默认 PermissionMode。
+ * 从统一 settings 仓储或环境变量只读加载默认权限模式。
  *
  * @param env - 环境配置上下文对象
- * @returns 加载出的 PermissionMode
- */
-/**
- * 从环境变量或配置文件只读加载默认权限模式。
- *
- * @param env - 环境配置上下文对象
+ * @param settingsRepository - 统一 settings 文件仓储（已由 loadConfig 创建）
  * @returns 加载出的权限模式
  */
-export function loadDefaultPermissionMode(env: Record<string, string | undefined> = getRuntimeEnv()): ConfigPermissionMode {
+export function loadDefaultPermissionMode(
+  env: Record<string, string | undefined> = getRuntimeEnv(),
+  settingsRepository?: SettingsRepository,
+): ConfigPermissionMode {
   const validModes: ConfigPermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'];
 
-  try {
-    const configPath = getAgentConfigPath(env);
-    if (existsSync(configPath)) {
-      const data = readFileSync(configPath, 'utf-8');
-      const parsed = JSON.parse(data);
-      const val = parsed.permissionMode ?? parsed.permission?.defaultMode;
-      if (validModes.includes(val)) {
-        cachedDefaultPermissionMode = val as ConfigPermissionMode;
-        return cachedDefaultPermissionMode;
-      }
-    }
-  } catch {
-    // 忽略加载读取错误，由环境变量或默认值兜底
-  }
-
+  // 环境变量（CLI 临时值）具有最高优先级
   const envMode = env.AGENT_PERMISSION_MODE;
   if (envMode && validModes.includes(envMode as ConfigPermissionMode)) {
     cachedDefaultPermissionMode = envMode as ConfigPermissionMode;
     return cachedDefaultPermissionMode;
   }
+
+  // 其次从统一 settings 仓储读取有效配置
+  if (settingsRepository) {
+    try {
+      const effective = settingsRepository.readEffectiveConfig();
+      const mode = effective.permission?.defaultMode;
+      if (mode && validModes.includes(mode)) {
+        cachedDefaultPermissionMode = mode;
+        return cachedDefaultPermissionMode;
+      }
+    } catch {
+      // settings 读取失败时使用默认值
+    }
+  }
+
   return DEFAULT_PERMISSION_MODE;
 }

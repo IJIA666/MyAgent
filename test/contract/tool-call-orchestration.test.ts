@@ -29,7 +29,11 @@ function createOrchestrator(tracer?: AgentTracer): {
   }
   const session = new SessionContext('contract-orchestrator');
 
-  const toolDispatcher = new ToolDispatcher(session, registry);
+  const toolDispatcher = new ToolDispatcher(
+    session,
+    registry,
+    join(tmpdir(), 'myagent-contract-tool-outputs'),
+  );
 
   const orchestrator = new ToolCallOrchestrator(
     registry,
@@ -54,8 +58,10 @@ describe('工具编排合约测试 — 真实装配', () => {
 
   it('deny 路径应写入摘要化 BeforeTool audit 记录', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tool-denial-audit-contract-'));
+    const tracesDir = join(tempDir, 'traces');
+    const auditsDir = join(tempDir, 'audits');
     try {
-      const tracer = new AgentTracer(tempDir, 'contract-orchestrator-audit', {
+      const tracer = new AgentTracer(tracesDir, auditsDir, 'contract-orchestrator-audit', {
         operationalEnabled: true,
         auditEnabled: true,
         replayEnabled: false,
@@ -85,7 +91,7 @@ describe('工具编排合约测试 — 真实装配', () => {
         () => {},
       );
 
-      const auditFile = join(tempDir, '.myagent', 'traces', 'audit_contract-orchestrator-audit.jsonl');
+      const auditFile = join(auditsDir, 'audit_contract-orchestrator-audit.jsonl');
       expect(existsSync(auditFile)).toBe(true);
       const auditContent = readFileSync(auditFile, 'utf-8');
       const records = auditContent.trim().split(/\r?\n/).map(line => JSON.parse(line));

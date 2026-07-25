@@ -50,12 +50,12 @@
 
 ### Requirement: Diagnostic Retention Boundaries
 
-系统 MUST 对 trace 和 audit 分别执行保留清理。未配置时每类制品最多保留最近 7 天且不超过 20 个会话文件；配置值可以收紧或放宽，但不得超过 30 天或 100 个会话文件的安全上限。`run.log` 继续遵循既有的 10MB、最多 5 个轮转文件策略。
+系统 MUST 将 operational run log、trace 与 audit 写入当前项目应用数据的独立日志目录，并对 trace 和 audit 分别执行保留清理。未配置时每类制品最多保留最近 7 天且不超过 20 个会话文件；配置值可以收紧或放宽，但不得超过 30 天或 100 个会话文件的安全上限。`run.log` MUST 位于当前项目 `logs/` 根并继续遵循 10MB、最多 5 个轮转文件策略。
 
 #### Scenario: 启动或首次写入触发清理
 
-- **WHEN** Agent 创建新的 trace/audit 写入器或执行该类制品的首次写入
-- **THEN** 系统删除超出对应时间或会话数量上限的非活跃文件，并保留当前会话文件及最新范围内的文件
+- **WHEN** Agent 创建新的 trace 或 audit 写入器，或者执行该类制品的首次写入
+- **THEN** 系统只在当前项目对应的 `logs/traces/` 或 `logs/audits/` 中清理超出该类别时间或数量上限的非活跃文件，并保留当前会话文件
 
 #### Scenario: 配置超过安全上限
 

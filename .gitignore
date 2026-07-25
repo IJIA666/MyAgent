@@ -32,8 +32,9 @@ wheels/
 venv/
 ENV/
 
-# Runtime and local artifacts
-.myagent/
+# Runtime and local artifacts (only project-local overrides; project settings/rules/skills are committed)
+.myagent/settings.local.json
+# Old .agent directory (fully deprecated; no longer read by the system)
 .agent/
 
 # Log files

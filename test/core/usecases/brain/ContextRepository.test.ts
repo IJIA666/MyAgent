@@ -1,5 +1,6 @@
 /**
  * @fileoverview ContextRepository 的单元测试，验证状态落盘与记忆回退。
+ * 使用注入的 sessionsDir（而非 workspace 下的 .myagent/sessions）。
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -12,12 +13,16 @@ import { SessionContext } from '../../../../src/core/domain/context.js';
 describe('ContextRepository', () => {
   let context: SessionContext;
   let tempDir: string;
+  /** 模拟 ApplicationPaths.sessionsDir 的临时目录。 */
+  let sessionsDir: string;
   let contextRepo: ContextRepository;
 
   beforeEach(() => {
     context = new SessionContext('test-repo-session');
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-repo-test-'));
-    contextRepo = new ContextRepository(context, tempDir);
+    sessionsDir = path.join(tempDir, 'session-store');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    contextRepo = new ContextRepository(context, sessionsDir);
   });
 
   afterEach(() => {
@@ -27,15 +32,14 @@ describe('ContextRepository', () => {
   });
 
   describe('saveState and loadState', () => {
-    it('should save session state to temp files and load it back correctly', async () => {
+    it('should save session state to sessionsDir and load it back correctly', async () => {
       context.addMessage({ role: 'user', content: 'hello' });
       context.addMessage({ role: 'assistant', content: 'world' });
 
       await contextRepo.saveState();
 
-      const sessionFile = path.join(tempDir, '.myagent/sessions/session_test-repo-session.json');
+      const sessionFile = path.join(sessionsDir, 'session_test-repo-session.json');
       expect(fs.existsSync(sessionFile)).toBe(true);
-      expect(fs.existsSync(path.join(tempDir, '.myagent/sessions/test-repo-session.json'))).toBe(false);
 
       const content = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
       expect(content).not.toHaveProperty('checkpointSummary');
@@ -43,8 +47,8 @@ describe('ContextRepository', () => {
       expect(content.messages.length).toBe(3);
 
       const newContext = new SessionContext('empty-session');
-      const newRepo = new ContextRepository(newContext, tempDir);
-      
+      const newRepo = new ContextRepository(newContext, sessionsDir);
+
       const loadSuccess = await newRepo.loadState('test-repo-session');
       expect(loadSuccess).toBe(true);
       expect(newContext.getSessionId()).toBe('test-repo-session');
@@ -57,16 +61,14 @@ describe('ContextRepository', () => {
 
       await Promise.all([contextRepo.saveState(), contextRepo.saveState(), contextRepo.saveState()]);
 
-      const sessionFile = path.join(tempDir, '.myagent/sessions/session_test-repo-session.json');
+      const sessionFile = path.join(sessionsDir, 'session_test-repo-session.json');
       const content = JSON.parse(fs.readFileSync(sessionFile, 'utf-8'));
       expect(content.messages).toHaveLength(3);
       expect(content).not.toHaveProperty('checkpointSummary');
     });
 
     it('should restore from the newest backup file when the main snapshot is missing', async () => {
-      const sessionDir = path.join(tempDir, '.myagent/sessions');
-      fs.mkdirSync(sessionDir, { recursive: true });
-      const backupFile = path.join(sessionDir, 'session_backup-session.json.bak-123');
+      const backupFile = path.join(sessionsDir, 'session_backup-session.json.bak-123');
       const backupState = {
         version: 2,
         sessionId: 'backup-session',
@@ -80,7 +82,7 @@ describe('ContextRepository', () => {
       fs.writeFileSync(backupFile, JSON.stringify(backupState), 'utf-8');
 
       const restoredContext = new SessionContext('empty-session');
-      const restoredRepo = new ContextRepository(restoredContext, tempDir);
+      const restoredRepo = new ContextRepository(restoredContext, sessionsDir);
       const loadSuccess = await restoredRepo.loadState('backup-session');
       expect(loadSuccess).toBe(true);
       expect(restoredContext.getSessionId()).toBe('backup-session');
@@ -91,8 +93,7 @@ describe('ContextRepository', () => {
       context.addMessage({ role: 'user', content: 'before failure' });
       await contextRepo.saveState();
 
-      const sessionDir = path.join(tempDir, '.myagent/sessions');
-      const sessionFile = path.join(sessionDir, 'session_test-repo-session.json');
+      const sessionFile = path.join(sessionsDir, 'session_test-repo-session.json');
       const originalContent = fs.readFileSync(sessionFile, 'utf-8');
       const repoForFailure = contextRepo as unknown as {
         replaceSnapshot: (tempFile: string, file: string) => Promise<void>;
@@ -106,14 +107,12 @@ describe('ContextRepository', () => {
       repoForFailure.replaceSnapshot = originalReplaceSnapshot;
 
       expect(fs.readFileSync(sessionFile, 'utf-8')).toBe(originalContent);
-      expect(fs.readdirSync(sessionDir).some((name) => name.includes('.tmp'))).toBe(false);
+      expect(fs.readdirSync(sessionsDir).some((name) => name.includes('.tmp'))).toBe(false);
     });
 
     it('should support loading simple array formatted session data', async () => {
-      const sessionDir = path.join(tempDir, '.myagent/sessions');
-      fs.mkdirSync(sessionDir, { recursive: true });
-      const sessionFile = path.join(sessionDir, 'legacy-session.json');
-      
+      const sessionFile = path.join(sessionsDir, 'legacy-session.json');
+
       const mockHistory = [
         { role: 'system', content: 'sys' },
         { role: 'user', content: 'hi' }
@@ -128,10 +127,8 @@ describe('ContextRepository', () => {
     });
 
     it('should ignore removed checkpoint fields when loading and clear them on the next save', async () => {
-      const sessionDir = path.join(tempDir, '.myagent/sessions');
-      fs.mkdirSync(sessionDir, { recursive: true });
-      const sessionFile = path.join(sessionDir, 'legacy-session-recent.json');
-      
+      const sessionFile = path.join(sessionsDir, 'legacy-session-recent.json');
+
       const mockState = {
         checkpointSummary: 'Legacy Summary',
         recentFiles: ['src/main.ts', 'src/utils.ts'],
@@ -148,7 +145,7 @@ describe('ContextRepository', () => {
       expect(context.getHistory()[1].content).toBe('hi');
 
       await contextRepo.saveState();
-      const migratedFile = path.join(sessionDir, 'session_legacy-session-recent.json');
+      const migratedFile = path.join(sessionsDir, 'session_legacy-session-recent.json');
       const migratedState = JSON.parse(fs.readFileSync(migratedFile, 'utf-8'));
       expect(migratedState).not.toHaveProperty('checkpointSummary');
       expect(migratedState).not.toHaveProperty('recentFiles');
@@ -158,9 +155,7 @@ describe('ContextRepository', () => {
       const success = await contextRepo.loadState('non-existent-session');
       expect(success).toBe(false);
 
-      const sessionDir = path.join(tempDir, '.myagent/sessions');
-      fs.mkdirSync(sessionDir, { recursive: true });
-      const sessionFile = path.join(sessionDir, 'invalid-session.json');
+      const sessionFile = path.join(sessionsDir, 'invalid-session.json');
       fs.writeFileSync(sessionFile, 'invalid-json-content', 'utf-8');
 
       const successInvalid = await contextRepo.loadState('invalid-session');
@@ -174,13 +169,13 @@ describe('ContextRepository', () => {
 
     it('should not save session files when isTransient is set to true', async () => {
       const transientContext = new SessionContext('transient-repo-session');
-      const transientRepo = new ContextRepository(transientContext, tempDir, true);
+      const transientRepo = new ContextRepository(transientContext, sessionsDir, true);
 
       transientContext.addMessage({ role: 'user', content: 'transient query' });
 
       await transientRepo.saveState();
 
-      const sessionFile = path.join(tempDir, '.myagent/sessions/transient-repo-session.json');
+      const sessionFile = path.join(sessionsDir, 'session_transient-repo-session.json');
       expect(fs.existsSync(sessionFile)).toBe(false);
     });
   });
@@ -200,10 +195,10 @@ describe('ContextRepository', () => {
       expect(context.getHistory().length).toBe(5);
 
       const dropped = contextRepo.rollback(1);
-      
+
       expect(context.getHistory().length).toBe(3);
       expect(context.getHistory()[2].content).toBe('reply 1');
-      
+
       expect(dropped.length).toBe(2);
       expect(dropped[0].content).toBe('turn 2');
       expect(dropped[1].content).toBe('reply 2');

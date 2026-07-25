@@ -12,15 +12,22 @@
 - **THEN** 工具应当（SHALL）自动下载或给出具体的依赖下载指南提示，并回退至隔离 Chromium 包。
 
 ### Requirement: CDP 直连与本地 Profile 双通道会话共享
-工具必须（MUST）支持配置 CDP 远程调试直连端口与本地 Profile 持久化存储。当指定 `cdpUrl` 调试参数时，必须（MUST）直连指定端口；否则，必须（MUST）持久化缓存 Cookie 到项目工作区内隐藏的本地物理路径。
+工具 MUST 支持 CDP 远程调试直连和本地 Profile 持久化两种通道。指定 `cdpUrl` 时 MUST 直连对应端口；未指定时 MUST 使用当前 workspace 对应项目应用数据的 `state/browser/<tenant-id>/`。显式浏览器数据目录覆盖仍可使用，但 MUST 在配置边界解析后传入浏览器模块。
 
 #### Scenario: 通过 CDP 端口共享隔离调试浏览器状态
-- **WHEN** 智能体传入 `cdpUrl`（例如 `http://127.0.0.1:9222`）来实例化页面。
-- **THEN** 工具通过 connectOverCDP 连接到对应的端口，智能体直接在该独立调试窗口中操作，无需重新执行输入账号密码及验证流程即可获得原浏览器的登录态。
 
-#### Scenario: 通过本地 Profile 持久化会话
-- **WHEN** 智能体在未配置 `cdpUrl` 情况下实例化页面，访问特定登录后的系统。
-- **THEN** 工具利用 launchPersistentContext 启动浏览器，指定会话路径为 `.myagent/browser-session/`。登录成功后，Cookies 自动物理保存；第二次运行智能体时能免登录直接访问该页面。
+- **WHEN** 智能体传入 `cdpUrl` 实例化页面
+- **THEN** 工具通过 `connectOverCDP` 连接指定端口，不创建默认项目 Profile
+
+#### Scenario: 通过项目应用数据 Profile 持久化会话
+
+- **WHEN** 智能体未配置 `cdpUrl` 且未提供显式外部 Profile 覆盖
+- **THEN** 工具通过 `launchPersistentContext` 使用当前项目与租户对应的 `state/browser/<tenant-id>/`，后续启动可复用该租户登录状态
+
+#### Scenario: 显式外部 Profile 覆盖
+
+- **WHEN** 用户通过受支持配置提供外部浏览器数据目录
+- **THEN** 浏览器使用已解析的显式目录，并在状态与诊断信息中显示实际生效路径，不再从 `process.cwd()` 推导默认路径
 
 ### Requirement: 人机风控与扫码登录的命令行协作阻塞
 当智能体检测到尚未登录或被滑动验证码、扫码验证等风控拦截时，必须（MUST）在终端暂停大模型推理循环，调起有头浏览器窗口，阻塞等待用户在弹窗中人工干预。用户完成登录后在命令行按回车以释放阻塞。

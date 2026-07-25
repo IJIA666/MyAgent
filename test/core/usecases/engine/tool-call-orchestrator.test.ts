@@ -33,7 +33,7 @@ describe('ToolCallOrchestrator', () => {
     context = new SessionContext('test-tco-session');
     context.isProcessing = false;
 
-    dispatcher = new ToolDispatcher(context);
+    dispatcher = new ToolDispatcher(context, undefined, path.join(tempDir, 'tool-outputs'));
     suspendEvents = [];
 
     const pushSuspendEvent = (evt: AgentEvent) => {

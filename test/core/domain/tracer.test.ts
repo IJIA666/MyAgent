@@ -14,9 +14,15 @@ import type { TraceIterationRecord } from '../../../src/core/domain/trace-format
 
 describe('AgentTracer diagnostic capture modes', () => {
   let tempDir: string;
+  let tracesDir: string;
+  let auditsDir: string;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tracer-test-'));
+    tracesDir = path.join(tempDir, 'traces');
+    auditsDir = path.join(tempDir, 'audits');
+    fs.mkdirSync(tracesDir, { recursive: true });
+    fs.mkdirSync(auditsDir, { recursive: true });
   });
 
   afterEach(() => {
@@ -24,7 +30,7 @@ describe('AgentTracer diagnostic capture modes', () => {
   });
 
   it('should write metadata-only trace by default and omit raw prompt/tool data', () => {
-    const tracer = new AgentTracer(tempDir, 'metadata-session', createDiagnostics());
+    const tracer = new AgentTracer(tracesDir, auditsDir, 'metadata-session', createDiagnostics());
     tracer.logMeta({
       type: 'meta',
       captureMode: 'metadata-only',
@@ -41,8 +47,8 @@ describe('AgentTracer diagnostic capture modes', () => {
       prompt: 'prompt-secret'
     });
 
-    const traceFile = path.join(tempDir, '.myagent', 'traces', 'trace_metadata-session.jsonl');
-    const auditFile = path.join(tempDir, '.myagent', 'traces', 'audit_metadata-session.jsonl');
+    const traceFile = path.join(tracesDir, 'trace_metadata-session.jsonl');
+    const auditFile = path.join(auditsDir, 'audit_metadata-session.jsonl');
     const trace = fs.readFileSync(traceFile, 'utf-8');
     const audit = fs.readFileSync(auditFile, 'utf-8');
 
@@ -62,7 +68,7 @@ describe('AgentTracer diagnostic capture modes', () => {
 
   it('should preserve replay fields while still redacting basic secret fields', () => {
     const diagnostics = createDiagnostics({ replayEnabled: true });
-    const tracer = new AgentTracer(tempDir, 'replay-session', diagnostics);
+    const tracer = new AgentTracer(tracesDir, auditsDir, 'replay-session', diagnostics);
     tracer.logMeta({
       type: 'meta',
       captureMode: 'replay',
@@ -84,7 +90,7 @@ describe('AgentTracer diagnostic capture modes', () => {
     });
     tracer.logIteration(createIteration('replay-session'));
 
-    const traceFile = path.join(tempDir, '.myagent', 'traces', 'trace_replay-session.jsonl');
+    const traceFile = path.join(tracesDir, 'trace_replay-session.jsonl');
     const content = fs.readFileSync(traceFile, 'utf-8');
     expect(content).toContain('replay body');
     expect(content).toContain('prompt-body');
@@ -99,7 +105,7 @@ describe('AgentTracer diagnostic capture modes', () => {
   });
 
   it('logEventSpan 在 metadata-only 模式下只写阶段、状态、耗时和计数', () => {
-    const tracer = new AgentTracer(tempDir, 'event-span-session', createDiagnostics());
+    const tracer = new AgentTracer(tracesDir, auditsDir, 'event-span-session', createDiagnostics());
     tracer.logEventSpan('tool_effect_resolved', {
       kind: 'read',
       durationMs: 50,
@@ -109,7 +115,7 @@ describe('AgentTracer diagnostic capture modes', () => {
       fileContent: 'file_content_here',
     }, 'corr-001');
 
-    const traceFile = path.join(tempDir, '.myagent', 'traces', 'trace_event-span-session.jsonl');
+    const traceFile = path.join(tracesDir, 'trace_event-span-session.jsonl');
     const content = fs.readFileSync(traceFile, 'utf-8');
     const parsed = JSON.parse(content.trim());
 
@@ -130,7 +136,7 @@ describe('AgentTracer diagnostic capture modes', () => {
 
   it('logEventSpan 在 replay 模式下保留完整元数据并脱敏', () => {
     const diagnostics = createDiagnostics({ replayEnabled: true });
-    const tracer = new AgentTracer(tempDir, 'event-span-replay', diagnostics);
+    const tracer = new AgentTracer(tracesDir, auditsDir, 'event-span-replay', diagnostics);
     tracer.logEventSpan('runtime_event_finished', {
       status: 'failed',
       durationMs: 1234,
@@ -138,7 +144,7 @@ describe('AgentTracer diagnostic capture modes', () => {
       errorSummary: 'some error context',
     }, 'corr-002');
 
-    const traceFile = path.join(tempDir, '.myagent', 'traces', 'trace_event-span-replay.jsonl');
+    const traceFile = path.join(tracesDir, 'trace_event-span-replay.jsonl');
     const content = fs.readFileSync(traceFile, 'utf-8');
     const parsed = JSON.parse(content.trim());
 
@@ -152,8 +158,7 @@ describe('AgentTracer diagnostic capture modes', () => {
   });
 
   it('should retain recent files, protect the active session, and tolerate cleanup failures', () => {
-    const traceDir = path.join(tempDir, '.myagent', 'traces');
-    fs.mkdirSync(traceDir, { recursive: true });
+    const traceDir = tracesDir;
     const activeFile = path.join(traceDir, 'trace_active.jsonl');
     const recentFile = path.join(traceDir, 'trace_recent.jsonl');
     const overflowFile = path.join(traceDir, 'trace_overflow.jsonl');

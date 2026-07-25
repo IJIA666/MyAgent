@@ -6,8 +6,9 @@
 
 import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import { logger } from '../../../src/utils/logger.js';
-import { existsSync, rmSync } from 'fs';
-import { resolve } from 'path';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { join, resolve } from 'path';
+import { tmpdir } from 'os';
 import { chromium, Browser } from 'playwright';
 import { 
   BrowserSession, 
@@ -15,16 +16,19 @@ import {
   BrowserNavigateTool,
   BrowserClickTool,
   BrowserTypeTool,
-  BrowserEnsureLoginTool
+  BrowserEnsureLoginTool,
+  setBrowserPaths,
 } from '../../../src/adapters/tools/impl/browser/browser-action.js';
 
 describe('BrowserAction 浏览器自动化工具集成测试', () => {
   let remoteBrowser: Browser | null = null;
   const cdpPort = 9222;
   const cdpUrl = `http://127.0.0.1:${cdpPort}`;
-  const persistentDir = resolve(process.cwd(), `.myagent/browser-session-test-${Date.now()}`);
+  const browserTestDir = mkdtempSync(join(tmpdir(), 'browser-session-test-'));
+  const persistentDir = resolve(browserTestDir, 'persistent');
 
   beforeAll(async () => {
+    setBrowserPaths(persistentDir, resolve(browserTestDir, 'screenshots'));
     // 强制设置测试独立的浏览器持久化会话目录，防止 SingletonLock 文件冲突
     process.env.BROWSER_USER_DATA_DIR = persistentDir;
 
@@ -50,9 +54,9 @@ describe('BrowserAction 浏览器自动化工具集成测试', () => {
     delete process.env.BROWSER_USER_DATA_DIR;
 
     // 清理 Persistent 产生的临时测试目录
-    if (existsSync(persistentDir)) {
+    if (existsSync(browserTestDir)) {
       try {
-        rmSync(persistentDir, { recursive: true, force: true });
+        rmSync(browserTestDir, { recursive: true, force: true });
       } catch {
         // 忽略清理残留的锁定冲突
       }

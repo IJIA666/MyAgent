@@ -1,14 +1,15 @@
-import { join } from 'path';
+import { resolve } from 'path';
 import { existsSync, watch, type FSWatcher } from 'fs';
 import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { SessionContext } from '../../domain/context.js';
 import { logger } from '../../../utils/logger.js';
 import {
-  readAndLimitFile,
+  loadUserRules,
+  loadProjectRules,
   scanSkills,
   readSkillContent,
-  SkillMetadata
+  SkillMetadata,
 } from './contextLoader.js';
 
 /**
@@ -19,7 +20,7 @@ export interface RuleManagerOptions {
   enableWatcher?: boolean;
 }
 
-/** 技能主体内容摘要的类型。 */
+/** 技能文件路径比较器，用于检测真实内容变化。 */
 type ContentHash = string;
 
 /** 计算文件内容的 SHA-256 摘要。 */
@@ -33,24 +34,28 @@ function computeFileHash(filePath: string): ContentHash | null {
   }
 }
 
-/** 判断事件文件名是否属于候选 SKILL.md。 */
+/** 判断事件文件名是否属于候选 SKILL.md（相对路径模式）。 */
 function isSkillCandidate(eventType: string, filename: string | null): boolean {
   if (!filename) return false;
-  // 仅接受 .agent/skills/**/SKILL.md
+  // filename 被视为 watcher 根下的相对路径
   const normalized = filename.replace(/\\/g, '/');
-  if (!normalized.endsWith('SKILL.md')) return false;
-  if (!normalized.includes('.agent/skills/')) return false;
-  return true;
+  // 拒绝绝对路径（某些平台可能在 filename 中返回完整路径）
+  if (normalized.startsWith('/') || normalized.match(/^[a-zA-Z]:[\\/]/)) return false;
+  // 拒绝 .. 越界
+  if (normalized.includes('..')) return false;
+  // 只接受 basename 为 SKILL.md（不检查目录前缀）
+  const basename = normalized.split('/').pop() || '';
+  return basename === 'SKILL.md';
 }
 
 /**
  * 负责全局规则、局部项目规则和技能列表的实例级热加载与生命周期管理。
  */
 export class RuleManager {
-  /** 缓存的全局规则内容 */
-  private cachedGlobalRules: string | null = null;
-  /** 缓存的局部项目规则内容 */
-  private cachedLocalRules: string | null = null;
+  /** 缓存的用户规则内容 */
+  private cachedUserRules: string | null = null;
+  /** 缓存的项目规则内容 */
+  private cachedProjectRules: string | null = null;
   /** 实例级私有技能缓存 */
   private skillsCache = new Map<string, SkillMetadata>();
   /** 监听状态标识 */
@@ -67,40 +72,56 @@ export class RuleManager {
   private enableWatcher: boolean;
   /** 是否已关闭 */
   private closed = false;
+  /** 用户 skills 目录（用于全量重扫）。 */
+  private readonly userSkillsDir: string;
+  /** 项目 skills 目录（watcher 监听此目录）。 */
+  private readonly projectSkillsDir: string;
 
   /**
    * @param context - 会话上下文管理实例
+   * @param userRulesDir - 用户 rules 目录绝对路径
+   * @param projectRulesDir - 项目 rules 目录绝对路径
+   * @param userSkillsDir - 用户 skills 目录绝对路径
+   * @param projectSkillsDir - 项目 skills 目录绝对路径
    * @param options - 可选构造选项
    */
-  constructor(private context: SessionContext, options?: RuleManagerOptions) {
+  constructor(
+    private context: SessionContext,
+    private userRulesDir: string,
+    private projectRulesDir: string,
+    userSkillsDir: string,
+    projectSkillsDir: string,
+    options?: RuleManagerOptions,
+  ) {
     this.enableWatcher = options?.enableWatcher ?? true;
-    const workspacePath = this.context.appConfig?.workspace || process.cwd();
-    this.loadRulesToCache(workspacePath);
-    this.refreshSkillsCache(workspacePath);
+    this.userSkillsDir = userSkillsDir;
+    this.projectSkillsDir = projectSkillsDir;
+    this.loadRulesToCache();
+    this.refreshSkillsCache();
 
     this.context.updateSystemPrompt(
-      this.cachedGlobalRules || undefined,
-      this.cachedLocalRules || undefined,
+      this.cachedUserRules || undefined,
+      this.cachedProjectRules || undefined,
       this.getSkills()
     );
   }
 
   /**
-   * 获取缓存的全局规则内容。
+   * 获取缓存的用户规则内容。
    *
-   * @returns 全局规则字符串，若无则返回 null
+   * @returns 用户规则字符串，若无则返回 null
    */
-  public getGlobalRules(): string | null {
-    return this.cachedGlobalRules;
+  public getUserRules(): string | null {
+    return this.cachedUserRules;
   }
 
   /**
-   * 获取缓存的局部项目规则内容。
+   * 获取缓存的项目规则内容。
    *
-   * @returns 局部项目规则字符串，若无则返回 null
+   * @returns 项目规则字符串，若无则返回 null
    */
-  public getLocalRules(): string | null {
-    return this.cachedLocalRules;
+  public getProjectRules(): string | null {
+    return this.cachedProjectRules;
   }
 
   /**
@@ -109,9 +130,8 @@ export class RuleManager {
    * @returns 技能元数据数组
    */
   public getSkills(): SkillMetadata[] {
-    const workspacePath = this.context.appConfig?.workspace || process.cwd();
     if (!this.isWatching && this.enableWatcher && !this.closed) {
-      this.initSkillsWatcher(workspacePath);
+      this.initSkillsWatcher();
     }
     return Array.from(this.skillsCache.values());
   }
@@ -130,29 +150,31 @@ export class RuleManager {
 
   /**
    * 初始化实例级技能文件变更监听服务。
-   * 仅接受 `.agent/skills/` 下以 `SKILL.md` 结尾的文件事件；
-   * 防抖到期后比较内容摘要，无差异不更新。
+   * 只监听项目 skills 目录，使用相对路径过滤；
+   * `filename` 缺失时在同一防抖窗口安排一次全量摘要重扫。
    */
-  private initSkillsWatcher(workspacePath: string): void {
+  private initSkillsWatcher(): void {
     if (this.isWatching || !this.enableWatcher) return;
-    this.precomputeSkillHashes(workspacePath);
+    this.precomputeSkillHashes();
 
     try {
-      const skillsDir = join(workspacePath, '.agent/skills');
-      if (existsSync(skillsDir)) {
-        this.watcher = watch(skillsDir, { recursive: true }, (eventType, filename) => {
+      if (existsSync(this.projectSkillsDir)) {
+        this.watcher = watch(this.projectSkillsDir, { recursive: true }, (eventType, filename) => {
           if (this.closed) return;
-          if (!isSkillCandidate(eventType, filename)) return;
 
-          // 加入候选路径集合
-          const fullPath = filename ? join(skillsDir, filename) : '';
-          if (fullPath) this.candidateSkillPaths.add(fullPath);
+          if (filename === null) {
+            // filename 缺失：在当前防抖窗口安排全量摘要重扫
+            this.candidateSkillPaths.clear();
+          } else if (isSkillCandidate(eventType, filename)) {
+            const fullPath = resolve(this.projectSkillsDir, filename);
+            this.candidateSkillPaths.add(fullPath);
+          }
 
-          // 防抖合并
+          // 防抖合并：100ms 内多次变更只触发一次重扫
           clearTimeout(this.watchDebounceTimer ?? undefined);
           this.watchDebounceTimer = setTimeout(() => {
             if (this.closed) return;
-            this.processSkillChanges(workspacePath);
+            this.processSkillChanges();
           }, 100);
         });
         this.isWatching = true;
@@ -165,10 +187,10 @@ export class RuleManager {
   /**
    * 预先计算所有技能的当前内容摘要。
    */
-  private precomputeSkillHashes(workspacePath: string): void {
+  private precomputeSkillHashes(): void {
     this.skillContentHashes.clear();
     try {
-      const list = scanSkills(workspacePath);
+      const list = scanSkills(this.userSkillsDir, this.projectSkillsDir);
       for (const item of list) {
         const hash = computeFileHash(item.filePath);
         if (hash) this.skillContentHashes.set(item.filePath, hash);
@@ -181,13 +203,13 @@ export class RuleManager {
   /**
    * 防抖到期后统一处理技能变更：重新扫描元数据、比较内容摘要，仅在有差异时更新缓存。
    */
-  private processSkillChanges(workspacePath: string): void {
+  private processSkillChanges(): void {
     if (this.closed) return;
 
     // 扫描当前技能元数据
     let currentList: SkillMetadata[];
     try {
-      currentList = scanSkills(workspacePath);
+      currentList = scanSkills(this.userSkillsDir, this.projectSkillsDir);
     } catch {
       return;
     }
@@ -224,12 +246,12 @@ export class RuleManager {
 
     // 有真实变化：原子替换缓存
     logger.info('[RuleManager] 检测到技能文件真实变化，正在刷新缓存...');
-    this.refreshSkillsCache(workspacePath);
+    this.refreshSkillsCache();
     this.skillContentHashes = newHashes;
 
     this.context.updateSystemPrompt(
-      this.cachedGlobalRules || undefined,
-      this.cachedLocalRules || undefined,
+      this.cachedUserRules || undefined,
+      this.cachedProjectRules || undefined,
       this.getSkills()
     );
   }
@@ -237,10 +259,10 @@ export class RuleManager {
   /**
    * 刷新当前实例的技能索引缓存（原子替换）。
    */
-  private refreshSkillsCache(workspacePath: string): void {
+  private refreshSkillsCache(): void {
     const newCache = new Map<string, SkillMetadata>();
     try {
-      const list = scanSkills(workspacePath);
+      const list = scanSkills(this.userSkillsDir, this.projectSkillsDir);
       for (const item of list) {
         newCache.set(item.name, item);
       }
@@ -252,32 +274,22 @@ export class RuleManager {
   }
 
   /**
-   * 将规则文件探测并加载锁定至内存缓存中。
+   * 从注入的规则目录加载规则到缓存。
+   * 用户规则先加载，项目规则后加载。
    */
-  private loadRulesToCache(workspacePath: string): void {
+  private loadRulesToCache(): void {
     try {
-      const globalRulesPath = join(workspacePath, '.agent/global_rules.md');
-      if (existsSync(globalRulesPath)) {
-        this.cachedGlobalRules = readAndLimitFile(globalRulesPath);
-      } else {
-        this.cachedGlobalRules = '';
-      }
+      this.cachedUserRules = loadUserRules(this.userRulesDir);
     } catch (e) {
-      logger.warn(`[RuleManager] 读取全局规则失败: ${e}`);
-      this.cachedGlobalRules = '';
+      logger.warn(`[RuleManager] 读取用户规则失败: ${e}`);
+      this.cachedUserRules = '';
     }
 
     try {
-      const localRulesPath = join(workspacePath, '.agent/rules/guize.md');
-      if (existsSync(localRulesPath)) {
-        this.cachedLocalRules = readAndLimitFile(localRulesPath);
-        logger.info(`[RuleManager] 已探测并锁定局部规则文件: ${localRulesPath}`);
-      } else {
-        this.cachedLocalRules = '';
-      }
+      this.cachedProjectRules = loadProjectRules(this.projectRulesDir);
     } catch (e) {
-      logger.warn(`[RuleManager] 探测局部规则文件失败: ${e}`);
-      this.cachedLocalRules = '';
+      logger.warn(`[RuleManager] 读取项目规则失败: ${e}`);
+      this.cachedProjectRules = '';
     }
   }
 
@@ -287,13 +299,12 @@ export class RuleManager {
    */
   public reloadRules(): void {
     logger.info('[RuleManager] 正在重载规则与技能文件...');
-    const workspacePath = this.context.appConfig?.workspace || process.cwd();
-    this.loadRulesToCache(workspacePath);
-    this.refreshSkillsCache(workspacePath);
+    this.loadRulesToCache();
+    this.refreshSkillsCache();
 
     this.context.updateSystemPrompt(
-      this.cachedGlobalRules || undefined,
-      this.cachedLocalRules || undefined,
+      this.cachedUserRules || undefined,
+      this.cachedProjectRules || undefined,
       this.getSkills()
     );
   }

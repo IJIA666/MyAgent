@@ -1,4 +1,3 @@
-import * as path from 'path';
 import { SessionManager } from './core/usecases/engine/session.js';
 import {
   McpToolManager,
@@ -12,10 +11,15 @@ import { theme } from './adapters/input/interface/views/theme.js';
 import { OpenAiLlmAdapter } from './adapters/llm/OpenAiLlmAdapter.js';
 import { TiktokenEstimator } from './adapters/llm/TiktokenEstimator.js';
 import { abortSessionTasks } from './adapters/tools/impl/system/terminal-engine.js';
+import { setBrowserPaths } from './adapters/tools/impl/browser/browser-action.js';
 import { DefaultContextAdapter } from './adapters/context/DefaultContextAdapter.js';
 import { findSkillFiles, parseSkillFrontmatter } from './core/usecases/brain/contextLoader.js';
 import { readFileSync } from 'fs';
-import { initLogger, logger } from './utils/logger.js';
+import { initLogger, configureFileSink, logger } from './utils/logger.js';
+import { ensureAppDataRoot } from './config/application-paths.js';
+import { detectLegacyLayout, warnLegacyLayout } from './config/legacy-layout-detector.js';
+import { setSkillPaths, setSessionsDir } from './adapters/input/interface/command.js';
+import { setSettingsRepository } from './adapters/tools/impl/system/terminal-config.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -27,13 +31,39 @@ async function main() {
   // 1. 文件引导：确保配置文件存在
   ensureConfigFiles();
 
-  // 2. 统一加载全部配置（dotenv → 必填校验 → MCP 加载 → 冻结）
+  // 2. 统一加载全部配置（dotenv → 必填校验 → MCP 加载 → 路径解析 → 冻结）
   const appConfig = loadConfig();
 
-  // 2. 初始化工作区沙箱路径
+  // 3. 注入技能路径和会话路径到 CLI 命令模块
+  setSkillPaths(
+    appConfig.applicationPaths.userSkillsDir,
+    appConfig.applicationPaths.projectSkillsDir,
+  );
+  setSessionsDir(appConfig.applicationPaths.sessionsDir);
+
+  // 4. 确保用户应用数据根可创建；失败时输出错误并阻止持久化初始化，但允许继续显示 banner
+  const dataRootReady = ensureAppDataRoot(appConfig.applicationPaths.userAppDataRoot);
+  if (!dataRootReady) {
+    console.error(`[错误] 用户应用数据根不可写: ${appConfig.applicationPaths.userAppDataRoot}`);
+    console.error('[错误] 日志、会话、trace 等持久化功能不可用，无法继续初始化。');
+    process.exit(1);
+  }
+
+  // 4. 注入终端配置的 SettingsRepository 和浏览器目录
+  setSettingsRepository(appConfig.settingsRepository);
+  setBrowserPaths(appConfig.applicationPaths.browserDir, appConfig.applicationPaths.screenshotsDir);
+
+  // 5. 旧布局检测与警告
+  const legacyInfo = detectLegacyLayout(appConfig.workspace);
+  warnLegacyLayout(legacyInfo, appConfig.workspace);
+
+  // 5. 配置文件日志 sink（两阶段初始化的第二阶段）
+  await configureFileSink(appConfig.applicationPaths.logsDir);
+
+  // 5. 初始化工作区沙箱路径
   initWorkspace(appConfig.workspace);
 
-  // 3. 打印系统启动与配置信息，在 Banner 中追加展示当前的上下文窗口总大小限制
+  // 6. 打印系统启动与配置信息，在 Banner 中追加展示当前的上下文窗口总大小限制
   const banner = `====================================================
 [系统] IJIA Agent 启动完成
 [配置] 授权工作区目录：${appConfig.workspace}
@@ -54,10 +84,10 @@ async function main() {
     LifecycleManager.register('mcp-manager', () => mcpManager.close());
     const { BrowserSession } = await import('./adapters/tools/impl/browser/browser-action.js');
     LifecycleManager.register('browser-session', () => BrowserSession.close());
-    const permissionSettingsStore = new PermissionSettingsStore(appConfig.workspace);
+    const permissionSettingsStore = new PermissionSettingsStore(appConfig.settingsRepository);
     const toolRegistry = new ToolRegistry(mcpManager, {
       loadSkill: (name: string) => {
-        const skillsDir = path.join(appConfig.workspace, '.agent/skills');
+        const skillsDir = appConfig.applicationPaths.projectSkillsDir;
         const files = findSkillFiles(skillsDir);
         for (const file of files) {
           try {

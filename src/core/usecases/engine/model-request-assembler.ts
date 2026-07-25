@@ -43,7 +43,7 @@ export interface AssemblyResult {
 export class ModelRequestAssembler {
   private toolRegistry: ToolRegistryPort;
   private contextAdapter: ContextAdapter;
-  private ruleManager: { getLocalRules(): string | null };
+  private ruleManager: { getProjectRules(): string | null };
   private pluginRegistry: PluginRegistry;
   private context: SessionContext;
   /** 最终模型请求预算协调器。 */
@@ -60,7 +60,7 @@ export class ModelRequestAssembler {
   constructor(
     toolRegistry: ToolRegistryPort,
     contextAdapter: ContextAdapter,
-    ruleManager: { getLocalRules(): string | null },
+    ruleManager: { getProjectRules(): string | null },
     pluginRegistry: PluginRegistry,
     context: SessionContext,
     contextBudgetCoordinator: ContextBudgetCoordinator
@@ -133,7 +133,7 @@ export class ModelRequestAssembler {
     const snapshotContext = this.contextAdapter.assemble(
       this.context.getHistory(),
       transientSkillContent,
-      this.ruleManager.getLocalRules() || undefined
+      this.ruleManager.getProjectRules() || undefined
     );
 
     // Step 4: 触发 BeforeModel 拦截并重写大模型入参

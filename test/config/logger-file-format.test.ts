@@ -6,14 +6,13 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { reset as resetLogTape } from '@logtape/logtape';
 
 describe('Logger file format', () => {
-  const previousCwd = process.cwd();
   const previousVitest = process.env.VITEST;
   const previousTestLog = process.env.MYAGENT_TEST_LOG;
 
-  afterEach(() => {
-    process.chdir(previousCwd);
+  afterEach(async () => {
     if (previousVitest === undefined) {
       delete process.env.VITEST;
     } else {
@@ -24,18 +23,21 @@ describe('Logger file format', () => {
     } else {
       process.env.MYAGENT_TEST_LOG = previousTestLog;
     }
+    await resetLogTape();
   });
 
-  it('should recreate .myagent and write structured properties into run.log as JSON lines', async () => {
+  it('should write structured properties into run.log as JSON lines with configureFileSink', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'logger-format-test-'));
-    process.chdir(tempDir);
+    const logDir = path.join(tempDir, 'logs');
     process.env.VITEST = 'true';
     process.env.MYAGENT_TEST_LOG = '1';
 
     try {
       vi.resetModules();
-      const { initLogger, logger, disposeLogger } = await import('../../src/utils/logger.js');
+      const { initLogger, configureFileSink, disposeLogger, logger } = await import('../../src/utils/logger.js');
       await initLogger();
+      await configureFileSink(logDir);
+
       logger.info('structured event', {
         component: 'context',
         event: 'work_mode_changed',
@@ -46,7 +48,7 @@ describe('Logger file format', () => {
       });
       await disposeLogger();
 
-      const runLog = path.join(tempDir, '.myagent', 'run.log');
+      const runLog = path.join(logDir, 'run.log');
       const lines = fs.readFileSync(runLog, 'utf-8').trim().split(/\r?\n/);
       const lastLine = JSON.parse(lines.at(-1) as string);
       expect(lastLine).toMatchObject({
@@ -59,7 +61,6 @@ describe('Logger file format', () => {
         reason: 'unit-test'
       });
     } finally {
-      process.chdir(previousCwd);
       if (previousVitest === undefined) {
         delete process.env.VITEST;
       } else {
