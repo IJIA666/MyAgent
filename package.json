@@ -21,7 +21,6 @@
   "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^1.5.0",
-    "@lancedb/lancedb": "^0.30.0",
     "@logtape/file": "^2.2.0",
     "@logtape/logtape": "^2.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",

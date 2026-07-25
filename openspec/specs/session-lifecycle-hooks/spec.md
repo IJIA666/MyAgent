@@ -29,17 +29,12 @@
 
 ### 需求: 会话管理器必须在会话关闭后派发 SessionClosed 不可逆通知事件
 
-会话管理器在所有资源清理完成后，必须（MUST）通过标准 Hook 管道派发 `SessionClosed` 事件，作为会话生命周期的终结点。此事件不可拦截，仅供插件执行收尾清理（如落盘、提炼、审计）。
+会话管理器在所有资源清理完成后，必须（MUST）通过标准 Hook 管道派发 `SessionClosed` 事件，作为会话生命周期的终结点。此事件不可拦截，仅供仍然注册的插件执行通用收尾清理。
 
 #### 场景: 正常关闭后通知插件收尾
 - **WHEN** SessionManager 已完成 `abort()`、`rejectAll()`、`cancelPendingInteraction()`、`taskAborter()`、`toolRegistry.close()` 和 `clearTemporaryWhitelists()` 全部清理步骤
 - **THEN** SessionManager 必须调用 `runHookPipeline(HookEventName.SessionClosed, context, plugins, {})`
 - **AND** 插件在此阶段返回的任何 `control.action`（除 `continue` 外）均被忽略，会话关闭不可逆转
-
-#### 场景: SessionClosed 阶段 LongTermMemoryPlugin 触发异步记忆提炼
-- **WHEN** `SessionClosed` 事件触发，`LongTermMemoryPlugin` 订阅了该事件
-- **THEN** 插件必须在此阶段执行对话历史的异步提炼与长期记忆存储
-- **AND** 提炼失败不得阻止会话关闭流程
 
 #### 场景: SessionClosed 仅触发一次
 - **WHEN** `SessionManager.close()` 被多次调用（重复关闭防护）

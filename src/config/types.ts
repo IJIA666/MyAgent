@@ -60,26 +60,6 @@ export interface LlmConfig {
 }
 
 /**
- * 文本嵌入（Embedding）模型连接配置。
- * 包含 API 认证凭据、接口地址、目标嵌入模型以及可选的网络请求属性。
- */
-export interface EmbeddingConfig {
-  /** API 认证密钥 */
-  apiKey: string;
-  /** API 接口基础地址（兼容 OpenAI 协议） */
-  baseUrl: string;
-  /** 目标嵌入模型名称（如 text-embedding-3-small） */
-  model: string;
-  /** 网络请求超时限制（毫秒） */
-  timeout?: number;
-  /** 最大重试次数 */
-  maxRetries?: number;
-  /** 自定义请求头 */
-  headers?: Record<string, string>;
-}
-
-
-/**
   * 支持的推理努力度（思考等级）字面量列表。
   */
 export const VALID_REASONING_EFFORTS = ['low', 'medium', 'high', 'max', 'disabled'] as const;
@@ -176,8 +156,6 @@ export interface AppConfig {
   llm: LlmConfig;
   /** 可选的用户可见回复语言偏好；未配置时不向模型施加语言要求 */
   language?: string;
-  /** 文本嵌入模型连接配置 */
-  embedding: EmbeddingConfig;
   /** 授权工作区的绝对路径 */
   workspace: string;
   /** MCP Server 连接配置（可能为空对象） */
@@ -209,14 +187,6 @@ export interface RuntimeLimitsConfig {
   searchLimit: number;
   /** Token 水位自动压缩阈值比例（浮点型，例如 0.8） */
   compactionWatermarkFactor: number;
-  /** 是否开启长期记忆 RAG 召回，若设为 false 则在推理前不再注入记忆 */
-  ragEnabled: boolean;
-  /** 向量相似度检索得分过滤阈值，低于此分数的记忆要点会被过滤 */
-  ragScoreThreshold: number;
-  /** 混合检索重排（RRF）后最终注入大模型上下文的记忆条数上限 */
-  ragRecallLimit: number;
-  /** 触发自省子智能体提炼记忆的最小有效对话轮数限制 */
-  ragRefinementThreshold: number;
   /** 防死循环熔断中同一工具完全相同参数允许的最大调用次数 */
   loopPreventionLimit: number;
   /** 中段压缩时最多原样保留的最新完整对话轮数 */
@@ -229,8 +199,6 @@ export interface RuntimeLimitsConfig {
   toolTimeoutMs: number;
   /** 大模型请求单次超时的时限（毫秒） */
   modelTimeoutMs: number;
-  /** 后台自省子智能体的总超时时限（毫秒） */
-  subAgentTimeoutMs: number;
   /** 文件检索时过滤排除的目录名列表 */
   excludeDirs?: string[];
 }

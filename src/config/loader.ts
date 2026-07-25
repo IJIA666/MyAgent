@@ -10,7 +10,7 @@ import { existsSync, copyFileSync, readFileSync, writeFileSync, realpathSync } f
 import { config as dotenvConfig } from 'dotenv';
 
 
-import { AppConfig, McpConfig, ConfigPermissionMode, EmbeddingConfig, DiagnosticDataConfig, DEFAULT_DIAGNOSTIC_DATA_CONFIG, DEFAULT_PERMISSION_MODE } from './types.js';
+import { AppConfig, McpConfig, ConfigPermissionMode, DiagnosticDataConfig, DEFAULT_DIAGNOSTIC_DATA_CONFIG, DEFAULT_PERMISSION_MODE } from './types.js';
 import { getModelConfig } from './models.js';
 import { getRuntimeEnv, interpolateEnvVars } from './env.js';
 import { logger, setDiagnosticSanitizerPatterns } from '../utils/logger.js';
@@ -254,42 +254,16 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   // 语言偏好仅在显式配置时生效，空白值不应生成语言提示。
   const language = env.AGENT_LANGUAGE?.trim() || undefined;
 
-  // 解析 RAG、死循环及上下文压缩的 9 个限额环境变量控制参数
-  const ragEnabled = env.AGENT_RAG_ENABLED === undefined ? true : env.AGENT_RAG_ENABLED.trim().toLowerCase() === 'true';
-  const ragScoreThreshold = parseEnvFloat(env.AGENT_RAG_SCORE_THRESHOLD, 0.5);
-  const ragRecallLimit = parseEnvInt(env.AGENT_RAG_RECALL_LIMIT, 5);
-  const ragRefinementThreshold = parseEnvInt(env.AGENT_RAG_REFINEMENT_THRESHOLD, 2);
+  // 解析死循环与上下文压缩的运行时限额环境变量
   const loopPreventionLimit = parseEnvInt(env.AGENT_LOOP_PREVENTION_LIMIT, 3);
   const compactionRetainCount = parseEnvPositiveInt(env.AGENT_COMPACTION_RETAIN_COUNT, 4);
   const compactionRetainTokens = parseEnvPositiveInt(env.AGENT_COMPACTION_RETAIN_TOKENS, 8000);
   const compactionSummaryMaxTokens = parseEnvPositiveInt(env.AGENT_COMPACTION_SUMMARY_MAX_TOKENS, 4096);
   const toolTimeoutMs = parseEnvInt(env.AGENT_TOOL_TIMEOUT_MS, 30000);
   const modelTimeoutMs = parseEnvTimeoutMs(env.AGENT_MODEL_TIMEOUT_MS, 60000);
-  const subAgentTimeoutMs = parseEnvTimeoutMs(env.AGENT_SUB_AGENT_TIMEOUT_MS, 60000);
   const excludeDirsStr = env.AGENT_SEARCH_EXCLUDE || '.git,node_modules,.venv,.myagent';
   const excludeDirs = excludeDirsStr.split(',').map((d: string) => d.trim()).filter(Boolean);
   const diagnostics = loadDiagnosticConfig(env);
-
-  // 加载 Embedding 配置（支持独立环境变量配置，并高保真向 LLM 配置降级）
-  const envEmbeddingApiKey = env.AGENT_EMBEDDING_API_KEY;
-  const envEmbeddingBaseUrl = env.AGENT_EMBEDDING_BASE_URL;
-  const envEmbeddingModel = env.AGENT_EMBEDDING_MODEL || 'text-embedding-3-small';
-
-  const embedding: EmbeddingConfig = {
-    apiKey: envEmbeddingApiKey || llm.apiKey,
-    baseUrl: envEmbeddingBaseUrl || llm.baseUrl,
-    model: envEmbeddingModel,
-  };
-  if (llm.timeout !== undefined) {
-    embedding.timeout = llm.timeout;
-  }
-  if (llm.maxRetries !== undefined) {
-    embedding.maxRetries = llm.maxRetries;
-  }
-  // 当且仅当没有配置独立的 AGENT_EMBEDDING_API_KEY 时才向 embedding.headers 透传 llm.headers，防止信息泄露
-  if (llm.headers !== undefined && !envEmbeddingApiKey) {
-    embedding.headers = llm.headers;
-  }
 
   // 解析是否启用 Plan 模式下动态物理过滤裁剪写操作工具的开关
   const enablePlanToolStripping = env.ENABLE_PLAN_TOOL_STRIPPING !== undefined
@@ -299,7 +273,6 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   const config: AppConfig = {
     llm,
     ...(language ? { language } : {}),
-    embedding,
     workspace,
     mcp,
     permission: {
@@ -312,17 +285,12 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
       readManyFilesLimit,
       searchLimit,
       compactionWatermarkFactor,
-      ragEnabled,
-      ragScoreThreshold,
-      ragRecallLimit,
-      ragRefinementThreshold,
       loopPreventionLimit,
       compactionRetainCount,
       compactionRetainTokens,
       compactionSummaryMaxTokens,
       toolTimeoutMs,
       modelTimeoutMs,
-      subAgentTimeoutMs,
       excludeDirs,
     },
     diagnostics
@@ -332,7 +300,6 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   // 6. 深度冻结，防止业务代码意外修改
   Object.freeze(config);
   Object.freeze(config.llm);
-  Object.freeze(config.embedding);
   Object.freeze(config.mcp);
   Object.freeze(config.runtimeLimits);
   Object.freeze(config.diagnostics);

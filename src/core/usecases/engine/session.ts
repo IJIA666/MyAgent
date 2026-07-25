@@ -22,9 +22,6 @@ import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { JitRulesPlugin } from '../plugins/JitRulesPlugin.js';
 import { TracerLogPlugin } from '../plugins/TracerLogPlugin.js';
 import { LoopPreventionPlugin } from '../plugins/LoopPreventionPlugin.js';
-import { LongTermMemoryPlugin } from '../plugins/LongTermMemoryPlugin.js';
-import type { EmbeddingPort } from '../../../ports/driven/llm/EmbeddingPort.js';
-import type { VectorDbPort } from '../../../ports/driven/db/VectorDbPort.js';
 import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 import { LifecycleManager } from './LifecycleManager.js';
 import { FileBackupManager } from '../security/FileBackupManager.js';
@@ -38,7 +35,6 @@ import { ContextHistoryPruner } from '../brain/ContextHistoryPruner.js';
 import { ContextBudgetPlanner } from '../brain/ContextBudgetPlanner.js';
 import { ContextBudgetCoordinator } from '../brain/ContextBudgetCoordinator.js';
 import { ApprovalService } from '../security/ApprovalService.js';
-import { MemoryService } from '../brain/MemoryService.js';
 
 /**
  * 会话管理与模型交互调度中心。
@@ -82,8 +78,6 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   private pluginRegistry: PluginRegistry;
   /** 独立的智能体执行循环引擎 */
   private agentLoop: AgentLoop;
-  /** 独立的长期记忆管理服务 */
-  private memoryService: MemoryService;
 
   /**
    * 实例初始化。
@@ -93,8 +87,6 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    * @param estimator - Token 预估与水位计算接口实例
    * @param toolRegistry - 工具注册表与调度管理端口契约
    * @param contextAdapter - 上下文适配器契约
-   * @param vectorDb - 本地向量数据库存储服务契约
-   * @param embedding - 文本嵌入生成契约
    * @param appConfig - 应用程序系统配置项
    * @param taskAborter - 任务中止服务端口
    */
@@ -104,8 +96,6 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     estimator: TokenEstimatorPort,
     toolRegistry: ToolRegistryPort,
     contextAdapter: ContextAdapter,
-    vectorDb: VectorDbPort,
-    embedding: EmbeddingPort,
     appConfig: AppConfig,
     taskAborter?: TaskAborterPort,
   ) {
@@ -131,16 +121,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     }
     this.contextAdapter = contextAdapter;
 
-    this.memoryService = new MemoryService(
-      vectorDb,
-      embedding,
-      appConfig,
-      this.driver,
-      this.contextAdapter,
-      estimator
-    );
-
-    // 初始化解耦后的五大领域服务
+    // 初始化领域服务集群
     this.ruleManager = new RuleManager(this.context);
     this.contextRepo = new ContextRepository(this.context);
     this.toolDispatcher = new ToolDispatcher(this.context, this.toolRegistry);
@@ -158,20 +139,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.pluginRegistry = new PluginRegistry();
     this.pluginRegistry.register(new JitRulesPlugin(this.toolDispatcher));
     this.pluginRegistry.register(new TracerLogPlugin(() => this.tracer));
-    this.pluginRegistry.register(
-      new LongTermMemoryPlugin(
-        vectorDb,
-        embedding,
-        this.memoryService.getMemoryFilePath(),
-        async (history) => {
-          await this.memoryService.triggerMemoryRefinementAsync(history, this.llmConfig);
-        },
-        appConfig
-      )
-    );
     this.pluginRegistry.register(new LoopPreventionPlugin(appConfig));
-
-    // 权限审批已收敛到 ToolRegistry 的 ToolCallGateway，避免旧插件形成第二决策入口。
 
     LifecycleManager.register('file-backup-manager', async () => {
       FileBackupManager.cleanup(appConfig.workspace);
@@ -195,14 +163,6 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.context.on('async_event', () => {
       this.handleAsyncEvent();
     });
-
-    // 仅当开启了长期记忆 RAG 时，才异步尝试重建向量数据库，避免无谓的库初始化和 LanceDB 加载日志
-    if (appConfig.runtimeLimits.ragEnabled !== false) {
-      this.memoryService.rebuildVectorDbIfEmpty().catch((error: unknown) => {
-        const msg = error instanceof Error ? error.message : String(error);
-        logger.error(`[SessionManager] 异步重建向量库失败: ${msg}`);
-      });
-    }
   }
 
   /**

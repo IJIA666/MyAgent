@@ -173,43 +173,59 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
       expect(config.runtimeLimits).not.toHaveProperty('compactionRecentFilesLimit');
     });
 
-    it('当配置自定义 AGENT_MODEL_TIMEOUT_MS 和 AGENT_SUB_AGENT_TIMEOUT_MS 时，应正确写入 runtimeLimits', () => {
+    it('当配置自定义 AGENT_MODEL_TIMEOUT_MS 时，应正确写入 runtimeLimits.modelTimeoutMs', () => {
       const mockEnv = {
         AGENT_LLM_API_KEY: 'mock-key',
         AGENT_LLM_MODEL: 'deepseek-v4-flash',
         AGENT_MODEL_TIMEOUT_MS: '45000',
-        AGENT_SUB_AGENT_TIMEOUT_MS: '90000'
       };
 
       const config = loadConfig(mockEnv);
       expect(config.runtimeLimits.modelTimeoutMs).toBe(45000);
-      expect(config.runtimeLimits.subAgentTimeoutMs).toBe(90000);
     });
 
-    it('当超时环境变量缺失、空白或无法解析时，应回退到 60000 默认值', () => {
+    it('当 modelTimeoutMs 环境变量缺失、空白或无法解析时，应回退到 60000 默认值', () => {
       const mockEnv = {
         AGENT_LLM_API_KEY: 'mock-key',
         AGENT_LLM_MODEL: 'deepseek-v4-flash',
         AGENT_MODEL_TIMEOUT_MS: '  ',
-        AGENT_SUB_AGENT_TIMEOUT_MS: 'not-a-number'
       };
 
       const config = loadConfig(mockEnv);
       expect(config.runtimeLimits.modelTimeoutMs).toBe(60000);
-      expect(config.runtimeLimits.subAgentTimeoutMs).toBe(60000);
     });
 
-    it('当超时环境变量非正数或超出 Node.js 定时器安全范围时，应回退到 60000 默认值', () => {
+    it('当 modelTimeoutMs 环境变量非正数或超出 Node.js 定时器安全范围时，应回退到 60000 默认值', () => {
       const mockEnv = {
         AGENT_LLM_API_KEY: 'mock-key',
         AGENT_LLM_MODEL: 'deepseek-v4-flash',
         AGENT_MODEL_TIMEOUT_MS: '-1',
-        AGENT_SUB_AGENT_TIMEOUT_MS: '2147483648'
       };
 
       const config = loadConfig(mockEnv);
       expect(config.runtimeLimits.modelTimeoutMs).toBe(60000);
-      expect(config.runtimeLimits.subAgentTimeoutMs).toBe(60000);
+    });
+
+    it('旧 RAG/Embedding/子智能体变量不应进入配置对象', () => {
+      const config = loadConfig({
+        AGENT_LLM_API_KEY: 'mock-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash',
+        AGENT_RAG_ENABLED: 'true',
+        AGENT_RAG_SCORE_THRESHOLD: '0.5',
+        AGENT_RAG_RECALL_LIMIT: '5',
+        AGENT_RAG_REFINEMENT_THRESHOLD: '2',
+        AGENT_EMBEDDING_API_KEY: 'embed-key',
+        AGENT_EMBEDDING_BASE_URL: 'https://embed.example.com',
+        AGENT_EMBEDDING_MODEL: 'text-embedding-3-small',
+        AGENT_SUB_AGENT_TIMEOUT_MS: '90000',
+      });
+
+      expect(config).not.toHaveProperty('embedding');
+      expect(config.runtimeLimits).not.toHaveProperty('ragEnabled');
+      expect(config.runtimeLimits).not.toHaveProperty('ragScoreThreshold');
+      expect(config.runtimeLimits).not.toHaveProperty('ragRecallLimit');
+      expect(config.runtimeLimits).not.toHaveProperty('ragRefinementThreshold');
+      expect(config.runtimeLimits).not.toHaveProperty('subAgentTimeoutMs');
     });
   });
 

@@ -6,7 +6,7 @@
 
 #### 场景: 生产启动时注入与消费
 - **WHEN** 宿主环境启动装配，调用配置加载器冻结 `AppConfig` 并将其传入 `SessionManager` 构造函数时
-- **THEN** 会话管理器及所有内置插件均通过 `appConfig.workspace` 绝对路径完成日志、记忆文件的定位，消除对 process.env 的访问和行内禁用注释。
+- **THEN** 会话管理器及所有内置插件均通过 `appConfig.workspace` 绝对路径完成日志、规则和技能文件的定位，消除对 process.env 的访问和行内禁用注释。
 
 #### 场景: 测试执行期的沙箱重定向继承
 - **WHEN** 测试用例调用 mock 工厂创建 `AppConfig` 且不提供显式的工作区覆盖时
@@ -14,8 +14,8 @@
 
 ### 需求: 测试强类型与契约机制
 
-单元测试中对于所有 Driven 驱动端口（包括 `LlmPort`、`VectorDbPort`、`EmbeddingPort` 和 `ToolRegistryPort`）的 Mock 桩对象，必须 (MUST) 实施类型安全的显式转型约束（如 `as unknown as Port`）。且测试套件必须 (MUST) 遵循 ESLint 的 any 限制检查，除无法规避的私有方法 SpyOn 转型外，禁止使用 any 类型声明或行内豁免。
+单元测试中对于所有现存 Driven 驱动端口（包括 `LlmPort` 和 `ToolRegistryPort`）的 Mock 桩对象，必须 (MUST) 实施类型安全的显式转型约束（如 `as unknown as Port`）。且测试套件必须 (MUST) 遵循 ESLint 的 any 限制检查，除无法规避的私有方法 SpyOn 转型外，禁止使用 any 类型声明或行内豁免。
 
 #### 场景: 外部接口变更触发编译期报错
-- **WHEN** `VectorDbPort` 接口新增了成员方法或修改了方法的出入参签名
+- **WHEN** `ToolRegistryPort` 接口新增了成员方法或修改了方法的出入参签名
 - **THEN** 测试文件中相关的 mock 对象因为类型不匹配在执行 TypeScript 编译检查阶段立即触发编译报错。

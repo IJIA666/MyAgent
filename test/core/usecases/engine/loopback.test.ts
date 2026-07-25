@@ -38,15 +38,12 @@ import { SessionContext } from '../../../../src/core/domain/context.js';
 import { BashTool } from '../../../../src/adapters/tools/impl/system/terminal.js';
 import * as terminalEngine from '../../../../src/adapters/tools/impl/system/terminal-engine.js';
 import { SessionManager } from '../../../../src/core/usecases/engine/session.js';
-import { MemoryService } from '../../../../src/core/usecases/brain/MemoryService.js';
 import { LlmConfig } from '../../../../src/config/index.js';
 import { LlmPort, ChatMessage } from '../../../../src/ports/driven/llm/LlmPort.js';
 import { TokenEstimatorPort } from '../../../../src/ports/driven/llm/TokenEstimatorPort.js';
 import { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
 import { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdapter.js';
 import { AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
-import type { VectorDbPort } from '../../../../src/ports/driven/db/VectorDbPort.js';
-import type { EmbeddingPort } from '../../../../src/ports/driven/llm/EmbeddingPort.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 
 describe('Terminal Notification Loopback & Buffering Tests', () => {
@@ -60,11 +57,6 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
   });
 
   beforeEach(() => {
-    // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
-    vi.spyOn(
-      MemoryService.prototype,
-      'rebuildVectorDbIfEmpty'
-    ).mockResolvedValue(undefined);
     // 将工作安全模式重置为 YOLO，防止测试由于审批挂起而阻塞
     setPermissionMode('bypassPermissions');
     // 设置默认 of promisified exec mock，防止在推理循环结束时物理执行 npm run lint / tsc --noEmit
@@ -239,27 +231,12 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
       assemble: (baseHistory: ChatMessage[]) => baseHistory
     } as unknown as ContextAdapter;
 
-    const mockVectorDb = {
-      add: vi.fn().mockResolvedValue(undefined),
-      search: vi.fn().mockResolvedValue([]),
-      clear: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-      count: vi.fn().mockResolvedValue(0)
-    } as unknown as VectorDbPort;
-
-    const mockEmbedding = {
-      generateEmbedding: vi.fn().mockResolvedValue([]),
-      generateEmbeddings: vi.fn().mockResolvedValue([])
-    } as unknown as EmbeddingPort;
-
     const session = new SessionManager(
       mockLlmConfig,
       mockDriver,
       mockEstimator,
       mockToolRegistry,
       mockContextAdapter,
-      mockVectorDb,
-      mockEmbedding,
       createMockAppConfig()
     );
     const privateSession = session as unknown as {
@@ -388,17 +365,6 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
         close: async () => { }
       } as unknown as ToolRegistryPort,
       { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter,
-      {
-        add: vi.fn().mockResolvedValue(undefined),
-        search: vi.fn().mockResolvedValue([]),
-        clear: vi.fn().mockResolvedValue(undefined),
-        close: vi.fn().mockResolvedValue(undefined),
-        count: vi.fn().mockResolvedValue(0)
-      } as unknown as VectorDbPort,
-      {
-        generateEmbedding: vi.fn().mockResolvedValue([]),
-        generateEmbeddings: vi.fn().mockResolvedValue([])
-      } as unknown as EmbeddingPort,
       createMockAppConfig()
     );
     const privateSession = session as unknown as {

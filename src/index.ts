@@ -15,9 +15,6 @@ import { abortSessionTasks } from './adapters/tools/impl/system/terminal-engine.
 import { DefaultContextAdapter } from './adapters/context/DefaultContextAdapter.js';
 import { findSkillFiles, parseSkillFrontmatter } from './core/usecases/brain/contextLoader.js';
 import { readFileSync } from 'fs';
-import { OpenAiEmbeddingAdapter } from './adapters/llm/OpenAiEmbeddingAdapter.js';
-import { DashScopeEmbeddingAdapter } from './adapters/llm/DashScopeEmbeddingAdapter.js';
-import { LocalVectorDbAdapter } from './adapters/vectordb/LocalVectorDbAdapter.js';
 import { initLogger, logger } from './utils/logger.js';
 
 /**
@@ -79,23 +76,12 @@ async function main() {
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
     const contextAdapter = new DefaultContextAdapter(tokenEstimator);
-    const isDashScope = appConfig.embedding.model.toLowerCase().includes('text-embedding-v3') ||
-      (appConfig.embedding.baseUrl && appConfig.embedding.baseUrl.includes('dashscope'));
-    const embeddingAdapter = isDashScope
-      ? new DashScopeEmbeddingAdapter(appConfig.embedding)
-      : new OpenAiEmbeddingAdapter(appConfig.embedding);
-    const vectorDbAdapter = new LocalVectorDbAdapter(
-      path.resolve(appConfig.workspace, '.agent/lancedb'),
-      path.resolve(appConfig.workspace, '.agent/vectordb.json')
-    );
     session = new SessionManager(
       appConfig.llm,
       llmAdapter,
       tokenEstimator,
       toolRegistry,
       contextAdapter,
-      vectorDbAdapter,
-      embeddingAdapter,
       appConfig,
       abortSessionTasks
     );

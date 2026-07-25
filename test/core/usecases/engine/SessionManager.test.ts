@@ -5,7 +5,6 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SessionManager } from '../../../../src/core/usecases/engine/session.js';
-import { MemoryService } from '../../../../src/core/usecases/brain/MemoryService.js';
 import { LlmConfig } from '../../../../src/config/index.js';
 import { LlmPort, ChatMessage } from '../../../../src/ports/driven/llm/LlmPort.js';
 import { TokenEstimatorPort } from '../../../../src/ports/driven/llm/TokenEstimatorPort.js';
@@ -13,8 +12,6 @@ import { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistr
 import { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdapter.js';
 import { AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
 import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-types.js';
-import type { VectorDbPort } from '../../../../src/ports/driven/db/VectorDbPort.js';
-import type { EmbeddingPort } from '../../../../src/ports/driven/llm/EmbeddingPort.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 
 interface VirtualAgentLoop {
@@ -50,25 +47,7 @@ function createMockEstimator(total = 0): TokenEstimatorPort {
 }
 
 describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
-  const mockVectorDb = {
-    add: vi.fn().mockResolvedValue(undefined),
-    search: vi.fn().mockResolvedValue([]),
-    clear: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn().mockResolvedValue(undefined),
-    count: vi.fn().mockResolvedValue(0)
-  } as unknown as VectorDbPort;
-
-  const mockEmbedding = {
-    generateEmbedding: vi.fn().mockResolvedValue([]),
-    generateEmbeddings: vi.fn().mockResolvedValue([])
-  } as unknown as EmbeddingPort;
-
   beforeEach(() => {
-    // 屏蔽 SessionManager 构造函数中悬挂异步重建向量数据库的副作用，防止 teardown 时 RPC 挂起报错
-    vi.spyOn(
-      MemoryService.prototype,
-      'rebuildVectorDbIfEmpty'
-    ).mockResolvedValue(undefined);
     vi.clearAllMocks();
   });
 
@@ -98,8 +77,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockEstimator,
       mockToolRegistry,
       mockContextAdapter,
-      mockVectorDb,
-      mockEmbedding,
       createMockAppConfig(),
     );
 
@@ -144,8 +121,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockEstimator,
       mockToolRegistry,
       mockContextAdapter,
-      mockVectorDb,
-      mockEmbedding,
       createMockAppConfig(),
     );
 
@@ -213,8 +188,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockEstimator,
       mockToolRegistry,
       mockContextAdapter,
-      mockVectorDb,
-      mockEmbedding,
       createMockAppConfig(),
     );
 
@@ -308,8 +281,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockEstimator,
       mockToolRegistry,
       mockContextAdapter,
-      mockVectorDb,
-      mockEmbedding,
       createMockAppConfig(),
     );
 
@@ -340,8 +311,6 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       mockEstimator,
       mockToolRegistry,
       mockContextAdapter,
-      mockVectorDb,
-      mockEmbedding,
       createMockAppConfig(),
     );
 
@@ -407,7 +376,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+      mockContextAdapter, createMockAppConfig()
     );
 
     // SessionOpened 应正常完成（无插件 abort）
@@ -423,7 +392,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+      mockContextAdapter, createMockAppConfig()
     );
 
     await session.close();
@@ -444,7 +413,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+      mockContextAdapter, createMockAppConfig()
     );
 
     await session.close();
@@ -465,7 +434,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     const session = new SessionManager(
       mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
-      mockContextAdapter, mockVectorDb, mockEmbedding, createMockAppConfig()
+      mockContextAdapter, createMockAppConfig()
     );
 
     const firstClosedSpy = vi.fn();
