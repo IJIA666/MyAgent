@@ -32,6 +32,7 @@ describe('Application data layout', () => {
 
     it('运行数据深度嵌套且分层清晰', () => {
       expect(paths.projectDataDir).toBe(resolve('/home/user/.myagent/projects', paths.workspaceKey));
+      expect(paths.memoryDir).toBe(resolve(paths.projectDataDir, 'memory'));
       expect(paths.logsDir).toBe(resolve(paths.projectDataDir, 'logs'));
       expect(paths.runLogPath).toBe(resolve(paths.logsDir, 'run.log'));
       expect(paths.tracesDir).toBe(resolve(paths.logsDir, 'traces'));
@@ -71,6 +72,27 @@ describe('Application data layout', () => {
       const paths = createApplicationPaths('/workspace/app', { appDataRoot: '/custom/data-root' });
       expect(paths.userAppDataRoot).toBe(resolve('/custom/data-root'));
       expect(paths.projectDataDir).toBe(resolve('/custom/data-root/projects', paths.workspaceKey));
+    });
+  });
+
+  describe('长期记忆目录与工作区隔离', () => {
+    it('memoryDir 位于 projectDataDir 下但不落入 workspace .myagent', () => {
+      const workspace = resolve('/workspace/my-project');
+      const paths = createApplicationPaths(workspace);
+      expect(paths.memoryDir).toBe(resolve(paths.projectDataDir, 'memory'));
+      // memoryDir 不在 workspace/.myagent 内
+      expect(paths.memoryDir.startsWith(resolve(workspace, '.myagent'))).toBe(false);
+      // memoryDir 是 projectDataDir 的子目录
+      expect(paths.memoryDir.startsWith(paths.projectDataDir)).toBe(true);
+    });
+
+    it('不同 workspace-key 的 memoryDir 隔离', () => {
+      const a = createApplicationPaths('/home/user/proj');
+      const b = createApplicationPaths('/tmp/proj');
+      expect(a.memoryDir).not.toBe(b.memoryDir);
+      // 每个 memoryDir 位于各自的 projectDataDir 下
+      expect(a.memoryDir).toBe(resolve(a.projectDataDir, 'memory'));
+      expect(b.memoryDir).toBe(resolve(b.projectDataDir, 'memory'));
     });
   });
 

@@ -13,6 +13,11 @@ import type { ToolExecutionContext } from '../../../core/usecases/plugins/plugin
  * 通过 initWorkspace() 延迟物理初始化，锁定真实的物理真实路径。
  */
 let authorizedDir: string | null = null;
+/**
+ * 当前项目长期记忆目录的绝对物理路径。
+ * 由 initWorkspace 显式注入，在路径边界校验中与 authorizedDir 并列作为合法根。
+ */
+let authorizedMemoryDir: string | null = null;
 
 export function getAuthorizedDir(): string | null {
   return authorizedDir;
@@ -49,14 +54,19 @@ export function getPhysicalRealPath(target: string): string {
 }
 
 /**
- * 初始化授权工作区路径。
+ * 初始化授权工作区路径与可选的长期记忆目录。
  * 在应用启动阶段由 index.ts 调用一次，强制将其转换为物理真实绝对路径。
+ * 重复调用时必须整体替换两个授权根，避免测试或多会话复用旧项目的记忆根。
  *
  * @param rootDir - 工作区配置路径
+ * @param memoryDir - 可选。当前项目的长期记忆目录，注入后标准文件工具可访问其子树
  */
-export function initWorkspace(rootDir: string): void {
+export function initWorkspace(rootDir: string, memoryDir?: string): void {
   // 强制通过 getPhysicalRealPath 对工作区根目录进行符号链接展开与物理定位
   authorizedDir = getPhysicalRealPath(rootDir);
+  // 记忆目录为可选；提供时同样进行物理路径解析，不存在时尝试解析其父目录。
+  // 未提供时必须显式置空，避免多会话复用旧项目的记忆根。
+  authorizedMemoryDir = memoryDir ? getPhysicalRealPath(memoryDir) : null;
 }
 /**
  * 检查指定路径是否已存在于临时只读白名单中。
@@ -96,32 +106,53 @@ function isSubPath(parent: string, child: string): boolean {
 }
 
 /**
- * 路径沙箱保护机制核心校验器。
- * 对给定的文件路径进行物理规范化处理，并依据受限边界进行硬隔离判定，
- * 从根本上杜绝潜在的路径遍历与符号链接挂载逃逸风险。
- * 
- * @param targetPath - 具有潜在风险的入参目标文件或目录路径
- * @returns 脱敏与清洗完毕的安全物理绝对路径
- * @throws 当工作区未初始化或路径试图打破授权保护区时抛出错误
+ * 检查目标物理路径是否处于任一授权根（工作区或记忆目录）的子树内。
+ *
+ * @param resolvedPath - 已解析的物理绝对路径
+ * @returns 在授权范围内返回 true
+ */
+function isWithinAnyAuthorizedRoot(resolvedPath: string): boolean {
+  if (authorizedDir && isSubPath(authorizedDir, resolvedPath)) {
+    return true;
+  }
+  if (authorizedMemoryDir && isSubPath(authorizedMemoryDir, resolvedPath)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 统一安全路径解析：将目标路径基于授权根解析为物理绝对路径，并校验边界。
+ * 按序尝试：authorizedDir → authorizedMemoryDir（若存在）。
+ *
+ * @param targetPath - 入参目标文件或目录路径（相对或绝对）
+ * @returns 校验通过的安全物理绝对路径
+ * @throws 当工作区未初始化或路径越权时抛出错误
  */
 export function secureResolvePath(targetPath: string): string {
-  // 防护检查：确保工作区已通过 initWorkspace() 完成初始化
   if (authorizedDir === null) {
     throw new Error('工作区尚未初始化。请确保在使用文件工具前调用 initWorkspace()。');
   }
 
-  // 基于工作区根目录和目标相对路径计算出物理真实的绝对路径
+  // 首先尝试基于 authorizedDir 解析
   const rawPath = resolve(authorizedDir, targetPath);
   const resolvedPath = getPhysicalRealPath(rawPath);
 
-  // 加固判定：目标物理路径必须完全属于授权工作区，或在其子路径内
-  const isAuthorized = isSubPath(authorizedDir, resolvedPath);
-  if (!isAuthorized) {
-    throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区的安全防护边界。`);
+  // 检查是否在 authorizedDir 或 authorizedMemoryDir 子树内
+  if (isWithinAnyAuthorizedRoot(resolvedPath)) {
+    return resolvedPath;
   }
 
-  // 认证放行
-  return resolvedPath;
+  // 若目标路径本身是绝对路径且经 authorizedDir 解析后超出了范围，尝试直接按绝对路径
+  // 检查其是否位于 authorizedMemoryDir 内（绕过 authorizedDir 前缀解析）
+  if (targetPath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(targetPath)) {
+    const directResolved = getPhysicalRealPath(targetPath);
+    if (authorizedMemoryDir && isSubPath(authorizedMemoryDir, directResolved)) {
+      return directResolved;
+    }
+  }
+
+  throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区或记忆目录的安全防护边界。`);
 }
 
 /**
@@ -158,10 +189,16 @@ export function secureResolveReadPath(targetPath: string, context?: SessionEvent
     return resolvedPath;
   }
 
-  // 2. 常规校验：判断是否在常规工作区授权边界内
-  const isAuthorized = isSubPath(authorizedDir, resolvedPath);
-  if (!isAuthorized) {
-    throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区的安全防护边界。`);
+  // 2. 常规校验：判断是否在 authorizedDir 或 authorizedMemoryDir 授权边界内
+  if (!isWithinAnyAuthorizedRoot(resolvedPath)) {
+    // 对绝对路径尝试直接解析并检查 authorizedMemoryDir
+    if ((targetPath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(targetPath)) && authorizedMemoryDir) {
+      const directResolved = getPhysicalRealPath(targetPath);
+      if (isSubPath(authorizedMemoryDir, directResolved)) {
+        return directResolved;
+      }
+    }
+    throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区或记忆目录的安全防护边界。`);
   }
 
   return resolvedPath;
@@ -201,10 +238,16 @@ export function secureResolveWritePath(targetPath: string, context?: SessionEven
     return resolvedPath;
   }
 
-  // 2. 常规校验：判断是否在常规工作区授权边界内
-  const isAuthorized = isSubPath(authorizedDir, resolvedPath);
-  if (!isAuthorized) {
-    throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区的安全防护边界。`);
+  // 2. 常规校验：判断是否在 authorizedDir 或 authorizedMemoryDir 授权边界内
+  if (!isWithinAnyAuthorizedRoot(resolvedPath)) {
+    // 对绝对路径尝试直接解析并检查 authorizedMemoryDir
+    if ((targetPath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(targetPath)) && authorizedMemoryDir) {
+      const directResolved = getPhysicalRealPath(targetPath);
+      if (isSubPath(authorizedMemoryDir, directResolved)) {
+        return directResolved;
+      }
+    }
+    throw new Error(`拒绝访问：目标路径 "${targetPath}" 溢出了授权工作区或记忆目录的安全防护边界。`);
   }
 
   return resolvedPath;

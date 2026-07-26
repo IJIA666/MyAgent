@@ -4,6 +4,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionManager } from '../../../../src/core/usecases/engine/session.js';
 import { LlmConfig } from '../../../../src/config/index.js';
@@ -434,6 +436,108 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     // toolRegistry.close 仅调用一次
     expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  describe('长期记忆快照', () => {
+    it('open() 应加载记忆快照（无 memory 目录时返回空快照）', async () => {
+      const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+      const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
+      const mockEstimator = createMockEstimator();
+      const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }), close: vi.fn().mockResolvedValue(undefined) } as unknown as ToolRegistryPort;
+      const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+
+      const session = new SessionManager(
+        mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
+        mockContextAdapter, createMockAppConfig()
+      );
+
+      await session.open();
+      const snapshot = session.getMemorySnapshot();
+      expect(snapshot).toBeDefined();
+      expect(snapshot.isEmpty).toBe(true);
+      expect(Object.isFrozen(snapshot)).toBe(true);
+    });
+
+    it('getMemorySnapshot() 返回当前快照且不可变', async () => {
+      const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+      const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
+      const mockEstimator = createMockEstimator();
+      const mockToolRegistry = { getTools: async () => [], callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }), close: vi.fn().mockResolvedValue(undefined) } as unknown as ToolRegistryPort;
+      const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+
+      const session = new SessionManager(
+        mockLlmConfig, mockDriver, mockEstimator, mockToolRegistry,
+        mockContextAdapter, createMockAppConfig()
+      );
+
+      const snapshot = session.getMemorySnapshot();
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      expect(Object.isFrozen(snapshot.topics)).toBe(true);
+    });
+
+    it('读取失败时应保留旧快照，合法空索引才替换为空快照', async () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), 'session-memory-'));
+      const memoryDir = join(tempRoot, 'memory');
+      mkdirSync(join(memoryDir, 'topics'), { recursive: true });
+      writeFileSync(
+        join(memoryDir, 'topics', 'project-context.md'),
+        '---\nname: 项目背景\ndescription: 稳定项目背景\ntype: project\n---\n',
+        'utf-8',
+      );
+      writeFileSync(
+        join(memoryDir, 'MEMORY.md'),
+        '- [项目背景](topics/project-context.md) — 稳定项目背景\n',
+        'utf-8',
+      );
+
+      const baseConfig = createMockAppConfig();
+      const appConfig = createMockAppConfig({
+        applicationPaths: {
+          ...baseConfig.applicationPaths,
+          memoryDir,
+        },
+      });
+      const session = new SessionManager(
+        { model: 'mock-model' } as unknown as LlmConfig,
+        { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort,
+        createMockEstimator(),
+        {
+          getTools: async () => [],
+          callTool: async () => ({
+            value: {},
+            effect: {
+              kind: 'read' as const,
+              executionStarted: true,
+              completed: true,
+              resources: [],
+              reason: 'declared_read_tool' as const,
+            },
+          }),
+          close: vi.fn().mockResolvedValue(undefined),
+        } as unknown as ToolRegistryPort,
+        { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter,
+        appConfig,
+      );
+
+      try {
+        await session.open();
+        const loadedSnapshot = session.getMemorySnapshot();
+        expect(loadedSnapshot.topics).toHaveLength(1);
+
+        rmSync(join(memoryDir, 'MEMORY.md'));
+        mkdirSync(join(memoryDir, 'MEMORY.md'));
+        expect(session.refreshMemorySnapshot()).toBe(false);
+        expect(session.getMemorySnapshot()).toBe(loadedSnapshot);
+
+        rmSync(join(memoryDir, 'MEMORY.md'), { recursive: true, force: true });
+        expect(session.refreshMemorySnapshot()).toBe(true);
+        expect(session.getMemorySnapshot().isEmpty).toBe(true);
+        expect(session.getMemorySnapshot().memoryDir).toBe(memoryDir);
+      } finally {
+        await session.close();
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    });
   });
 
   it('SessionClosed 阶段单个插件失败或不调用 next，不应阻断后续订阅者和 close() 完成', async () => {

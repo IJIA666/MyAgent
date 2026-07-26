@@ -35,12 +35,14 @@ export class CompactionService {
    * @param driver - 大语言模型驱动接口
    * @param contextRepo - 会话状态仓储实例
    * @param tokenEstimator - 消息 Token 估算端口
+   * @param onCompactionCommitted - 可选。压缩成功后回调，仅在摘要校验通过、新历史提交且持久化成功后才调用。
    */
   constructor(
     private readonly context: SessionContext,
     private readonly driver: LlmPort,
     private readonly contextRepo: ContextRepository,
-    private readonly tokenEstimator: TokenEstimatorPort
+    private readonly tokenEstimator: TokenEstimatorPort,
+    private readonly onCompactionCommitted?: () => void | Promise<void>
   ) {
     // 依赖在构造期固定，压缩策略与预算由每次 ContextBudgetPlan 提供。
   }
@@ -253,6 +255,15 @@ export class CompactionService {
       // 历史已整体替换，旧 API usage 不再能作为新请求的增量估算锚点。
       this.context.clearLastApiUsageBaseline();
 
+      // 刷新属于压缩提交后的附加动作，失败不得改判或回滚已经成功持久化的压缩。
+      if (this.onCompactionCommitted) {
+        try {
+          await this.onCompactionCommitted();
+        } catch (refreshError: unknown) {
+          logger.warn(`[CompactionService] 压缩后刷新回调失败，保留已提交的压缩结果: ${String(refreshError)}`);
+        }
+      }
+
       return {
         status: 'compacted',
         strategy: plan.strategy,
@@ -267,4 +278,3 @@ export class CompactionService {
     }
   }
 }
-

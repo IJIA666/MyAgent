@@ -25,6 +25,7 @@ import { ContextRepository } from '../brain/ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import type { ContextBudgetCoordinator } from '../brain/ContextBudgetCoordinator.js';
 import { ModelRequestAssembler } from './model-request-assembler.js';
+import type { MemorySnapshot } from '../brain/memory-loader.js';
 import { ToolCallOrchestrator } from './tool-call-orchestrator.js';
 import {
   buildCanonicalSystemMessages,
@@ -70,6 +71,8 @@ export interface AgentLoopOptions {
   interactionPort?: InteractionPort;
   /** 允许智能体在一次对话中流转调用工具的最大迭代轮数 */
   maxIterations?: number;
+  /** 长期记忆快照提供器，为空时使用空快照。 */
+  memorySnapshotProvider?: () => MemorySnapshot;
 }
 /** 缓存击穿校验：缓存跌幅百分比阈值（5% = 0.95 倍） */
 const CACHE_DROP_RATIO_THRESHOLD = 0.95;
@@ -140,9 +143,16 @@ export class AgentLoop {
     this.toolDispatcher = options.toolDispatcher;
     this.contextBudgetCoordinator = options.contextBudgetCoordinator;
     this.pluginRegistry = options.pluginRegistry;
+    const memorySnapshotProvider = options.memorySnapshotProvider ?? (() => Object.freeze({
+      memoryDir: '',
+      topics: Object.freeze([]),
+      isTruncated: false,
+      isEmpty: true,
+    }));
     this.modelRequestAssembler = new ModelRequestAssembler(
       this.toolRegistry, this.contextAdapter, this.ruleManager,
-      this.pluginRegistry, this.context, this.contextBudgetCoordinator
+      this.pluginRegistry, this.context, this.contextBudgetCoordinator,
+      memorySnapshotProvider
     );
     this.toolCallOrchestrator = new ToolCallOrchestrator(
       this.toolRegistry, this.toolDispatcher, this.pluginRegistry,

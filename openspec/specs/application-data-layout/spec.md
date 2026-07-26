@@ -4,7 +4,7 @@
 
 ### Requirement: 项目配置与应用运行数据必须分离
 
-系统 MUST 使用 `.myagent` 作为唯一产品目录命名空间，并将人工维护的项目配置与程序生成的运行数据置于不同物理作用域。项目 `<workspace>/.myagent/` MUST 只包含 `settings.json`、`settings.local.json`、`rules/` 和 `skills/`；项目运行数据 MUST 位于 `~/.myagent/projects/<workspace-key>/` 下，并按 `logs/`、`state/`、`artifacts/` 和 `tmp/` 分类。
+系统 MUST 使用 `.myagent` 作为唯一产品目录命名空间，并将人工维护的项目配置与程序生成的运行数据置于不同物理作用域。项目 `<workspace>/.myagent/` MUST 只包含 `settings.json`、`settings.local.json`、`rules/` 和 `skills/`；项目运行数据 MUST 位于 `~/.myagent/projects/<workspace-key>/` 下，并按 `logs/`、`state/`、`artifacts/`、`tmp/` 和 `memory/` 分类。长期记忆 MUST 通过 `ApplicationPaths.memoryDir` 指向当前项目的 `<projectDataDir>/memory/`，MUST NOT 写入工作区 `.myagent/`。
 
 #### Scenario: 正常启动项目
 
@@ -15,6 +15,12 @@
 
 - **WHEN** workspace 中不存在 `.myagent` 或其中不存在某个可选配置文件
 - **THEN** 系统使用用户配置和内建默认值继续启动，且不得为了运行数据在 workspace 中创建 `.myagent`
+
+#### Scenario: 解析项目长期记忆目录
+
+- **WHEN** `ApplicationPaths` 已根据当前工作区生成稳定的 `workspace-key`
+- **THEN** `memoryDir` 等于 `<projectDataDir>/memory/`
+- **AND** 该路径不位于工作区 `.myagent/` 中
 
 ### Requirement: workspace 运行数据必须稳定隔离
 

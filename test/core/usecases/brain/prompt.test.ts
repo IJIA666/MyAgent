@@ -10,6 +10,7 @@ import {
   buildSystemPrompt,
   SYSTEM_RULES,
   RULE_TOOL_RESULT_HANDLING,
+  LONG_TERM_MEMORY_RULES,
 } from '../../../../src/core/usecases/brain/prompts.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
@@ -95,6 +96,7 @@ describe('System Prompt 组装契约', () => {
   test('SYSTEM_RULES 应完整且按顺序装配进基础提示词', () => {
     const rulesToVerify = [
       RULE_TOOL_RESULT_HANDLING,
+      LONG_TERM_MEMORY_RULES,
     ];
 
     for (const rule of rulesToVerify) {

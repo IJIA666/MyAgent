@@ -35,6 +35,12 @@ import { ContextHistoryPruner } from '../brain/ContextHistoryPruner.js';
 import { ContextBudgetPlanner } from '../brain/ContextBudgetPlanner.js';
 import { ContextBudgetCoordinator } from '../brain/ContextBudgetCoordinator.js';
 import { ApprovalService } from '../security/ApprovalService.js';
+import {
+  createEmptyMemorySnapshot,
+  loadMemorySnapshot,
+  type MemoryDiagnostic,
+  type MemorySnapshot,
+} from '../brain/memory-loader.js';
 
 /**
  * 会话管理与模型交互调度中心。
@@ -57,6 +63,10 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   private hasPendingAsyncNotification = false;
   /** 会话是否已关闭（幂等保护） */
   private isClosed = false;
+  /** 当前项目长期记忆目录，用于在 open 阶段加载快照。 */
+  private memoryDir: string;
+  /** 当前冻结的长期记忆快照，由 open() 及压缩刷新后装载。 */
+  private memorySnapshot: MemorySnapshot;
   /** 大语言模型的核心驱动模块 */
   private driver: LlmPort;
   /** 上下文管理与组装适配器 */
@@ -125,6 +135,10 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     }
     this.contextAdapter = contextAdapter;
 
+    // 初始化长期记忆目录与空快照（真实加载延迟到 open() 执行）
+    this.memoryDir = appConfig.applicationPaths.memoryDir;
+    this.memorySnapshot = createEmptyMemorySnapshot(this.memoryDir);
+
     // 初始化领域服务集群
     const paths = appConfig.applicationPaths;
     this.ruleManager = new RuleManager(
@@ -140,7 +154,10 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.context.addTemporaryDirectoryScopeReadWhitelist(paths.toolOutputsDir);
     // 回滚备份必须使用当前项目的应用数据目录，禁止从 workspace 推导旧路径。
     FileBackupManager.setBackupsDir(paths.backupsDir);
-    const compactionService = new CompactionService(this.context, this.driver, this.contextRepo, estimator);
+    const compactionService = new CompactionService(
+      this.context, this.driver, this.contextRepo, estimator,
+      () => { this.refreshMemorySnapshot(); }
+    );
     const contextHistoryPruner = new ContextHistoryPruner(estimator);
     const contextBudgetPlanner = new ContextBudgetPlanner(estimator, contextHistoryPruner);
     const contextBudgetCoordinator = new ContextBudgetCoordinator(
@@ -171,7 +188,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       toolDispatcher: this.toolDispatcher,
       contextBudgetCoordinator,
       pluginRegistry: this.pluginRegistry,
-      maxIterations: this.maxIterations
+      maxIterations: this.maxIterations,
+      memorySnapshotProvider: () => this.memorySnapshot,
     });
 
     // 监听底层 Driven 事件总线抛出的异步任务事件，实施下沉后的自唤醒调度
@@ -358,6 +376,76 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   }
 
   /**
+   * 获取当前长期记忆快照（只读提供器，供 AgentLoop 和请求组装使用）。
+   *
+   * @returns 当前冻结的记忆快照
+   */
+  public getMemorySnapshot(): MemorySnapshot {
+    return this.memorySnapshot;
+  }
+
+  /**
+   * 从磁盘重新加载长期记忆快照，原子替换当前内存快照。
+   * 刷新失败时记录结构化诊断并保留旧快照。
+   *
+   * @returns 刷新成功或磁盘上合法为空时返回 true，读取失败返回 false
+   */
+  public refreshMemorySnapshot(): boolean {
+    try {
+      const result = loadMemorySnapshot(this.memoryDir);
+      this.logMemoryDiagnostic(result.diagnostic);
+      if (result.status === 'failed') {
+        logger.warn('[记忆] refresh_memory_snapshot_failed', {
+          component: 'session',
+          event: 'refresh_memory_snapshot_failed',
+          memoryDir: this.memoryDir,
+        });
+        return false;
+      }
+
+      this.memorySnapshot = result.snapshot;
+      return true;
+    } catch (error: unknown) {
+      logger.warn('[记忆] refresh_memory_snapshot_failed', {
+        component: 'session',
+        event: 'refresh_memory_snapshot_failed',
+        memoryDir: this.memoryDir,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
+  /** 记录非空的记忆加载诊断。 */
+  private logMemoryDiagnostic(diagnostic: MemoryDiagnostic): void {
+    const hasDiagnostic = diagnostic.truncation !== null
+      || diagnostic.duplicates.length > 0
+      || diagnostic.brokenLinks.length > 0
+      || diagnostic.invalidFilenames.length > 0
+      || diagnostic.unknownTypes.length > 0
+      || diagnostic.invalidFrontmatter.length > 0
+      || diagnostic.warnings.length > 0;
+    if (!hasDiagnostic) {
+      return;
+    }
+
+    logger.warn('[记忆] refresh_memory_snapshot_diagnostic', {
+      component: 'session',
+      event: 'refresh_memory_snapshot_diagnostic',
+      memoryDir: this.memoryDir,
+      diagnostic: {
+        truncation: diagnostic.truncation,
+        duplicates: [...diagnostic.duplicates],
+        brokenLinks: [...diagnostic.brokenLinks],
+        invalidFilenames: [...diagnostic.invalidFilenames],
+        unknownTypes: [...diagnostic.unknownTypes],
+        invalidFrontmatter: [...diagnostic.invalidFrontmatter],
+        warnings: [...diagnostic.warnings],
+      },
+    });
+  }
+
+  /**
    * 显式打开会话，派发 SessionOpened 生命周期事件。
    * 由组合根在构造完成后调用，插件可在此阶段执行初始化逻辑。
    *
@@ -365,6 +453,9 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    * @throws 若任一插件返回 abort，则抛出异常阻止会话进入可用状态
    */
   public async open(): Promise<void> {
+    // 在生命周期事件前加载长期记忆快照
+    this.refreshMemorySnapshot();
+
     const result = await runHookPipeline(
       HookEventName.SessionOpened,
       this.context,

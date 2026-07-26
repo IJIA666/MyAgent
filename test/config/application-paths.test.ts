@@ -31,6 +31,7 @@ describe('createApplicationPaths', () => {
     it('运行数据位于 ~/.myagent/projects/<key>/ 下并按分类分层', () => {
       expect(paths.projectDataDir).toBe(resolve(`/home/user/.myagent/projects/${paths.workspaceKey}`));
 
+      expect(paths.memoryDir).toBe(resolve(paths.projectDataDir, 'memory'));
       expect(paths.logsDir).toBe(resolve(paths.projectDataDir, 'logs'));
       expect(paths.runLogPath).toBe(resolve(paths.logsDir, 'run.log'));
       expect(paths.tracesDir).toBe(resolve(paths.logsDir, 'traces'));

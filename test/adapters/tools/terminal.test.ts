@@ -23,11 +23,12 @@ import { ToolPermissionService } from '../../../src/core/domain/permissions/tool
 
 describe('Terminal Tool 单元测试', () => {
   const mockRootDir = mkdtempSync(join(tmpdir(), 'authorized-terminal-test-'));
+  const mockMemoryDir = mkdtempSync(join(tmpdir(), 'authorized-memory-test-'));
   let executeCommandToolInstance: BashTool | PowerShellTool;
 
   beforeAll(() => {
-    // 初始化测试工作区路径
-    initWorkspace(mockRootDir);
+    // 初始化测试工作区路径与独立的文件工具记忆根。
+    initWorkspace(mockRootDir, mockMemoryDir);
   });
 
   afterAll(async () => {
@@ -35,6 +36,7 @@ describe('Terminal Tool 单元测试', () => {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     // 清理当前测试专用工作区，避免在系统临时目录遗留配置和工具输出。
     rmSync(mockRootDir, { recursive: true, force: true });
+    rmSync(mockMemoryDir, { recursive: true, force: true });
   });
 
   beforeEach(() => {
@@ -87,6 +89,8 @@ describe('Terminal Tool 单元测试', () => {
     await expect(executeCommandToolInstance.execute({ command: 'npm run build', cwd: '../../etc' })).rejects.toThrow('Operation not permitted');
     const maliciousCwd = process.platform === 'win32' ? 'C:\\Windows' : '/etc';
     await expect(executeCommandToolInstance.execute({ command: 'npm run build', cwd: maliciousCwd })).rejects.toThrow('Operation not permitted');
+    // 文件工具可访问的 memoryDir 不得扩张为终端 cwd。
+    expect(() => validateCwd(mockMemoryDir)).toThrow('Operation not permitted');
   });
 
   test('4. 工作模式持久化配置测试', () => {

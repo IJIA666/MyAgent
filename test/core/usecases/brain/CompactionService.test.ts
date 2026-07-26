@@ -244,6 +244,102 @@ describe('CompactionService', () => {
     expect(contextRepo.saveState).not.toHaveBeenCalled();
   });
 
+  describe('onCompactionCommitted 回调', () => {
+    it('成功压缩应调用回调', async () => {
+      const committedSpy = vi.fn();
+      const history = seedHistory([
+        { role: 'user', content: 'request' },
+        { role: 'assistant', content: 'answer' },
+      ]);
+      vi.mocked(driver.generateSummaryAsync).mockResolvedValue('summary');
+      service = new CompactionService(context, driver, contextRepo, tokenEstimator, committedSpy);
+
+      const result = await service.execute(createPlan('full', history));
+
+      expect(result.status).toBe('compacted');
+      expect(committedSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('摘要失败时不调用回调', async () => {
+      const committedSpy = vi.fn();
+      const history = seedHistory([
+        { role: 'user', content: 'request' },
+      ]);
+      vi.mocked(driver.generateSummaryAsync).mockRejectedValueOnce(new Error('failed'));
+      service = new CompactionService(context, driver, contextRepo, tokenEstimator, committedSpy);
+
+      const result = await service.execute(createPlan('full', history));
+
+      expect(result.status).toBe('failed');
+      expect(committedSpy).not.toHaveBeenCalled();
+    });
+
+    it('跳过时不调用回调', async () => {
+      const committedSpy = vi.fn();
+      service = new CompactionService(context, driver, contextRepo, tokenEstimator, committedSpy);
+
+      seedHistory([{ role: 'user', content: 'request' }]);
+      const skipPlan: ContextBudgetPlan = {
+        strategy: 'none',
+        requestMessages: [],
+        historyView: [],
+        originalUsage: { total: 10000, system: 0, rules: 0, transient: 0, history: 10000, isEstimated: true },
+        prunedUsage: { total: 9000, system: 0, rules: 0, transient: 0, history: 9000, isEstimated: true },
+        thresholdTokens: 5000,
+        contextWindowTokens: 50000,
+        fixedRequestTokens: 100,
+        projectedTokens: 1000,
+        prunedTokens: 1000,
+        headEndIndex: 1,
+        tailStartIndex: null,
+        reason: 'skip',
+        summaryMaxTokens: 512,
+      };
+      const result = await service.execute(skipPlan);
+
+      expect(result.status).toBe('skipped');
+      expect(committedSpy).not.toHaveBeenCalled();
+    });
+
+    it('持久化失败时不调用回调', async () => {
+      const committedSpy = vi.fn();
+      const history = seedHistory([
+        { role: 'user', content: 'request' },
+      ]);
+      vi.mocked(driver.generateSummaryAsync).mockResolvedValue('summary');
+      vi.mocked(contextRepo.saveState).mockRejectedValueOnce(new Error('save failed'));
+      service = new CompactionService(context, driver, contextRepo, tokenEstimator, committedSpy);
+
+      const result = await service.execute(createPlan('full', history));
+
+      expect(result.status).toBe('failed');
+      expect(result.reason).toContain('持久化失败');
+      expect(committedSpy).not.toHaveBeenCalled();
+    });
+
+    it('刷新回调异常时压缩仍保持成功', async () => {
+      const history = seedHistory([
+        { role: 'user', content: 'request' },
+        { role: 'assistant', content: 'answer' },
+      ]);
+      vi.mocked(driver.generateSummaryAsync).mockResolvedValue('summary');
+      service = new CompactionService(
+        context,
+        driver,
+        contextRepo,
+        tokenEstimator,
+        async () => {
+          throw new Error('memory refresh failed');
+        },
+      );
+
+      const result = await service.execute(createPlan('full', history));
+
+      expect(result.status).toBe('compacted');
+      expect(contextRepo.saveState).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('持久化失败时必须恢复内存历史', async () => {
     const history = seedHistory([
       { role: 'user', content: 'request' },

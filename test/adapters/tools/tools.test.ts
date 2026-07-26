@@ -1,8 +1,10 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { resolve, join } from 'path';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { resolve, join, dirname } from 'path';
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { initWorkspace, secureResolvePath, ReadFileTool } from '../../../src/adapters/tools/tools.js';
+import { secureResolveReadPath, secureResolveWritePath } from '../../../src/adapters/tools/impl/base.js';
 import { WriteFileTool, EditFileTool, ListFilesTool } from '../../../src/adapters/tools/impl/filesystem/file-system.js';
+import { DeletePathTool } from '../../../src/adapters/tools/impl/filesystem/directory-manager.js';
 import type { ToolPermissionCheckResult } from '../../../src/core/domain/permissions/permission-types.js';
 
 describe('安全沙箱 tools.ts 单元测试', () => {
@@ -356,5 +358,113 @@ describe('ListFilesTool.checkPermissions', () => {
     const result = tool.checkPermissions!({}) as ToolPermissionCheckResult;
     expect(result.kind).toBe('allow');
     expect(result.evidence?.sideEffect).toBe('read');
+  });
+});
+
+// ── 长期记忆目录路径安全测试 ──
+
+describe('长期记忆目录路径边界', () => {
+  const workspaceDir = resolve(__dirname, 'temp_memory_workspace');
+  const memoryDir = resolve(__dirname, 'temp_memory_data');
+  const outsideDir = resolve(__dirname, 'temp_memory_outside');
+  const projectDataDir = dirname(memoryDir); // 模拟 projectDataDir（memoryDir 的父目录）
+
+  beforeAll(() => {
+    // 清理残留
+    for (const dir of [workspaceDir, memoryDir, outsideDir]) {
+      if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    mkdirSync(join(memoryDir, 'topics'), { recursive: true });
+    mkdirSync(workspaceDir, { recursive: true });
+    mkdirSync(outsideDir, { recursive: true });
+    writeFileSync(join(memoryDir, 'MEMORY.md'), '- [test](topics/test.md) — test\n');
+    writeFileSync(join(memoryDir, 'topics', 'test.md'), '---\nname: test\ndescription: test\ntype: user\n---\n');
+    writeFileSync(join(workspaceDir, 'workspace-file.txt'), 'workspace file');
+
+    // 初始化工作区并单独注入记忆目录
+    initWorkspace(workspaceDir, memoryDir);
+  });
+
+  afterAll(() => {
+    // 重置授权状态
+    initWorkspace(workspaceDir);
+    for (const dir of [workspaceDir, memoryDir, outsideDir]) {
+      if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('memoryDir 内 MEMORY.md 可读取', () => {
+    const resolved = secureResolvePath(join(memoryDir, 'MEMORY.md'));
+    expect(resolved).toBeTruthy();
+  });
+
+  test('memoryDir 内 topics 文件可读取', () => {
+    const resolved = secureResolveReadPath(join(memoryDir, 'topics', 'test.md'));
+    expect(resolved).toBeTruthy();
+  });
+
+  test('标准文件工具可在 memoryDir 内完成读取、写入、列举和删除', async () => {
+    const readTool = new ReadFileTool();
+    const writeTool = new WriteFileTool();
+    const listTool = new ListFilesTool();
+    const deleteTool = new DeletePathTool();
+    const createdTopicPath = join(memoryDir, 'topics', 'created-by-tool.md');
+
+    const readResult = await readTool.execute({ targetPath: join(memoryDir, 'MEMORY.md') });
+    expect(readResult).toContain('topics/test.md');
+
+    await writeTool.execute({
+      targetPath: createdTopicPath,
+      content: '---\nname: created\ndescription: created\ntype: project\n---\n',
+    });
+    expect(existsSync(createdTopicPath)).toBe(true);
+
+    const listResult = await listTool.execute({ targetPath: join(memoryDir, 'topics') });
+    expect(listResult).toContain('created-by-tool.md');
+
+    await deleteTool.execute({ targetPath: createdTopicPath });
+    expect(existsSync(createdTopicPath)).toBe(false);
+  });
+
+  test('projectDataDir（memoryDir 父目录）不可访问', () => {
+    expect(() => secureResolvePath(join(projectDataDir, 'other-file.txt'))).toThrow('拒绝访问');
+  });
+
+  test('memoryDir 同层兄弟目录不可访问', () => {
+    const siblingDir = join(projectDataDir, 'other-dir');
+    expect(() => secureResolvePath(siblingDir)).toThrow('拒绝访问');
+  });
+
+  test('memoryDir 内符号链接及不存在子目标不得逃逸物理根', () => {
+    const escapeLink = join(memoryDir, 'escape-link');
+    symlinkSync(outsideDir, escapeLink, process.platform === 'win32' ? 'junction' : 'dir');
+
+    expect(() => secureResolveReadPath(join(escapeLink, 'outside.txt'))).toThrow('拒绝访问');
+    expect(() => secureResolveWritePath(join(escapeLink, 'new-topic.md'))).toThrow('拒绝访问');
+  });
+
+  test('工作区内正常路径仍可访问', () => {
+    const resolved = secureResolvePath('workspace-file.txt');
+    expect(resolved).toBe(join(workspaceDir, 'workspace-file.txt'));
+  });
+
+  test('重新初始化后旧 memoryDir 失效', () => {
+    const newWorkspace = resolve(__dirname, 'temp_memory_workspace_new');
+    if (!existsSync(newWorkspace)) {
+      mkdirSync(newWorkspace, { recursive: true });
+    }
+    // 重新初始化不带 memoryDir
+    initWorkspace(newWorkspace);
+
+    // 旧 memoryDir 路径应被拒绝
+    expect(() => secureResolvePath(join(memoryDir, 'MEMORY.md'))).toThrow('拒绝访问');
+
+    // 清理并恢复
+    rmSync(newWorkspace, { recursive: true, force: true });
+    initWorkspace(workspaceDir, memoryDir);
   });
 });

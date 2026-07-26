@@ -55,6 +55,12 @@ export interface ApplicationPaths {
   /** 当前项目的运行数据根目录。 */
   readonly projectDataDir: string;
 
+  /**
+   * 长期记忆目录：`<project-data>/memory/`。
+   * 采用 Markdown-first 项目私有长期记忆，以 MEMORY.md 为索引、topics/*.md 为主题正文。
+   */
+  readonly memoryDir: string;
+
   /** 日志目录：`<project-data>/logs/`。 */
   readonly logsDir: string;
   /** 运行日志文件：`<logsDir>/run.log`。 */
@@ -137,6 +143,7 @@ export function createApplicationPaths(
 
     // 项目运行数据
     projectDataDir,
+    memoryDir: resolve(projectDataDir, 'memory'),
     logsDir: resolve(projectDataDir, 'logs'),
     runLogPath: resolve(projectDataDir, 'logs', 'run.log'),
     tracesDir: resolve(projectDataDir, 'logs', 'traces'),

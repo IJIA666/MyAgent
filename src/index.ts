@@ -60,8 +60,8 @@ async function main() {
   // 5. 配置文件日志 sink（两阶段初始化的第二阶段）
   await configureFileSink(appConfig.applicationPaths.logsDir);
 
-  // 5. 初始化工作区沙箱路径
-  initWorkspace(appConfig.workspace);
+  // 5. 初始化工作区沙箱路径与长期记忆目录
+  initWorkspace(appConfig.workspace, appConfig.applicationPaths.memoryDir);
 
   // 6. 打印系统启动与配置信息，在 Banner 中追加展示当前的上下文窗口总大小限制
   const banner = `====================================================
