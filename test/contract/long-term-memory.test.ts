@@ -134,6 +134,20 @@ describe('长期记忆静态契约', () => {
       expect(LONG_TERM_MEMORY_RULES).toContain('再更新');
     });
 
+    it('system prompt 提供不可省略的 frontmatter 和索引模板', () => {
+      expect(LONG_TERM_MEMORY_RULES).toContain('三个字段均不可省略');
+      expect(LONG_TERM_MEMORY_RULES).toContain('name: {{清晰、稳定的主题名称}}');
+      expect(LONG_TERM_MEMORY_RULES).toContain('description: {{用于未来判断相关性的一行具体描述}}');
+      expect(LONG_TERM_MEMORY_RULES).toContain('type: {{user、feedback、project、reference 四选一}}');
+      expect(LONG_TERM_MEMORY_RULES).toContain('- [简洁标题](topics/<slug>.md) — 一行相关性摘要');
+    });
+
+    it('system prompt 要求写后自检且禁止补充未经确认的事实', () => {
+      expect(LONG_TERM_MEMORY_RULES).toContain('不得编造用户没有确认的原因、工具、数字、技术栈或项目细节');
+      expect(LONG_TERM_MEMORY_RULES).toContain('必须重新读取结果');
+      expect(LONG_TERM_MEMORY_RULES).toContain('frontmatter 完整');
+    });
+
     it('system prompt 规定忘记操作先删除内容再更新索引', () => {
       expect(LONG_TERM_MEMORY_RULES).toContain('忘记单项内容');
       expect(LONG_TERM_MEMORY_RULES).toContain('先删除主题文件');

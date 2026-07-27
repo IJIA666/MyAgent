@@ -1,6 +1,10 @@
 # Markdown-first Long-term Memory
 
-## ADDED Requirements
+## Purpose
+
+定义项目级 Markdown 长期记忆的存储、写入、召回、诊断和遗忘契约，确保模型能够使用标准文件工具维护透明、可治理且跨会话可复用的记忆。
+
+## Requirements
 
 ### Requirement: 项目长期记忆必须采用机器本地的 Markdown 目录
 
@@ -20,7 +24,7 @@
 
 ### Requirement: 记忆索引加载必须有界且可诊断
 
-系统必须（MUST）在会话快照中最多读取 `MEMORY.md` 的前 200 行或前 20KB，以先达到的限制为准。发生截断时，系统必须（MUST）在投影给模型的内容中明确标记索引已截断，并且不得（MUST NOT）修改磁盘文件。加载器必须（MUST）诊断重复索引、断链主题、非法主题文件名、未知记忆类型和无效 frontmatter，但单个异常不得（MUST NOT）导致会话启动失败。
+系统必须（MUST）在会话快照中最多读取 `MEMORY.md` 的前 200 行或前 20KB，以先达到的限制为准。发生截断时，系统必须（MUST）在投影给模型的内容中明确标记索引已截断，并且不得（MUST NOT）修改磁盘文件。加载器必须（MUST）诊断重复索引、断链主题、非法主题文件名、未知记忆类型和无效 frontmatter，但单个异常不得（MUST NOT）导致会话启动失败。对于文件存在且名称合法、但 frontmatter 缺失或类型未知的索引主题，加载器必须（MUST）保留索引标题和摘要以支持降级召回，同时不得（MUST NOT）把未知类型推断为四种合法类型之一。
 
 #### Scenario: MEMORY.md 超出容量上限
 
@@ -36,9 +40,16 @@
 - **AND** 加载器报告重复与断链诊断
 - **AND** 会话启动继续进行
 
+#### Scenario: 主题 frontmatter 缺失或类型未知
+
+- **WHEN** 索引引用的主题文件存在且文件名合法，但 frontmatter 缺失或 `type` 未知
+- **THEN** 加载器报告对应诊断
+- **AND** 快照保留该索引条目的标题与摘要以支持降级召回
+- **AND** 快照不为该条目推断合法记忆类型
+
 ### Requirement: 主题文件必须遵循固定类型与确定性命名
 
-每个主题文件必须（MUST）位于 `topics/` 的单层目录中，并使用匹配 `[a-z0-9]+(?:-[a-z0-9]+)*\.md` 的 ASCII kebab-case 文件名。主题 frontmatter 必须（MUST）包含 `name`、`description` 和 `type`，其中 `type` 只能（MUST）为 `user`、`feedback`、`project` 或 `reference`。创建新主题前，模型必须（MUST）先检查并复用语义相同的现有主题；确需创建时，必须（MUST）先写入主题文件，再更新 `MEMORY.md` 索引。
+每个主题文件必须（MUST）位于 `topics/` 的单层目录中，并使用匹配 `[a-z0-9]+(?:-[a-z0-9]+)*\.md` 的 ASCII kebab-case 文件名。主题 frontmatter 必须（MUST）包含 `name`、`description` 和 `type`，其中 `type` 只能（MUST）为 `user`、`feedback`、`project` 或 `reference`。稳定的记忆机制提示词必须（MUST）向模型提供包含这三个字段的完整 frontmatter 模板和 `MEMORY.md` 单行索引示例。创建新主题前，模型必须（MUST）先检查并复用语义相同的现有主题；确需创建时，必须（MUST）先写入主题文件，重新读取并核对格式及事实忠实性，再更新 `MEMORY.md` 索引。模型不得（MUST NOT）向记忆正文补充用户未确认的原因、工具、数字、技术栈或项目细节。
 
 #### Scenario: 保存新的项目约定
 

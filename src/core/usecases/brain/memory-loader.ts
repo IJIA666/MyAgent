@@ -35,7 +35,7 @@ export interface TopicFrontmatter {
   type: MemoryType;
 }
 
-/** 单个通过校验的记忆主题条目。 */
+/** 单个可召回的记忆主题条目。 */
 export interface TopicEntry {
   /** 主题 slug（不含 `.md` 扩展名）。 */
   readonly slug: string;
@@ -43,23 +43,23 @@ export interface TopicEntry {
   readonly title: string;
   /** 索引行中的描述文本。 */
   readonly indexDescription: string;
-  /** 主题文件的 frontmatter name。 */
+  /** 主题文件的 frontmatter name；格式无效时降级为索引标题。 */
   readonly name: string;
-  /** 主题文件的 frontmatter description。 */
+  /** 主题文件的 frontmatter description；格式无效时降级为索引描述。 */
   readonly description: string;
-  /** 主题文件的 frontmatter type。 */
-  readonly type: MemoryType;
+  /** 主题文件的 frontmatter type；缺失或未知时保留为空并报告诊断。 */
+  readonly type: MemoryType | undefined;
 }
 
 /** 不可变记忆快照。返回前递归冻结。 */
 export interface MemorySnapshot {
   /** 当前项目长期记忆目录的绝对路径。 */
   readonly memoryDir: string;
-  /** 通过校验的有效条目。 */
+  /** 文件存在且名称合法的可召回条目，包括元数据降级条目。 */
   readonly topics: readonly TopicEntry[];
   /** 是否因超过容量上限而被截断。 */
   readonly isTruncated: boolean;
-  /** 快照是否为空（目录无索引文件或索引无有效条目）。 */
+  /** 快照是否为空（目录无索引文件或索引无可召回条目）。 */
   readonly isEmpty: boolean;
 }
 
@@ -194,7 +194,7 @@ export function loadMemorySnapshot(memoryDir: string): MemoryLoadResult {
   }
 
   // ── 校验并加载主题 frontmatter ──
-  const validEntries: TopicEntry[] = [];
+  const topicEntries: TopicEntry[] = [];
   const brokenLinks: string[] = [];
   const invalidFilenames: string[] = [];
   const unknownTypes: string[] = [];
@@ -228,17 +228,28 @@ export function loadMemorySnapshot(memoryDir: string): MemoryLoadResult {
     const frontmatter = parseFrontmatter(topicContent);
     if (!frontmatter) {
       invalidFrontmatter.push(filename);
+      // 生产端仍必须生成合法 frontmatter；读取端使用索引信息降级，
+      // 避免单个格式错误让已经存在的记忆在后续会话中彻底消失。
+      topicEntries.push(createDegradedTopicEntry(entry));
       continue;
     }
 
     // 校验 type
     if (!VALID_MEMORY_TYPES.includes(frontmatter.type as MemoryType)) {
       unknownTypes.push(`${filename}: type="${frontmatter.type}"`);
+      topicEntries.push({
+        slug: filename.replace(/\.md$/, ''),
+        title,
+        indexDescription: description,
+        name: frontmatter.name,
+        description: frontmatter.description,
+        type: undefined,
+      });
       continue;
     }
 
     // 通过校验
-    validEntries.push({
+    topicEntries.push({
       slug: filename.replace(/\.md$/, ''),
       title,
       indexDescription: description,
@@ -251,9 +262,9 @@ export function loadMemorySnapshot(memoryDir: string): MemoryLoadResult {
   // ── 直接从局部变量构建最终的冻结快照与诊断 ──
   const snapshot: MemorySnapshot = Object.freeze({
     memoryDir,
-    topics: Object.freeze(validEntries.map((e) => Object.freeze(e))),
+    topics: Object.freeze(topicEntries.map((e) => Object.freeze(e))),
     isTruncated,
-    isEmpty: validEntries.length === 0,
+    isEmpty: topicEntries.length === 0,
   });
 
   diagnostic.duplicates = duplicates;
@@ -270,6 +281,18 @@ export function loadMemorySnapshot(memoryDir: string): MemoryLoadResult {
 }
 
 // ── 辅助函数 ──
+
+/** 使用索引中的可信字段构造元数据降级主题。 */
+function createDegradedTopicEntry(entry: ParsedIndexEntry): TopicEntry {
+  return {
+    slug: entry.filename.replace(/\.md$/, ''),
+    title: entry.title,
+    indexDescription: entry.description,
+    name: entry.title,
+    description: entry.description,
+    type: undefined,
+  };
+}
 
 /** 有界索引读取结果。 */
 interface BoundedIndexReadResult {

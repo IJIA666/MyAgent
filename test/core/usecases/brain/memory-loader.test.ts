@@ -260,7 +260,7 @@ describe('loadMemorySnapshot', () => {
 
   // ── 有效与无效条目混合 ──
   describe('有效与无效条目混合', () => {
-    it('有效条目正常加载，无效条目报告诊断', () => {
+    it('有效条目正常加载，元数据异常条目降级召回并报告诊断', () => {
       ensureTopicsDir(memoryDir);
       // 有效主题
       writeTopic(memoryDir, 'valid.md', '有效', '有效主题', 'user');
@@ -282,9 +282,16 @@ describe('loadMemorySnapshot', () => {
       ].join('\n') + '\n');
 
       const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      // 有效条目
-      expect(snapshot.topics).toHaveLength(2);
-      expect(snapshot.topics.map((t) => t.slug)).toEqual(expect.arrayContaining(['valid', 'project-notes']));
+      // 文件存在且名称合法的条目均可召回，元数据异常项降级为空类型。
+      expect(snapshot.topics).toHaveLength(4);
+      expect(snapshot.topics.map((t) => t.slug)).toEqual(expect.arrayContaining([
+        'valid',
+        'project-notes',
+        'unknown-type',
+        'no-name',
+      ]));
+      expect(snapshot.topics.find((t) => t.slug === 'unknown-type')?.type).toBeUndefined();
+      expect(snapshot.topics.find((t) => t.slug === 'no-name')?.type).toBeUndefined();
       // 诊断
       expect(diagnostic.brokenLinks).toContain('broken.md');
       expect(diagnostic.invalidFilenames).toContain('UPPERCASE.md');
@@ -350,43 +357,52 @@ describe('loadMemorySnapshot', () => {
       expect(diagnostic.invalidFrontmatter).toHaveLength(0);
     });
 
-    it('完全无 frontmatter', () => {
+    it('完全无 frontmatter 时使用索引元数据降级召回', () => {
       ensureTopicsDir(memoryDir);
       writeFileSync(join(memoryDir, 'topics', 'no-fm.md'), '# 无 frontmatter 的正文\n', 'utf-8');
       writeIndex(memoryDir, '- [无 frontmatter](topics/no-fm.md) — 无 frontmatter\n');
 
       const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(0);
+      expect(snapshot.topics).toHaveLength(1);
+      expect(snapshot.topics[0]).toMatchObject({
+        slug: 'no-fm',
+        name: '无 frontmatter',
+        description: '无 frontmatter',
+        type: undefined,
+      });
       expect(diagnostic.invalidFrontmatter).toContain('no-fm.md');
     });
 
-    it('frontmatter 缺少 description', () => {
+    it('frontmatter 缺少 description 时使用索引元数据降级召回', () => {
       ensureTopicsDir(memoryDir);
       writeFileSync(join(memoryDir, 'topics', 'no-desc.md'), "---\nname: 无描述\ntype: user\n---\n", 'utf-8');
       writeIndex(memoryDir, '- [无描述](topics/no-desc.md) — 无描述\n');
 
       const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(0);
+      expect(snapshot.topics).toHaveLength(1);
+      expect(snapshot.topics[0].type).toBeUndefined();
       expect(diagnostic.invalidFrontmatter).toContain('no-desc.md');
     });
 
-    it('frontmatter 缺少 type', () => {
+    it('frontmatter 缺少 type 时使用索引元数据降级召回', () => {
       ensureTopicsDir(memoryDir);
       writeFileSync(join(memoryDir, 'topics', 'no-type.md'), "---\nname: 无类型\ndescription: 无类型\n---\n", 'utf-8');
       writeIndex(memoryDir, '- [无类型](topics/no-type.md) — 无类型\n');
 
       const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(0);
+      expect(snapshot.topics).toHaveLength(1);
+      expect(snapshot.topics[0].type).toBeUndefined();
       expect(diagnostic.invalidFrontmatter).toContain('no-type.md');
     });
 
-    it('frontmatter 为空块', () => {
+    it('frontmatter 为空块时使用索引元数据降级召回', () => {
       ensureTopicsDir(memoryDir);
       writeFileSync(join(memoryDir, 'topics', 'empty-fm.md'), "---\n---\n# 正文\n", 'utf-8');
       writeIndex(memoryDir, '- [空 frontmatter](topics/empty-fm.md) — 空\n');
 
       const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(0);
+      expect(snapshot.topics).toHaveLength(1);
+      expect(snapshot.topics[0].type).toBeUndefined();
       expect(diagnostic.invalidFrontmatter).toContain('empty-fm.md');
     });
   });
