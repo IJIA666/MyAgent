@@ -413,6 +413,7 @@ export class ToolRegistry implements ToolRegistryPort {
 /** 校验审批端口返回的是工具适配器定义的稳定 action id。 */
 function isApprovalActionId(value: string): value is ApprovalAction['type'] {
   return value === 'allowOnce'
+    || value === 'allowAndAddRules'
     || value === 'allowAndSetMode'
     || value === 'allowAndAddDirectories'
     || value === 'allowAndSetModeWithDirectories'
@@ -433,6 +434,14 @@ export function renderApprovalActionChoice(action: ApprovalAction): ApprovalChoi
         choiceId: 'allowOnce',
         label: '单次放行 (Allow Once)',
         description: '只允许当前这一次调用',
+      };
+    case 'allowAndAddRules':
+      return {
+        choiceId: 'allowAndAddRules',
+        label: '允许，并在本会话中不再询问',
+        description: `允许本次调用，并在当前会话放行：${action.rules
+          .map(rule => `${rule.ruleValue.toolName}(${rule.ruleValue.ruleContent ?? '*'})`)
+          .join(', ')}`,
       };
     case 'allowAndSetMode':
       return {

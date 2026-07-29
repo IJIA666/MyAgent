@@ -12,6 +12,7 @@ import type {
   NetworkResourceEvidence,
   PermissionIdentity,
   PermissionRequest,
+  PermissionRule,
   ResourceEvidence,
   ToolPermissionCheckResult,
   UnknownResourceEvidence,
@@ -244,6 +245,29 @@ function createCommandEvidences(
   }));
 }
 
+/** 将 Shell 分析器提供的安全建议转换为随会话结束清理的允许规则。 */
+function createSessionAllowRules(
+  runtimeToolName: ShellAuthorizationAdapterOptions['runtimeToolName'],
+  result: ToolPermissionCheckResult | undefined,
+): readonly PermissionRule[] {
+  // 显式 ask 规则表达“每次都问”，不能被一次审批悄悄改写为 allow。
+  if (result?.matchedRule?.ruleBehavior === 'ask') {
+    return [];
+  }
+  const suggestions = result?.ruleSuggestions ?? [];
+  return Object.freeze(
+    [...new Set(suggestions.map(suggestion => suggestion.trim()).filter(Boolean))]
+      .map(ruleContent => Object.freeze({
+        source: 'session' as const,
+        ruleBehavior: 'allow' as const,
+        ruleValue: Object.freeze({
+          toolName: runtimeToolName,
+          ruleContent,
+        }),
+      })),
+  );
+}
+
 /**
  * 将一次已完成的 Shell 分析投影为正式资源证据。
  *
@@ -297,8 +321,16 @@ export function createShellToolAuthorizationAdapter(
             provenance: 'tool-analyzed',
             channelTrust,
           }];
+      const sessionRules = createSessionAllowRules(options.runtimeToolName, context?.toolResult);
       const approvalOptions = Object.freeze<ApprovalAction[]>([
         { type: 'allowOnce' },
+        ...(sessionRules.length > 0
+          ? [{
+              type: 'allowAndAddRules' as const,
+              target: 'session' as const,
+              rules: sessionRules,
+            }]
+          : []),
         { type: 'deny' },
       ]);
       return {

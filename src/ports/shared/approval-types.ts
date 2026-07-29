@@ -9,6 +9,7 @@
  */
 export type ApprovalChoiceId =
   | 'allowOnce'
+  | 'allowAndAddRules'
   | 'allowAndSetMode'
   | 'allowAndAddDirectories'
   | 'allowAndSetModeWithDirectories'

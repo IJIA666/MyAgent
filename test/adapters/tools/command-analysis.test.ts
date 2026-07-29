@@ -219,6 +219,27 @@ describe('Shell 命令分析', () => {
     expect(readRedirect).toMatchObject({ parseStatus: 'parsed', sideEffect: 'sensitive-read', permission: 'ask' });
   });
 
+  // 与 Claude Code 一致：把输出丢到 $null 不会写入文件系统。
+  it.each([
+    'Get-ChildItem -Path . 2>$null',
+    'Get-ChildItem -Path . 2>${null}',
+  ])('PowerShell 空设备重定向保持只读：%s', async command => {
+    const analysis = await analyzeShellCommand(command, 'powershell');
+
+    expect(analysis).toMatchObject({
+      parseStatus: 'parsed',
+      sideEffect: 'read',
+      permission: 'allow',
+    });
+    expect(analysis.subcommands[0].redirections).toEqual([
+      expect.objectContaining({
+        target: expect.stringMatching(/^\$(?:null|\{null\})$/i),
+        sideEffect: 'read',
+        permission: 'allow',
+      }),
+    ]);
+  });
+
   it('重定向开关关闭时回退到旧行为', async () => {
     const disabled = {
       pipelines: false, conditionals: false, redirections: false,

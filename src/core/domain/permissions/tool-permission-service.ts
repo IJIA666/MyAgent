@@ -288,6 +288,7 @@ export class ToolPermissionService {
         runtimeToolName,
         isAuthorizedEditScope,
         permissionIdentity,
+        context.toolResult,
       );
     }
 
@@ -307,6 +308,7 @@ export class ToolPermissionService {
         runtimeToolName,
         isAuthorizedEditScope,
         permissionIdentity,
+        context.toolResult,
       );
     }
 
@@ -318,6 +320,7 @@ export class ToolPermissionService {
       runtimeToolName,
       isAuthorizedEditScope,
       permissionIdentity,
+      context.toolResult,
     );
   }
 
@@ -363,6 +366,7 @@ export class ToolPermissionService {
    * @param toolName - 运行时工具名
    * @param isEdit - 是否为普通编辑操作
    * @param identity - 稳定权限身份
+   * @param toolResult - 工具对当前输入完成的安全分析结果
    * @returns 最终决策
    */
   private async applyRequestMode(
@@ -371,6 +375,7 @@ export class ToolPermissionService {
     toolName: string,
     isEdit: boolean,
     identity: PermissionIdentity,
+    toolResult: ToolPermissionCheckResult | undefined,
   ): Promise<PermissionDecision> {
     if (decision.kind === 'deny' || !decision.overridable) return decision;
 
@@ -389,7 +394,13 @@ export class ToolPermissionService {
         return decision;
       }
       case 'plan': {
-        if (identity !== 'FileRead') {
+        const isVerifiedReadOnlyShell = (
+          identity === 'ShellPowerShell'
+          || identity === 'ShellBash'
+        )
+          && toolResult?.kind === 'allow'
+          && toolResult.evidence?.sideEffect === 'read';
+        if (identity !== 'FileRead' && !isVerifiedReadOnlyShell) {
           return {
             kind: 'deny',
             decisionReason: `plan 模式不允许 "${toolName}" (${identity})`,

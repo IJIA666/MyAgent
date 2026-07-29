@@ -18,8 +18,11 @@ import {
   copyPathAdapter,
 } from '../../../src/adapters/tools/permissions/file-tool-authorization.js';
 import { BROWSER_TOOL_AUTHORIZATION_ADAPTERS } from '../../../src/adapters/tools/permissions/browser-tool-authorization.js';
+import { createShellToolAuthorizationAdapter } from '../../../src/adapters/tools/permissions/shell-tool-authorization.js';
+import { analyzeShellCommand } from '../../../src/adapters/tools/impl/system/command-analysis/index.js';
 import { setBrowserPaths } from '../../../src/adapters/tools/impl/browser/browser-action.js';
 import { initWorkspace } from '../../../src/adapters/tools/impl/base.js';
+import type { ToolPermissionCheckResult } from '../../../src/core/domain/permissions/permission-types.js';
 
 describe('文件工具适配器', () => {
   describe('buildPermissionRequest', () => {
@@ -166,6 +169,97 @@ describe('checkRequest（适配器感知权限检查）', () => {
     const req = readFileAdapter.buildPermissionRequest({ targetPath: '/workspace/file.ts' });
     const result = await svc.checkRequest(req, state, { caller });
     expect(result.kind).toBe('allow');
+  });
+});
+
+describe('Shell 工具适配器', () => {
+  const caller = createTrustedCallContext('shell-authorization-adapter-test', 'interactive');
+  const adapter = createShellToolAuthorizationAdapter({
+    runtimeToolName: 'PowerShell',
+    shellKind: 'powershell',
+  });
+
+  /** 构造与原始命令绑定的工具候选，避免测试绕过真实 Shell 分析证据。 */
+  async function createToolResult(
+    command: string,
+    kind: 'allow' | 'ask',
+  ): Promise<ToolPermissionCheckResult> {
+    const analysis = await analyzeShellCommand(command, 'powershell');
+    const evidence = {
+      operationCategory: 'command-execute',
+      sideEffect: analysis.sideEffect,
+      riskReason: analysis.riskReason,
+      shellKind: 'powershell',
+      parseStatus: analysis.parseStatus,
+    } as const;
+    return kind === 'allow'
+      ? { kind, analysis, evidence, decisionReason: '已验证只读' }
+      : { kind, analysis, evidence, message: '需要确认', decisionReason: '存在写副作用' };
+  }
+
+  // Plan 只允许已经由 Shell 分析器证明为只读的命令。
+  it('plan 应允许已验证只读 PowerShell，并拒绝写候选', async () => {
+    initWorkspace(process.cwd());
+    const state = new PermissionSessionState({ mode: 'plan' });
+    const service = new ToolPermissionService({ ruleStore: state.getRuleStore() });
+    const readCommand = 'Get-Location';
+    const readResult = await createToolResult(readCommand, 'allow');
+    const readRequest = adapter.buildPermissionRequest(
+      { command: readCommand },
+      { caller, toolResult: readResult },
+    );
+
+    await expect(service.checkRequest(
+      readRequest,
+      state,
+      { caller, toolResult: readResult },
+    )).resolves.toMatchObject({ kind: 'allow' });
+
+    const writeCommand = 'Set-Content .\\plan-denied.txt value';
+    const writeResult = await createToolResult(writeCommand, 'ask');
+    const writeRequest = adapter.buildPermissionRequest(
+      { command: writeCommand },
+      { caller, toolResult: writeResult },
+    );
+    await expect(service.checkRequest(
+      writeRequest,
+      state,
+      { caller, toolResult: writeResult },
+    )).resolves.toMatchObject({ kind: 'deny', decisionSource: 'mode' });
+  });
+
+  // 只有工具分析器明确给出安全规则建议时，审批框才提供会话复用动作。
+  it('应把安全规则建议转换为会话允许动作', async () => {
+    const command = 'Get-ChildItem -DefinitelyUnsupported';
+    const analysis = await analyzeShellCommand(command, 'powershell');
+    const toolResult: ToolPermissionCheckResult = {
+      kind: 'ask',
+      message: '需要确认',
+      decisionReason: '参数未识别',
+      analysis,
+      ruleSuggestions: ['get-childitem *'],
+    };
+    const request = adapter.buildPermissionRequest(
+      { command },
+      { caller, toolResult },
+    );
+
+    expect(request.approvalOptions).toEqual([
+      { type: 'allowOnce' },
+      {
+        type: 'allowAndAddRules',
+        target: 'session',
+        rules: [{
+          source: 'session',
+          ruleBehavior: 'allow',
+          ruleValue: {
+            toolName: 'PowerShell',
+            ruleContent: 'get-childitem *',
+          },
+        }],
+      },
+      { type: 'deny' },
+    ]);
   });
 });
 

@@ -648,6 +648,12 @@ function approvalActionToUpdates(action: ApprovalAction): readonly PermissionUpd
     case 'allowOnce':
     case 'deny':
       return [];
+    case 'allowAndAddRules':
+      return [{
+        type: 'addRules',
+        target: action.target,
+        rules: action.rules,
+      }];
     case 'allowAndSetMode':
       return [{
         type: 'setMode',

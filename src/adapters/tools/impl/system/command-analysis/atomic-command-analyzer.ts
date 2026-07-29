@@ -23,6 +23,18 @@ interface AtomicEvidenceSummary {
   readonly reason: string;
 }
 
+/** 优先使用 PowerShell AST 参数，避免把重定向重新词法解析成动态参数。 */
+function collectAtomicArguments(
+  tokens: readonly string[],
+  syntax: Readonly<AtomicCommandSyntaxContext> | undefined,
+): readonly string[] {
+  const powerShellElements = syntax?.powershellCommand?.elements;
+  if (!powerShellElements) {
+    return tokens.slice(1);
+  }
+  return powerShellElements.slice(1).map(element => element.value ?? element.text);
+}
+
 /** 判断资源证据是否包含静态敏感读取路径。 */
 function hasSensitiveReadOperand(evidence: Readonly<AtomicCommandEvidence>): boolean {
   return evidence.resourceOperands.some(operand => (
@@ -76,7 +88,7 @@ export function analyzeAtomicCommand(
 ): CommandSegmentAnalysis {
   const tokens = tokenizeAtomicCommand(command, shellKind);
   const rawExecutable = syntax?.powershellCommand?.name ?? tokens[0] ?? '';
-  const arguments_ = tokens.slice(1);
+  const arguments_ = collectAtomicArguments(tokens, syntax);
   const evidence = analyzeAtomicCommandEvidence(rawExecutable, arguments_, shellKind, syntax);
   const decision = summarizeAtomicEvidence(evidence);
   return {

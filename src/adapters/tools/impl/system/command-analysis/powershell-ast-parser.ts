@@ -459,6 +459,12 @@ class PowerShellParserError extends Error {
   }
 }
 
+/** 判断重定向目标是否为 PowerShell 的空设备变量。 */
+function isNullRedirectionTarget(target: string | undefined): boolean {
+  const normalized = target?.replace(/\s+/gu, '').toLowerCase();
+  return normalized === '$null' || normalized === '${null}';
+}
+
 /** 将 PowerShell 重定向投影为保守证据。 */
 function parseRedirection(raw: string | RawPowerShellRedirection): CommandRedirectionAnalysis {
   const text = typeof raw === 'string' ? raw : typeof raw.text === 'string' ? raw.text : '';
@@ -466,13 +472,15 @@ function parseRedirection(raw: string | RawPowerShellRedirection): CommandRedire
   const match = text.trim().match(/^(\d*[*]?)(>>|>|<)\s*(.*)$/);
   const operator = match?.[2] ?? text.trim();
   const target = match?.[3]?.trim() || undefined;
-  if (isMerging) {
+  if (isMerging || isNullRedirectionTarget(target)) {
     return {
       operator,
       target,
       sideEffect: 'read',
       permission: 'allow',
-      reason: `检测到流合并重定向 ${text.trim()}`,
+      reason: isMerging
+        ? `检测到流合并重定向 ${text.trim()}`
+        : `检测到丢弃输出的空设备重定向 ${text.trim()}`,
     };
   }
   const isInput = operator === '<';

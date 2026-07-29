@@ -396,6 +396,14 @@ export type ResourceEvidence =
  */
 export type ApprovalAction =
   | { readonly type: 'allowOnce' }
+  | {
+      /** 允许当前调用，并把工具提供的安全规则加入指定权限层。 */
+      readonly type: 'allowAndAddRules';
+      /** 规则写入目标；Shell 默认使用 session，随会话结束清理。 */
+      readonly target: PermissionUpdateTarget;
+      /** 已由工具分析器生成的完整允许规则。 */
+      readonly rules: readonly PermissionRule[];
+    }
   | { readonly type: 'allowAndSetMode'; readonly mode: PermissionMode }
   | { readonly type: 'allowAndAddDirectories'; readonly directories: readonly string[] }
   | { readonly type: 'allowAndSetModeWithDirectories'; readonly mode: PermissionMode; readonly directories: readonly string[] }

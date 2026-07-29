@@ -170,8 +170,8 @@ describe('工具运行时契约', () => {
     }
   });
 
-  // 三次真实工具调用均需完成原生 AST 分析，验证 Allow once 不会偷偷生成可复用规则。
-  it('PowerShell 的 Allow once 只放行当前调用，不生成命令前缀规则', async () => {
+  // 显式 ask 表达“每次都问”，Allow once 不能改变该用户规则。
+  it('PowerShell 显式 ask 下的 Allow once 只放行当前调用', async () => {
     initWorkspace(process.cwd());
     const registry = new ToolRegistry();
     if (!registry.getTool('PowerShell')) {
@@ -187,7 +187,6 @@ describe('工具运行时契约', () => {
       ruleValue: { toolName: 'PowerShell', ruleContent: 'Get-Service -Name EventLog' },
     });
     expect(ruleStore.getMatchingRules('PowerShell', 'Get-Service -Name EventLog')).toHaveLength(1);
-    let approvalCount = 0;
     const observedChoiceIds: string[][] = [];
     const approvalHandler = vi.fn((
       id: string,
@@ -196,11 +195,10 @@ describe('工具运行时契约', () => {
       _message: string | undefined,
       choices: Array<{ choiceId: string }> | undefined,
     ) => {
-      approvalCount += 1;
       observedChoiceIds.push(choices?.map(choice => choice.choiceId) ?? []);
       setTimeout(() => {
         session.approvalInteraction.resolve(id, {
-          action: approvalCount <= 2 ? 'allowOnce' : 'deny',
+          action: 'allowOnce',
         });
       }, 0);
     });
@@ -216,14 +214,6 @@ describe('工具运行时契约', () => {
       expect(repeatedOutcome.effect.executionStarted).toBe(true);
       expect(approvalHandler).toHaveBeenCalledTimes(2);
       expect(ruleStore.getRules('session').some(rule => rule.ruleBehavior === 'allow')).toBe(false);
-
-      await expect(registry.callTool(
-        'PowerShell',
-        { command: 'Remove-Item dangerous-target.txt' },
-        session,
-      )).rejects.toThrow('审批拒绝');
-      expect(approvalHandler).toHaveBeenCalledTimes(3);
-      expect(observedChoiceIds[2]).toEqual(['allowOnce', 'deny']);
     } finally {
       await registry.close();
       // Registry 关闭不得替会话销毁其规则；会话结束时由状态所有者清理。
@@ -233,8 +223,8 @@ describe('工具运行时契约', () => {
     }
   }, 20_000);
 
-  // Shell 尚未有正式规则动作适配器时，审批不得从命令文本猜测持久规则。
-  it('PowerShell 复合命令审批只提供单次放行与拒绝', async () => {
+  // 选择会话复用后，后续匹配安全前缀的命令应直接命中 allow 规则。
+  it('PowerShell 审批可安装会话规则并跳过后续同前缀询问', async () => {
     initWorkspace(process.cwd());
     const registry = new ToolRegistry();
     if (!registry.getTool('PowerShell')) {
@@ -243,24 +233,48 @@ describe('工具运行时契约', () => {
     }
     const session = new SessionContext('tool-runtime-visible-rule');
     session.setPermissionMode('default');
+    const ruleStore = session.getPermissionSessionState().getRuleStore();
+    let approvalCount = 0;
     let observedChoices: ApprovalChoice[] = [];
     session.approvalInteraction.registerApprovalHandler((id, _toolCall, _prefix, _message, choices) => {
+      approvalCount += 1;
       observedChoices = choices ?? [];
-      session.approvalInteraction.resolve(id, { action: 'deny' });
+      session.approvalInteraction.resolve(id, { action: 'allowAndAddRules' });
     });
 
     try {
-      await expect(registry.callTool('PowerShell', {
-        command: 'vssadmin list shadowstorage /for=c: | Select-String "Used"',
-      }, session)).rejects.toThrow('审批拒绝');
+      const firstOutcome = await registry.callTool('PowerShell', {
+        command: 'Get-ChildItem -DefinitelyUnsupported',
+      }, session);
+      expect(firstOutcome.effect.executionStarted).toBe(true);
 
       expect(observedChoices.map(choice => choice.choiceId)).toEqual([
         'allowOnce',
+        'allowAndAddRules',
         'deny',
       ]);
-      expect(observedChoices.some(choice => choice.choiceId === 'persistent')).toBe(false);
+      expect(observedChoices[1]).toMatchObject({
+        label: '允许，并在本会话中不再询问',
+      });
+      expect(ruleStore.getRules('session')).toContainEqual({
+        source: 'session',
+        ruleBehavior: 'allow',
+        ruleValue: {
+          toolName: 'PowerShell',
+          ruleContent: 'get-childitem *',
+        },
+      });
+
+      const repeatedOutcome = await registry.callTool('PowerShell', {
+        command: 'Get-ChildItem -AnotherUnsupported',
+      }, session);
+      expect(repeatedOutcome.effect.executionStarted).toBe(true);
+      expect(approvalCount).toBe(1);
     } finally {
       await registry.close();
+      // 会话规则由会话所有者清理，不由 Registry 越权销毁。
+      expect(ruleStore.getRules('session')).toHaveLength(1);
+      ruleStore.clearSessionRules();
     }
   }, 15_000);
 });
