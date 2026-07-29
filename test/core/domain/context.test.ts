@@ -111,8 +111,8 @@ describe('SessionContext Token & Hash Tests', () => {
   });
 
   it('应该在 waitApproval 中保留 persistent 决策供调用方继续选择范围', async () => {
-    context.approvalService.setBypassMode(false);
     const approvalId = 'approval-persistent-001';
+    context.approvalInteraction.registerApprovalHandler(() => undefined);
     const pending = context.waitApproval(
       approvalId,
       { name: 'Bash', arguments: { command: 'git status' } },
@@ -120,7 +120,7 @@ describe('SessionContext Token & Hash Tests', () => {
       '测试持久化审批'
     );
 
-    context.approvalService.resolve(approvalId, { action: 'persistent' });
+    context.approvalInteraction.resolve(approvalId, { action: 'persistent' });
     const result = await pending;
 
     expect(result.action).toBe('persistent');

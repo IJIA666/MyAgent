@@ -9,6 +9,7 @@
 import type { ChatMessage } from '../../../../ports/driven/llm/LlmPort.js';
 import type { ApiUsage, ContextTokenUsage } from '../../../../ports/driven/llm/TokenEstimatorPort.js';
 import { theme } from './theme.js';
+import { getUserPermissionModeLabel } from '../../../../core/domain/permissions/permission-types.js';
 
 const DEFAULT_RENDER_WIDTH = 88;
 const MIN_RENDER_WIDTH = 56;
@@ -69,7 +70,7 @@ export function renderSessionHeader(modelName: string, permissionMode: string, s
   const shortSessionId = truncateText(sessionId, 20);
   console.log(theme.brand(`┌${rule('─', width - 2)}┐`));
   console.log(theme.brand(frameLine('MyAgent CLI', width)));
-  console.log(theme.info(frameLine(`model: ${truncateText(modelName, 28)}  mode: ${permissionMode}  session: ${shortSessionId}`, width)));
+  console.log(theme.info(frameLine(`model: ${truncateText(modelName, 28)}  mode: ${getUserPermissionModeLabel(permissionMode)}  session: ${shortSessionId}`, width)));
   console.log(theme.brand(`└${rule('─', width - 2)}┘`));
   console.log(theme.dim('输入 / 打开命令菜单，输入 exit 或 quit 结束会话。双击 Esc 可中断或回滚。'));
   console.log();
@@ -83,7 +84,7 @@ export function renderSessionHeader(modelName: string, permissionMode: string, s
  * @returns 可直接传给 readline 的提示符文本
  */
 export function renderPromptPrefix(modelName: string, permissionMode: string): string {
-  return `${theme.brand('myagent')} ${theme.dim(`[${modelName} | ${permissionMode}]`)} ${theme.highlight('›')} `;
+  return `${theme.brand('myagent')} ${theme.dim(`[${modelName} | ${getUserPermissionModeLabel(permissionMode)}]`)} ${theme.highlight('›')} `;
 }
 
 /**
@@ -121,9 +122,19 @@ export function renderToolCallStart(functionName: string, functionArgs: unknown)
  *
  * @param functionName - 工具名称
  * @param result - 工具返回文本
+ * @param status - 工具调用成功或失败的显式状态
  * @returns 工具调用完成提示文本
  */
-export function renderToolCallResult(functionName: string, result: string): string {
+export function renderToolCallResult(
+  functionName: string,
+  result: string,
+  status: 'success' | 'error',
+): string {
+  if (status === 'error') {
+    return theme.warning(
+      `[反馈] 工具 "${functionName}" 调用失败，错误结果已返回给 Agent。`,
+    );
+  }
   return theme.dim(`[反馈] 工具 "${functionName}" 执行完毕，返回了 ${result.length} 字节的数据。`);
 }
 

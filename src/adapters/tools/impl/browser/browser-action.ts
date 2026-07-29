@@ -9,6 +9,10 @@ import { existsSync, rmSync } from 'fs';
 import readline from 'readline';
 import type { NativeTool } from '../../tool-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
+import {
+  createCredentialEnvironment,
+  createCredentialProfile,
+} from '../../../../core/domain/security/credential-profile.js';
 
 /**
  * 从 ToolExecutionContext 或原始 SessionEventPort 中提取 sessionContext。
@@ -50,7 +54,7 @@ function getBrowserDir(): string {
 }
 
 /** 获取已由组合根注入的截图目录，禁止回退 workspace。 */
-function getScreenshotsDir(): string {
+export function getBrowserScreenshotsDir(): string {
   if (!_screenshotsDir) {
     throw new Error('截图目录尚未通过 ApplicationPaths 注入');
   }
@@ -163,7 +167,13 @@ export class BrowserSession {
       const context = await chromium.launchPersistentContext(userDataDir, {
         executablePath,
         headless: isHeadless,
-        viewport: { width: 1280, height: 800 }
+        viewport: { width: 1280, height: 800 },
+        env: {
+          ...createCredentialEnvironment(
+            createCredentialProfile('browser'),
+            runtimeEnv,
+          ),
+        },
       });
       
       const page = context.pages()[0] || await context.newPage();
@@ -863,7 +873,7 @@ export class BrowserVisionTool implements NativeTool {
         operationCategory: 'browser-screenshot',
         sideEffect: 'write',
         riskReason: '将网页截图写入本地目录',
-        resources: [{ kind: 'directory-scope', access: 'write', normalizedPath: getScreenshotsDir() }],
+        resources: [],
       },
     };
   }
@@ -880,7 +890,7 @@ export class BrowserVisionTool implements NativeTool {
     const annotate = typeof args.annotate === 'boolean' ? args.annotate : false;
 
     // 建立专用的临时截图存放目录
-    const screenshotsDir = getScreenshotsDir();
+    const screenshotsDir = getBrowserScreenshotsDir();
     const { mkdirSync, existsSync } = await import('fs');
     if (!existsSync(screenshotsDir)) {
       mkdirSync(screenshotsDir, { recursive: true });

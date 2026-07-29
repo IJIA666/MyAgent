@@ -5,6 +5,11 @@
  */
 
 import { getRuntimeEnv } from './env.js';
+import {
+  BASE_PROCESS_ENV_VARS,
+  createCredentialEnvironment,
+  createCredentialProfile,
+} from '../core/domain/security/credential-profile.js';
 
 // ============================================================================
 // 子进程环境变量白名单
@@ -15,34 +20,7 @@ import { getRuntimeEnv } from './env.js';
  * 使用严格白名单策略，仅允许操作系统级的基础变量通过，
  * 杜绝 API Key、Token 等敏感凭据的意外泄露。
  */
-export const SAFE_ENV_WHITELIST: ReadonlyArray<string> = [
-  // 跨平台通用
-  'PATH',
-  'HOME',
-  'USER',
-  'SHELL',
-  'LANG',
-  'LC_ALL',
-  'LC_CTYPE',
-  // Windows 专用
-  'PATHEXT',
-  'USERPROFILE',
-  'APPDATA',
-  'LOCALAPPDATA',
-  'TEMP',
-  'TMP',
-  'SystemRoot',
-  'HOMEDRIVE',
-  'HOMEPATH',
-  'ProgramData',
-  'ProgramFiles',
-  'ProgramFiles(x86)',
-  'CommonProgramFiles',
-  'ComSpec',
-  // 编辑器/终端相关（MCP Server 可能依赖）
-  'TERM',
-  'COLORTERM',
-];
+export const SAFE_ENV_WHITELIST: ReadonlyArray<string> = BASE_PROCESS_ENV_VARS;
 
 /**
  * 构建 MCP 子进程的安全环境变量集。
@@ -58,34 +36,16 @@ export const SAFE_ENV_WHITELIST: ReadonlyArray<string> = [
  * @returns 适用于 StdioClientTransport 的安全环境变量对象
  */
 export function buildSubprocessEnv(userEnv?: Record<string, string>): Record<string, string> {
-  const env: Record<string, string> = {};
   const runtimeEnv = getRuntimeEnv();
-
-  // 1. 仅提取白名单中的系统基础变量
-  for (const key of SAFE_ENV_WHITELIST) {
-    const value = runtimeEnv[key];
-    if (value !== undefined) {
-      env[key] = value;
-    }
-  }
-
-  // 同时允许 XDG_ 前缀的 Linux 标准目录变量通过。
-  for (const [key, value] of Object.entries(runtimeEnv)) {
-    if (key.startsWith('XDG_') && value !== undefined) {
-      env[key] = value;
-    }
-  }
-
-  // 2. 强制注入 Python 编码设置（参照 tinypace-ai-desktop 的实践经验）
-  env['PYTHONIOENCODING'] = 'utf-8';
-  env['PYTHONUTF8'] = '1';
-
-  // 3. 合并用户自定义环境变量（最高优先级，可覆盖上述任意值）
-  if (userEnv) {
-    for (const [key, value] of Object.entries(userEnv)) {
-      env[key] = value;
-    }
-  }
-
-  return env;
+  return {
+    ...createCredentialEnvironment(
+      createCredentialProfile('mcp-server'),
+      runtimeEnv,
+      {
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUTF8: '1',
+        ...userEnv,
+      },
+    ),
+  };
 }

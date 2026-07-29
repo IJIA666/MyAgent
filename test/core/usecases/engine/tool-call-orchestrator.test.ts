@@ -14,7 +14,6 @@ import * as os from 'os';
 import { ToolCallOrchestrator } from '../../../../src/core/usecases/engine/tool-call-orchestrator.js';
 import { ToolDispatcher } from '../../../../src/core/usecases/engine/ToolDispatcher.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
-import { SecurityService } from '../../../../src/core/usecases/security/SecurityService.js';
 import type { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
 import type { PluginRegistry } from '../../../../src/core/usecases/plugins/plugin-registry.js';
 import type { AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
@@ -28,7 +27,6 @@ describe('ToolCallOrchestrator', () => {
   let tempDir: string;
 
   beforeEach(() => {
-    SecurityService.resetInstance();
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-tco-test-'));
     context = new SessionContext('test-tco-session');
     context.isProcessing = false;
@@ -72,7 +70,6 @@ describe('ToolCallOrchestrator', () => {
   });
 
   afterEach(() => {
-    SecurityService.resetInstance();
     if (tempDir && fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

@@ -72,6 +72,7 @@ export function createMockAppConfig(custom?: Partial<AppConfig>): AppConfig {
       auditRetentionSessions: 20,
     },
     ...custom,
+    autoMemoryEnabled: custom?.autoMemoryEnabled ?? true,
     workspace,
     applicationPaths,
     settingsRepository,

@@ -1,57 +1,44 @@
-## 新增需求
+## Purpose
 
-### 需求: 外部 MCP 工具必须进入统一策略入口
+定义外部 MCP 工具进入统一授权入口时的身份、证据和审批边界。该规范确保外部声明只能作为不可信风险证据，不能替代宿主验证，也不能生成超出精确调用的可复用授权。
+## Requirements
+### Requirement: External Tools Use the Unified Authorization Request
 
-系统必须保留外部 MCP 工具所属 server 和受支持的 annotations 字段，使其在 BeforeTool 阶段能够被策略端口识别，而不是作为来源不明的工具处理；端口契约不得暴露具体 MCP SDK 类型。
+MCP 和其他外部工具 MUST 通过 ToolCatalog 的外部权限适配器进入同一 PermissionSessionState、host cap、审批和执行 grant 流程。请求 MUST 绑定 server、工具、参数摘要、caller 和当前 descriptor version。
 
-#### 场景: 评估已注册 MCP 工具
+#### Scenario: An MCP tool is called
 
-- **WHEN** 模型调用当前 MCP 工具目录中已注册的外部工具
-- **THEN** 策略适配器必须返回 `status: 'suspend'`
-- **THEN** 安全操作必须标记为 `external-tool`，并在摘要中包含 server 和工具名
+- **WHEN** 模型调用当前 descriptor 中存在的 MCP 工具
+- **THEN** 权限请求 MUST 包含 server/tool identity、参数摘要、annotations provenance 和 caller trust
+- **THEN** 最终执行 MUST 使用同一不可变请求快照
 
-#### 场景: MCP 工具已从目录移除
+#### Scenario: A descriptor changes after approval
 
-- **WHEN** MCP 重连、刷新或关闭后某工具不再存在于当前描述缓存
-- **THEN** 后续对该工具的策略评估必须返回 `status: 'deny'`
-- **THEN** 不得使用刷新前的陈旧 descriptor 创建审批请求
+- **WHEN** MCP descriptor 在批准后、执行前刷新或移除
+- **THEN** 原执行 grant MUST 失效
+- **THEN** 远端工具 MUST NOT 被调用
 
-### 需求: MCP annotations 只能用于风险提示
+### Requirement: MCP Annotations Are Untrusted Evidence
 
-系统必须把 MCP annotations 视为不可信提示，不得据此独立执行自动放行或扩大授权范围。
+`readOnlyHint`、`destructiveHint`、`openWorldHint` 等 annotations MUST 只形成 `external-claimed` 证据和提示，不能绕过 host policy、产生路径授权或独立自动 allow。
 
-#### 场景: 外部工具声明只读
+#### Scenario: A server claims read-only
 
-- **WHEN** 外部 MCP 工具声明 `readOnlyHint: true` 或 `destructiveHint: false`
-- **THEN** 策略结果仍必须为 `status: 'suspend'`
-- **THEN** annotations 只能改变审批提示文本
+- **WHEN** MCP server 声明 `readOnlyHint: true`
+- **THEN** 系统 MAY 在提示中展示该声明
+- **THEN** 系统 MUST 继续按主机验证能力和当前模式裁决
 
-#### 场景: 外部工具声明破坏性或开放世界访问
+### Requirement: Unverified External Resources Use Exact-Call Approval
 
-- **WHEN** annotations 包含 `destructiveHint: true` 或 `openWorldHint: true`
-- **THEN** 审批提示必须说明对应风险
-- **THEN** 不得由 annotations 生成路径资源、会话授权或持久授权
+当宿主无法可信解析外部工具的资源和副作用时，可复用授权 MUST 限制为当前精确调用。一次性 grant MUST 绑定 tool、server、参数摘要、caller、descriptor version 和 state version。
 
-### 需求: 无可信资源提取器的 MCP 工具只能单次授权
+#### Scenario: The user approves an unknown external call
 
-外部 MCP 工具在没有宿主侧可信资源提取器时，用户审批选项必须限制为 call 和 deny。
+- **WHEN** 外部工具资源无法由宿主验证，用户选择 Allow once
+- **THEN** 系统 MAY 为精确调用签发一次性 grant
+- **THEN** 空资源 MUST NOT 表示任意路径、账号或网络授权
 
-#### 场景: 用户批准一次外部工具调用
+#### Scenario: A reusable external rule is proposed
 
-- **WHEN** 用户选择 call 放行已挂起的 MCP 工具
-- **THEN** 系统必须注册绑定本次 toolCallId、toolName 和参数摘要的一次性能力
-- **THEN** 外部 MCP 执行边界必须在调用远端 server 前领取该能力；能力缺失、已领取或参数摘要不匹配时必须拒绝执行
-- **THEN** resources 为空不得被解释为任意路径授权
-- **THEN** 不得写入 session 或 persistent 白名单
-
-#### 场景: 空资源能力成功领取
-
-- **WHEN** 外部 MCP 的一次性能力已注册且 resources 为空数组
-- **THEN** `claimCapability()` 返回空数组必须表示精确调用授权有效，而不是授权缺失
-- **THEN** 远端调用完成、失败或中止后，编排器必须消费该能力
-
-#### 场景: MCP server 没有额外信任配置
-
-- **WHEN** MCP server 按现有配置被启用，但没有额外的信任等级字段
-- **THEN** 工具仍可进入 suspend 审批流程
-- **THEN** 系统不得因为缺少本变更未定义的 trust 配置而直接禁用现有 MCP 工具
+- **WHEN** 工具没有宿主侧可信适配器却尝试建议 session 或 persistent 广泛授权
+- **THEN** 系统 MUST 丢弃该建议

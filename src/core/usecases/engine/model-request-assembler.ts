@@ -70,6 +70,7 @@ export class ModelRequestAssembler {
     contextBudgetCoordinator: ContextBudgetCoordinator,
     memorySnapshotProvider: () => MemorySnapshot = () => Object.freeze({
       memoryDir: '',
+      content: '',
       topics: Object.freeze([]),
       isTruncated: false,
       isEmpty: true,
@@ -338,14 +339,10 @@ function buildMemoryProjection(snapshot: MemorySnapshot): string {
   lines.push(`<memory-directory>${escapeMemoryProjectionText(snapshot.memoryDir)}</memory-directory>`);
   lines.push('<memory-index>');
 
-  if (snapshot.topics.length === 0) {
+  if (snapshot.content.trim().length === 0) {
     lines.push('当前索引为空。需要保存稳定信息时，可在 memory-directory 指向的目录中创建 MEMORY.md 和 topics/*.md。');
   } else {
-    for (const topic of snapshot.topics) {
-      lines.push(
-        `- [${escapeMemoryProjectionText(topic.title)}](topics/${topic.slug}.md) — ${escapeMemoryProjectionText(topic.indexDescription)}`,
-      );
-    }
+    lines.push(escapeMemoryProjectionText(snapshot.content));
   }
 
   if (snapshot.isTruncated) {

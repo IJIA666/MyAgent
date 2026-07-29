@@ -6,3 +6,7 @@ export * from './tools.js';
 export * from './toolRegistry.js';
 export * from './PermissionSettingsStore.js';
 export * from './mcp-client.js';
+export * from './permissions/browser-tool-authorization.js';
+export * from './permissions/file-tool-authorization.js';
+export * from './permissions/mcp-tool-authorization.js';
+export * from './permissions/shell-tool-authorization.js';

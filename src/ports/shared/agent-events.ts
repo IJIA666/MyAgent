@@ -14,7 +14,13 @@ export type AgentEvent =
   | { type: 'thinking'; content: string }
   | { type: 'content'; content: string }
   | { type: 'tool_call_start'; functionName: string; functionArgs: Record<string, unknown> }
-  | { type: 'tool_call_result'; functionName: string; result: string }
+  | {
+      type: 'tool_call_result';
+      functionName: string;
+      result: string;
+      /** 工具调用是否成功；UI 不得从本地化错误文本猜测执行结果。 */
+      status: 'success' | 'error';
+    }
   | { type: 'interaction_request'; interaction: PendingInteraction }
   | { type: 'error'; message: string; cause?: unknown }
   | {

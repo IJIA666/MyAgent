@@ -4,9 +4,6 @@
  * 适配为 ToolPermissionService 的统一输入格式，确保 tail call 重新经过权限服务。
  */
 
-import type { ToolPermissionService, AuthorizedExecutionContext } from './tool-permission-service.js';
-import type { PermissionMode, PermissionDecision } from './permission-types.js';
-
 // ── OpenAI Tool Call 类型 ──
 
 /**
@@ -70,76 +67,6 @@ export function adaptOpenAiToolCall(call: OpenAiToolCall): AdaptedToolCall {
     args: parsedArgs,
     rawCall: call,
   };
-}
-
-/**
- * 将适配后的工具调用送入 ToolPermissionService 执行权限检查。
- * 确保 tail call（模型自动产生连续工具调用）重新经过权限服务。
- *
- * @param adaptedCall - 适配后的工具调用
- * @param service - 权限服务实例
- * @param mode - 当前权限模式
- * @returns 权限决策结果
- */
-export async function checkOpenAiToolCall(
-  adaptedCall: AdaptedToolCall,
-  service: ToolPermissionService,
-  mode: PermissionMode,
-): Promise<PermissionDecision> {
-  return service.checkPermissions(
-    adaptedCall.toolName,
-    adaptedCall.args,
-    mode,
-  );
-}
-
-/**
- * 批量检查多个 OpenAI tool call 的权限。
- * tail call 场景下，上一轮已通过权限检查的调用仍需重新检查。
- *
- * @param calls - OpenAI tool call 数组
- * @param service - 权限服务实例
- * @param mode - 当前权限模式
- * @returns 每个 tool call 对应的权限决策
- */
-export async function batchCheckOpenAiToolCalls(
-  calls: OpenAiToolCall[],
-  service: ToolPermissionService,
-  mode: PermissionMode,
-): Promise<Map<string, PermissionDecision>> {
-  const results = new Map<string, PermissionDecision>();
-
-  for (const call of calls) {
-    const adapted = adaptOpenAiToolCall(call);
-    const decision = await checkOpenAiToolCall(adapted, service, mode);
-    results.set(call.id, decision);
-  }
-
-  return results;
-}
-
-/**
- * 从权限决策中提取已授权的执行上下文。
- * 只对 `allow` 决策生成上下文；`ask` 和 `deny` 返回 null。
- *
- * @param adaptedCall - 适配后的工具调用
- * @param decision - 权限决策
- * @param service - 权限服务实例
- * @returns 已授权的执行上下文，或 null
- */
-export function extractAuthorizedContext(
-  adaptedCall: AdaptedToolCall,
-  decision: PermissionDecision,
-  service: ToolPermissionService,
-): AuthorizedExecutionContext | null {
-  if (decision.kind !== 'allow') {
-    return null;
-  }
-  return service.createAuthorizedContext(
-    adaptedCall.toolName,
-    adaptedCall.args,
-    decision,
-  );
 }
 
 /**

@@ -10,10 +10,7 @@ import { initWorkspace } from '../../../src/adapters/tools/tools.js';
 import {
   BashTool,
   PowerShellTool,
-  extractSafePrefix,
-  setPermissionMode,
-  savePermissionMode,
-  loadPermissionMode
+  extractSafePrefix
 } from '../../../src/adapters/tools/impl/system/terminal.js';
 import { analyzeShellCommand } from '../../../src/adapters/tools/impl/system/command-analysis/index.js';
 import { validateCommand, validateCwd, unboxNestedCommand, detectAdvisoryWarnings } from '../../../src/adapters/tools/impl/system/terminal-guard.js';
@@ -40,10 +37,6 @@ describe('Terminal Tool 单元测试', () => {
   });
 
   beforeEach(() => {
-    // 每次测试前，将工作模式重置为 YOLO，防止测试由于人工交互阻断卡死
-    setPermissionMode('bypassPermissions');
-    savePermissionMode('bypassPermissions');
-
     // 按当前平台实例化对应的公开 Shell 工具
     executeCommandToolInstance = process.platform === 'win32'
       ? new PowerShellTool()
@@ -93,20 +86,7 @@ describe('Terminal Tool 单元测试', () => {
     expect(() => validateCwd(mockMemoryDir)).toThrow('Operation not permitted');
   });
 
-  test('4. 工作模式持久化配置测试', () => {
-    // 工作模式存取测试
-    savePermissionMode('default');
-    expect(loadPermissionMode()).toBe('default');
-
-    savePermissionMode('auto');
-    expect(loadPermissionMode()).toBe('auto');
-
-  });
-
   test('5. YOLO 模式下命令的执行及首尾截断防爆测试', async () => {
-    // 设置模式为 YOLO 绕过人工确认
-    setPermissionMode('bypassPermissions');
-
     // 执行一个简单的 echo 指令，由于在 Windows 环境下可能没有全局 echo，
     // 我们使用 node.exe 执行一段 JS 脚本作为跨平台的执行测试，确保子进程能正常跑起来
     const result = await executeCommandToolInstance.execute({ command: 'node -e "console.log(\'LineA\'); console.log(\'LineB\')"' });
@@ -118,7 +98,6 @@ describe('Terminal Tool 单元测试', () => {
   });
 
   test('6. 启动观察期 200ms 后台驻留捕获测试', async () => {
-    setPermissionMode('bypassPermissions');
 
     // 场景 A: 在 200ms 内立即报错退出的命令，executeCommandTool 应同步返回错误结果，而不是后台 ID 提示
     // 使用确定性非零退出进程的同步路径，等待真实退出后断言失败，避免固定观察窗口受平台负载影响。
@@ -301,10 +280,10 @@ describe('ShellTool.checkPermissions', () => {
     expect(result.kind).toBe('allow');
     expect(result.evidence?.sideEffect).toBe('read');
     expect(result.evidence?.resources).toContainEqual(expect.objectContaining({
-      kind: 'directory',
+      kind: 'directory-scope',
       operation: 'read',
       scope: 'workspace',
-      certainty: 'exact',
+      provenance: 'tool-analyzed',
     }));
   });
 

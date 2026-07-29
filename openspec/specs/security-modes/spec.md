@@ -1,6 +1,8 @@
-## 新增需求
+## Purpose
 
-### 需求: 权限持久化与静态前缀提取 (Always Allow & Static Prefix Abstraction)
+定义面向用户的权限模式、规则持久化和会话隔离语义。该规范要求模式切换只影响预期作用域，并让规则来源、危险高级模式和未来默认配置具有明确、可解释的安全边界。
+## Requirements
+### Requirement: 权限持久化与静态前缀提取 (Always Allow & Static Prefix Abstraction)
 当统一权限服务对终端命令产生 `ask` 决策时，系统 MUST 基于解包后的真实子命令生成安全、有限的规则建议。用户选择”始终放行”后，系统 MUST 将对应 `PermissionRule` 原子写入项目 `.myagent/settings.local.json` 的 `permission.allow`，并保留同文件中的其他配置字段。系统不得读取、创建或初始化 `.agent/allowed_commands.json`。
 
 - 系统不得自动生成只包含根命令的宽泛通配规则。
@@ -33,22 +35,49 @@
 - **WHEN** workspace 中存在 `.agent/allowed_commands.json`，但新 settings 中没有对应规则
 - **THEN** 系统不得加载或迁移该白名单，也不得自动写入预设 allow 规则
 
-### 需求: 动态安全工作模式 (Work Modes)
+### Requirement: User-Facing Permission Mode Labels
 
-> ❌ 已删除 — 由 Claude PermissionMode 同构实现替代。旧 `Safe`、`Auto`、`YOLO`、`Plan` 枚举同时承载阶段和审批语义，已在 `claude-permission-model` 变更中移除。
+普通权限模式选择器 MUST 只显示 `Manual`、`Accept edits on`、`Plan`。内部 id MAY 保持 `default`、`acceptEdits`、`plan`，但普通帮助、状态、审批成功提示和错误信息 MUST 使用用户可见标签。
 
-**Migration:** 迁移到 `PermissionMode`（`default`、`acceptEdits`、`plan`、`auto`、`dontAsk`、`bypassPermissions`）与统一权限服务。
+#### Scenario: The common picker is opened
 
-### 需求: Session-Scoped Permission Modes
+- **WHEN** 用户打开普通模式选择器
+- **THEN** 系统 MUST 只显示 Manual、Accept edits on 和 Plan
+- **THEN** Auto、dontAsk、bypassPermissions 和内部 id MUST NOT 出现在该列表
 
-每个会话 MUST 独立保存 `PermissionMode`，模式切换 MUST 通过统一模式管理器执行，不得使用进程级共享模式状态。
+#### Scenario: A mode transition succeeds
 
-#### 场景: One session mode does not affect another session
+- **WHEN** 会话从 Manual 切换到 Accept edits on
+- **THEN** 成功提示 MUST 显示 `Manual → Accept edits on`
+- **THEN** 提示 MUST NOT 显示 `default → acceptEdits`
 
-- **WHEN** 会话 A 切换到 `bypassPermissions`，会话 B 保持 `default`
-- **THEN** 会话 B 的工具调用 MUST 继续按 `default` 评估
+### Requirement: Session Mode and Future Default Are Separate
 
-#### 场景: Mode behavior follows Claude semantics
+普通模式切换 MUST 只修改当前 `PermissionSessionState`。未来新会话默认模式 MUST 只能通过显式设置管理动作修改，并持久化到用户选择的可写 settings 来源。
 
-- **WHEN** 调用分别处于 `default`、`acceptEdits`、`plan`、`auto`、`dontAsk` 或 `bypassPermissions`
-- **THEN** 系统 MUST 按对应 Claude 权限行为产生最终决策
+#### Scenario: Workmode changes the current session
+
+- **WHEN** 用户在会话内通过 `/workmode` 选择 Plan
+- **THEN** 当前会话 MUST 进入 Plan
+- **THEN** `permission.defaultMode` MUST 保持不变
+
+#### Scenario: The user changes the future default
+
+- **WHEN** 用户通过设置或 `/permissions` 明确选择修改未来默认模式及目标来源
+- **THEN** 系统 MUST 原子持久化该默认值
+- **THEN** 当前会话模式 MUST NOT 被隐式改变
+
+### Requirement: Plan Mode Restores Its Actual Previous Mode
+
+进入 Plan MUST 保存当前 `prePlanMode`；退出 Plan MUST 恢复该模式并清空前态，不得固定回到 Manual。
+
+#### Scenario: Plan entered from Accept edits on
+
+- **WHEN** 当前会话从 Accept edits on 进入 Plan 后退出
+- **THEN** 系统 MUST 恢复 Accept edits on
+
+#### Scenario: A restored mode is no longer permitted
+
+- **WHEN** host policy 在 Plan 期间收紧，导致 `prePlanMode` 不再允许
+- **THEN** 系统 MUST 回退到 Manual
+- **THEN** 系统 MUST 记录可解释的收紧原因

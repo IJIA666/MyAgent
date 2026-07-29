@@ -7,6 +7,11 @@
  */
 
 import { spawn, ChildProcess, execSync } from 'child_process';
+import {
+  createCredentialEnvironment,
+  createCredentialProfile,
+  type CredentialAudience,
+} from '../../../../core/domain/security/credential-profile.js';
 import { resolve, dirname } from 'path';
 import { existsSync, createWriteStream, WriteStream, statSync, openSync, readSync, closeSync } from 'fs';
 import { tmpdir } from 'os';
@@ -282,6 +287,8 @@ export async function runCommandEngine(
       output?: string;
     }) => void;
     signal?: AbortSignal;
+    /** 已授权 ExecutionPlan 绑定的凭据受众，工具参数不能覆盖。 */
+    credentialAudience?: Extract<CredentialAudience, 'terminal' | 'sub-agent'>;
   },
   sessionId?: string,
   plan?: ShellExecutionPlan,
@@ -446,7 +453,12 @@ export async function runCommandEngine(
   // 执行子进程的 spawn
   const child = spawn(exe, remainingArgs, {
     cwd: targetCwd,
-    env: { ...getRuntimeEnv() },
+    env: {
+      ...createCredentialEnvironment(
+        createCredentialProfile(options?.credentialAudience ?? 'terminal'),
+        getRuntimeEnv(),
+      ),
+    },
     shell: false
   });
 

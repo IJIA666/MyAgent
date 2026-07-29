@@ -5,23 +5,39 @@ import { ToolCatalog } from './ToolCatalog.js';
 import { ToolExecutor } from './ToolExecutor.js';
 import { ToolCallGateway } from './ToolCallGateway.js';
 import { PermissionSettingsStore } from './PermissionSettingsStore.js';
-import { PermissionRuleStore } from '../../core/domain/permissions/rule-store.js';
 import { ToolPermissionService } from '../../core/domain/permissions/tool-permission-service.js';
+import { PermissionSessionState } from '../../core/domain/permissions/permission-session-state.js';
 import { PermissionPromptAdapter } from '../../core/usecases/plugins/PermissionPromptAdapter.js';
-import type { ToolPermissionCheckResult, ToolPermissionEvidence } from '../../core/domain/permissions/permission-types.js';
+import type {
+  PermissionUpdate,
+  ToolPermissionCheckResult,
+} from '../../core/domain/permissions/permission-types.js';
+import { getUserPermissionModeLabel } from '../../core/domain/permissions/permission-types.js';
+import type {
+  PermissionSessionSnapshot,
+} from '../../core/domain/permissions/permission-session-state.js';
 import { isToolLifecycleError } from '../../core/domain/tool-lifecycle-error.js';
-import { ToolAccessMetadataProvider } from './ToolAccessMetadataProvider.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { ApprovalChoice } from '../../ports/shared/approval-types.js';
-import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabilityPort.js';
 import type { EventNotificationPort } from '../../ports/driven/session/EventNotificationPort.js';
 import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import type { ToolExecutionLifecycleHooks } from '../../ports/driven/tools/ToolRegistryPort.js';
 import type { ToolRegistryPort, ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
-import type { ToolAccessMetadataPort, ResourceExtractor, ToolAccessMetadata } from '../../ports/driven/tools/ToolAccessMetadataPort.js';
 import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
 import type { ToolExecutionOutcome, ToolExecutionEffect } from './tool-types.js';
+import {
+  createTrustedCallContext,
+  UNTRUSTED_CALLER,
+} from '../../core/domain/permissions/trusted-call-context.js';
+import type { ApprovalAction } from '../../core/domain/permissions/permission-types.js';
+import {
+  createMcpPermissionCandidate,
+  createMcpToolAuthorizationAdapter,
+} from './permissions/mcp-tool-authorization.js';
+import {
+  configureMemoryAuthorizationRoot,
+} from './impl/base.js';
 
 /**
  * 工具注册表管理类。
@@ -30,21 +46,21 @@ import type { ToolExecutionOutcome, ToolExecutionEffect } from './tool-types.js'
  * 2. 集成外部真实 MCP 服务器（McpToolManager）提供的外部工具；
  * 3. 对外提供统一的工具获取（getTools）与工具调用（callTool）接口。
  */
-export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
+export class ToolRegistry implements ToolRegistryPort {
   // 工具目录管理器（委托 getTools / getTool）
   private catalog: ToolCatalog;
   // 工具执行调度器（委托 callTool）
   private executor: ToolExecutor;
   /** 所有本地工具调用的统一权限网关。 */
   private gateway: ToolCallGateway;
-  /** 当前注册表对应的规则存储。 */
-  private permissionRuleStore: PermissionRuleStore;
+  /** 无会话调用使用的显式受限权限状态。 */
+  private readonly restrictedPermissionState: PermissionSessionState;
+  /** 已从持久 settings 完成首次解析的会话状态集合。 */
+  private readonly initializedPermissionStates = new WeakSet<PermissionSessionState>();
   /** 当前注册表对应的权限服务。 */
   private permissionService: ToolPermissionService;
   /** 可选的权限规则磁盘仓库；测试默认不注入以保持隔离。 */
   private readonly permissionSettingsStore?: PermissionSettingsStore;
-  // 工具访问元数据聚合器（委托资源提取器查询）
-  private metadataProvider: ToolAccessMetadataProvider;
   // 可选的外部 MCP 工具管理器实例
   public readonly mcpManager?: McpManagerPort;
 
@@ -67,18 +83,21 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     // 构建工具目录
     this.catalog = new ToolCatalog(allTools, mcpManager);
     // 构建执行器与权限网关，网关只使用本实例签发的授权上下文。
-    this.permissionRuleStore = new PermissionRuleStore();
+    this.restrictedPermissionState = new PermissionSessionState();
     this.permissionSettingsStore = permissionSettingsStore;
-    this.permissionSettingsStore?.loadInto(this.permissionRuleStore);
-    this.permissionService = new ToolPermissionService({ ruleStore: this.permissionRuleStore });
+    this.permissionService = new ToolPermissionService({
+      ruleStore: this.restrictedPermissionState.getRuleStore(),
+    });
     this.executor = new ToolExecutor(
       this.catalog,
-      (context) => this.permissionService.isIssuedContext(context),
+      context => this.permissionService.consumeAuthorizedContext(context),
     );
-    this.gateway = new ToolCallGateway(this.permissionService, this.permissionRuleStore, this.executor);
+    this.gateway = new ToolCallGateway(
+      this.permissionService,
+      this.restrictedPermissionState.getRuleStore(),
+      this.executor,
+    );
     this.gateway.registerTools(allTools);
-    // 构建元数据聚合器（从工具自带 resourceExtractor 聚合）
-    this.metadataProvider = new ToolAccessMetadataProvider(allTools);
   }
 
   /**
@@ -89,6 +108,78 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
    */
   public getTool(name: string): ToolMetadata | undefined {
     return this.catalog.getToolMetadata(name);
+  }
+
+  /**
+   * 执行本地工具的候选权限分析，但不进行最终授权或真实执行。
+   * 该入口主要供受限后台 Agent 判断 Bash 是否经过正式分析证明为只读。
+   *
+   * @param name - 本地工具名称
+   * @param args - 待分析参数
+   * @param permissionState - 当前受限权限状态
+   * @returns 工具候选结果；未知、MCP 或无检查器工具返回 undefined
+   */
+  public async evaluateToolPermissionCandidate(
+    name: string,
+    args: Record<string, unknown>,
+    permissionState: PermissionSessionState,
+  ): Promise<ToolPermissionCheckResult | undefined> {
+    const tool = this.catalog.getTool(name);
+    if (!tool?.checkPermissions) {
+      return undefined;
+    }
+    return await tool.checkPermissions(args, {
+      mode: permissionState.getMode(),
+      rules: permissionState.getRuleStore(),
+    });
+  }
+
+  /**
+   * 同步 Auto Memory 文件授权根，不改变当前工作区身份。
+   *
+   * @param memoryDir - 启用时的精确根；undefined 表示关闭
+   * @param rootKind - 默认根或受信自定义根
+   * @param candidateMemoryDir - 始终受保护的候选仓储所属根
+   */
+  public configureMemoryAuthorizationRoot(
+    memoryDir: string | undefined,
+    rootKind: 'default' | 'custom',
+    candidateMemoryDir: string,
+  ): void {
+    configureMemoryAuthorizationRoot(memoryDir, rootKind, candidateMemoryDir);
+  }
+
+  /**
+   * 获取当前会话权限状态的不可变快照。
+   *
+   * @param sessionContext - 当前会话上下文
+   * @returns 权限状态快照
+   */
+  public getPermissionSnapshot(
+    sessionContext: SessionEventPort,
+  ): PermissionSessionSnapshot {
+    return sessionContext.getPermissionSessionState!().snapshot();
+  }
+
+  /**
+   * 使用与审批动作相同的磁盘优先提交语义更新权限状态。
+   *
+   * @param updates - 待提交更新
+   * @param sessionContext - 当前会话上下文
+   */
+  public async applyPermissionUpdates(
+    updates: readonly PermissionUpdate[],
+    sessionContext: SessionEventPort,
+  ): Promise<void> {
+    const state = sessionContext.getPermissionSessionState!();
+    const promptAdapter = new PermissionPromptAdapter(
+      state,
+      undefined,
+      this.permissionSettingsStore
+        ? persistentUpdates => this.permissionSettingsStore!.persistAll(persistentUpdates)
+        : undefined,
+    );
+    await promptAdapter.applyUpdates(updates);
   }
 
   /**
@@ -114,7 +205,7 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
   public async callTool(
     functionName: string,
     functionArgs: Record<string, unknown>,
-    sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
+    sessionContext?: SessionEventPort & ApprovalPort & EventNotificationPort,
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
     toolCallId?: string,
@@ -132,8 +223,22 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
     }
 
     try {
-      const mode = sessionContext?.getPermissionMode() ?? 'default';
-      const promptAdapter = this.createPromptAdapter(functionName, functionArgs, sessionContext);
+      const securityContext = lifecycleHooks?.securityContext;
+      const permissionState = securityContext?.permissionState
+        ?? this.resolvePermissionState(sessionContext);
+      const mode = permissionState.getMode();
+      const caller = securityContext?.caller
+        ?? (sessionContext
+          ? createTrustedCallContext(sessionContext.getSessionId(), 'interactive')
+          : UNTRUSTED_CALLER);
+      const promptAdapter = securityContext && !securityContext.approvalAllowed
+        ? undefined
+        : this.createPromptAdapter(
+          functionName,
+          functionArgs,
+          permissionState,
+          sessionContext,
+        );
       if (isLocalTool) {
         const gatewayResult = await this.gateway.execute(
           functionName,
@@ -141,6 +246,8 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
           mode,
           {
             promptAdapter,
+            permissionState,
+            caller,
             runtime: {
               sessionId: sessionContext?.getSessionId(),
               correlationId: toolCallId,
@@ -149,42 +256,52 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
               timeoutMs,
               interactionPort,
               prepareExecution: lifecycleHooks?.prepareExecution,
+              getPermissionStateVersion: () => permissionState.getStateVersion(),
+              auditSource: securityContext?.auditSource,
             },
           },
         );
         return gatewayResult.outcome;
       } else if (this.mcpManager) {
-        const evidence = this.createExternalEvidence(functionName);
+        const descriptor = this.mcpManager.getToolDescriptor(functionName);
+        if (!descriptor) {
+          throw new Error(`MCP 工具 "${functionName}" 缺少当前 descriptor，拒绝授权`);
+        }
+        const authorizationAdapter = createMcpToolAuthorizationAdapter(descriptor);
         const checker = {
-          checkPermissions: (): ToolPermissionCheckResult => evidence.sideEffect === 'read'
-            ? { kind: 'allow', decisionReason: '外部工具声明为只读', evidence }
-            : {
-                kind: 'ask',
-                message: `外部工具 "${functionName}" 需要权限确认`,
-                decisionReason: evidence.riskReason,
-                evidence,
-              },
+          checkPermissions: () => createMcpPermissionCandidate(descriptor),
         };
         const gatewayResult = await this.gateway.executeExternal(
           functionName,
           functionArgs,
           mode,
           {
+            authorizationAdapter,
             checker,
+            getCurrentDescriptorVersion: () =>
+              this.mcpManager?.getToolDescriptor(functionName)?.descriptorVersion,
             execute: (authorizedArgs, executionSignal) => this.mcpManager!.callMcpTool(
               functionName,
               authorizedArgs,
+              {
+                serverName: descriptor.serverName,
+                descriptorVersion: descriptor.descriptorVersion,
+              },
               executionSignal,
             ),
           },
           {
             promptAdapter,
+            permissionState,
+            caller,
             runtime: {
               sessionId: sessionContext?.getSessionId(),
               correlationId: toolCallId,
               signal,
               timeoutMs,
               prepareExecution: lifecycleHooks?.prepareExecution,
+              getPermissionStateVersion: () => permissionState.getStateVersion(),
+              auditSource: securityContext?.auditSource,
             },
           },
         );
@@ -225,142 +342,121 @@ export class ToolRegistry implements ToolRegistryPort, ToolAccessMetadataPort {
   private createPromptAdapter(
     toolName: string,
     args: Record<string, unknown>,
-    sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
+    permissionState: PermissionSessionState,
+    sessionContext?: SessionEventPort & ApprovalPort & EventNotificationPort,
   ): PermissionPromptAdapter | undefined {
     if (!sessionContext) {
       return undefined;
     }
     const promptAdapter = new PermissionPromptAdapter(
-      this.permissionRuleStore,
-      async (decision, _mode, signal) => {
-        const ruleSuggestions = promptAdapter.getRuleSuggestions(toolName, args, decision);
-        const ruleDescriptions = ruleSuggestions.map(ruleContent => (
-          ruleContent === undefined ? toolName : `${toolName}(${ruleContent})`
-        ));
-        const choices: ApprovalChoice[] = [
-          {
-            choiceId: 'call',
-            label: '单次放行 (Allow Once)',
-            description: '只允许当前这一次调用',
-          },
-          ...(ruleDescriptions.length > 0 ? [{
-            choiceId: 'persistent' as const,
-            label: '允许并创建规则',
-            description: ruleDescriptions.join('；'),
-            followUp: {
-              prompt: '规则保存到哪里？',
-              choices: [
-                {
-                  choiceId: 'session' as const,
-                  label: '当前会话',
-                  description: '退出本次 MyAgent 会话后自动失效',
-                },
-                {
-                  choiceId: 'project' as const,
-                  label: '当前项目',
-                  description: '仅本机当前项目生效，保存到 .myagent/settings.local.json',
-                },
-                {
-                  choiceId: 'user' as const,
-                  label: '当前用户',
-                  description: '本机所有项目生效，保存到 ~/.myagent/settings.json',
-                },
-              ],
-            },
-          }] : []),
-          {
-            choiceId: 'deny',
-            label: '拒绝执行 (Deny)',
-          },
-        ];
+      permissionState,
+      async (decision, _mode, signal, actions) => {
+        // 使用工具适配器提供的 ApprovalAction 构建选择项
+        const choices: ApprovalChoice[] = (actions ?? []).map(renderApprovalActionChoice);
+
+        // 工具没有提供正式动作时只允许单次放行或拒绝，禁止从参数猜测持久规则。
+        if (choices.length === 0) {
+          choices.push(
+            { choiceId: 'allowOnce', label: '单次放行 (Allow Once)', description: '只允许当前这一次调用' },
+          );
+          choices.push(
+            { choiceId: 'deny', label: '拒绝执行 (Deny)', description: '拒绝当前调用' },
+          );
+        }
+
         const approval = await sessionContext.waitApproval(
           `permission_${Date.now()}_${toolName}`,
           { name: toolName, arguments: args },
           { signal, choices },
           `${decision.message}（${decision.decisionReason}）`,
         );
-        const scope = approval.action === 'session'
-          ? 'session'
-          : approval.action === 'project'
-            ? 'project'
-            : approval.action === 'user' || approval.action === 'persistent'
-              ? 'user'
-              : 'once';
-        return { approved: approval.action !== 'deny', scope };
+        return {
+          approved: approval.action !== 'deny',
+          actionId: isApprovalActionId(approval.action) ? approval.action : undefined,
+        };
       },
-      (update) => this.permissionSettingsStore?.persist(update),
+      async updates => {
+        if (!this.permissionSettingsStore) {
+          throw new Error('当前运行时没有配置权限设置仓库');
+        }
+        await this.permissionSettingsStore.persistAll(updates);
+      },
     );
     return promptAdapter;
   }
 
-  /** 根据外部工具访问声明生成保守权限证据。 */
-  private createExternalEvidence(toolName: string): ToolPermissionEvidence {
-    const accessMetadata = this.getAccessMetadata(toolName);
-    const descriptor = this.mcpManager?.getToolDescriptor(toolName);
-    const sideEffect = accessMetadata?.accessMode === 'read'
-      ? 'read'
-      : accessMetadata?.accessMode === 'write' || descriptor?.annotations?.destructiveHint === true
-        ? 'write'
-        : 'unknown';
-    return {
-      operationCategory: 'external-tool-call',
-      sideEffect,
-      riskReason: sideEffect === 'read'
-        ? '外部工具声明为只读'
-        : sideEffect === 'write'
-          ? '外部工具声明可能产生破坏性写入'
-          : '外部工具缺少可自动允许的只读证据',
-      resources: [],
-    };
-  }
-
-  /**
-   * 获取本地内置工具的资源提取器注册表只读副本（委托给 ToolAccessMetadataProvider）。
-   * 供统一权限服务生成外部工具的结构化资源证据。
-   *
-   * @returns 工具名 → 资源提取器的 Map
-   */
-  public getResourceExtractors(): Map<string, ResourceExtractor> {
-    return this.metadataProvider.getResourceExtractors();
-  }
-
-  /**
-   * 根据工具名称获取对应的资源提取器。
-   *
-   * @param toolName - 工具名称
-   * @returns 对应的资源提取器，若未注册则返回 undefined
-   */
-  public getResourceExtractor(toolName: string): ResourceExtractor | undefined {
-    return this.metadataProvider.getResourceExtractor(toolName);
-  }
-
-  /**
-   * 根据工具名称获取访问元数据声明。
-   *
-   * @param toolName - 工具名称
-   * @returns 对应的访问元数据，若未注册则返回 undefined
-   */
-  public getAccessMetadata(toolName: string): ToolAccessMetadata | undefined {
-    return this.metadataProvider.getAccessMetadata(toolName);
-  }
-
-  /**
-   * 获取当前注册表私有的权限规则存储，供会话装配和契约测试注入规则。
-   *
-   * @returns 当前注册表的权限规则存储
-   */
-  public getPermissionRuleStore(): PermissionRuleStore {
-    return this.permissionRuleStore;
+  /** 解析调用所属的会话状态，并在首次使用时加载持久规则。 */
+  private resolvePermissionState(
+    sessionContext?: SessionEventPort,
+  ): PermissionSessionState {
+    const state = sessionContext?.getPermissionSessionState?.()
+      ?? this.restrictedPermissionState;
+    if (state !== this.restrictedPermissionState && !this.initializedPermissionStates.has(state)) {
+      this.permissionSettingsStore?.loadInto(state);
+      this.initializedPermissionStates.add(state);
+    }
+    return state;
   }
 
   /**
    * 优雅断开并清理工具注册表内管理的所有物理连接（如 MCP 子进程）。
    */
   public async close(): Promise<void> {
-    // session 来源规则只能存活到当前注册表对应的会话关闭，禁止泄漏到后续会话。
-    this.permissionRuleStore.clearSessionRules();
+    // 清理仅供无会话调用使用的受限状态，真实会话状态由 SessionContext 生命周期持有。
+    this.restrictedPermissionState.getRuleStore().clearSessionRules();
     if (this.mcpManager) {
       await this.mcpManager.close();
     }
+  }
+}
+
+/** 校验审批端口返回的是工具适配器定义的稳定 action id。 */
+function isApprovalActionId(value: string): value is ApprovalAction['type'] {
+  return value === 'allowOnce'
+    || value === 'allowAndSetMode'
+    || value === 'allowAndAddDirectories'
+    || value === 'allowAndSetModeWithDirectories'
+    || value === 'deny';
+}
+
+/**
+ * 将正式审批动作渲染为用户可见选择项。
+ * 模式必须使用产品标签，目录扩权必须显示真实目录范围。
+ *
+ * @param action - 工具适配器提供的正式动作
+ * @returns 审批端口可展示的选择项
+ */
+export function renderApprovalActionChoice(action: ApprovalAction): ApprovalChoice {
+  switch (action.type) {
+    case 'allowOnce':
+      return {
+        choiceId: 'allowOnce',
+        label: '单次放行 (Allow Once)',
+        description: '只允许当前这一次调用',
+      };
+    case 'allowAndSetMode':
+      return {
+        choiceId: 'allowAndSetMode',
+        label: '允许并开启 Accept edits on',
+        description: `允许本次调用并将当前会话切换为 ${getUserPermissionModeLabel(action.mode)}`,
+      };
+    case 'allowAndAddDirectories':
+      return {
+        choiceId: 'allowAndAddDirectories',
+        label: '允许并添加目录',
+        description: `允许本次调用并添加目录：${action.directories.join(', ')}`,
+      };
+    case 'allowAndSetModeWithDirectories':
+      return {
+        choiceId: 'allowAndSetModeWithDirectories',
+        label: '在此目录开启 Accept edits on',
+        description: `允许本次调用、切换为 ${getUserPermissionModeLabel(action.mode)}，并授权目录：${action.directories.join(', ')}`,
+      };
+    case 'deny':
+      return {
+        choiceId: 'deny',
+        label: '拒绝执行 (Deny)',
+        description: '拒绝当前调用',
+      };
   }
 }

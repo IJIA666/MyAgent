@@ -5,6 +5,10 @@ export type ToolLifecyclePhase = 'authorization' | 'queue' | 'preparation' | 'ex
 export type ToolLifecycleFailureCode =
   | 'permission_denied_before_execution'
   | 'approval_denied_before_execution'
+  | 'approval_unavailable_before_execution'
+  | 'approval_handler_failed_before_execution'
+  | 'permission_update_failed_before_execution'
+  | 'authorization_state_changed_before_execution'
   | 'cancelled_while_awaiting_approval'
   | 'cancelled_while_queued'
   | 'cancelled_before_execution'

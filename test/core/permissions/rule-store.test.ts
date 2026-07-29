@@ -275,10 +275,11 @@ describe('PermissionRuleStore', () => {
   // ── PermissionUpdate 操作 ──
 
   describe('PermissionUpdate 操作', () => {
-    it('add 操作应新增规则', () => {
+    it('addRules 应新增规则', () => {
       const store = new PermissionRuleStore();
       const update: PermissionUpdate = {
-        operation: 'add',
+        type: 'addRules',
+        target: 'session',
         rules: [{
           source: 'session',
           ruleBehavior: 'allow',
@@ -292,7 +293,7 @@ describe('PermissionRuleStore', () => {
       expect(matched[0].ruleBehavior).toBe('allow');
     });
 
-    it('remove 操作应删除匹配的规则', () => {
+    it('removeRules 应删除匹配的规则', () => {
       const store = new PermissionRuleStore();
       store.addRule('session', {
         source: 'session',
@@ -301,7 +302,8 @@ describe('PermissionRuleStore', () => {
       });
 
       const update: PermissionUpdate = {
-        operation: 'remove',
+        type: 'removeRules',
+        target: 'session',
         rules: [{
           source: 'session',
           ruleBehavior: 'allow',
@@ -313,7 +315,7 @@ describe('PermissionRuleStore', () => {
       expect(store.getRules('session').length).toBe(0);
     });
 
-    it('replace 操作应替换已存在的规则', () => {
+    it('replaceRules 应整体替换目标来源规则', () => {
       const store = new PermissionRuleStore();
       store.addRule('session', {
         source: 'session',
@@ -322,7 +324,8 @@ describe('PermissionRuleStore', () => {
       });
 
       const update: PermissionUpdate = {
-        operation: 'replace',
+        type: 'replaceRules',
+        target: 'session',
         rules: [{
           source: 'session',
           ruleBehavior: 'deny',
@@ -336,7 +339,7 @@ describe('PermissionRuleStore', () => {
       expect(result!.behavior).toBe('deny');
     });
 
-    it('set 操作应全量替换来源的规则', () => {
+    it('replaceRules 应全量替换来源的规则', () => {
       const store = new PermissionRuleStore();
       store.addRule('session', {
         source: 'session',
@@ -345,8 +348,8 @@ describe('PermissionRuleStore', () => {
       });
 
       const update: PermissionUpdate = {
-        operation: 'set',
-        targetSource: 'session',
+        type: 'replaceRules',
+        target: 'session',
         rules: [{
           source: 'session',
           ruleBehavior: 'allow',
@@ -360,24 +363,18 @@ describe('PermissionRuleStore', () => {
     });
 
     it('once 授权不应产生持久规则', () => {
-      // once 通过不创建 PermissionUpdate 实现，只影响当前调用
+      // once 通过不创建 PermissionUpdate，只影响当前调用。
       const store = new PermissionRuleStore();
       const rulesBefore = store.getAllRules().length;
 
-      // once 授权：不写入规则存储
-      const update: PermissionUpdate = {
-        operation: 'add',
-        rules: [], // once 不产生规则
-      };
-
-      store.applyUpdate(update);
       expect(store.getAllRules().length).toBe(rulesBefore);
     });
 
     it('session 授权应写入 session 来源', () => {
       const store = new PermissionRuleStore();
       store.applyUpdate({
-        operation: 'add',
+        type: 'addRules',
+        target: 'session',
         rules: [{
           source: 'session',
           ruleBehavior: 'allow',

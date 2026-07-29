@@ -5,6 +5,7 @@
 
 import type { ToolPermissionEvidence } from '../../../../../core/domain/permissions/permission-types.js';
 import type { ShellCommandAnalysis } from './types.js';
+import { createShellResourceEvidences } from '../../../permissions/shell-tool-authorization.js';
 
 /**
  * 将 Shell 分析投影为只读通用证据。
@@ -28,6 +29,7 @@ export function createShellPermissionEvidence(
       permission: segment.permission,
       reason: segment.reason,
     })),
-    resources: analysis.resourceAccesses ?? [],
+    // 工具预检查缺失宿主 caller，先使用 remote；Gateway 随后会绑定真实 caller。
+    resources: createShellResourceEvidences(analysis, 'remote'),
   };
 }

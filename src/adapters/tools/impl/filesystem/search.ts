@@ -1,10 +1,11 @@
 import { resolve, basename, relative } from 'path';
 import { existsSync, statSync, openSync, readSync, closeSync, promises as fsPromises } from 'fs';
-import { secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import { secureResolveReadPath, getAuthorizedDir } from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { tryRipgrepSearch, type RipgrepLineMatch } from './ripgrep-search.js';
+import { createDirectoryScopeEvidence } from '../../permissions/path-resource-evidence.js';
 
 const DEFAULT_SEARCH_LIMIT = 100;
 const DEFAULT_SEARCH_MAX_BYTES = 20_000;
@@ -286,13 +287,15 @@ export class GrepSearchTool implements NativeTool {
    */
   checkPermissions(args: Record<string, unknown>): import('../../../../core/domain/permissions/permission-types.js').ToolPermissionCheckResult {
     const searchPath = typeof args.searchPath === 'string' ? args.searchPath : '.';
-    const rootDir = getAuthorizedDir();
-    const resolvedPath = getPhysicalRealPath(resolve(rootDir!, searchPath));
     const evidence = {
       operationCategory: 'file-read',
       sideEffect: 'read' as const,
       riskReason: `全文搜索: ${searchPath}`,
-      resources: [{ kind: 'path', access: 'read', normalizedPath: resolvedPath }],
+      resources: [createDirectoryScopeEvidence(
+        searchPath,
+        'read',
+        'grep-search:root',
+      )],
     };
     try {
       secureResolveReadPath(searchPath);
@@ -556,7 +559,11 @@ export class GlobSearchTool implements NativeTool {
         operationCategory: 'file-read',
         sideEffect: 'read',
         riskReason: '在工作区内按通配符检索路径',
-        resources: [{ kind: 'path', access: 'read', normalizedPath: getAuthorizedDir() ?? '.' }],
+        resources: [createDirectoryScopeEvidence(
+          getAuthorizedDir() ?? '.',
+          'read',
+          'glob-search:root',
+        )],
       },
     };
   }

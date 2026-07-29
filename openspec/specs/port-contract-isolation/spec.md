@@ -1,6 +1,10 @@
 # 规格契约：端口契约纯度提升
 
-## 新增需求
+## Purpose
+
+定义 driving 与 driven ports 对核心实现类型的隔离边界。该规范保证输入适配器、工具运行时和插件消费者只依赖稳定契约，不因权限或会话实现迁移而被迫导入具体服务类。
+
+## Requirements
 
 ### Requirement: Driving Port Independence
 
@@ -9,7 +13,7 @@
 #### Scenario: ChatUseCase does not expose core implementation types
 - **WHEN** 外部模块导入并使用 `ChatUseCase` 这类驱动端口接口时
 - **THEN** 其公开属性、方法参数与事件类型必须（MUST）来自端口层自有契约或与实现无关的纯数据结构
-- **THEN** 外部模块不应（MUST NOT）因为使用驱动端口接口而被迫导入或理解 `SessionManager`、`ApprovalService`、`agent-loop.ts` 等核心实现类型
+- **THEN** 外部模块不应（MUST NOT）因为使用驱动端口接口而被迫导入或理解 `SessionManager`、`ApprovalInteractionService`、`agent-loop.ts` 等核心实现类型
 
 #### Scenario: Approval interaction remains available through driving port contract
 - **WHEN** 输入适配器需要发起、等待或响应审批交互时
@@ -20,8 +24,8 @@
 
 `src/ports/driven/` 下的端口接口定义必须（MUST）只依赖端口层拥有的契约类型或纯数据结构，不得（MUST NOT）直接引用 `src/core/` 中的安全、插件或领域内部类型。
 
-#### Scenario: Tool metadata contracts do not reference core-only security types
-- **WHEN** `ToolAccessMetadataPort` 这类 driven port 描述资源提取、访问元数据或安全相关结构时
+#### Scenario: Tool runtime contracts do not expose adapter implementations
+- **WHEN** driven port 描述工具目录、执行生命周期或授权请求边界时
 - **THEN** 其输入输出类型必须（MUST）由端口层拥有，或由端口层共享类型表达
 - **THEN** 端口消费者不得（MUST NOT）因为使用这些接口而依赖 core 内部安全模型文件
 

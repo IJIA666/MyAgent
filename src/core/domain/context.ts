@@ -1,21 +1,17 @@
 import { logger } from '../../utils/logger.js';
 import { EventEmitter } from 'node:events';
-import type { SafetyResource } from '../usecases/security/SafetyResource.js';
-import type { CallCapabilityPort } from '../../ports/driven/session/CallCapabilityPort.js';
 import { buildSystemPrompt } from '../usecases/brain/prompts.js';
 import type { SkillMetadata } from '../usecases/brain/contextLoader.js';
-import { ApprovalService } from '../usecases/security/ApprovalService.js';
+import { ApprovalInteractionService } from '../usecases/security/ApprovalInteractionService.js';
 import { AppConfig, ConfigPermissionMode, getDefaultPermissionMode } from '../../config/index.js';
 import { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import { createSessionId } from './trace-format.js';
-import type { CallCapability, CallCapabilityState } from './call-capability.js';
-import { PermissionModeManager } from './permissions/mode-manager.js';
-import { PermissionRuleStore } from './permissions/rule-store.js';
+import { PermissionSessionState } from './permissions/permission-session-state.js';
 import { ConversationState } from './conversation-state.js';
 import type { StoredChatMessage } from './conversation-state.js';
 import { InteractionState } from './interaction-state.js';
 import type { PendingInteraction, PendingInteractionState, QuestionPayload } from './interaction-state.js';
-import { AuthorizationState } from './authorization-state.js';
+import { ApprovalInteractionState } from './approval-interaction-state.js';
 import { PluginMutationLog } from './plugin-mutation-log.js';
 import type { PluginPatchGroup } from './plugin-mutation-log.js';
 import type { AskUserAnswer } from '../../ports/driven/session/InteractionPort.js';
@@ -23,8 +19,6 @@ import type { ApprovalWaitOptions } from '../../ports/driven/session/ApprovalPor
 import type { ApprovalChoiceId } from '../../ports/shared/approval-types.js';
 
 // 从子状态文件重导出公开类型与函数（保持向后兼容）
-export { computeArgumentsDigest } from './call-capability.js';
-export type { CallCapabilityState, CallCapability };
 export type { StoredChatMessage };
 export type { PendingInteractionState, QuestionPayload, PendingInteraction };
 export type { PluginPatchGroup };
@@ -38,26 +32,25 @@ import type { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
  * 1. 维护当前会话的消息历史（Message History）。
  * 2. 管理会话唯一标识（Session ID）。
  */
-export class SessionContext extends EventEmitter implements SessionEventPort, CallCapabilityPort {
+export class SessionContext extends EventEmitter implements SessionEventPort {
   // ── 会话元数据（保留在 façade）──
   private sessionId: string;
   private tenantId: string;
-  private permissionMode: ConfigPermissionMode;
-  /** 会话私有的统一模式管理器，避免进程级共享模式状态。 */
-  private readonly permissionModeManager: PermissionModeManager;
+  /** 会话唯一的权限状态聚合根。 */
+  private readonly permissionSessionState: PermissionSessionState;
   private _appConfig?: AppConfig;
 
   // ── 子状态对象 ──
   private readonly conversationState: ConversationState;
   private readonly interactionState: InteractionState;
-  private readonly authorizationState: AuthorizationState;
+  private readonly approvalInteractionState: ApprovalInteractionState;
   private readonly pluginMutationLog: PluginMutationLog;
 
   // ── 公开属性代理（保持向后兼容）──
 
-  /** 人机协同审批服务（委托给 AuthorizationState） */
-  public get approvalService(): ApprovalService {
-    return this.authorizationState.approvalService;
+  /** 人机协同审批服务（仅负责交互等待） */
+  public get approvalInteraction(): ApprovalInteractionService {
+    return this.approvalInteractionState.service;
   }
 
   /** 全局配置对象 */
@@ -95,17 +88,15 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
     super();
     this.sessionId = sessionId || createSessionId();
     this.tenantId = tenantId || 'default';
-    this.permissionMode = getDefaultPermissionMode();
-    this.permissionModeManager = new PermissionModeManager(
-      this.permissionMode,
-      new PermissionRuleStore(),
-    );
+    this.permissionSessionState = new PermissionSessionState({
+      mode: getDefaultPermissionMode(),
+    });
 
     // 实例化子状态对象
     const systemPrompt = buildSystemPrompt();
     this.conversationState = new ConversationState(systemPrompt);
     this.interactionState = new InteractionState();
-    this.authorizationState = new AuthorizationState();
+    this.approvalInteractionState = new ApprovalInteractionState();
     this.pluginMutationLog = new PluginMutationLog();
   }
 
@@ -281,7 +272,16 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
    */
   /** 获取当前会话的权限模式。 */
   public getPermissionMode(): ConfigPermissionMode {
-    return this.permissionModeManager.getMode();
+    return this.permissionSessionState.getMode();
+  }
+
+  /**
+   * 获取当前会话唯一的权限状态。
+   *
+   * @returns 当前 PermissionSessionState
+   */
+  public getPermissionSessionState(): PermissionSessionState {
+    return this.permissionSessionState;
   }
 
   /**
@@ -295,21 +295,25 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
         component: 'context',
         event: 'permission_mode_change_blocked',
         sessionId: this.sessionId,
-        oldValue: this.permissionMode,
+        oldValue: this.permissionSessionState.getMode(),
         newValue: mode,
         reason: 'isProcessing=true'
       });
       throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
     }
-    const previousMode = this.permissionModeManager.getMode();
-    this.permissionModeManager.transitionTo(mode);
-    this.permissionMode = this.permissionModeManager.getMode();
+    const previousMode = this.permissionSessionState.getMode();
+    this.permissionSessionState.applyUpdates([{
+      type: 'setMode',
+      target: 'session',
+      mode,
+    }]);
+    const currentMode = this.permissionSessionState.getMode();
     logger.info('[SessionContext] permission_mode_changed', {
       component: 'context',
       event: 'permission_mode_changed',
       sessionId: this.sessionId,
       oldValue: previousMode,
-      newValue: mode,
+      newValue: currentMode,
       reason: 'user_request'
     });
   }
@@ -416,7 +420,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
     }
   }
 
-  // ── 审批（委托给 AuthorizationState）──
+  // ── 审批交互 ──
 
   /**
    * 挂起当前高危操作，等待人机协同的确权审批。
@@ -433,115 +437,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort, Ca
     options?: string | ApprovalWaitOptions,
     warningMsg?: string
   ): Promise<{ action: ApprovalChoiceId; reason?: string }> {
-    return this.authorizationState.waitApproval(approvalId, actionInfo, options, warningMsg);
+    return this.approvalInteractionState.waitApproval(approvalId, actionInfo, options, warningMsg);
   }
 
-  // ── 临时白名单（委托给 AuthorizationState + busy 检查）──
-
-  /**
-   * 检查指定绝对物理路径是否处于临时只读授权白名单中。
-   *
-   * @param pathStr - 物理绝对路径
-   */
-  public hasTemporaryReadWhitelist(pathStr: string): boolean {
-    return this.authorizationState.hasReadWhitelist(this.sessionId, pathStr);
-  }
-
-  /**
-   * 检查指定绝对物理路径是否处于临时可写授权白名单中。
-   *
-   * @param pathStr - 物理绝对路径
-   */
-  public hasTemporaryWriteWhitelist(pathStr: string): boolean {
-    return this.authorizationState.hasWriteWhitelist(this.sessionId, pathStr);
-  }
-
-  /**
-   * 将指定物理绝对路径加入当前会话的临时只读白名单。
-   * 受到 busy 状态锁防护。
-   *
-   * @param pathStr - 物理绝对路径
-   */
-  public addTemporaryReadWhitelist(pathStr: string): void {
-    if (this.isProcessing) {
-      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
-    }
-    this.authorizationState.addReadWhitelist(this.sessionId, pathStr);
-  }
-
-  /**
-   * 将指定物理绝对路径加入当前会话的临时可写白名单。
-   * 受到 busy 状态锁防护。
-   *
-   * @param pathStr - 物理绝对路径
-   */
-  public addTemporaryWriteWhitelist(pathStr: string): void {
-    if (this.isProcessing) {
-      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
-    }
-    this.authorizationState.addWriteWhitelist(this.sessionId, pathStr);
-  }
-
-  /**
-   * 将指定目录根路径加入当前会话的目录范围只读白名单。
-   * 受到 busy 状态锁防护。
-   *
-   * @param dirRoot - 经物理路径归一化的目录根路径
-   */
-  public addTemporaryDirectoryScopeReadWhitelist(dirRoot: string): void {
-    if (this.isProcessing) {
-      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
-    }
-    this.authorizationState.addDirectoryScopeReadWhitelist(this.sessionId, dirRoot);
-  }
-
-  /**
-   * 清空当前会话在内存中暂存的所有临时读写白名单。
-   * 受到 busy 状态锁防护。
-   */
-  public clearTemporaryWhitelists(): void {
-    if (this.isProcessing) {
-      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
-    }
-    this.authorizationState.clearWhitelists(this.sessionId);
-  }
-
-  // ── Call Capability 令牌生命周期（委托给 AuthorizationState）──
-
-  /**
-   * 注册一个 call 级授权令牌（registered 状态）。
-   *
-   * @param cap - 待注册的授权令牌，必须包含 argumentsDigest
-   */
-  public registerCallCapability(cap: CallCapability): void {
-    this.authorizationState.registerCallCapability(cap);
-  }
-
-  /**
-   * 领取（claim）一个 registered 状态的令牌。
-   * 验证 toolCallId + toolName + argumentsDigest 三重匹配，防止参数篡改。
-   */
-  public claimCapability(
-    toolCallId: string,
-    toolName: string,
-    args: Record<string, unknown>
-  ): SafetyResource[] | null {
-    return this.authorizationState.claimCapability(toolCallId, toolName, args);
-  }
-
-  /**
-   * 消费（consume）一个 claimed 状态的令牌。
-   *
-   * @param toolCallId - 工具调用唯一标识
-   */
-  public consumeCapability(toolCallId: string): void {
-    this.authorizationState.consumeCapability(toolCallId);
-  }
-
-  /**
-   * 检查指定 toolCallId 的 claimed 令牌中是否包含匹配的路径资源。
-   */
-  public hasClaimedResource(toolCallId: string, access: 'read' | 'write', normalizedPath: string): boolean {
-    return this.authorizationState.hasClaimedResource(toolCallId, access, normalizedPath);
-  }
 }

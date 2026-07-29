@@ -3,10 +3,13 @@
  * 负责授权工作区的全局初始化与获取，提供防范路径遍历与符号链接越权攻击的安全路径解析核心校验器。
  */
 
-import { resolve, sep, dirname } from 'path';
+import { resolve, sep, dirname, join } from 'path';
 import { realpathSync, existsSync } from 'fs';
 import type { SessionEventPort } from '../../../ports/driven/session/SessionEventPort.js';
 import type { ToolExecutionContext } from '../../../core/usecases/plugins/plugin-types.js';
+import {
+  setProtectedMemoryCandidateRoot,
+} from '../../../core/domain/permissions/protected-resource-policy.js';
 
 /**
  * 授权工作区的绝对物理路径。
@@ -18,9 +21,29 @@ let authorizedDir: string | null = null;
  * 由 initWorkspace 显式注入，在路径边界校验中与 authorizedDir 并列作为合法根。
  */
 let authorizedMemoryDir: string | null = null;
+/** 当前注入记忆根的来源；只有 default 根拥有 Claude 风格维护写特例。 */
+let authorizedMemoryRootKind: 'default' | 'custom' | null = null;
 
 export function getAuthorizedDir(): string | null {
   return authorizedDir;
+}
+
+/**
+ * 获取当前项目默认的长期记忆根。
+ *
+ * @returns 已规范化的记忆目录；未初始化时为 null
+ */
+export function getAuthorizedMemoryDir(): string | null {
+  return authorizedMemoryDir;
+}
+
+/**
+ * 获取当前记忆根的权限语义。
+ *
+ * @returns default、custom；未启用 Auto Memory 时为 null
+ */
+export function getAuthorizedMemoryRootKind(): 'default' | 'custom' | null {
+  return authorizedMemoryRootKind;
 }
 
 /**
@@ -60,34 +83,48 @@ export function getPhysicalRealPath(target: string): string {
  *
  * @param rootDir - 工作区配置路径
  * @param memoryDir - 可选。当前项目的长期记忆目录，注入后标准文件工具可访问其子树
+ * @param memoryRootKind - 默认根拥有维护写特例；自定义根仅提供可达性
+ * @param candidateMemoryDir - 即使 Auto Memory 关闭也需保护的候选仓储所属 memory 根
  */
-export function initWorkspace(rootDir: string, memoryDir?: string): void {
+export function initWorkspace(
+  rootDir: string,
+  memoryDir?: string,
+  memoryRootKind: 'default' | 'custom' = 'default',
+  candidateMemoryDir?: string,
+): void {
   // 强制通过 getPhysicalRealPath 对工作区根目录进行符号链接展开与物理定位
   authorizedDir = getPhysicalRealPath(rootDir);
+  configureMemoryAuthorizationRoot(
+    memoryDir,
+    memoryRootKind,
+    candidateMemoryDir ?? memoryDir,
+  );
+}
+
+/**
+ * 在不改变工作区身份的前提下切换 Auto Memory 文件授权根。
+ * `/memory on|off` 使用此入口同步当前会话的文件权限边界。
+ *
+ * @param memoryDir - 启用时的精确 memory 根；undefined 表示关闭
+ * @param memoryRootKind - 默认根或受信自定义根
+ * @param candidateMemoryDir - 始终受保护的候选仓储所属 memory 根
+ */
+export function configureMemoryAuthorizationRoot(
+  memoryDir?: string,
+  memoryRootKind: 'default' | 'custom' = 'default',
+  candidateMemoryDir?: string,
+): void {
   // 记忆目录为可选；提供时同样进行物理路径解析，不存在时尝试解析其父目录。
   // 未提供时必须显式置空，避免多会话复用旧项目的记忆根。
   authorizedMemoryDir = memoryDir ? getPhysicalRealPath(memoryDir) : null;
+  authorizedMemoryRootKind = memoryDir ? memoryRootKind : null;
+  const protectedMemoryDir = candidateMemoryDir
+    ? getPhysicalRealPath(candidateMemoryDir)
+    : authorizedMemoryDir;
+  setProtectedMemoryCandidateRoot(
+    protectedMemoryDir ? join(protectedMemoryDir, '.candidates') : null,
+  );
 }
-/**
- * 检查指定路径是否已存在于临时只读白名单中。
- * @param pathStr - 待检查的物理路径
- * @param sessionContext - 可选的会话事件只读契约
- * @returns 是否在白名单中
- */
-export function hasTemporaryReadWhitelist(pathStr: string, sessionContext?: SessionEventPort): boolean {
-  return sessionContext ? sessionContext.hasTemporaryReadWhitelist(pathStr) : false;
-}
-
-/**
- * 检查指定路径是否已存在于临时可写白名单中。
- * @param pathStr - 待检查的物理路径
- * @param sessionContext - 可选的会话事件只读契约
- * @returns 是否在白名单中
- */
-export function hasTemporaryWriteWhitelist(pathStr: string, sessionContext?: SessionEventPort): boolean {
-  return sessionContext ? sessionContext.hasTemporaryWriteWhitelist(pathStr) : false;
-}
-
 /**
  * 判定目标物理路径是否在授权目录安全防护边界内。
  * 针对 Windows 平台下文件或目录尚未创建时（ realpathSync 无法对未存在子目录完全大小写对齐 ）导致的盘符或大小写不一致进行不敏感兼容判定。
@@ -106,17 +143,58 @@ function isSubPath(parent: string, child: string): boolean {
 }
 
 /**
- * 检查目标物理路径是否处于任一授权根（工作区或记忆目录）的子树内。
+ * 检查目标物理路径是否处于任一授权根（工作区、记忆目录或会话额外目录）的子树内。
  *
  * @param resolvedPath - 已解析的物理绝对路径
+ * @param additionalDirs - 会话额外授权目录（来自 PermissionSessionState）
  * @returns 在授权范围内返回 true
  */
-function isWithinAnyAuthorizedRoot(resolvedPath: string): boolean {
+function isWithinAnyAuthorizedRoot(
+  resolvedPath: string,
+  additionalDirs?: readonly string[],
+): boolean {
   if (authorizedDir && isSubPath(authorizedDir, resolvedPath)) {
     return true;
   }
   if (authorizedMemoryDir && isSubPath(authorizedMemoryDir, resolvedPath)) {
     return true;
+  }
+  if (additionalDirs) {
+    for (const dir of additionalDirs) {
+      if (isSubPath(dir, resolvedPath)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** 检查当前一次性 ExecutionPlan 是否精确授权了该物理路径。 */
+function isAuthorizedByExecutionPlan(
+  resolvedPath: string,
+  access: 'read' | 'write',
+  context?: SessionEventPort | ToolExecutionContext,
+): boolean {
+  if (!context || !('toolCallId' in context)) {
+    return false;
+  }
+  for (const evidence of context.executionPlan.resourceEvidences) {
+    if (evidence.kind !== 'file' && evidence.kind !== 'directory-scope') {
+      continue;
+    }
+    const evidencePath = getPhysicalRealPath(evidence.canonicalPath);
+    const pathMatches = evidence.kind === 'directory-scope'
+      ? isSubPath(evidencePath, resolvedPath)
+      : isSubPath(evidencePath, resolvedPath) && isSubPath(resolvedPath, evidencePath);
+    if (!pathMatches) {
+      continue;
+    }
+    if (access === 'read') {
+      return evidence.operation === 'read'
+        || evidence.operation === 'copy'
+        || evidence.operation === 'move';
+    }
+    return evidence.operation !== 'read';
   }
   return false;
 }
@@ -158,7 +236,7 @@ export function secureResolvePath(targetPath: string): string {
 /**
  * 文件只读操作安全路径校验器。
  * 接受 SessionEventPort（向后兼容）或 ToolExecutionContext。
- * 优先检查 call capability（access='read'），再检查 session 白名单，最后检查沙箱边界。
+ * 优先检查当前一次性 ExecutionPlan，再检查正式会话目录和静态根。
  *
  * @param targetPath - 待读取的目标相对或绝对路径
  * @param context - 可选的会话上下文（SessionEventPort）或工具调用执行上下文（ToolExecutionContext）
@@ -177,20 +255,16 @@ export function secureResolveReadPath(targetPath: string, context?: SessionEvent
     ? ('toolCallId' in context ? (context as ToolExecutionContext).sessionContext : context as SessionEventPort)
     : undefined;
 
-  // 0. 优先检查 ToolExecutionContext 的 call capability（access='read'）
-  if (context && 'toolCallId' in context) {
-    if ((context as ToolExecutionContext).sessionContext.hasClaimedResource((context as ToolExecutionContext).toolCallId, 'read', resolvedPath)) {
-      return resolvedPath;
-    }
-  }
-
-  // 1. 安全放行：如果目标物理路径已被临时授权加入只读白名单
-  if (sessionCtx && typeof sessionCtx.hasTemporaryReadWhitelist === 'function' && sessionCtx.hasTemporaryReadWhitelist(resolvedPath)) {
+  // 一次性放行只绑定本次计划内的精确资源。
+  if (isAuthorizedByExecutionPlan(resolvedPath, 'read', context)) {
     return resolvedPath;
   }
 
-  // 2. 常规校验：判断是否在 authorizedDir 或 authorizedMemoryDir 授权边界内
-  if (!isWithinAnyAuthorizedRoot(resolvedPath)) {
+  // 提取会话额外授权目录（来自 PermissionSessionState）
+  const readAdditionalDirs = sessionCtx?.getPermissionSessionState?.().getAdditionalDirectories();
+
+  // 2. 常规校验（含会话额外目录）：判断是否在 authorizedDir、authorizedMemoryDir 或 additionalDirectories 内
+  if (!isWithinAnyAuthorizedRoot(resolvedPath, readAdditionalDirs)) {
     // 对绝对路径尝试直接解析并检查 authorizedMemoryDir
     if ((targetPath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(targetPath)) && authorizedMemoryDir) {
       const directResolved = getPhysicalRealPath(targetPath);
@@ -207,7 +281,7 @@ export function secureResolveReadPath(targetPath: string, context?: SessionEvent
 /**
  * 文件写入/修改操作安全路径校验器。
  * 接受 SessionEventPort（向后兼容）或 ToolExecutionContext。
- * 优先检查 call capability（access='write'），再检查 session 白名单，最后检查沙箱边界。
+ * 优先检查当前一次性 ExecutionPlan，再检查正式会话目录和静态根。
  *
  * @param targetPath - 待写入的目标相对或绝对路径
  * @param context - 可选的会话上下文（SessionEventPort）或工具调用执行上下文（ToolExecutionContext）
@@ -226,20 +300,16 @@ export function secureResolveWritePath(targetPath: string, context?: SessionEven
     ? ('toolCallId' in context ? (context as ToolExecutionContext).sessionContext : context as SessionEventPort)
     : undefined;
 
-  // 0. 优先检查 ToolExecutionContext 的 call capability（access='write'）
-  if (context && 'toolCallId' in context) {
-    if ((context as ToolExecutionContext).sessionContext.hasClaimedResource((context as ToolExecutionContext).toolCallId, 'write', resolvedPath)) {
-      return resolvedPath;
-    }
-  }
-
-  // 1. 安全放行：如果目标物理路径已被临时授权加入可写白名单
-  if (sessionCtx && typeof sessionCtx.hasTemporaryWriteWhitelist === 'function' && sessionCtx.hasTemporaryWriteWhitelist(resolvedPath)) {
+  // 一次性放行只绑定本次计划内的精确资源。
+  if (isAuthorizedByExecutionPlan(resolvedPath, 'write', context)) {
     return resolvedPath;
   }
 
-  // 2. 常规校验：判断是否在 authorizedDir 或 authorizedMemoryDir 授权边界内
-  if (!isWithinAnyAuthorizedRoot(resolvedPath)) {
+  // 提取会话额外授权目录（来自 PermissionSessionState）
+  const writeAdditionalDirs = sessionCtx?.getPermissionSessionState?.().getAdditionalDirectories();
+
+  // 2. 常规校验（含会话额外目录）：判断是否在 authorizedDir、authorizedMemoryDir 或 additionalDirectories 内
+  if (!isWithinAnyAuthorizedRoot(resolvedPath, writeAdditionalDirs)) {
     // 对绝对路径尝试直接解析并检查 authorizedMemoryDir
     if ((targetPath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(targetPath)) && authorizedMemoryDir) {
       const directResolved = getPhysicalRealPath(targetPath);

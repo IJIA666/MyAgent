@@ -6,13 +6,17 @@
 
 import type {
   PermissionBehavior,
+  PermissionMode,
   PermissionRule,
-  PermissionRuleSource,
+  PermissionRuleUpdate,
   PermissionUpdate,
 } from '../../core/domain/permissions/permission-types.js';
-import { PermissionRuleStore } from '../../core/domain/permissions/rule-store.js';
+import {
+  getRuleSourceForUpdateTarget,
+} from '../../core/domain/permissions/rule-store.js';
 import { logger } from '../../utils/logger.js';
 import type { SettingsRepository, SettingsScope } from '../../config/settings-repository.js';
+import type { PermissionSessionState } from '../../core/domain/permissions/permission-session-state.js';
 
 /** 磁盘中不重复保存来源与行为的规则值。 */
 interface StoredPermissionRule {
@@ -24,20 +28,25 @@ interface StoredPermissionRule {
 
 /** MyAgent 权限设置文件中的权限段。 */
 interface StoredPermissions {
+  /** 未来新会话使用的默认模式。 */
+  defaultMode?: PermissionMode;
   /** 自动允许规则。 */
   allow?: StoredPermissionRule[];
   /** 始终询问规则。 */
   ask?: StoredPermissionRule[];
   /** 自动拒绝规则。 */
   deny?: StoredPermissionRule[];
+  /** 明确授权的额外目录。 */
+  additionalDirectories?: string[];
 }
 
 /** 可由普通审批保存的权限设置来源。 */
-type EditablePermissionSource = 'localSettings' | 'userSettings';
+type EditablePermissionSource = 'localSettings' | 'projectSettings' | 'userSettings';
 
 /** scope 映射：权限来源 → settings scope。 */
 const SOURCE_TO_SCOPE: Record<EditablePermissionSource, SettingsScope> = {
   localSettings: 'local',
+  projectSettings: 'project',
   userSettings: 'user',
 };
 
@@ -57,9 +66,34 @@ export class PermissionSettingsStore {
    *
    * @param ruleStore - 权限规则内存仓库
    */
-  public loadInto(ruleStore: PermissionRuleStore): void {
-    this.loadSource(ruleStore, 'userSettings');
-    this.loadSource(ruleStore, 'localSettings');
+  public loadInto(state: PermissionSessionState): void {
+    const updates: PermissionUpdate[] = [
+      {
+        type: 'replaceRules',
+        target: 'user',
+        rules: this.loadSource('userSettings'),
+      },
+      {
+        type: 'replaceRules',
+        target: 'project',
+        rules: this.loadSource('projectSettings'),
+      },
+      {
+        type: 'replaceRules',
+        target: 'projectLocal',
+        rules: this.loadSource('localSettings'),
+      },
+    ];
+    const effective = this.repository.readEffectiveConfig();
+    const directories = effective.permission?.additionalDirectories;
+    if (Array.isArray(directories) && directories.length > 0) {
+      updates.push({
+        type: 'addDirectories',
+        target: 'session',
+        directories,
+      });
+    }
+    state.applyUpdates(updates);
   }
 
   /**
@@ -69,31 +103,59 @@ export class PermissionSettingsStore {
    * @param update - 已由用户确认的权限规则更新
    */
   public async persist(update: PermissionUpdate): Promise<void> {
-    const updatesBySource = new Map<EditablePermissionSource, PermissionRule[]>();
-    for (const rule of update.rules) {
-      const source = update.targetSource ?? rule.source;
-      if (!isEditablePersistentSource(source)) {
+    await this.persistAll([update]);
+  }
+
+  /**
+   * 将一组持久更新按目标 settings 文件一次读改写提交。
+   *
+   * @param updates - 已通过审批的持久更新
+   */
+  public async persistAll(updates: readonly PermissionUpdate[]): Promise<void> {
+    const updatesByScope = new Map<SettingsScope, PermissionUpdate[]>();
+    for (const update of updates) {
+      const scope = getScopeForTarget(update.target);
+      if (!scope) {
         continue;
       }
-      const sourceRules = updatesBySource.get(source) ?? [];
-      sourceRules.push({ ...rule, source });
-      updatesBySource.set(source, sourceRules);
+      const scopeUpdates = updatesByScope.get(scope) ?? [];
+      scopeUpdates.push(update);
+      updatesByScope.set(scope, scopeUpdates);
     }
 
-    for (const [source, rules] of updatesBySource) {
-      await this.persistSource(source, rules, update.operation);
+    if (updatesByScope.size > 1) {
+      throw new Error('单次权限动作不能跨多个 settings scope，已拒绝可能的部分提交');
+    }
+
+    for (const [scope, scopeUpdates] of updatesByScope) {
+      // 读取与合并必须在 SettingsRepository 的串行临界区内发生，避免并发读旧值后互相覆盖。
+      const updated = await this.repository.updateDocument(scope, document => {
+        const permissions = normalizeStoredPermissions(document.permission);
+        for (const update of scopeUpdates) {
+          applyStoredPermissionUpdate(permissions, update);
+        }
+        return {
+          ...document,
+          version: 1,
+          permission: permissions,
+        };
+      });
+      if (!updated) {
+        throw new Error(`权限设置写入失败: ${scope}`);
+      }
     }
   }
 
   /** 从单个来源加载规则。 */
-  private loadSource(ruleStore: PermissionRuleStore, source: EditablePermissionSource): void {
+  private loadSource(source: EditablePermissionSource): PermissionRule[] {
     try {
       const scope = SOURCE_TO_SCOPE[source];
       const document = this.repository.readDocument(scope);
       const permissions = normalizeStoredPermissions(document.permission);
+      const rules: PermissionRule[] = [];
       for (const behavior of ['allow', 'ask', 'deny'] as const) {
         for (const storedRule of permissions[behavior] ?? []) {
-          ruleStore.addRule(source, {
+          rules.push({
             source,
             ruleBehavior: behavior,
             ruleValue: {
@@ -103,6 +165,7 @@ export class PermissionSettingsStore {
           });
         }
       }
+      return rules;
     } catch (error: unknown) {
       logger.warn('[权限配置] 设置文件加载失败，已跳过该配置来源。', {
         component: 'permission_settings',
@@ -110,63 +173,10 @@ export class PermissionSettingsStore {
         source,
         error: error instanceof Error ? error.message : String(error),
       });
+      return [];
     }
   }
 
-  /** 将同一来源的一组规则持久化到 settings。 */
-  private async persistSource(
-    source: EditablePermissionSource,
-    rules: PermissionRule[],
-    operation: PermissionUpdate['operation'],
-  ): Promise<void> {
-    const scope = SOURCE_TO_SCOPE[source];
-    const document = this.repository.readDocument(scope);
-    const permissions = normalizeStoredPermissions(document.permission);
-
-    for (const behavior of ['allow', 'ask', 'deny'] as const) {
-      const affectedRules = rules.filter(rule => rule.ruleBehavior === behavior);
-      if (operation === 'set') {
-        permissions[behavior] = affectedRules.map(toStoredRule);
-        continue;
-      }
-      const currentRules = permissions[behavior] ?? [];
-      if (operation === 'remove') {
-        permissions[behavior] = currentRules.filter(current =>
-          !affectedRules.some(rule => isSameStoredRule(current, toStoredRule(rule)))
-        );
-        continue;
-      }
-      if (operation === 'replace') {
-        permissions[behavior] = affectedRules.map(toStoredRule);
-        continue;
-      }
-      // add
-      for (const rule of affectedRules) {
-        const storedRule = toStoredRule(rule);
-        if (!currentRules.some(current => isSameStoredRule(current, storedRule))) {
-          currentRules.push(storedRule);
-        }
-      }
-      permissions[behavior] = currentRules;
-    }
-
-    document.permission = {
-      ...document.permission,
-      ...permissions,
-    };
-    document.version = 1;
-
-    // 通过 repository 写回
-    await this.repository.updateField(scope, {
-      field: 'permission',
-      value: document.permission,
-    });
-  }
-}
-
-/** 判断来源是否允许由普通审批持久化。 */
-function isEditablePersistentSource(source: PermissionRuleSource): source is EditablePermissionSource {
-  return source === 'localSettings' || source === 'userSettings';
 }
 
 /** 将内存规则转换为磁盘规则。 */
@@ -192,7 +202,80 @@ function normalizeStoredPermissions(value: unknown): StoredPermissions {
       ? candidates.filter(isStoredPermissionRule)
       : [];
   }
+  if (typeof permissions?.defaultMode === 'string') {
+    normalized.defaultMode = permissions.defaultMode as PermissionMode;
+  }
+  normalized.additionalDirectories = Array.isArray(permissions?.additionalDirectories)
+    ? permissions.additionalDirectories.filter(
+      (directory): directory is string => typeof directory === 'string' && directory.trim().length > 0,
+    )
+    : [];
   return normalized;
+}
+
+/** 将 PermissionUpdate 合并进单个 settings 权限段。 */
+function applyStoredPermissionUpdate(
+  permissions: StoredPermissions,
+  update: PermissionUpdate,
+): void {
+  if (update.type === 'setMode') {
+    permissions.defaultMode = update.mode;
+    return;
+  }
+  if (update.type === 'addDirectories') {
+    permissions.additionalDirectories = [
+      ...new Set([...(permissions.additionalDirectories ?? []), ...update.directories]),
+    ];
+    return;
+  }
+  if (update.type === 'removeDirectories') {
+    const removals = new Set(update.directories);
+    permissions.additionalDirectories = (permissions.additionalDirectories ?? [])
+      .filter(directory => !removals.has(directory));
+    return;
+  }
+
+  applyStoredRuleUpdate(permissions, update);
+}
+
+/** 将一项规则动作合并进磁盘权限段。 */
+function applyStoredRuleUpdate(
+  permissions: StoredPermissions,
+  update: PermissionRuleUpdate,
+): void {
+  const source = getRuleSourceForUpdateTarget(update.target);
+  const rules = update.rules.map(rule => ({ ...rule, source }));
+  for (const behavior of ['allow', 'ask', 'deny'] as const) {
+    const affectedRules = rules.filter(rule => rule.ruleBehavior === behavior);
+    if (update.type === 'replaceRules') {
+      permissions[behavior] = affectedRules.map(toStoredRule);
+      continue;
+    }
+    const currentRules = permissions[behavior] ?? [];
+    if (update.type === 'removeRules') {
+      permissions[behavior] = currentRules.filter(current =>
+        !affectedRules.some(rule => isSameStoredRule(current, toStoredRule(rule)))
+      );
+      continue;
+    }
+    for (const rule of affectedRules) {
+      const storedRule = toStoredRule(rule);
+      if (!currentRules.some(current => isSameStoredRule(current, storedRule))) {
+        currentRules.push(storedRule);
+      }
+    }
+    permissions[behavior] = currentRules;
+  }
+}
+
+/** 将更新目标映射为可写 settings scope。 */
+function getScopeForTarget(target: PermissionUpdate['target']): SettingsScope | undefined {
+  switch (target) {
+    case 'projectLocal': return 'local';
+    case 'project': return 'project';
+    case 'user': return 'user';
+    case 'session': return undefined;
+  }
 }
 
 /** 验证从磁盘读取的单条规则。 */

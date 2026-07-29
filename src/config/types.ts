@@ -105,7 +105,6 @@ export type ConfigPermissionMode =
   | 'default'
   | 'acceptEdits'
   | 'plan'
-  | 'auto'
   | 'dontAsk'
   | 'bypassPermissions';
 
@@ -170,6 +169,10 @@ export interface AppConfig {
   };
   /** 在 Plan 只读模式下是否物理裁剪写倾向工具的声明 */
   enablePlanToolStripping?: boolean;
+  /** 自动长期记忆开关（默认开启）。 */
+  autoMemoryEnabled: boolean;
+  /** 自定义自动记忆目录；未设置时使用默认 memoryDir。 */
+  autoMemoryDirectory?: string;
   /** 运行资源与行为限制配置 */
   runtimeLimits: RuntimeLimitsConfig;
   /** 运行日志、trace 与 audit 的诊断治理配置。 */

@@ -4,6 +4,7 @@
  */
 
 import type { ConfigPermissionMode } from '../../../config/index.js';
+import type { PermissionSessionState } from '../../../core/domain/permissions/permission-session-state.js';
 
 /**
  * 会话属性与只读策略输出端口接口。
@@ -37,18 +38,11 @@ export interface SessionEventPort {
   getPermissionMode(): ConfigPermissionMode;
 
   /**
-   * 检查指定绝对物理路径是否处于临时只读授权白名单中。
+   * 获取会话唯一权限状态。
+   * 迁移期允许旧只读宿主省略该方法，调用方必须使用受限状态兜底。
    *
-   * @param pathStr - 物理绝对路径
-   * @returns 在白名单中返回 true，否则返回 false
+   * @returns 当前 PermissionSessionState
    */
-  hasTemporaryReadWhitelist(pathStr: string): boolean;
+  getPermissionSessionState?(): PermissionSessionState;
 
-  /**
-   * 检查指定绝对物理路径是否处于临时可写授权白名单中。
-   *
-   * @param pathStr - 物理绝对路径
-   * @returns 在白名单中返回 true，否则返回 false
-   */
-  hasTemporaryWriteWhitelist(pathStr: string): boolean;
 }

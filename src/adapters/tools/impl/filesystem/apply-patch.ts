@@ -1,11 +1,18 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { applyPatch, createPatch } from 'diff';
-import { secureResolveWritePath } from '../base.js';
+import {
+  getAuthorizedDir,
+  getAuthorizedMemoryDir,
+  getAuthorizedMemoryRootKind,
+  secureResolveWritePath,
+} from '../base.js';
 import { ReadFileTool } from './file-system.js';
 import type { NativeTool } from '../../tool-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { applyReplacePatch } from './apply-patch-helper.js';
+import { isAutoMemPath } from '../../permissions/memory-path-policy.js';
+import { createFileResourceEvidence } from '../../permissions/path-resource-evidence.js';
 
 /**
  * 局部补丁修补与特征对齐替换工具类。
@@ -70,17 +77,34 @@ export class ApplyPatchTool implements NativeTool {
     if (typeof targetPath !== 'string') {
       return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
     }
-    // 补丁始终会修改目标文件，工具层提供完整写证据并请求统一权限服务裁决。
+    const evidence = {
+      operationCategory: 'file-edit',
+      sideEffect: 'write' as const,
+      riskReason: `补丁操作: ${targetPath}`,
+      resources: [createFileResourceEvidence(
+        targetPath,
+        'edit',
+        'apply-patch:target',
+      )],
+    };
+    const memoryDirectory = getAuthorizedMemoryDir();
+    if (
+      getAuthorizedMemoryRootKind() === 'default'
+      && memoryDirectory
+      && isAutoMemPath(targetPath, memoryDirectory, getAuthorizedDir() ?? process.cwd())
+    ) {
+      return {
+        kind: 'allow',
+        decisionReason: 'Claude 默认 Auto Memory 根内应用补丁',
+        evidence,
+      };
+    }
+    // 普通补丁仍请求统一权限服务裁决。
     return {
       kind: 'ask',
       message: `应用补丁到 ${targetPath}`,
       decisionReason: '补丁工具会修改文件内容',
-      evidence: {
-        operationCategory: 'file-edit',
-        sideEffect: 'write',
-        riskReason: `补丁操作: ${targetPath}`,
-        resources: [{ kind: 'path', access: 'write', normalizedPath: targetPath }],
-      },
+      evidence,
     };
   }
 

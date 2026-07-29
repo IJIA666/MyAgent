@@ -116,4 +116,25 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
       payload: { questions: [{ id: 'choice', question: 'Continue?' }] },
     });
   });
+
+  it('新会话不恢复旧会话临时模式（仅使用未来默认）', async () => {
+    const session = new SessionContext('contract-persistence-mode');
+    expect(session.getPermissionMode()).toBe('default');
+
+    // 切换到 acceptEdits（临时会话模式）
+    session.setPermissionMode('acceptEdits');
+    expect(session.getPermissionMode()).toBe('acceptEdits');
+
+    const workspace = createTempWorkspace();
+    const repo = new ContextRepository(session, workspace);
+    await repo.saveState();
+
+    // 新会话加载同一持久化快照，但不继承临时的 acceptEdits
+    const loadedSession = new SessionContext('contract-persistence-mode-loaded');
+    const loadRepo = new ContextRepository(loadedSession, workspace);
+    await loadRepo.loadState(session.getSessionId());
+
+    // 新会话应从头使用配置默认值，而不是恢复旧的 acceptEdits
+    expect(loadedSession.getPermissionMode()).toBe('default');
+  });
 });

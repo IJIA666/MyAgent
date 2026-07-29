@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PermissionSettingsStore } from '../../../src/adapters/tools/PermissionSettingsStore.js';
-import { PermissionRuleStore } from '../../../src/core/domain/permissions/rule-store.js';
+import { PermissionSessionState } from '../../../src/core/domain/permissions/permission-session-state.js';
 import { SettingsRepository } from '../../../src/config/settings-repository.js';
 
 describe('PermissionSettingsStore', () => {
@@ -41,8 +41,8 @@ describe('PermissionSettingsStore', () => {
     const store = new PermissionSettingsStore(repo);
 
     await store.persist({
-      operation: 'add',
-      targetSource: 'localSettings',
+      type: 'addRules',
+      target: 'projectLocal',
       rules: [{
         source: 'localSettings',
         ruleBehavior: 'allow',
@@ -51,8 +51,8 @@ describe('PermissionSettingsStore', () => {
     });
     // 重复保存同一规则验证已有文件可被安全替换且不会产生重复项。
     await store.persist({
-      operation: 'add',
-      targetSource: 'localSettings',
+      type: 'addRules',
+      target: 'projectLocal',
       rules: [{
         source: 'localSettings',
         ruleBehavior: 'allow',
@@ -65,8 +65,9 @@ describe('PermissionSettingsStore', () => {
     expect(doc.permission?.allow).toHaveLength(1);
     expect(JSON.stringify(doc)).toContain('Get-CimInstance Win32_OperatingSystem');
 
-    const reloadedRules = new PermissionRuleStore();
-    store.loadInto(reloadedRules);
+    const state = new PermissionSessionState();
+    const reloadedRules = state.getRuleStore();
+    store.loadInto(state);
     expect(reloadedRules.getMatchingRules(
       'PowerShell',
       'Get-CimInstance Win32_OperatingSystem',
@@ -81,8 +82,8 @@ describe('PermissionSettingsStore', () => {
     const store = new PermissionSettingsStore(repo);
 
     await store.persist({
-      operation: 'add',
-      targetSource: 'userSettings',
+      type: 'addRules',
+      target: 'user',
       rules: [{
         source: 'userSettings',
         ruleBehavior: 'allow',
@@ -95,10 +96,70 @@ describe('PermissionSettingsStore', () => {
     const projectDoc = repo.readDocument('local');
     expect(JSON.stringify(projectDoc)).not.toContain('Get-Service');
 
-    const reloadedRules = new PermissionRuleStore();
-    store.loadInto(reloadedRules);
+    const state = new PermissionSessionState();
+    const reloadedRules = state.getRuleStore();
+    store.loadInto(state);
     expect(reloadedRules.getRules('userSettings')).toHaveLength(1);
     expect(reloadedRules.getRules('localSettings')).toHaveLength(0);
+  });
+
+  it('同一 scope 的并发规则更新应在仓储临界区内合并而不丢失', async () => {
+    const projectDir = createTempDir('myagent-permission-project-');
+    const userDir = createTempDir('myagent-permission-user-');
+    const repo = createRepo(userDir, projectDir);
+    const store = new PermissionSettingsStore(repo);
+
+    await Promise.all([
+      store.persist({
+        type: 'addRules',
+        target: 'user',
+        rules: [{
+          source: 'userSettings',
+          ruleBehavior: 'allow',
+          ruleValue: { toolName: 'readFile', ruleContent: 'docs/*' },
+        }],
+      }),
+      store.persist({
+        type: 'addRules',
+        target: 'user',
+        rules: [{
+          source: 'userSettings',
+          ruleBehavior: 'deny',
+          ruleValue: { toolName: 'deletePath', ruleContent: 'config/*' },
+        }],
+      }),
+    ]);
+
+    const document = repo.readDocument('user');
+    expect(document.permission?.allow).toEqual([
+      { toolName: 'readFile', ruleContent: 'docs/*' },
+    ]);
+    expect(document.permission?.deny).toEqual([
+      { toolName: 'deletePath', ruleContent: 'config/*' },
+    ]);
+  });
+
+  it('跨 scope 原子动作应在写盘前 fail closed，避免部分提交', async () => {
+    const projectDir = createTempDir('myagent-permission-project-');
+    const userDir = createTempDir('myagent-permission-user-');
+    const repo = createRepo(userDir, projectDir);
+    const store = new PermissionSettingsStore(repo);
+
+    await expect(store.persistAll([
+      {
+        type: 'setMode',
+        target: 'user',
+        mode: 'acceptEdits',
+      },
+      {
+        type: 'setMode',
+        target: 'projectLocal',
+        mode: 'plan',
+      },
+    ])).rejects.toThrow('不能跨多个 settings scope');
+
+    expect(repo.readDocument('user')).toEqual({});
+    expect(repo.readDocument('local')).toEqual({});
   });
 
   it('空白设置文件应按尚未配置处理', () => {
@@ -106,9 +167,10 @@ describe('PermissionSettingsStore', () => {
     const userDir = createTempDir('myagent-permission-user-');
     const repo = createRepo(userDir, projectDir);
     const store = new PermissionSettingsStore(repo);
-    const reloadedRules = new PermissionRuleStore();
+    const state = new PermissionSessionState();
+    const reloadedRules = state.getRuleStore();
 
-    expect(() => store.loadInto(reloadedRules)).not.toThrow();
+    expect(() => store.loadInto(state)).not.toThrow();
     expect(reloadedRules.getRules('localSettings')).toHaveLength(0);
   });
 
@@ -120,8 +182,9 @@ describe('PermissionSettingsStore', () => {
     // repository.readDocument 遇到损坏文件返回空文档（不抛出），
     // 因此损坏场景下规则数为 0。
     const store = new PermissionSettingsStore(repo);
-    const reloadedRules = new PermissionRuleStore();
-    expect(() => store.loadInto(reloadedRules)).not.toThrow();
+    const state = new PermissionSessionState();
+    const reloadedRules = state.getRuleStore();
+    expect(() => store.loadInto(state)).not.toThrow();
     expect(reloadedRules.getRules('localSettings')).toHaveLength(0);
   });
 });

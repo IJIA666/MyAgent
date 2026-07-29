@@ -9,6 +9,7 @@ import type {
   PermissionRuleSource,
   PermissionBehavior,
   PermissionUpdate,
+  PermissionUpdateTarget,
 } from './permission-types.js';
 import {
   RULE_BEHAVIOR_MATCH_ORDER,
@@ -98,6 +99,24 @@ const SOURCE_META: Record<PermissionRuleSource, RuleSourceMeta> = {
   command:         { source: 'command',         lifecycle: 'session',    userModifiable: true,  priority: 5 },
   session:         { source: 'session',         lifecycle: 'session',    userModifiable: true,  priority: 1 },
 };
+
+/** 普通权限更新目标与内部规则来源的唯一映射。 */
+const UPDATE_TARGET_TO_SOURCE: Record<PermissionUpdateTarget, PermissionRuleSource> = {
+  session: 'session',
+  projectLocal: 'localSettings',
+  project: 'projectSettings',
+  user: 'userSettings',
+};
+
+/**
+ * 将公开更新目标转换为内部规则来源。
+ *
+ * @param target - 用户可修改的权限目标
+ * @returns 对应的规则来源
+ */
+export function getRuleSourceForUpdateTarget(target: PermissionUpdateTarget): PermissionRuleSource {
+  return UPDATE_TARGET_TO_SOURCE[target];
+}
 
 /**
  * 获取规则来源的元数据。
@@ -306,6 +325,29 @@ export class PermissionRuleStore {
     }
   }
 
+  /**
+   * 用经过上层整体验证的快照替换当前规则状态。
+   * 该入口供 PermissionSessionState 原子提交使用，不执行用户可修改性判断。
+   *
+   * @param rules - 已验证的完整规则快照
+   */
+  replaceSnapshot(rules: readonly PermissionRule[]): void {
+    const next = new Map<PermissionRuleSource, PermissionRule[]>();
+    for (const source of Object.keys(SOURCE_META) as PermissionRuleSource[]) {
+      next.set(source, []);
+    }
+    for (const rule of rules) {
+      const sourceRules = next.get(rule.source);
+      if (!sourceRules) {
+        throw new Error(`未知规则来源: ${String(rule.source)}`);
+      }
+      sourceRules.push(cloneRule(rule));
+    }
+    for (const [source, sourceRules] of next) {
+      this.rulesBySource.set(source, sourceRules);
+    }
+  }
+
   // ── PermissionUpdate 应用 ──
 
   /**
@@ -314,31 +356,28 @@ export class PermissionRuleStore {
    * @param update - 规则更新操作
    */
   applyUpdate(update: PermissionUpdate): void {
-    for (const rule of update.rules) {
-      const targetSource = update.targetSource ?? rule.source;
-
-      switch (update.operation) {
-        case 'add':
+    if (!('rules' in update)) {
+      throw new Error(`规则存储不能直接应用 ${update.type} 动作`);
+    }
+    const targetSource = getRuleSourceForUpdateTarget(update.target);
+    const normalizedRules = update.rules.map(rule => ({
+      ...cloneRule(rule),
+      source: targetSource,
+    }));
+    switch (update.type) {
+      case 'addRules':
+        for (const rule of normalizedRules) {
           this.addRule(targetSource, rule);
-          break;
-        case 'remove':
-          this.removeRule(targetSource, (r) =>
-            r.ruleValue.toolName === rule.ruleValue.toolName &&
-            r.ruleValue.ruleContent === rule.ruleValue.ruleContent &&
-            r.ruleBehavior === rule.ruleBehavior,
-          );
-          break;
-        case 'replace':
-          this.removeRule(targetSource, (r) =>
-            r.ruleValue.toolName === rule.ruleValue.toolName &&
-            r.ruleValue.ruleContent === rule.ruleValue.ruleContent,
-          );
-          this.addRule(targetSource, rule);
-          break;
-        case 'set':
-          this.setRules(targetSource, update.rules);
-          break;
-      }
+        }
+        break;
+      case 'removeRules':
+        for (const rule of normalizedRules) {
+          this.removeRule(targetSource, candidate => isSameRule(candidate, rule));
+        }
+        break;
+      case 'replaceRules':
+        this.setRules(targetSource, normalizedRules);
+        break;
     }
   }
 
@@ -356,6 +395,22 @@ export class PermissionRuleStore {
       throw new Error(`规则来源 ${source} 不允许在运行时修改`);
     }
   }
+}
+
+/** 创建不共享可变嵌套对象的规则副本。 */
+function cloneRule(rule: PermissionRule): PermissionRule {
+  return {
+    source: rule.source,
+    ruleBehavior: rule.ruleBehavior,
+    ruleValue: { ...rule.ruleValue },
+  };
+}
+
+/** 判断两条规则的行为和限定内容是否完全一致。 */
+function isSameRule(left: PermissionRule, right: PermissionRule): boolean {
+  return left.ruleBehavior === right.ruleBehavior
+    && left.ruleValue.toolName === right.ruleValue.toolName
+    && left.ruleValue.ruleContent === right.ruleValue.ruleContent;
 }
 
 // ── 内容匹配函数 ──

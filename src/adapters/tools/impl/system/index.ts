@@ -2,14 +2,13 @@
  * @file index.ts
  * @description 系统终端原生工具包入口模块。
  * 负责实例化并对外统一暴露所有与系统命令执行及 shell 操作相关的原生工具，
- * 并为每个工具注入 resourceExtractor 以替代集中式 registerExtractorsForBuiltinTools()。
+ * Shell 工具在自身构造阶段注入正式权限适配器。
  */
 
 import type { NativeTool } from '../../tool-types.js';
 import { BashTool, PowerShellTool } from './terminal.js';
 import { isShellKindSupportedOnPlatform } from './terminal-plan.js';
 import { GetCurrentTimeTool } from './time.js';
-import { commandPrefixExtractor, emptyExtractor } from '../resource-extractors.js';
 import { DEFAULT_SHELL_COMPOUND_FEATURES, type ShellCompoundFeatureConfig } from './command-analysis/index.js';
 
 /**
@@ -26,21 +25,14 @@ export function buildSystemTools(
   features: Readonly<ShellCompoundFeatureConfig> = DEFAULT_SHELL_COMPOUND_FEATURES,
 ): NativeTool[] {
   const bashTool: NativeTool = new BashTool(features);
-  bashTool.resourceExtractor = commandPrefixExtractor();
-  bashTool.accessMetadata = { resourceKinds: ['command-prefix'], accessMode: 'write' };
 
   // PowerShell 仅在 Windows 且可解析到可执行文件时注册。
   const powerShellTool: NativeTool | undefined = process.platform === 'win32' &&
     isShellKindSupportedOnPlatform('powershell', 'win32')
     ? new PowerShellTool(features)
     : undefined;
-  if (powerShellTool) {
-    powerShellTool.resourceExtractor = commandPrefixExtractor();
-    powerShellTool.accessMetadata = { resourceKinds: ['command-prefix'], accessMode: 'write' };
-  }
 
   const getCurrentTimeTool: NativeTool = new GetCurrentTimeTool();
-  getCurrentTimeTool.resourceExtractor = emptyExtractor();
 
   return [
     bashTool,

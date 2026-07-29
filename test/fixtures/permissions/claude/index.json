@@ -1,0 +1,317 @@
+{
+  "version": "1.0",
+  "description": "Claude Code 权限行为基准 fixtures",
+  "fixtures": [
+    {
+      "id": "manual-writefile-ask",
+      "scenario": "Manual + writeFile + workspace",
+      "description": "Manual 模式下写工作区文件应询问",
+      "input": {
+        "runtimeToolName": "writeFile",
+        "params": { "targetPath": "/workspace/file.ts" },
+        "session": {
+          "mode": "default",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "ask",
+        "actions": ["allowOnce", "allowAndSetMode(acceptEdits, session)", "deny"]
+      },
+      "source": "url:https://code.claude.com/docs/en/permission-modes"
+    },
+    {
+      "id": "acceptEdits-writefile-allow",
+      "scenario": "Accept edits on + writeFile + workspace",
+      "description": "Accept edits on 模式下写工作区文件应自动允许",
+      "input": {
+        "runtimeToolName": "writeFile",
+        "params": { "targetPath": "/workspace/file.ts" },
+        "session": {
+          "mode": "acceptEdits",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "allow",
+        "decisionReason": "acceptEdits",
+        "actions": []
+      },
+      "source": "url:https://code.claude.com/docs/en/permission-modes"
+    },
+    {
+      "id": "acceptEdits-editfile-allow",
+      "scenario": "Accept edits on + editFile + workspace",
+      "description": "Accept edits on 模式下编辑工作区文件应自动允许",
+      "input": {
+        "runtimeToolName": "editFile",
+        "params": { "targetPath": "/workspace/file.ts" },
+        "session": {
+          "mode": "acceptEdits",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "allow",
+        "decisionReason": "acceptEdits",
+        "actions": []
+      },
+      "source": "url:https://code.claude.com/docs/en/permission-modes"
+    },
+    {
+      "id": "acceptEdits-applypatch-allow",
+      "scenario": "Accept edits on + applyPatch + workspace",
+      "description": "Accept edits on 模式下 applyPatch 应自动允许",
+      "input": {
+        "runtimeToolName": "applyPatch",
+        "params": { "targetPath": "/workspace/file.ts" },
+        "session": {
+          "mode": "acceptEdits",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "allow",
+        "decisionReason": "acceptEdits",
+        "actions": []
+      },
+      "source": "url:https://code.claude.com/docs/en/permission-modes"
+    },
+    {
+      "id": "acceptEdits-createdirectory-allow",
+      "scenario": "Accept edits on + createDirectory + workspace",
+      "description": "Accept edits on 模式下创建工作区目录应自动允许",
+      "input": {
+        "runtimeToolName": "createDirectory",
+        "params": { "directoryPath": "/workspace/new-dir" },
+        "session": {
+          "mode": "acceptEdits",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "allow",
+        "decisionReason": "acceptEdits",
+        "actions": []
+      },
+      "source": "url:https://code.claude.com/docs/en/permission-modes"
+    },
+    {
+      "id": "acceptEdits-deletepath-ask",
+      "scenario": "Accept edits on + deletePath + workspace",
+      "description": "Accept edits on 不覆盖删除操作，应询问",
+      "input": {
+        "runtimeToolName": "deletePath",
+        "params": { "targetPath": "/workspace/file.ts" },
+        "session": {
+          "mode": "acceptEdits",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "ask",
+        "actions": ["allowOnce", "deny"]
+      },
+      "source": "src:D:/projects/Agents/claude-code-analysis/src/utils/permissions/filesystem.ts"
+    },
+    {
+      "id": "plan-writefile-deny",
+      "scenario": "Plan + writeFile + workspace",
+      "description": "Plan 模式下写文件应拒绝",
+      "input": {
+        "runtimeToolName": "writeFile",
+        "params": { "targetPath": "/workspace/file.ts" },
+        "session": {
+          "mode": "plan",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "deny",
+        "decisionReason": "plan",
+        "actions": []
+      },
+      "source": "url:https://code.claude.com/docs/en/permission-modes"
+    },
+    {
+      "id": "plan-editfile-deny",
+      "scenario": "Plan + editFile + workspace",
+      "description": "Plan 模式下编辑文件应拒绝",
+      "input": {
+        "runtimeToolName": "editFile",
+        "params": { "targetPath": "/workspace/file.ts" },
+        "session": {
+          "mode": "plan",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "deny",
+        "decisionReason": "plan",
+        "actions": []
+      },
+      "source": "url:https://code.claude.com/docs/en/permission-modes"
+    },
+    {
+      "id": "manual-readfile-allow",
+      "scenario": "Manual + readFile + workspace",
+      "description": "Manual 模式下读取工作区文件应允许",
+      "intentionalDifference": "isKnownReadOnlyTool 尚未包含 readFile（Phase 4.8）",
+      "input": {
+        "runtimeToolName": "readFile",
+        "params": { "targetPath": "/workspace/file.ts" },
+        "session": {
+          "mode": "default",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "allow",
+        "actions": []
+      },
+      "source": "url:https://code.claude.com/docs/en/permissions"
+    },
+    {
+      "id": "acceptEdits-protected-path-deny",
+      "scenario": "Accept edits on + writeFile + protected path (.env)",
+      "description": "Accept edits on 模式下写受保护路径仍应询问或拒绝",
+      "intentionalDifference": "受保护路径策略（Phase 5）尚未实现",
+      "input": {
+        "runtimeToolName": "writeFile",
+        "params": { "targetPath": "/workspace/.env" },
+        "session": {
+          "mode": "acceptEdits",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "ask",
+        "actions": ["allowOnce", "deny"]
+      },
+      "source": "src:D:/projects/Agents/claude-code-analysis/src/utils/permissions/filesystem.ts"
+    },
+    {
+      "id": "default-memory-root-write-allow",
+      "scenario": "Default + writeFile + built-in memoryDir",
+      "description": "默认 memory 根内写文件应直接允许",
+      "intentionalDifference": "memory-specific allow（Phase 8）尚未实现",
+      "input": {
+        "runtimeToolName": "writeFile",
+        "params": { "targetPath": "/home/user/.myagent/projects/MyAgent/memory/topics/note.md" },
+        "session": {
+          "mode": "default",
+          "rules": [],
+          "additionalDirectories": [],
+          "memoryDir": "/home/user/.myagent/projects/MyAgent/memory"
+        }
+      },
+      "expectedOutput": {
+        "decision": "allow",
+        "decisionReason": "autoMemoryDir",
+        "actions": []
+      },
+      "source": "src:D:/projects/Agents/claude-code-analysis/src/utils/permissions/filesystem.ts"
+    },
+    {
+      "id": "default-memory-root-read-allow",
+      "scenario": "Default + readFile + built-in memoryDir",
+      "description": "默认 memory 根内读文件应直接允许",
+      "intentionalDifference": "memory-specific allow（Phase 8）尚未实现",
+      "input": {
+        "runtimeToolName": "readFile",
+        "params": { "targetPath": "/home/user/.myagent/projects/MyAgent/memory/MEMORY.md" },
+        "session": {
+          "mode": "default",
+          "rules": [],
+          "additionalDirectories": [],
+          "memoryDir": "/home/user/.myagent/projects/MyAgent/memory"
+        }
+      },
+      "expectedOutput": {
+        "decision": "allow",
+        "decisionReason": "autoMemoryDir",
+        "actions": []
+      },
+      "source": "src:D:/projects/Agents/claude-code-analysis/src/utils/permissions/filesystem.ts"
+    },
+    {
+      "id": "default-memory-root-create-directory-allow",
+      "scenario": "Default + createDirectory + built-in memoryDir",
+      "description": "默认 memory 根内创建目录应直接允许",
+      "intentionalDifference": "memory-specific allow（Phase 8）尚未实现",
+      "input": {
+        "runtimeToolName": "createDirectory",
+        "params": { "directoryPath": "/home/user/.myagent/projects/MyAgent/memory/topics" },
+        "session": {
+          "mode": "default",
+          "rules": [],
+          "additionalDirectories": [],
+          "memoryDir": "/home/user/.myagent/projects/MyAgent/memory"
+        }
+      },
+      "expectedOutput": {
+        "decision": "allow",
+        "decisionReason": "autoMemoryDir",
+        "actions": []
+      },
+      "source": "src:D:/projects/Agents/claude-code-analysis/src/utils/permissions/filesystem.ts"
+    },
+    {
+      "id": "deny-rule-overrides-memory-allow",
+      "scenario": "Explicit deny rule overrides memory-specific allow",
+      "description": "显式 deny rule 优先于 memory 特例",
+      "intentionalDifference": "memory-specific allow + rule content 匹配（Phase 8）尚未实现",
+      "input": {
+        "runtimeToolName": "writeFile",
+        "params": { "targetPath": "/home/user/.myagent/projects/MyAgent/memory/MEMORY.md" },
+        "session": {
+          "mode": "default",
+          "rules": [
+            {
+              "source": "userSettings",
+              "ruleBehavior": "deny",
+              "ruleValue": { "toolName": "writeFile", "ruleContent": "/home/user/.myagent/projects/MyAgent/memory/*" }
+            }
+          ],
+          "additionalDirectories": [],
+          "memoryDir": "/home/user/.myagent/projects/MyAgent/memory"
+        }
+      },
+      "expectedOutput": {
+        "decision": "deny",
+        "decisionReason": "denyRule",
+        "actions": []
+      },
+      "source": "src:D:/projects/Agents/claude-code-analysis/src/utils/permissions/filesystem.ts"
+    },
+    {
+      "id": "external-directory-allow-once",
+      "scenario": "Manual + writeFile + outside workspace",
+      "description": "写工作区外文件应询问，Allow once 不加目录",
+      "input": {
+        "runtimeToolName": "writeFile",
+        "params": { "targetPath": "/outside-workspace/file.ts" },
+        "session": {
+          "mode": "default",
+          "rules": [],
+          "additionalDirectories": []
+        }
+      },
+      "expectedOutput": {
+        "decision": "ask",
+        "actions": ["allowOnce", "deny"]
+      },
+      "source": "src:D:/projects/Agents/claude-code-analysis/src/utils/permissions/filesystem.ts"
+    }
+  ]
+}

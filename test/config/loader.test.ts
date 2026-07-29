@@ -73,6 +73,36 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
     expect(unconfigured.language).toBeUndefined();
   });
 
+  it('Auto Memory 默认开启，并允许环境变量显式关闭', () => {
+    const baseEnv = {
+      AGENT_LLM_MODEL: 'deepseek-v4-flash',
+      AGENT_LLM_API_KEY: 'mock-api-key-123',
+    };
+
+    expect(loadConfig(baseEnv).autoMemoryEnabled).toBe(true);
+    expect(loadConfig({
+      ...baseEnv,
+      AGENT_AUTO_MEMORY_ENABLED: 'false',
+    }).autoMemoryEnabled).toBe(false);
+  });
+
+  it('Auto Memory 自定义目录只接受绝对或 home-relative 路径', () => {
+    const absoluteDirectory = resolve(tempTestDir, 'custom-memory');
+    const baseEnv = {
+      AGENT_LLM_MODEL: 'deepseek-v4-flash',
+      AGENT_LLM_API_KEY: 'mock-api-key-123',
+    };
+
+    expect(loadConfig({
+      ...baseEnv,
+      AGENT_AUTO_MEMORY_DIRECTORY: absoluteDirectory,
+    }).autoMemoryDirectory).toBe(absoluteDirectory);
+    expect(loadConfig({
+      ...baseEnv,
+      AGENT_AUTO_MEMORY_DIRECTORY: 'relative-memory',
+    }).autoMemoryDirectory).toBeUndefined();
+  });
+
   describe('环境变量依赖注入绝对隔离性验证', () => {
     const originalEnv = { ...process.env };
 

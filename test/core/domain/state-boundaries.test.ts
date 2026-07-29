@@ -128,10 +128,10 @@ describe('SessionContext 状态边界', () => {
     const context = new SessionContext('state-boundaries');
     context.setTenantId('tenant-a');
     context.setSessionId('state-boundaries-updated');
-    context.setPermissionMode('auto');
+    context.setPermissionMode('acceptEdits');
     expect(context.getTenantId()).toBe('tenant-a');
     expect(context.getSessionId()).toBe('state-boundaries-updated');
-    expect(context.getPermissionMode()).toBe('auto');
+    expect(context.getPermissionMode()).toBe('acceptEdits');
 
     context.addMessage(message('one'));
     context.addMessage(message('two'));
@@ -144,23 +144,20 @@ describe('SessionContext 状态边界', () => {
     context.truncateHistoryFromIndex(2);
     expect(context.getHistory()).toHaveLength(3);
 
-    context.addTemporaryReadWhitelist('state-boundaries-read');
-    context.addTemporaryWriteWhitelist('state-boundaries-write');
-    context.addTemporaryDirectoryScopeReadWhitelist('state-boundaries-directory');
-    expect(context.hasTemporaryReadWhitelist('state-boundaries-read')).toBe(true);
-    expect(context.hasTemporaryWriteWhitelist('state-boundaries-write')).toBe(true);
-    context.clearTemporaryWhitelists();
-    expect(context.hasTemporaryReadWhitelist('state-boundaries-read')).toBe(false);
+    context.getPermissionSessionState().applyUpdates([{
+      type: 'addDirectories',
+      target: 'session',
+      directories: ['state-boundaries-directory'],
+    }]);
+    expect(context.getPermissionSessionState().getAdditionalDirectories()).toEqual(
+      expect.arrayContaining([expect.stringContaining('state-boundaries-directory')]),
+    );
 
     context.isProcessing = true;
     expect(() => context.setTenantId('blocked')).toThrow('session is currently busy');
     expect(() => context.setPermissionMode('default')).toThrow('session is currently busy');
     expect(() => context.rollbackHistoryToLength(0)).toThrow('session is currently busy');
     expect(() => context.truncateHistoryFromIndex(1)).toThrow('session is currently busy');
-    expect(() => context.addTemporaryReadWhitelist('blocked-read')).toThrow('session is currently busy');
-    expect(() => context.addTemporaryWriteWhitelist('blocked-write')).toThrow('session is currently busy');
-    expect(() => context.addTemporaryDirectoryScopeReadWhitelist('blocked-directory')).toThrow('session is currently busy');
-    expect(() => context.clearTemporaryWhitelists()).toThrow('session is currently busy');
     context.isProcessing = false;
   });
 

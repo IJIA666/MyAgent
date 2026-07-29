@@ -33,7 +33,6 @@ vi.mock('child_process', () => {
   };
 });
 import { initWorkspace } from '../../../../src/adapters/tools/tools.js';
-import { setPermissionMode } from '../../../../src/adapters/tools/impl/system/terminal.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 import { BashTool } from '../../../../src/adapters/tools/impl/system/terminal.js';
 import * as terminalEngine from '../../../../src/adapters/tools/impl/system/terminal-engine.js';
@@ -57,8 +56,6 @@ describe('Terminal Notification Loopback & Buffering Tests', () => {
   });
 
   beforeEach(() => {
-    // 将工作安全模式重置为 YOLO，防止测试由于审批挂起而阻塞
-    setPermissionMode('bypassPermissions');
     // 设置默认 of promisified exec mock，防止在推理循环结束时物理执行 npm run lint / tsc --noEmit
     mockExecPromisified.mockResolvedValue({ stdout: 'mock lint/tsc passed\n', stderr: '' });
   });

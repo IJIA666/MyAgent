@@ -19,9 +19,12 @@ export class HelpCommand implements ICommand {
     console.log(`  ${theme.highlight('/resume <id>')}      - 恢复指定的历史会话上下文`);
     console.log(`  ${theme.highlight('/mcp <list|enable|disable> [name]')} - 管理与查阅 MCP 扩展服务`);
     console.log(`  ${theme.highlight('/reload-rules')}    - 重新读取并锁定最新的全局和项目局部规则`);
-    console.log(`  ${theme.highlight('/workmode [mode]')}  - 切换权限模式（常规 default|acceptEdits|plan|auto；dontAsk/bypassPermissions 需显式指定）`);
+    console.log(`  ${theme.highlight('/workmode [mode]')}  - 切换权限模式（常规 manual|acceptEdits|plan；dontAsk/bypassPermissions 需显式指定）`);
     console.log(`  ${theme.highlight('/compact [full]')}  - 自动规划上下文压缩，或强制生成全量检查点`);
     console.log(`  ${theme.highlight('/tool list')}       - 查看当前已挂载的可用工具清单`);
+    console.log(`  ${theme.highlight('/permissions')}     - 查看和管理当前权限状态、规则与额外目录`);
+    console.log(`  ${theme.highlight('/memory [action]')} - 查看 Auto Memory、显式诊断 topic 与管理候选`);
+    console.log(`  ${theme.highlight('/sandbox')}         - 查看真实隔离能力与 attestation 等级`);
     console.log(`  ${theme.highlight('/help')}             - 显示此帮助信息`);
     console.log(`  ${theme.highlight('exit / quit')}       - 退出程序`);
     console.log(`\n${theme.success('快捷键支持:')}`);

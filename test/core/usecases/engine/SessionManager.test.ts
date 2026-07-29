@@ -16,7 +16,6 @@ import { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdap
 import { AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
 import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
-import { SecurityService } from '../../../../src/core/usecases/security/SecurityService.js';
 
 interface VirtualAgentLoop {
   checkCacheAndCalibrate: (usage: unknown) => Generator<AgentEvent, void, unknown>;
@@ -85,14 +84,10 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       appConfig,
     );
 
-    expect(SecurityService.getInstance().hasTemporaryReadWhitelist(
-      session.getSessionId(),
-      join(appConfig.applicationPaths.toolOutputsDir, 'tool-output.log'),
-    )).toBe(true);
-    expect(SecurityService.getInstance().hasTemporaryReadWhitelist(
-      session.getSessionId(),
-      join(appConfig.applicationPaths.artifactsDir, 'outside.log'),
-    )).toBe(false);
+    expect(session.getPermissionSnapshot().additionalDirectories)
+      .toContain(appConfig.applicationPaths.toolOutputsDir);
+    expect(session.getPermissionSnapshot().additionalDirectories)
+      .not.toContain(appConfig.applicationPaths.artifactsDir);
 
     expect(session.getIsGenerating()).toBe(false);
     expect(session.getLastApiUsage()).toBeNull();
@@ -439,6 +434,78 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
   });
 
   describe('长期记忆快照', () => {
+    it('setAutoMemoryEnabled 仅在 settings 成功后更新当前会话与未来默认', async () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), 'session-memory-toggle-'));
+      const appConfig = createMockAppConfig({
+        workspace: tempRoot,
+        autoMemoryEnabled: true,
+      });
+      const configureMemoryAuthorizationRoot = vi.fn();
+      const session = new SessionManager(
+        { model: 'mock-model' } as unknown as LlmConfig,
+        {
+          getModelName: () => 'Mock',
+          switchModel: vi.fn(),
+          abort: vi.fn(),
+        } as unknown as LlmPort,
+        createMockEstimator(),
+        {
+          getTools: async () => [],
+          callTool: async () => ({
+            value: {},
+            effect: {
+              kind: 'read' as const,
+              executionStarted: true,
+              completed: true,
+              resources: [],
+              reason: 'declared_read_tool' as const,
+            },
+          }),
+          configureMemoryAuthorizationRoot,
+          close: vi.fn().mockResolvedValue(undefined),
+        } as unknown as ToolRegistryPort,
+        {
+          assemble: (baseHistory: ChatMessage[]) => baseHistory,
+        } as unknown as ContextAdapter,
+        appConfig,
+      );
+
+      try {
+        await session.setAutoMemoryEnabled(false);
+        expect(session.getMemoryStatus().enabled).toBe(false);
+        expect(session.getMemorySnapshot().memoryDir).toBe('');
+        expect(appConfig.settingsRepository.readDocument('user').autoMemoryEnabled)
+          .toBe(false);
+        expect(configureMemoryAuthorizationRoot).toHaveBeenLastCalledWith(
+          undefined,
+          'default',
+          appConfig.applicationPaths.memoryDir,
+        );
+
+        const updateSpy = vi.spyOn(
+          appConfig.settingsRepository,
+          'updateField',
+        ).mockResolvedValueOnce(false);
+        await expect(session.setAutoMemoryEnabled(true))
+          .rejects.toThrow('当前会话未改变');
+        expect(session.getMemoryStatus().enabled).toBe(false);
+        updateSpy.mockRestore();
+
+        await session.setAutoMemoryEnabled(true);
+        expect(session.getMemoryStatus().enabled).toBe(true);
+        expect(appConfig.settingsRepository.readDocument('user').autoMemoryEnabled)
+          .toBe(true);
+        expect(configureMemoryAuthorizationRoot).toHaveBeenLastCalledWith(
+          appConfig.applicationPaths.memoryDir,
+          'default',
+          appConfig.applicationPaths.memoryDir,
+        );
+      } finally {
+        await session.close();
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    });
+
     it('open() 应加载记忆快照（无 memory 目录时返回空快照）', async () => {
       const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
       const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
@@ -473,6 +540,55 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       const snapshot = session.getMemorySnapshot();
       expect(Object.isFrozen(snapshot)).toBe(true);
       expect(Object.isFrozen(snapshot.topics)).toBe(true);
+    });
+
+    it('autoMemoryEnabled=false 时完全不读取或投影 MEMORY.md', async () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), 'session-memory-disabled-'));
+      const memoryDir = join(tempRoot, 'memory');
+      // 若加载器被错误调用，目录形态的 MEMORY.md 会产生读取失败。
+      mkdirSync(join(memoryDir, 'MEMORY.md'), { recursive: true });
+      const baseConfig = createMockAppConfig();
+      const appConfig = createMockAppConfig({
+        autoMemoryEnabled: false,
+        applicationPaths: {
+          ...baseConfig.applicationPaths,
+          memoryDir,
+        },
+      });
+      const session = new SessionManager(
+        { model: 'mock-model' } as unknown as LlmConfig,
+        { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort,
+        createMockEstimator(),
+        {
+          getTools: async () => [],
+          callTool: async () => ({
+            value: {},
+            effect: {
+              kind: 'read' as const,
+              executionStarted: true,
+              completed: true,
+              resources: [],
+              reason: 'declared_read_tool' as const,
+            },
+          }),
+          close: vi.fn().mockResolvedValue(undefined),
+        } as unknown as ToolRegistryPort,
+        { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter,
+        appConfig,
+      );
+
+      try {
+        await expect(session.open()).resolves.toBeUndefined();
+        expect(session.getMemorySnapshot()).toMatchObject({
+          memoryDir: '',
+          content: '',
+          isEmpty: true,
+        });
+        expect(session.refreshMemorySnapshot()).toBe(true);
+      } finally {
+        await session.close();
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
     });
 
     it('读取失败时应保留旧快照，合法空索引才替换为空快照', async () => {

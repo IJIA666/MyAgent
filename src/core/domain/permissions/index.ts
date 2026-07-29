@@ -5,6 +5,5 @@
 export * from './permission-types.js';
 export * from './rule-store.js';
 export * from './tool-permission-service.js';
-export * from './mode-manager.js';
-export * from './auto-classifier.js';
 export * from './openai-adapter.js';
+export * from './permission-session-state.js';

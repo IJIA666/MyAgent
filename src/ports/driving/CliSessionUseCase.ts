@@ -11,6 +11,19 @@ import type {
   CompactionResult,
 } from '../driven/llm/LlmPort.js';
 import type { ChatUseCase } from './ChatUseCase.js';
+import type {
+  PermissionUpdate,
+} from '../../core/domain/permissions/permission-types.js';
+import type {
+  PermissionSessionSnapshot,
+} from '../../core/domain/permissions/permission-session-state.js';
+import type {
+  MemoryDiagnostic,
+  MemoryTopicDiagnosticResult,
+} from '../../core/usecases/brain/memory-loader.js';
+import type {
+  MemoryCandidate,
+} from '../../core/usecases/brain/memory-candidate-store.js';
 
 /**
  * CLI 可消费的技能摘要信息。
@@ -20,6 +33,24 @@ export interface CliSkillSummary {
   name: string;
   /** 技能简介 */
   description: string;
+}
+
+/** `/memory` 命令可查看的低敏长期记忆状态。 */
+export interface CliMemoryStatus {
+  /** 启动自动投影是否启用。 */
+  readonly enabled: boolean;
+  /** 当前精确 memory 根。 */
+  readonly memoryDir: string;
+  /** 当前根来自默认项目路径还是受信自定义配置。 */
+  readonly rootKind: 'default' | 'custom';
+  /** 启动快照是否为空。 */
+  readonly isEmpty: boolean;
+  /** 启动快照是否被 200 行或 25KB 上限截断。 */
+  readonly isTruncated: boolean;
+  /** 索引中已解析的 topic 引用数量，不代表已读取正文。 */
+  readonly indexedTopicCount: number;
+  /** 最近一次启动索引加载诊断。 */
+  readonly diagnostic: MemoryDiagnostic;
 }
 
 /**
@@ -100,4 +131,54 @@ export interface CliSessionUseCase extends ChatUseCase {
    * @param mode - 目标权限模式
    */
   setPermissionMode(mode: ConfigPermissionMode): void;
+
+  /**
+   * 获取当前会话权限状态快照。
+   *
+   * @returns 模式、规则、额外目录和状态版本
+   */
+  getPermissionSnapshot?(): PermissionSessionSnapshot;
+
+  /**
+   * 提交权限管理命令产生的更新。
+   *
+   * @param updates - 待提交更新
+   */
+  applyPermissionUpdates?(updates: readonly PermissionUpdate[]): Promise<void>;
+
+  /**
+   * 获取当前 Auto Memory 状态，不返回 MEMORY.md 或候选正文。
+   *
+   * @returns 低敏状态摘要
+   */
+  getMemoryStatus?(): CliMemoryStatus;
+
+  /**
+   * 原子持久化用户级 Auto Memory 开关，并刷新当前会话投影。
+   *
+   * @param enabled - 是否启用
+   */
+  setAutoMemoryEnabled?(enabled: boolean): Promise<void>;
+
+  /**
+   * 显式按需读取并诊断索引引用的 topic 文件。
+   *
+   * @returns topic 元数据与诊断；不得由启动流程隐式调用
+   */
+  diagnoseMemoryTopics?(): MemoryTopicDiagnosticResult;
+
+  /**
+   * 列出尚未激活的候选及其 provenance。
+   *
+   * @returns 候选列表
+   */
+  listMemoryCandidates?(): readonly MemoryCandidate[];
+
+  /**
+   * 撤销一个尚未激活的候选。
+   *
+   * @param candidateId - 候选 UUID
+   * @returns 候选存在并删除时为 true
+   */
+  discardMemoryCandidate?(candidateId: string): boolean;
 }

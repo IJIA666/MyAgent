@@ -5,6 +5,8 @@
  * 只产生最终 allow / ask / deny 三种决策。
  */
 
+import { randomUUID } from 'node:crypto';
+import { isAbsolute, relative } from 'node:path';
 import type {
   PermissionMode,
   PermissionDecision,
@@ -13,9 +15,22 @@ import type {
   PermissionRuleSource,
   ToolPermissionEvidence,
   ToolPermissionCheckResult,
-  ToolPermissionResourceEvidence,
+  ResourceEvidence,
+  PermissionRequest,
+  PermissionIdentity,
 } from './permission-types.js';
+import type { PermissionSessionState } from './permission-session-state.js';
 import { PermissionRuleStore } from './rule-store.js';
+import { checkProtectedResource } from './protected-resource-policy.js';
+import {
+  UNTRUSTED_CALLER,
+  type TrustedCallContext,
+} from './trusted-call-context.js';
+import { ExecutionPlan } from './execution-plan.js';
+import {
+  ExecutionGrantService,
+  type ExecutionGrant,
+} from './execution-grant-service.js';
 
 // ── 工具 checkPermissions 端口 ──
 
@@ -48,23 +63,15 @@ export interface ToolPermissionChecker {
   ): Promise<ToolPermissionCheckResult> | ToolPermissionCheckResult;
 }
 
-// ── 模式语义辅助类型 ──
-
-/** Auto 分类器接口，由 AutoPermissionClassifier 实现 */
-export interface AutoClassifier {
-  /**
-   * 判断一次 ask 调用是否安全。
-   *
-   * @param toolName - 工具名称
-   * @param args - 工具参数
-   * @param evidence - 工具分析产生的结构化证据
-   * @returns 允许或拒绝
-   */
-  classify(
-    toolName: string,
-    args: Record<string, unknown>,
-    evidence?: ToolPermissionEvidence,
-  ): Promise<{ allow: boolean; reason: string }>;
+/**
+ * 正式权限请求的宿主上下文。
+ * 工具候选只提供工具语义，caller 身份与会话状态必须由宿主注入。
+ */
+export interface PermissionRequestContext {
+  /** 工具自身已经完成的一次安全分析结果。 */
+  readonly toolResult?: ToolPermissionCheckResult;
+  /** 经宿主验证的调用者；缺失时按未验证远程调用处理。 */
+  readonly caller?: TrustedCallContext;
 }
 
 /** 规则匹配候选的类型。 */
@@ -96,6 +103,10 @@ export interface AuthorizedExecutionContext {
   readonly toolName: string;
   /** 工具调用参数 */
   readonly args: Record<string, unknown>;
+  /** 与授权决定绑定的不可变执行计划。 */
+  readonly plan: ExecutionPlan;
+  /** 当前权限服务为该计划签发的一次性 grant。 */
+  readonly grant: ExecutionGrant;
   /** 权限决策信息 */
   readonly decision: Pick<PermissionDecision, 'kind'> & { decisionReason?: string };
   /** 权限阶段生成的只读证据。 */
@@ -112,10 +123,8 @@ export interface AuthorizedExecutionContext {
 export interface ToolPermissionServiceOptions {
   /** 规则存储实例 */
   ruleStore: PermissionRuleStore;
-  /** 可选：Auto 分类器 */
-  autoClassifier?: AutoClassifier;
-  /** 是否运行在 headless 模式（无交互） */
-  headless?: boolean;
+  /** 可选的一次性 grant 服务，主要用于组合根与测试注入。 */
+  grantService?: ExecutionGrantService;
 }
 
 /**
@@ -129,8 +138,8 @@ export interface ToolPermissionServiceOptions {
  */
 export class ToolPermissionService {
   private readonly ruleStore: PermissionRuleStore;
-  private readonly autoClassifier?: AutoClassifier;
-  private readonly headless: boolean;
+  /** 当前权限服务唯一的一次性执行 grant 签发器。 */
+  private readonly grantService: ExecutionGrantService;
   /** 仅登记由本服务创建的上下文，阻止调用方伪造授权凭据。 */
   private readonly issuedContexts = new WeakSet<object>();
   /** 防止同一授权上下文被 tail call 重放。 */
@@ -138,8 +147,7 @@ export class ToolPermissionService {
 
   constructor(options: ToolPermissionServiceOptions) {
     this.ruleStore = options.ruleStore;
-    this.autoClassifier = options.autoClassifier;
-    this.headless = options.headless ?? false;
+    this.grantService = options.grantService ?? new ExecutionGrantService();
   }
 
   /**
@@ -149,7 +157,7 @@ export class ToolPermissionService {
    * @param args - 工具调用参数
    * @param mode - 当前权限模式
    * @param toolChecker - 可选的工具 checkPermissions 实现
-   * @param context - 额外的执行上下文（cwd 等）
+   * @param context - 额外的执行上下文与当前会话规则视图
    * @returns 最终的权限决策
    */
   async checkPermissions(
@@ -157,14 +165,16 @@ export class ToolPermissionService {
     args: Record<string, unknown>,
     mode: PermissionMode,
     toolChecker?: ToolPermissionChecker,
-    context?: { cwd?: string },
+    context?: { cwd?: string; ruleStore?: PermissionRuleStore },
   ): Promise<PermissionDecision> {
+    // 每次调用固定使用所属会话的规则视图；无会话时才使用构造期受限仓库。
+    const ruleStore = context?.ruleStore ?? this.ruleStore;
     // 工具检查只执行一次，优先取得结构化证据与不可绕过结果。
     let toolResult: ToolPermissionCheckResult = { kind: 'passthrough' };
     if (toolChecker) {
       toolResult = await toolChecker.checkPermissions(
         { args, cwd: context?.cwd },
-        { mode, rules: this.ruleStore },
+        { mode, rules: ruleStore },
       );
     }
     const shellCandidate = isShellPermissionCandidate(toolName, toolResult);
@@ -203,11 +213,220 @@ export class ToolPermissionService {
 
     // 显式用户规则高于普通工具建议；deny 和 ask 仍高于 allow。
     const ruleDecision = shellCandidate
-      ? this.evaluateBareToolRule(toolName, toolResult.evidence)
-      : this.evaluateExplicitRules(toolName, args, toolResult.evidence);
+      ? this.evaluateBareToolRule(toolName, ruleStore, toolResult.evidence)
+      : this.evaluateExplicitRules(toolName, args, ruleStore, toolResult.evidence);
     const baselineDecision = ruleDecision ?? this.createBuiltInBaseline(toolName, toolResult);
     const candidateDecision = attachToolMetadata(baselineDecision, toolResult);
     return this.applyPermissionMode(candidateDecision, mode, toolName, args);
+  }
+
+  /**
+   * 基于工具适配器产生的 PermissionRequest 执行权限检查。
+   * 使用适配器提供的稳定权限身份取代字符串猜测。
+   *
+   * @param request - 工具适配器产生的标准化权限请求
+   * @param state - 当前会话权限状态
+   * @returns 最终权限决策
+   */
+  async checkRequest(
+    request: PermissionRequest,
+    state: PermissionSessionState,
+    context: PermissionRequestContext = {},
+  ): Promise<PermissionDecision> {
+    const mode = state.getMode();
+    const ruleStore = state.getRuleStore();
+    const { runtimeToolName, normalizedArgs, permissionIdentity, isEditOperation: isEdit } = request;
+    const caller = context.caller ?? UNTRUSTED_CALLER;
+    const isAuthorizedEditScope = isEdit && isRequestWithinEditScope(request, state);
+
+    // managed/trusted-user 资源上限必须先于 caller、普通规则、模式和 memory 特例。
+    const protectedDecision = evaluateProtectedRequest(request);
+    if (protectedDecision) {
+      return protectedDecision;
+    }
+
+    // 未经宿主验证或来自 remote 渠道的 caller 不得借用本地会话 id、规则或审批。
+    if (!caller.hostVerified || caller.caller.channelTrust === 'remote') {
+      return {
+        kind: 'ask',
+        message: `未验证调用者请求执行 "${runtimeToolName}"`,
+        decisionReason: '调用者身份未通过本地宿主验证',
+        evidence: createRequestEvidence(request),
+        decisionSource: 'invariant',
+        matchedEvidenceIds: request.resourceEvidences.map(createResourceEvidenceId),
+        overridable: false,
+      };
+    }
+
+    // 工具硬拒绝代表输入或分析不完整，任何规则与模式都不能覆盖。
+    if (context.toolResult?.kind === 'deny') {
+      const toolResult = attachRequestResources(context.toolResult, request);
+      return {
+        kind: 'deny',
+        decisionReason: toolResult.decisionReason,
+        evidence: toolResult.evidence,
+        decisionCode: toolResult.decisionCode,
+        analysis: toolResult.analysis,
+        decisionSource: 'invariant',
+        matchedEvidenceIds: request.resourceEvidences.map(createResourceEvidenceId),
+        overridable: false,
+      };
+    }
+
+    // 显式规则优先
+    const requestEvidence = createRequestEvidence(request);
+    const ruleDecision = this.evaluateExplicitRules(
+      runtimeToolName,
+      normalizedArgs as Record<string, unknown>,
+      ruleStore,
+      requestEvidence,
+    );
+    if (ruleDecision) {
+      return this.applyRequestMode(
+        ruleDecision,
+        mode,
+        runtimeToolName,
+        isAuthorizedEditScope,
+        permissionIdentity,
+      );
+    }
+
+    // 默认 memory 等工具专属内置候选在显式规则之后生效。
+    if (
+      context.toolResult
+      && context.toolResult.kind !== 'passthrough'
+    ) {
+      const toolResult = attachRequestResources(context.toolResult, request);
+      const toolDecision = attachToolMetadata(
+        this.createBuiltInBaseline(runtimeToolName, toolResult),
+        toolResult,
+      );
+      return this.applyRequestMode(
+        toolDecision,
+        mode,
+        runtimeToolName,
+        isAuthorizedEditScope,
+        permissionIdentity,
+      );
+    }
+
+    // 没有命中规则时，根据权限身份产生基线
+    const baselineDecision = this.createPermissionBaseline(permissionIdentity, runtimeToolName, request);
+    return this.applyRequestMode(
+      baselineDecision,
+      mode,
+      runtimeToolName,
+      isAuthorizedEditScope,
+      permissionIdentity,
+    );
+  }
+
+  /**
+   * 根据 PermissionIdentity 创建内置基线决策。
+   *
+   * @param identity - 稳定权限身份
+   * @param toolName - 运行时工具名
+   * @param request - 适配器提供的权限请求
+   * @returns 内置基线决策
+   */
+  private createPermissionBaseline(
+    identity: PermissionIdentity,
+    toolName: string,
+    _request: PermissionRequest,
+  ): PermissionDecision {
+    const readIdentities: PermissionIdentity[] = ['FileRead'];
+    if (readIdentities.includes(identity)) {
+      return {
+        kind: 'allow',
+        decisionReason: `适配器标识 "${identity}" 为只读操作`,
+        decisionSource: 'builtInBaseline',
+        matchedEvidenceIds: [],
+        overridable: true,
+      };
+    }
+
+    return {
+      kind: 'ask',
+      message: `工具 "${toolName}" (${identity}) 需要权限确认`,
+      decisionReason: `适配器标识 "${identity}" 未被规则覆盖`,
+      decisionSource: 'builtInBaseline',
+      matchedEvidenceIds: [],
+      overridable: true,
+    };
+  }
+
+  /**
+   * 基于 mode 和适配器身份的最终模式转换。
+   *
+   * @param decision - 待处理的决策
+   * @param mode - 当前模式
+   * @param toolName - 运行时工具名
+   * @param isEdit - 是否为普通编辑操作
+   * @param identity - 稳定权限身份
+   * @returns 最终决策
+   */
+  private async applyRequestMode(
+    decision: PermissionDecision,
+    mode: PermissionMode,
+    toolName: string,
+    isEdit: boolean,
+    identity: PermissionIdentity,
+  ): Promise<PermissionDecision> {
+    if (decision.kind === 'deny' || !decision.overridable) return decision;
+
+    switch (mode) {
+      case 'acceptEdits': {
+        if (isEdit) {
+          return {
+            kind: 'allow',
+            decisionReason: `acceptEdits: "${toolName}" 为普通编辑操作 (${identity})`,
+            evidence: decision.evidence,
+            decisionSource: 'mode',
+            matchedEvidenceIds: decision.matchedEvidenceIds,
+            overridable: false,
+          };
+        }
+        return decision;
+      }
+      case 'plan': {
+        if (identity !== 'FileRead') {
+          return {
+            kind: 'deny',
+            decisionReason: `plan 模式不允许 "${toolName}" (${identity})`,
+            decisionSource: 'mode',
+            matchedEvidenceIds: decision.matchedEvidenceIds,
+            overridable: false,
+          };
+        }
+        return decision;
+      }
+      case 'dontAsk': {
+        if (decision.kind === 'ask') {
+          return {
+            kind: 'deny',
+            decisionReason: `dontAsk 模式: "${toolName}" 需要权限但不允许交互`,
+            decisionSource: 'mode',
+            matchedEvidenceIds: decision.matchedEvidenceIds,
+            overridable: false,
+          };
+        }
+        return decision;
+      }
+      case 'bypassPermissions': {
+        if (decision.kind === 'ask') {
+          return {
+            kind: 'allow',
+            decisionReason: `bypassPermissions 模式: "${toolName}" 已绕过询问`,
+            decisionSource: 'mode',
+            matchedEvidenceIds: decision.matchedEvidenceIds,
+            overridable: false,
+          };
+        }
+        return decision;
+      }
+      default:
+        return decision;
+    }
   }
 
   /**
@@ -217,24 +436,31 @@ export class ToolPermissionService {
    * @param toolName - 工具名称
    * @param args - 工具调用参数
    * @param decision - 权限决策
+   * @param plan - 已由网关基于当前状态创建的不可变执行计划
    * @returns 不可伪造的执行上下文
    */
   createAuthorizedContext(
     toolName: string,
     args: Record<string, unknown>,
     decision: PermissionDecision,
+    plan: ExecutionPlan,
   ): AuthorizedExecutionContext | null {
     if (decision.kind !== 'allow') {
       return null;
     }
-    const context: AuthorizedExecutionContext = {
+    if (plan.runtimeToolName !== toolName) {
+      throw new Error('执行计划与工具名称不匹配');
+    }
+    const context: AuthorizedExecutionContext = Object.freeze({
       nonce: generateNonce(),
       toolName,
-      args,
+      args: plan.normalizedArgs as Record<string, unknown>,
+      plan,
+      grant: this.grantService.issueGrant(plan),
       decision: { kind: 'allow', decisionReason: decision.decisionReason },
       evidence: decision.evidence,
       analysis: decision.analysis,
-    };
+    });
     this.issuedContexts.add(context);
     return context;
   }
@@ -247,6 +473,10 @@ export class ToolPermissionService {
    */
   consumeAuthorizedContext(context: AuthorizedExecutionContext): boolean {
     if (!this.issuedContexts.has(context) || this.consumedContexts.has(context)) {
+      return false;
+    }
+    const verification = this.grantService.consumeGrant(context.grant, context.plan);
+    if (!verification.valid) {
       return false;
     }
     this.consumedContexts.add(context);
@@ -268,9 +498,10 @@ export class ToolPermissionService {
   /** 对 Shell 候选结果只应用裸工具规则，内容规则已由专用分析器处理。 */
   private evaluateBareToolRule(
     toolName: string,
+    ruleStore: PermissionRuleStore,
     evidence?: ToolPermissionEvidence,
   ): PermissionDecision | undefined {
-    const rule = this.ruleStore.getMatchingRules(toolName)
+    const rule = ruleStore.getMatchingRules(toolName)
       .find(candidate => candidate.ruleValue.ruleContent === undefined);
     if (!rule) {
       return undefined;
@@ -316,17 +547,19 @@ export class ToolPermissionService {
    * deny/ask 命中任何候选即可生效；allow 必须覆盖完整调用或所有子命令，避免复合命令被部分放行。
    *
    * @param toolName - 工具名称
-   * @param args - 工具参数
+   * @param _args - 保留给未来需要参数级模式后处理的调用上下文
+   * @param ruleStore - 当前会话规则视图
    * @param evidence - 工具分析证据
    * @returns 匹配的最终规则决策，无匹配则返回 undefined
    */
   private evaluateExplicitRules(
     toolName: string,
     args: Record<string, unknown>,
+    ruleStore: PermissionRuleStore,
     evidence?: ToolPermissionEvidence,
   ): PermissionDecision | undefined {
     const candidates = createRuleCandidates(toolName, args, evidence);
-    const matches = this.collectRuleMatches(toolName, candidates);
+    const matches = this.collectRuleMatches(toolName, candidates, ruleStore);
 
     // deny 和 ask 只要命中一个结构化候选就必须生效。
     for (const behavior of ['deny', 'ask'] as const) {
@@ -379,10 +612,11 @@ export class ToolPermissionService {
   private collectRuleMatches(
     toolName: string,
     candidates: readonly RuleMatchCandidate[],
+    ruleStore: PermissionRuleStore,
   ): MatchedPermissionRule[] {
     const matches: MatchedPermissionRule[] = [];
     for (const candidate of candidates) {
-      const matchedRules = this.ruleStore.getMatchingRules(toolName, candidate.content);
+      const matchedRules = ruleStore.getMatchingRules(toolName, candidate.content);
       for (const rule of matchedRules) {
         matches.push({ rule, candidate });
       }
@@ -487,14 +721,14 @@ export class ToolPermissionService {
    * @param decision - 待处理的决策
    * @param mode - 当前权限模式
    * @param toolName - 工具名称
-   * @param args - 工具参数
+   * @param _args - 保留给未来参数级模式后处理的调用上下文
    * @returns 最终的权限决策
    */
   private async applyPermissionMode(
     decision: PermissionDecision,
     mode: PermissionMode,
     toolName: string,
-    args: Record<string, unknown>,
+    _args: Record<string, unknown>,
   ): Promise<PermissionDecision> {
     // deny 永不降级；显式 allow 也不再被普通模式改写。
     if (decision.kind === 'deny') {
@@ -530,7 +764,7 @@ export class ToolPermissionService {
     switch (mode) {
       case 'acceptEdits': {
         // acceptEdits 只放行专用编辑工具，不扩张到任意终端写入。
-        if (isEditOperation(toolName, args)) {
+        if (isEditOperation(decision.evidence, toolName)) {
           return {
             kind: 'allow',
             decisionReason: 'acceptEdits: 编辑操作自动允许',
@@ -585,11 +819,6 @@ export class ToolPermissionService {
         };
       }
 
-      case 'auto': {
-        // auto 模式使用分类器
-        return this.handleAutoMode(decision, toolName, args);
-      }
-
       default: {
         // default 模式：保留 ask
         return decision;
@@ -598,87 +827,9 @@ export class ToolPermissionService {
   }
 
   /**
-   * 处理 auto 模式的 ask 后分类。
-   *
-   * @param decision - ask 决策
-   * @param toolName - 工具名称
-   * @param args - 工具参数
-   * @returns 分类器决定的 allow/deny 或原始 ask
-   */
-  private async handleAutoMode(
-    decision: PermissionDecision & { kind: 'ask' },
-    toolName: string,
-    args: Record<string, unknown>,
-  ): Promise<PermissionDecision> {
-    if (!this.autoClassifier) {
-      // 分类器不可用
-      if (this.headless) {
-        return {
-          kind: 'deny',
-          decisionReason: `auto 模式: 分类器不可用且为 headless 模式，拒绝 "${toolName}"`,
-          evidence: decision.evidence,
-          decisionCode: decision.decisionCode,
-          ruleSuggestions: decision.ruleSuggestions,
-          analysis: decision.analysis,
-          decisionSource: 'mode',
-          matchedEvidenceIds: decision.matchedEvidenceIds,
-          overridable: false,
-        };
-      }
-      // 有交互环境：保留 ask 让用户判断
-      return decision;
-    }
-
-    try {
-      const result = await this.autoClassifier.classify(toolName, args, decision.evidence);
-      if (result.allow) {
-        return {
-          kind: 'allow',
-          decisionReason: `auto 分类器: ${result.reason}`,
-          evidence: decision.evidence,
-          decisionCode: decision.decisionCode,
-          ruleSuggestions: decision.ruleSuggestions,
-          analysis: decision.analysis,
-          decisionSource: 'classifier',
-          matchedEvidenceIds: decision.matchedEvidenceIds,
-          overridable: false,
-        };
-      }
-      return {
-        kind: 'deny',
-        decisionReason: `auto 分类器: ${result.reason}`,
-        evidence: decision.evidence,
-        decisionCode: decision.decisionCode,
-        ruleSuggestions: decision.ruleSuggestions,
-        analysis: decision.analysis,
-        decisionSource: 'classifier',
-        matchedEvidenceIds: decision.matchedEvidenceIds,
-        overridable: false,
-      };
-    } catch {
-      // 分类器异常
-      if (this.headless) {
-        return {
-          kind: 'deny',
-          decisionReason: `auto 模式: 分类器异常且为 headless 模式，拒绝 "${toolName}"`,
-          evidence: decision.evidence,
-          decisionCode: decision.decisionCode,
-          ruleSuggestions: decision.ruleSuggestions,
-          analysis: decision.analysis,
-          decisionSource: 'mode',
-          matchedEvidenceIds: decision.matchedEvidenceIds,
-          overridable: false,
-        };
-      }
-      return decision;
-    }
-  }
-
-  /**
    * 判断 plan 模式下该工具调用是否安全（只读）。
    *
    * @param toolName - 工具名称
-   * @param args - 工具参数
    * @param evidence - 工具权限证据
    * @returns 是否被允许在 plan 模式下执行
    */
@@ -716,13 +867,11 @@ function createRuleCandidates(
   });
 
   evidence?.resources?.forEach((resource, index) => {
-    if (!isStructuredResourceEvidence(resource)) {
-      return;
-    }
     const evidenceId = resource.sourceNodeId || `resource:${index}`;
     candidates.push({ content: resource.rawExpression, kind: 'resource', evidenceId });
-    if (resource.resolvedResource && resource.resolvedResource !== resource.rawExpression) {
-      candidates.push({ content: resource.resolvedResource, kind: 'resource', evidenceId });
+    const canonicalExpression = getCanonicalResourceExpression(resource);
+    if (canonicalExpression && canonicalExpression !== resource.rawExpression) {
+      candidates.push({ content: canonicalExpression, kind: 'resource', evidenceId });
     }
   });
 
@@ -735,6 +884,25 @@ function createRuleCandidates(
   }
 
   return candidates;
+}
+
+/** 返回正式资源证据中可安全参与精确规则匹配的规范表达式。 */
+function getCanonicalResourceExpression(resource: ResourceEvidence): string | undefined {
+  switch (resource.kind) {
+    case 'file':
+    case 'directory-scope':
+      return resource.canonicalPath;
+    case 'network':
+      return resource.canonicalUrl;
+    case 'external-side-effect':
+      return resource.canonicalServiceName;
+    case 'command':
+      return resource.canonicalSummary;
+    case 'mcp-call':
+      return `${resource.serverName}/${resource.toolName}`;
+    case 'unknown':
+      return undefined;
+  }
 }
 
 /** 找出足以覆盖完整调用的 allow 命中，拒绝只覆盖复合命令一部分的 allow。 */
@@ -808,20 +976,9 @@ function collectEvidenceIds(evidence?: ToolPermissionEvidence): string[] {
   const evidenceIds = [`operation:${evidence.operationCategory}`];
   evidence.subcommands?.forEach((_subcommand, index) => evidenceIds.push(`subcommand:${index}`));
   evidence.resources?.forEach((resource, index) => {
-    evidenceIds.push(isStructuredResourceEvidence(resource) && resource.sourceNodeId
-      ? resource.sourceNodeId
-      : `resource:${index}`);
+    evidenceIds.push(resource.sourceNodeId || `resource:${index}`);
   });
   return [...new Set(evidenceIds)];
-}
-
-/** 判断兼容资源记录是否已经采用正式的结构化资源契约。 */
-function isStructuredResourceEvidence(
-  resource: ToolPermissionResourceEvidence | Readonly<Record<string, unknown>>,
-): resource is ToolPermissionResourceEvidence {
-  return typeof resource.rawExpression === 'string' &&
-    typeof resource.sourceNodeId === 'string' &&
-    typeof resource.operation === 'string';
 }
 
 /** 创建由权限模式收紧后的拒绝决定。 */
@@ -910,35 +1067,182 @@ function extractContentFromArgs(toolName: string, args: Record<string, unknown>)
 }
 
 /**
- * 判断是否为编辑类操作（acceptEdits 模式使用）。
- *
- * @param toolName - 工具名称
- * @param args - 工具参数
- * @returns 是否为编辑操作
+ * 已知的普通编辑工具名集合（acceptEdits 模式放行依据）。
+ * TODO: 迁移到 ToolAuthorizationAdapter.isOrdinaryEdit()。
  */
-function isEditOperation(toolName: string, _args: Record<string, unknown>): boolean {
-  const editTools = new Set([
-    'Write',
-    'Edit',
-    'Create',
-    'ApplyPatch',
-    'DeleteFile',
-    'MoveFile',
-    'CopyFile',
-  ]);
-  return editTools.has(toolName);
-}
-
-let nonceCounter = 0;
+const ORDINARY_EDIT_TOOLS = new Set([
+  'writeFile', 'editFile', 'applyPatch', 'createDirectory',
+]);
 
 /**
- * 生成不可伪造的 nonce 字符串。
+ * 判断是否为编辑类操作（acceptEdits 模式使用）。
+ * 优先检查 evidence 中的 operationCategory，回退检查工具名。
+ *
+ * @param evidence - 工具适配器产生的结构化操作证据
+ * @param toolName - 运行时工具名（可选，用于 evidence 缺失时回退）
+ * @returns 是否为编辑操作
+ */
+function isEditOperation(evidence?: ToolPermissionEvidence, toolName?: string): boolean {
+  if (evidence?.operationCategory === 'file-edit'
+    || evidence?.operationCategory === 'file-write') {
+    return true;
+  }
+  // 无 evidence 时按已知编辑工具名回退
+  if (toolName && ORDINARY_EDIT_TOOLS.has(toolName)) {
+    return true;
+  }
+  return false;
+}
+
+/** 用正式 PermissionRequest 资源替换工具候选中的迁移期资源形状。 */
+function attachRequestResources<T extends ToolPermissionCheckResult>(
+  toolResult: T,
+  request: PermissionRequest,
+): T {
+  const fallbackEvidence = createRequestEvidence(request);
+  return {
+    ...toolResult,
+    evidence: {
+      ...(toolResult.evidence ?? fallbackEvidence),
+      resources: request.resourceEvidences,
+    },
+  } as T;
+}
+
+/** 将正式请求中的资源转成现有执行 effect 可消费的证据。 */
+function createRequestEvidence(request: PermissionRequest): ToolPermissionEvidence {
+  const sideEffect = request.permissionIdentity === 'FileRead'
+    ? 'read'
+    : request.permissionIdentity === 'UnknownEffect'
+      ? 'unknown'
+      : 'write';
+  return {
+    operationCategory: request.permissionIdentity,
+    sideEffect,
+    riskReason: `工具适配器声明 ${request.permissionIdentity}`,
+    resources: request.resourceEvidences,
+  };
+}
+
+/** 判断普通编辑的全部文件资源是否位于工作区或显式 additionalDirectories 内。 */
+function isRequestWithinEditScope(
+  request: PermissionRequest,
+  state: PermissionSessionState,
+): boolean {
+  if (request.resourceEvidences.length === 0) {
+    return false;
+  }
+  const additionalDirectories = state.getAdditionalDirectories();
+  return request.resourceEvidences.every(resource => {
+    if (resource.kind !== 'file' && resource.kind !== 'directory-scope') {
+      return false;
+    }
+    if (resource.scope === 'workspace') {
+      return true;
+    }
+    return additionalDirectories.some(directory =>
+      isPhysicalSubPath(directory, resource.canonicalPath));
+  });
+}
+
+/** 使用路径分段而非字符串前缀判断物理子树关系。 */
+function isPhysicalSubPath(parent: string, candidate: string): boolean {
+  const parentKey = process.platform === 'win32' ? parent.toLowerCase() : parent;
+  const candidateKey = process.platform === 'win32' ? candidate.toLowerCase() : candidate;
+  const relation = relative(parentKey, candidateKey);
+  return relation === ''
+    || (!relation.startsWith('..') && !isAbsolute(relation));
+}
+
+/** 为正式资源证据生成稳定、去敏的匹配标识。 */
+function createResourceEvidenceId(resource: ResourceEvidence): string {
+  return `${resource.kind}:${resource.sourceNodeId}:${resource.operation}`;
+}
+
+/**
+ * 计算受保护资源的不可绕过上限。
+ * 文件、网络和外部账号副作用必须在普通规则与模式之前完成判断。
+ */
+function evaluateProtectedRequest(request: PermissionRequest): PermissionDecision | undefined {
+  const evidence = createRequestEvidence(request);
+  const matchedEvidenceIds = request.resourceEvidences.map(createResourceEvidenceId);
+
+  for (const resource of request.resourceEvidences) {
+    if (resource.kind === 'file' || resource.kind === 'directory-scope') {
+      const operation = resource.operation === 'read' ? 'read' : 'write';
+      const result = checkProtectedResource(resource.canonicalPath, operation);
+      if (result.decision === 'deny') {
+        return {
+          kind: 'deny',
+          decisionReason: result.reason,
+          evidence,
+          decisionSource: 'invariant',
+          matchedEvidenceIds,
+          overridable: false,
+        };
+      }
+      if (result.decision === 'ask') {
+        return {
+          kind: 'ask',
+          message: '目标属于受保护资源，需要单次明确确认',
+          decisionReason: result.reason,
+          evidence,
+          decisionSource: 'invariant',
+          matchedEvidenceIds,
+          overridable: false,
+        };
+      }
+    }
+
+    if (
+      resource.kind === 'network'
+      && (resource.scope === 'cloud-metadata' || resource.scope === 'link-local')
+    ) {
+      return {
+        kind: 'deny',
+        decisionReason: `禁止访问受保护网络范围: ${resource.scope}`,
+        evidence,
+        decisionSource: 'invariant',
+        matchedEvidenceIds,
+        overridable: false,
+      };
+    }
+
+    if (
+      resource.kind === 'network'
+      && (resource.scope === 'loopback' || resource.scope === 'private')
+    ) {
+      return {
+        kind: 'ask',
+        message: '访问本地或私有网络需要明确确认',
+        decisionReason: `网络目标属于受保护范围: ${resource.scope}`,
+        evidence,
+        decisionSource: 'invariant',
+        matchedEvidenceIds,
+        overridable: false,
+      };
+    }
+
+    if (resource.kind === 'external-side-effect') {
+      return {
+        kind: 'ask',
+        message: '外部账号副作用需要单次明确确认',
+        decisionReason: `外部操作不可由文件编辑模式放行: ${resource.operation}`,
+        evidence,
+        decisionSource: 'invariant',
+        matchedEvidenceIds,
+        overridable: false,
+      };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 生成用于审计关联的安全随机 nonce。
  *
  * @returns nonce 字符串
  */
 function generateNonce(): string {
-  nonceCounter++;
-  const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).substring(2, 10);
-  return `auth_${ts}_${rand}_${nonceCounter}`;
+  return `auth_${randomUUID()}`;
 }

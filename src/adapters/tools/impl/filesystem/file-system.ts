@@ -7,11 +7,23 @@ import { existsSync, statSync, mkdirSync, readdirSync, promises as fsPromises } 
 import type { Dirent } from 'fs';
 import { dirname, resolve, basename } from 'path';
 import { createPatch } from 'diff';
-import { secureResolveReadPath, secureResolveWritePath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import {
+  secureResolveReadPath,
+  secureResolveWritePath,
+  getAuthorizedDir,
+  getAuthorizedMemoryDir,
+  getAuthorizedMemoryRootKind,
+} from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import { logger, LOG_COMPONENT, LOG_EVENT } from '../../../../utils/logger.js';
+import { isAutoMemPath } from '../../permissions/memory-path-policy.js';
+import {
+  createDirectoryScopeEvidence,
+  createFileResourceEvidence,
+} from '../../permissions/path-resource-evidence.js';
+import type { ResourceEvidence } from '../../../../core/domain/permissions/permission-types.js';
 
 /** 判断给定的文件路径是否属于敏感的环境变量配置文件 */
 function isSensitiveEnvFile(filePath: string): boolean {
@@ -22,19 +34,36 @@ function isSensitiveEnvFile(filePath: string): boolean {
   return name === '.env' || name.startsWith('.env.');
 }
 
+/** 判断文件参数是否落在当前项目默认记忆根内。 */
+function isDefaultMemoryPath(targetPath: string): boolean {
+  if (getAuthorizedMemoryRootKind() !== 'default') {
+    return false;
+  }
+  const memoryDirectory = getAuthorizedMemoryDir();
+  if (!memoryDirectory) {
+    return false;
+  }
+  return isAutoMemPath(targetPath, memoryDirectory, getAuthorizedDir() ?? process.cwd());
+}
+
 /** 将文件参数转换为权限层使用的规范化路径资源。 */
 function createFilePathResource(
   targetPath: string,
   access: 'read' | 'write',
   kind: 'path' | 'directory-scope' = 'path',
-): Readonly<Record<string, unknown>> {
-  const rootDir = getAuthorizedDir() ?? process.cwd();
-  const rawPath = resolve(rootDir, targetPath);
-  return {
-    kind,
+): ResourceEvidence {
+  if (kind === 'directory-scope') {
+    return createDirectoryScopeEvidence(
+      targetPath,
+      access,
+      'file-system:directory',
+    );
+  }
+  return createFileResourceEvidence(
+    targetPath,
     access,
-    normalizedPath: existsSync(rawPath) ? getPhysicalRealPath(rawPath) : rawPath,
-  };
+    'file-system:file',
+  );
 }
 
 /** 读取布尔型开关参数。 */
@@ -694,16 +723,24 @@ export class WriteFileTool implements NativeTool {
       return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
     }
     const sensitive = isSensitiveEnvFile(targetPath);
+    const evidence = {
+      operationCategory: 'file-write',
+      sideEffect: 'write' as const,
+      riskReason: sensitive ? `写入敏感文件 ${targetPath}` : `写入文件 ${targetPath}`,
+      resources: [createFilePathResource(targetPath, 'write')],
+    };
+    if (!sensitive && isDefaultMemoryPath(targetPath)) {
+      return {
+        kind: 'allow',
+        decisionReason: 'Claude 默认 Auto Memory 根内维护写入',
+        evidence,
+      };
+    }
     return {
       kind: 'ask',
       message: sensitive ? `写入敏感文件: ${targetPath}` : `写入文件: ${targetPath}`,
       decisionReason: sensitive ? '敏感文件写入需要显式授权' : '文件写入需要授权',
-      evidence: {
-        operationCategory: 'file-write',
-        sideEffect: 'write',
-        riskReason: sensitive ? `写入敏感文件 ${targetPath}` : `写入文件 ${targetPath}`,
-        resources: [createFilePathResource(targetPath, 'write')],
-      },
+      evidence,
     };
   }
 
@@ -798,16 +835,24 @@ export class EditFileTool implements NativeTool {
       return { kind: 'deny', decisionReason: 'targetPath 必须是字符串' };
     }
     const sensitive = isSensitiveEnvFile(targetPath);
+    const evidence = {
+      operationCategory: 'file-edit',
+      sideEffect: 'write' as const,
+      riskReason: sensitive ? `编辑敏感文件 ${targetPath}` : `编辑文件 ${targetPath}`,
+      resources: [createFilePathResource(targetPath, 'write')],
+    };
+    if (!sensitive && isDefaultMemoryPath(targetPath)) {
+      return {
+        kind: 'allow',
+        decisionReason: 'Claude 默认 Auto Memory 根内维护编辑',
+        evidence,
+      };
+    }
     return {
       kind: 'ask',
       message: sensitive ? `编辑敏感文件: ${targetPath}` : `编辑文件: ${targetPath}`,
       decisionReason: sensitive ? '敏感文件编辑需要显式授权' : '文件编辑需要授权',
-      evidence: {
-        operationCategory: 'file-edit',
-        sideEffect: 'write',
-        riskReason: sensitive ? `编辑敏感文件 ${targetPath}` : `编辑文件 ${targetPath}`,
-        resources: [createFilePathResource(targetPath, 'write')],
-      },
+      evidence,
     };
   }
 

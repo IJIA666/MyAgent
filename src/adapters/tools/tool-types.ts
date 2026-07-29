@@ -5,14 +5,12 @@
  * 使工具实现方可直接引用而无需依赖 LocalFileSystemMcpServer 类。
  */
 
-import type { ResourceExtractor, ToolAccessMetadata } from '../../ports/driven/tools/ToolAccessMetadataPort.js';
 import type { ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
 import type { ToolPermissionCheckResult } from '../../core/domain/permissions/permission-types.js';
 import type { ToolPermissionChecker } from '../../core/domain/permissions/tool-permission-service.js';
-
-export type { ResourceExtractor };
+import type { ToolAuthorizationAdapter } from '../../ports/driven/tools/ToolAuthorizationAdapter.js';
 
 /**
  * 工具执行模式。
@@ -83,18 +81,11 @@ export interface NativeTool {
   ): Promise<ToolPermissionCheckResult> | ToolPermissionCheckResult;
 
   /**
-   * 工具自带的资源提取器（可选）。
-   * 替代集中式 registerExtractorsForBuiltinTools() 按工具名分支的硬编码模式。
-   * 在工具注册清单中注入，ToolAccessMetadataProvider 初始化时自动聚合。
+   * 工具权限适配器（可选）。
+   * 有副作用的工具（securityCategory: 'write'）必须注册适配器，
+   * 提供稳定权限身份和正式资源证据。缺少适配器的 effectful 工具 fail closed。
    */
-  resourceExtractor?: ResourceExtractor;
-
-  /**
-   * 工具自带的访问元数据（可选）。
-   * 声明该工具涉及的资源类型、访问模式等审批前置信息。
-   */
-  accessMetadata?: ToolAccessMetadata;
-
+  authorizationAdapter?: ToolAuthorizationAdapter;
 }
 
 /**
@@ -181,6 +172,10 @@ export type ToolExecutionEffectReason =
   | 'pre_execution_abort'
   | 'permission_denied_before_execution'
   | 'approval_denied_before_execution'
+  | 'approval_unavailable_before_execution'
+  | 'approval_handler_failed_before_execution'
+  | 'permission_update_failed_before_execution'
+  | 'authorization_state_changed_before_execution'
   | 'cancelled_while_awaiting_approval'
   | 'cancelled_while_queued'
   | 'cancelled_before_execution'

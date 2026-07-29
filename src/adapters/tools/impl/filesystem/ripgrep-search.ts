@@ -6,6 +6,11 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { createInterface } from 'readline';
 import { basename, dirname, resolve } from 'path';
 import { statSync } from 'fs';
+import { getRuntimeEnv } from '../../../../config/env.js';
+import {
+  createCredentialEnvironment,
+  createCredentialProfile,
+} from '../../../../core/domain/security/credential-profile.js';
 
 /** ripgrep 搜索请求。 */
 export interface RipgrepSearchRequest {
@@ -105,6 +110,12 @@ export async function tryRipgrepSearch(request: RipgrepSearchRequest): Promise<R
     try {
       child = spawn('rg', args, {
         cwd: searchDirectory,
+        env: {
+          ...createCredentialEnvironment(
+            createCredentialProfile('terminal'),
+            getRuntimeEnv(),
+          ),
+        },
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       });

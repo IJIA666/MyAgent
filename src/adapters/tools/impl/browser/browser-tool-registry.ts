@@ -16,16 +16,15 @@ import {
   BrowserGetTextTool
 } from './browser-action.js';
 import type { NativeTool } from '../../tool-types.js';
-import { emptyExtractor } from '../resource-extractors.js';
+import { BROWSER_TOOL_AUTHORIZATION_ADAPTERS } from '../../permissions/browser-tool-authorization.js';
 
 /**
  * 获取浏览器工具的完整注册清单。
- * 浏览器工具不涉及文件路径操作，使用空提取器。
+ * 每个浏览器工具必须绑定与真实动作匹配的正式权限适配器。
  *
  * @returns 浏览器工具实例数组
  */
 export function getBrowserTools(): NativeTool[] {
-  const empty = emptyExtractor();
   const tools: NativeTool[] = [
     new BrowserNavigateTool(),
     new BrowserClickTool(),
@@ -38,7 +37,11 @@ export function getBrowserTools(): NativeTool[] {
     new BrowserGetTextTool()
   ];
   for (const tool of tools) {
-    tool.resourceExtractor = empty;
+    const adapter = BROWSER_TOOL_AUTHORIZATION_ADAPTERS.get(tool.name);
+    if (!adapter) {
+      throw new Error(`浏览器工具 "${tool.name}" 缺少正式权限适配器`);
+    }
+    tool.authorizationAdapter = adapter;
   }
   return tools;
 }

@@ -3,8 +3,21 @@
  * 使审批契约不再依赖 core 中的安全与插件类型定义。
  */
 
-/** 审批选择项标识联合类型。 */
-export type ApprovalChoiceId = 'call' | 'session' | 'project' | 'user' | 'persistent' | 'deny';
+/**
+ * 审批选择项标识联合类型。
+ * 权限审批使用工具适配器提供的稳定 action id；其它人机协作入口可继续使用通用 id。
+ */
+export type ApprovalChoiceId =
+  | 'allowOnce'
+  | 'allowAndSetMode'
+  | 'allowAndAddDirectories'
+  | 'allowAndSetModeWithDirectories'
+  | 'call'
+  | 'session'
+  | 'project'
+  | 'user'
+  | 'persistent'
+  | 'deny';
 
 /** 审批选择项接口。 */
 export interface ApprovalChoice {

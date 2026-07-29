@@ -71,7 +71,11 @@ describe('新增原生内置工具单元测试', () => {
     const permissionResult = tool.checkPermissions({ targetPath: 'delete_me.txt' });
     expect(permissionResult.kind).toBe('ask');
     expect(permissionResult.evidence?.sideEffect).toBe('write');
-    expect(permissionResult.evidence?.resources?.[0]).toMatchObject({ kind: 'path', access: 'write' });
+    expect(permissionResult.evidence?.resources?.[0]).toMatchObject({
+      kind: 'file',
+      operation: 'delete',
+      scope: 'workspace',
+    });
 
     // 3. 工具执行本身不重复请求授权，统一网关负责前置权限流程。
     expect(existsSync(filePath)).toBe(true);

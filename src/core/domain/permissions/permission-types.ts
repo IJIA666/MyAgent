@@ -14,7 +14,6 @@
  * - `default`：默认模式，未被规则覆盖且需要确认的工具调用进入询问。
  * - `acceptEdits`：自动接受文件编辑和常见文件系统操作。
  * - `plan`：只读计划模式，允许读取和只读 shell 探索，不允许源文件编辑。
- * - `auto`：使用安全分类器自动批准低风险调用。
  * - `dontAsk`：将未预先允许的 ask 转为 deny，无交互下拒绝未预授权操作。
  * - `bypassPermissions`：跳过普通询问，但显式 ask 规则和不可绕过检查仍生效。
  */
@@ -22,7 +21,6 @@ export type PermissionMode =
   | 'default'
   | 'acceptEdits'
   | 'plan'
-  | 'auto'
   | 'dontAsk'
   | 'bypassPermissions';
 
@@ -129,33 +127,8 @@ export interface ToolPermissionEvidence {
   readonly parseStatus?: string;
   /** 有序子操作证据。 */
   readonly subcommands?: readonly ToolPermissionSubcommandEvidence[];
-  /**
-   * 可选的结构化资源证据。
-   * Shell 使用正式资源契约；其它工具的旧资源记录在独立迁移前保持兼容。
-   */
-  readonly resources?: readonly (ToolPermissionResourceEvidence | Readonly<Record<string, unknown>>)[];
-}
-
-/** 核心权限层消费的通用资源访问证据。 */
-export interface ToolPermissionResourceEvidence {
-  /** 资源种类。 */
-  readonly kind: 'file' | 'directory' | 'process' | 'network' | 'environment' | 'registry' | 'service' | 'unknown';
-  /** 对资源执行的操作。 */
-  readonly operation: 'read' | 'write' | 'create' | 'delete' | 'execute' | 'connect' | 'mutate';
-  /** 工具调用中的原始资源表达式。 */
-  readonly rawExpression: string;
-  /** 能够静态解析时的规范资源标识。 */
-  readonly resolvedResource?: string;
-  /** 解析资源时使用的上下文。 */
-  readonly baseContext: string;
-  /** 资源相对于工作区和系统的事实范围。 */
-  readonly scope: 'workspace' | 'external' | 'sensitive' | 'system' | 'unknown';
-  /** 静态资源解析的确定程度。 */
-  readonly certainty: 'exact' | 'pattern' | 'symbolic' | 'unknown';
-  /** 工具内部产生资源访问的节点标识。 */
-  readonly sourceNodeId: string;
-  /** 面向日志和规则解释的稳定说明。 */
-  readonly reason: string;
+  /** 正式结构化资源证据；无法确定的 effectful 资源必须使用 `kind: unknown`。 */
+  readonly resources?: readonly ResourceEvidence[];
 }
 
 // ── ToolPermissionCheckResult（工具内部检查结果）──
@@ -204,7 +177,6 @@ export type PermissionDecisionSource =
   | 'projectRule'
   | 'builtInBaseline'
   | 'mode'
-  | 'classifier'
   | 'userApproval';
 
 /**
@@ -268,32 +240,289 @@ export type PermissionDecision = PermissionDecisionProvenance & PermissionDecisi
     }
 );
 
-// ── PermissionUpdate ──
+// ──  PermissionIdentity ──
 
 /**
- * 规则更新操作类型。
- * 权限规则的 add/replace/remove/set 更新操作。
- */
-export type PermissionUpdateOperation = 'add' | 'replace' | 'remove' | 'set';
-
-/**
- * 权限规则更新。
- * 用于将 once、session 或 persistent 授权结果转换为规则存储的实际变更。
+ * 稳定权限身份标识。
+ * 由工具适配器从运行时工具名显式映射而来，供规则、模式和执行计划消费。
  *
- * - once：只影响当前调用的审批流程，不产生持久规则。
- * - session：通过 `add` 操作写入 `session` 来源的规则。
- * - persistent：通过 `add` 或 `set` 操作写入对应配置来源的规则。
+ * - `FileRead`：读取文件（readFile）
+ * - `FileWrite`：写入文件（writeFile）
+ * - `FileEdit`：编辑文件（editFile、applyPatch）
+ * - `FileCreate`：创建目录（createDirectory）
+ * - `FileDelete`：删除文件或目录（deletePath）
+ * - `FileMove`：移动文件或目录（movePath）
+ * - `FileCopy`：复制文件或目录（copyPath）
+ * - `ShellBash`：Bash 命令执行
+ * - `ShellPowerShell`：PowerShell 命令执行
+ * - `NetworkAccess`：网络请求（fetch、browser、plugin）
+ * - `ExternalSideEffect`：外部副作用（邮件、消息、付款）
+ * - `McpCall`：MCP 工具调用
  */
-export interface PermissionUpdate {
-  /** 更新操作类型 */
-  operation: PermissionUpdateOperation;
-  /** 目标规则数组（replace/set 时全量替换，add/remove 时增量操作） */
-  rules: PermissionRule[];
-  /** 可选的目标来源（set 操作时指定） */
-  targetSource?: PermissionRuleSource;
+export type PermissionIdentity =
+  | 'FileRead'
+  | 'FileWrite'
+  | 'FileEdit'
+  | 'FileCreate'
+  | 'FileDelete'
+  | 'FileMove'
+  | 'FileCopy'
+  | 'ShellBash'
+  | 'ShellPowerShell'
+  | 'NetworkAccess'
+  | 'ExternalSideEffect'
+  | 'McpCall'
+  | 'UnknownEffect';
+
+// ──  ResourceEvidence（正式资源证据判别联合）──
+
+/** 文件资源证据。 */
+export interface FileResourceEvidence {
+  readonly kind: 'file';
+  readonly operation: 'read' | 'write' | 'edit' | 'create' | 'delete' | 'move' | 'copy';
+  /** 工具调用中的原始路径表达式。 */
+  readonly rawExpression: string;
+  /** 物理路径规范化后的结果。 */
+  readonly canonicalPath: string;
+  /** 路径相对于工作区和系统的事实范围。 */
+  readonly scope: 'workspace' | 'external' | 'sensitive' | 'system';
+  /** sourceNodeId - 分析节点标识符。 */
+  readonly sourceNodeId: string;
+  /** 是否命中受保护路径策略。 */
+  readonly protected: boolean;
+  /** 路径来源可信度。 */
+  readonly provenance: 'host-verified' | 'tool-analyzed' | 'external-claimed';
+  /** 调用者信任级别。 */
+  readonly channelTrust: 'interactive' | 'script' | 'remote' | 'background';
 }
 
+/** 目录范围资源证据。 */
+export interface DirectoryScopeEvidence {
+  readonly kind: 'directory-scope';
+  readonly operation: 'read' | 'write' | 'create' | 'delete';
+  readonly rawExpression: string;
+  readonly canonicalPath: string;
+  readonly scope: 'workspace' | 'external' | 'sensitive' | 'system';
+  readonly sourceNodeId: string;
+  readonly protected: boolean;
+  readonly provenance: 'host-verified' | 'tool-analyzed' | 'external-claimed';
+  readonly channelTrust: 'interactive' | 'script' | 'remote' | 'background';
+}
+
+/** 命令资源证据（Shell 子命令）。 */
+export interface CommandResourceEvidence {
+  readonly kind: 'command';
+  readonly operation: 'execute';
+  readonly rawExpression: string;
+  /** 规范化的命令摘要（不含敏感参数）。 */
+  readonly canonicalSummary: string;
+  readonly shellKind: 'bash' | 'powershell';
+  readonly scope: 'workspace' | 'system' | 'unknown';
+  readonly sourceNodeId: string;
+  readonly protected: boolean;
+  readonly provenance: 'host-verified' | 'tool-analyzed';
+  readonly channelTrust: 'interactive' | 'script' | 'remote' | 'background';
+}
+
+/** 网络资源证据。 */
+export interface NetworkResourceEvidence {
+  readonly kind: 'network';
+  readonly operation: 'connect' | 'send' | 'receive';
+  readonly rawExpression: string;
+  readonly canonicalUrl: string;
+  readonly scope: 'cloud-metadata' | 'loopback' | 'link-local' | 'private' | 'public';
+  readonly sourceNodeId: string;
+  readonly protected: boolean;
+  readonly provenance: 'host-verified' | 'tool-analyzed' | 'external-claimed';
+  readonly channelTrust: 'interactive' | 'script' | 'remote' | 'background';
+}
+
+/** 外部副作用资源证据。 */
+export interface ExternalSideEffectEvidence {
+  readonly kind: 'external-side-effect';
+  readonly operation: 'send' | 'publish' | 'delete' | 'payment' | 'permission-modify';
+  readonly rawExpression: string;
+  readonly canonicalServiceName: string;
+  readonly sourceNodeId: string;
+  readonly protected: boolean;
+  readonly provenance: 'external-claimed';
+  readonly channelTrust: 'interactive' | 'script' | 'remote' | 'background';
+}
+
+/** MCP 调用资源证据。 */
+export interface McpCallResourceEvidence {
+  readonly kind: 'mcp-call';
+  readonly operation: 'call' | 'subscribe' | 'unsubscribe';
+  readonly rawExpression: string;
+  readonly serverName: string;
+  /** 外部工具名。 */
+  readonly toolName: string;
+  /** MCP 连接和工具声明的易失版本。 */
+  readonly descriptorVersion: string;
+  /** 规范化参数摘要；不记录参数正文。 */
+  readonly argumentsDigest: string;
+  readonly sourceNodeId: string;
+  readonly protected: boolean;
+  readonly provenance: 'external-claimed';
+  readonly channelTrust: 'interactive' | 'script' | 'remote' | 'background';
+}
+
+/** 未知资源证据。 */
+export interface UnknownResourceEvidence {
+  readonly kind: 'unknown';
+  readonly operation: 'unknown';
+  readonly rawExpression: string;
+  readonly sourceNodeId: string;
+  readonly protected: false;
+  readonly provenance: 'host-verified' | 'tool-analyzed' | 'external-claimed';
+  readonly channelTrust: 'interactive' | 'script' | 'remote' | 'background';
+}
+
+/** 穷尽资源证据判别联合。 */
+export type ResourceEvidence =
+  | FileResourceEvidence
+  | DirectoryScopeEvidence
+  | CommandResourceEvidence
+  | NetworkResourceEvidence
+  | ExternalSideEffectEvidence
+  | McpCallResourceEvidence
+  | UnknownResourceEvidence;
+
+// ──  ApprovalAction ──
+
+/**
+ * 审批 UI 可选择的动作。
+ * 对应 PermissionUpdate 判别联合的友好表达。
+ */
+export type ApprovalAction =
+  | { readonly type: 'allowOnce' }
+  | { readonly type: 'allowAndSetMode'; readonly mode: PermissionMode }
+  | { readonly type: 'allowAndAddDirectories'; readonly directories: readonly string[] }
+  | { readonly type: 'allowAndSetModeWithDirectories'; readonly mode: PermissionMode; readonly directories: readonly string[] }
+  | { readonly type: 'deny' };
+
+// ──  PermissionRequest ──
+
+/**
+ * 工具适配器产生的完整权限请求。
+ * 包含运行时工具名、稳定权限身份、规范化参数、资源证据和可用的审批动作。
+ */
+export interface PermissionRequest {
+  /** 运行时工具名（如 writeFile、editFile）。 */
+  readonly runtimeToolName: string;
+  /** 工具适配器映射的稳定权限身份。 */
+  readonly permissionIdentity: PermissionIdentity;
+  /** 规范化的工具调用参数（深冻结后）。 */
+  readonly normalizedArgs: Readonly<Record<string, unknown>>;
+  /** 操作类别是否为普通 Edit。 */
+  readonly isEditOperation: boolean;
+  /** 解析出的资源证据。 */
+  readonly resourceEvidences: readonly ResourceEvidence[];
+  /** 当前会话状态下可选的审批动作。 */
+  readonly approvalOptions: readonly ApprovalAction[];
+  /** 适配器版本。 */
+  readonly adapterVersion: string;
+}
+
+// ──  PermissionUpdate ──
+
+/**
+ * 用户可修改的权限状态目标。
+ * managed/host 策略不属于此联合，因此调用方无法借普通审批修改宿主上限。
+ */
+export type PermissionUpdateTarget = 'session' | 'projectLocal' | 'project' | 'user';
+
+/** 规则集合更新动作。 */
+export type PermissionRuleUpdate =
+  | {
+      /** 向目标来源追加规则。 */
+      readonly type: 'addRules';
+      /** 更新目标。 */
+      readonly target: PermissionUpdateTarget;
+      /** 完整规则值；提交时 source 会被目标来源规范化。 */
+      readonly rules: readonly PermissionRule[];
+    }
+  | {
+      /** 用给定规则整体替换目标来源的规则。 */
+      readonly type: 'replaceRules';
+      /** 更新目标。 */
+      readonly target: PermissionUpdateTarget;
+      /** 目标来源的新规则全集。 */
+      readonly rules: readonly PermissionRule[];
+    }
+  | {
+      /** 从目标来源移除完全匹配的规则。 */
+      readonly type: 'removeRules';
+      /** 更新目标。 */
+      readonly target: PermissionUpdateTarget;
+      /** 待移除的规则。 */
+      readonly rules: readonly PermissionRule[];
+    };
+
+/**
+ * 权限状态更新动作。
+ * 判别联合让规则、模式和目录修改可以先整体验证，再由会话状态一次提交。
+ */
+export type PermissionUpdate =
+  | PermissionRuleUpdate
+  | {
+      /** 设置当前会话模式或未来默认模式。 */
+      readonly type: 'setMode';
+      /** 更新目标。 */
+      readonly target: PermissionUpdateTarget;
+      /** 目标模式。 */
+      readonly mode: PermissionMode;
+    }
+  | {
+      /** 添加明确授权的目录子树。 */
+      readonly type: 'addDirectories';
+      /** 更新目标。 */
+      readonly target: PermissionUpdateTarget;
+      /** 待加入的规范绝对目录。 */
+      readonly directories: readonly string[];
+    }
+  | {
+      /** 移除已授权目录子树。 */
+      readonly type: 'removeDirectories';
+      /** 更新目标。 */
+      readonly target: PermissionUpdateTarget;
+      /** 待移除的规范绝对目录。 */
+      readonly directories: readonly string[];
+    };
+
 // ── 辅助函数与常量 ──
+
+/** 内部模式 id 到用户可见标签的映射。 */
+export const MODE_USER_LABELS: Record<PermissionMode, string> = {
+  default: 'Manual',
+  acceptEdits: 'Accept edits on',
+  plan: 'Plan',
+  dontAsk: "Don't ask",
+  bypassPermissions: 'Bypass permissions',
+};
+
+/**
+ * 将内部权限模式 id 转换为用户可见标签。
+ *
+ * @param mode - 内部权限模式 id
+ * @returns 用户可见标签（未知模式时原样返回）
+ */
+export function getUserPermissionModeLabel(mode: string): string {
+  if (mode in MODE_USER_LABELS) {
+    return MODE_USER_LABELS[mode as PermissionMode];
+  }
+  return mode;
+}
+
+/**
+ * 当前已交付的三种普通模式。
+ * 供交互向导使用，排除 dontAsk 和 bypassPermissions 等高级模式。
+ */
+export const INTERACTIVE_PERMISSION_MODES: readonly PermissionMode[] = [
+  'default',
+  'acceptEdits',
+  'plan',
+] as const;
 
 /** 默认权限模式，对应需要时请求审批的 default 行为。 */
 export const DEFAULT_PERMISSION_MODE: PermissionMode = 'default';

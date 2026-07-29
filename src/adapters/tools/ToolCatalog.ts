@@ -1,6 +1,7 @@
 import type { NativeTool } from './tool-types.js';
 import type { ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
 import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
+import type { ToolAuthorizationAdapter } from '../../ports/driven/tools/ToolAuthorizationAdapter.js';
 
 /**
  * 工具目录管理器。
@@ -26,11 +27,46 @@ export class ToolCatalog {
 
   /**
    * 注册一个本地内建工具。
+   * 有副作用的工具（securityCategory === 'write'）必须拥有与运行时名称一致的 adapter，
+   * 重复名称和错绑 adapter 均 fail closed。
    *
    * @param tool - 需要纳入目录的工具实例
    */
   register(tool: NativeTool): void {
+    if (this.toolsMap.has(tool.name)) {
+      throw new Error(`工具 "${tool.name}" 重复注册，权限身份可能被覆盖`);
+    }
+    if (tool.securityCategory === 'write' && !tool.authorizationAdapter) {
+      throw new Error(
+        `有副作用工具 "${tool.name}" 缺少 authorizationAdapter。` +
+        '所有 securityCategory: "write" 的工具必须注册权限适配器。',
+      );
+    }
+    if (
+      tool.authorizationAdapter
+      && tool.authorizationAdapter.runtimeToolName !== tool.name
+    ) {
+      throw new Error(
+        `工具 "${tool.name}" 错绑权限适配器 "${tool.authorizationAdapter.runtimeToolName}"`,
+      );
+    }
     this.toolsMap.set(tool.name, tool);
+  }
+
+  /**
+   * 获取所有注册了 authorizationAdapter 的 effectful 工具。
+   * 用于测试验证完整的适配器覆盖。
+   *
+   * @returns 工具名 → 适配器的只读映射
+   */
+  getAuthorizedTools(): ReadonlyMap<string, ToolAuthorizationAdapter> {
+    const result = new Map<string, ToolAuthorizationAdapter>();
+    for (const [name, tool] of this.toolsMap) {
+      if (tool.authorizationAdapter) {
+        result.set(name, tool.authorizationAdapter);
+      }
+    }
+    return result;
   }
 
   /**

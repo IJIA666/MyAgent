@@ -10,3 +10,6 @@ export { McpCommand } from './mcp.js';
 export { ToolCommand } from './tool.js';
 export { ModelCommand } from './model.js';
 export { PermissionModeCommand } from './workmode.js';
+export { PermissionsCommand } from './permissions.js';
+export { SandboxCommand } from './sandbox.js';
+export { MemoryCommand } from './memory.js';

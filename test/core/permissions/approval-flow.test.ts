@@ -6,13 +6,9 @@
 import { describe, it, expect } from 'vitest';
 import { PermissionRuleStore } from '../../../src/core/domain/permissions/rule-store.js';
 import { ToolPermissionService } from '../../../src/core/domain/permissions/tool-permission-service.js';
-import type { AutoClassifier } from '../../../src/core/domain/permissions/tool-permission-service.js';
-
-class TestClassifier implements AutoClassifier {
-  async classify(_toolName: string, _args: Record<string, unknown>): Promise<{ allow: boolean; reason: string }> {
-    return { allow: true, reason: '测试分类器' };
-  }
-}
+import { createTestExecutionPlan } from '../../helpers/permission-plan.js';
+import { PermissionSessionState } from '../../../src/core/domain/permissions/permission-session-state.js';
+import { PermissionPromptAdapter } from '../../../src/core/usecases/plugins/PermissionPromptAdapter.js';
 
 describe('审批交互流程', () => {
   it('allow 不触发审批', async () => {
@@ -71,7 +67,7 @@ describe('审批交互流程', () => {
       decisionSource: 'userApproval',
       matchedEvidenceIds: [],
       overridable: false,
-    });
+    }, createTestExecutionPlan('Bash', { command: 'ls' }));
     expect(ctx).not.toBeNull();
     expect(store.getAllRules().length).toBe(0);
   });
@@ -79,7 +75,8 @@ describe('审批交互流程', () => {
   it('session 授权应写入 session 来源', async () => {
     const store = new PermissionRuleStore();
     store.applyUpdate({
-      operation: 'add',
+      type: 'addRules',
+      target: 'session',
       rules: [{
         source: 'session',
         ruleBehavior: 'allow',
@@ -93,8 +90,8 @@ describe('审批交互流程', () => {
   it('persistent 授权应写入配置来源', async () => {
     const store = new PermissionRuleStore();
     store.applyUpdate({
-      operation: 'add',
-      targetSource: 'userSettings',
+      type: 'addRules',
+      target: 'user',
       rules: [{
         source: 'userSettings',
         ruleBehavior: 'allow',
@@ -105,11 +102,31 @@ describe('审批交互流程', () => {
     expect(rules.some(r => r.ruleValue.toolName === 'Bash')).toBe(true);
   });
 
-  it('auto 模式使用分类器应产生 allow/deny', async () => {
-    const store = new PermissionRuleStore();
-    const classifier = new TestClassifier();
-    const service = new ToolPermissionService({ ruleStore: store, autoClassifier: classifier });
-    const result = await service.checkPermissions('Read', { path: 'test.ts' }, 'auto');
-    expect(['allow', 'deny']).toContain(result.kind);
+  it('持久化失败时不得提交任何内存状态更新', async () => {
+    const state = new PermissionSessionState({ mode: 'default' });
+    const adapter = new PermissionPromptAdapter(
+      state,
+      undefined,
+      async () => {
+        throw new Error('CAS conflict');
+      },
+    );
+
+    await expect(adapter.applyUpdates([
+      {
+        type: 'setMode',
+        target: 'user',
+        mode: 'acceptEdits',
+      },
+      {
+        type: 'addDirectories',
+        target: 'session',
+        directories: ['outside'],
+      },
+    ])).rejects.toThrow('CAS conflict');
+
+    expect(state.getMode()).toBe('default');
+    expect(state.getAdditionalDirectories()).toEqual([]);
+    expect(state.getStateVersion()).toBe(0);
   });
 });

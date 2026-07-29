@@ -1,11 +1,10 @@
 /**
- * 终端 Shell 与 PermissionMode 配置管理模块。
+ * 终端 Shell 配置管理模块。
  *
  * 命令内容权限统一由 PermissionRuleStore 管理，本模块不维护额外白名单。
  * 所有持久化读写委托给 {@link SettingsRepository}。
  */
 
-import type { ConfigPermissionMode } from '../../../../config/types.js';
 import type { SettingsRepository } from '../../../../config/settings-repository.js';
 import type { ShellKind } from './terminal-types.js';
 import { logger } from '../../../../utils/logger.js';
@@ -116,89 +115,6 @@ export function saveDefaultShellFamily(kind: ShellKind): void {
     });
   } catch (error: unknown) {
     logger.error('保存默认 shell family 失败:', error);
-  }
-}
-
-/** 当前进程缓存的 PermissionMode。 */
-let cachedPermissionMode: ConfigPermissionMode = 'default';
-
-/** 获取当前进程缓存的 PermissionMode。 */
-export function getPermissionMode(): ConfigPermissionMode {
-  return cachedPermissionMode;
-}
-
-/** 更新当前进程缓存的 PermissionMode。 */
-export function setPermissionMode(mode: ConfigPermissionMode): void {
-  cachedPermissionMode = mode;
-}
-
-/**
- * 从环境变量或 settings 仓储加载默认 PermissionMode。
- * 环境变量具有最高优先级，其次为有效 settings 配置。
- *
- * @param env - 环境变量
- * @returns 加载出的 PermissionMode
- */
-export function loadPermissionMode(
-  env: Record<string, string | undefined> = getRuntimeEnv(),
-): ConfigPermissionMode {
-  const validModes: ConfigPermissionMode[] = [
-    'default',
-    'acceptEdits',
-    'plan',
-    'auto',
-    'dontAsk',
-    'bypassPermissions',
-  ];
-
-  // 环境变量（最高优先级）
-  const envMode = env.AGENT_PERMISSION_MODE;
-  if (envMode && validModes.includes(envMode as ConfigPermissionMode)) {
-    cachedPermissionMode = envMode as ConfigPermissionMode;
-    return cachedPermissionMode;
-  }
-
-  // 从 settings 仓储读取
-  const repo = _settingsRepository;
-  if (repo) {
-    try {
-      const effective = repo.readEffectiveConfig();
-      const mode = effective.permission?.defaultMode;
-      if (mode && validModes.includes(mode)) {
-        cachedPermissionMode = mode;
-        return cachedPermissionMode;
-      }
-    } catch {
-      // 忽略
-    }
-  }
-
-  return cachedPermissionMode;
-}
-
-/**
- * 持久化 PermissionMode 到 settings 仓储（项目 scope）。
- *
- * @param mode - 权限模式
- */
-export function savePermissionMode(mode: ConfigPermissionMode): void {
-  cachedPermissionMode = mode;
-
-  const repo = _settingsRepository;
-  if (!repo) {
-    logger.warn('[终端配置] 无可用的 SettingsRepository，权限模式仅在本次进程生效。');
-    return;
-  }
-
-  try {
-    repo.updateField('local', {
-      field: 'permission.defaultMode',
-      value: mode,
-    }).catch(() => {
-      logger.warn('[终端配置] 保存 PermissionMode 失败。');
-    });
-  } catch (error: unknown) {
-    logger.error('保存 PermissionMode 失败:', error);
   }
 }
 

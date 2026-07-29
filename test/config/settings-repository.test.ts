@@ -3,11 +3,12 @@
  * 覆盖优先级合并、缺失/空/畸形文件、同进程串行更新、写入失败保留文件和权限安全边界。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { tmpdir } from 'os';
 import { SettingsRepository } from '../../src/config/settings-repository.js';
+import { logger } from '../../src/utils/logger.js';
 
 describe('SettingsRepository', () => {
   let tempDir: string;
@@ -23,6 +24,7 @@ describe('SettingsRepository', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -89,21 +91,32 @@ describe('SettingsRepository', () => {
       expect(config.terminal?.defaultShellFamily).toBe('powershell');
     });
 
-    it('会话覆盖优先于所有文件 scope', () => {
+    it('旧 Auto 会话值应迁移回 Manual', () => {
       const { repo } = createRepo(
         { version: 1, permission: { defaultMode: 'dontAsk' } },
         { version: 1, permission: { defaultMode: 'acceptEdits' } },
         { version: 1, permission: { defaultMode: 'plan' } },
       );
 
-      const config = repo.readEffectiveConfig({
+      const legacySession = JSON.parse(JSON.stringify({
         version: 1,
         permission: { defaultMode: 'auto' },
         terminal: { defaultShellFamily: 'cmd' },
-      });
+      }));
+      const config = repo.readEffectiveConfig(legacySession);
 
-      expect(config.permission?.defaultMode).toBe('auto');
+      expect(config.permission?.defaultMode).toBe('default');
       expect(config.terminal?.defaultShellFamily).toBe('cmd');
+    });
+
+    it('project 与 local 来源不得开启 bypassPermissions', () => {
+      const { repo } = createRepo(
+        { version: 1, permission: { defaultMode: 'acceptEdits' } },
+        { version: 1, permission: { defaultMode: 'bypassPermissions' } },
+        { version: 1, permission: { defaultMode: 'bypassPermissions' } },
+      );
+
+      expect(repo.readEffectiveConfig().permission?.defaultMode).toBe('acceptEdits');
     });
 
     it('数组字段按优先级替换而非拼接', () => {
@@ -230,6 +243,87 @@ describe('SettingsRepository', () => {
       expect(doc.terminal?.defaultShellFamily).toBe('powershell');
     });
 
+    it('两个独立 Repository 并发更新同一文件也不得丢失字段', async () => {
+      const { repo, userPath, projectPath, localPath } = createRepo(
+        {},
+        {},
+        {
+          version: 1,
+          permission: { defaultMode: 'default' },
+          terminal: { defaultShellFamily: 'auto' },
+        },
+      );
+      const secondRepo = new SettingsRepository(userDir, projectDir, {
+        userSettingsPath: userPath,
+        projectSettingsPath: projectPath,
+        projectLocalSettingsPath: localPath,
+      });
+
+      const [permissionUpdated, terminalUpdated] = await Promise.all([
+        repo.updateField('local', {
+          field: 'permission.defaultMode',
+          value: 'acceptEdits',
+        }),
+        secondRepo.updateField('local', {
+          field: 'terminal.defaultShellFamily',
+          value: 'powershell',
+        }),
+      ]);
+
+      expect(permissionUpdated).toBe(true);
+      expect(terminalUpdated).toBe(true);
+      const document = repo.readDocument('local');
+      expect(document.permission?.defaultMode).toBe('acceptEdits');
+      expect(document.terminal?.defaultShellFamily).toBe('powershell');
+      expect(document.settingsRevision).toBe(2);
+    });
+
+    it('revision 或 digest 漂移时 CAS 必须返回 conflict 且不覆盖新内容', async () => {
+      const { repo, userPath, projectPath, localPath } = createRepo(
+        {},
+        {},
+        { version: 1, permission: { defaultMode: 'default' } },
+      );
+      const competingRepo = new SettingsRepository(userDir, projectDir, {
+        userSettingsPath: userPath,
+        projectSettingsPath: projectPath,
+        projectLocalSettingsPath: localPath,
+      });
+      const staleSnapshot = repo.readVersionedDocument('local');
+      expect(await competingRepo.updateField('local', {
+        field: 'terminal.defaultShellFamily',
+        value: 'powershell',
+      })).toBe(true);
+
+      const outcome = await repo.updateDocumentCas(
+        'local',
+        staleSnapshot.version,
+        document => ({
+          ...document,
+          permission: { defaultMode: 'acceptEdits' },
+        }),
+      );
+
+      expect(outcome.status).toBe('conflict');
+      const current = repo.readDocument('local');
+      expect(current.terminal?.defaultShellFamily).toBe('powershell');
+      expect(current.permission?.defaultMode).toBe('default');
+    });
+
+    it('畸形原文件更新失败时必须保留原始字节', async () => {
+      const { repo, localPath } = createRepo();
+      const malformed = '{"permission": ';
+      writeFileSync(localPath, malformed, 'utf8');
+
+      const updated = await repo.updateField('local', {
+        field: 'permission.defaultMode',
+        value: 'acceptEdits',
+      });
+
+      expect(updated).toBe(false);
+      expect(readFileSync(localPath, 'utf8')).toBe(malformed);
+    });
+
     it('写入失败时保留原文件', async () => {
       const { repo } = createRepo(
         {},
@@ -259,17 +353,58 @@ describe('SettingsRepository', () => {
       expect(config.permission?.defaultMode).toBe('acceptEdits');
     });
 
-    it('项目本机和会话显式配置可以启用 bypass 模式', () => {
+    it('项目本机配置不能启用 bypass，但受信会话显式参数可以', () => {
       const { repo } = createRepo(
         { version: 1, permission: { defaultMode: 'default' } },
         {},
         { version: 1, permission: { defaultMode: 'bypassPermissions' } },
       );
 
-      expect(repo.readEffectiveConfig().permission?.defaultMode).toBe('bypassPermissions');
+      expect(repo.readEffectiveConfig().permission?.defaultMode).toBe('default');
       expect(repo.readEffectiveConfig({
         permission: { defaultMode: 'bypassPermissions' },
       }).permission?.defaultMode).toBe('bypassPermissions');
+    });
+
+    it('旧字符串/PascalCase 规则与 whitelist 字段只告警并忽略', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const secretLegacyRule = 'Edit(C:\\secret\\*)';
+      const { repo } = createRepo({
+        version: 1,
+        approvalPolicy: 'always',
+        permission: {
+          allow: [
+            secretLegacyRule,
+            { toolName: 'Edit', ruleContent: 'C:\\secret\\*' },
+            { toolName: 'Bash', ruleContent: 'git status' },
+          ],
+          whitelist: ['C:\\secret'],
+        },
+      });
+
+      const config = repo.readEffectiveConfig();
+
+      expect(config.permission?.allow).toEqual([
+        { toolName: 'Bash', ruleContent: 'git status' },
+      ]);
+      expect(warnSpy).toHaveBeenCalled();
+      const renderedWarnings = JSON.stringify(warnSpy.mock.calls);
+      expect(renderedWarnings).toContain('legacy_permission_config_ignored');
+      expect(renderedWarnings).toContain('/permissions');
+      expect(renderedWarnings).not.toContain(secretLegacyRule);
+      expect(renderedWarnings).not.toContain('C:\\\\secret');
+    });
+
+    it('旧规则不得通过别名重新匹配真实 runtime tool', () => {
+      const { repo } = createRepo({
+        version: 1,
+        permission: {
+          allow: [{ toolName: 'Write', ruleContent: 'docs/*' }],
+        },
+      });
+
+      expect(repo.readEffectiveConfig().permission?.allow).toEqual([]);
+      expect(repo.readDocument('user').permission?.allow).toEqual([]);
     });
   });
 });

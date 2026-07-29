@@ -1,437 +1,206 @@
 /**
- * @file 长期记忆快照加载器单元测试。
- * 覆盖空目录与缺失索引、200 行边界、20KB 边界、UTF-8 字节截断、磁盘文件不被修改、
- * 有效与无效条目混合、重复索引、断链、非法 slug、未知类型和损坏 frontmatter。
+ * @file Claude 风格长期记忆索引加载器测试。
+ * 覆盖只读 MEMORY.md、200 行/25KB 上限、topic 按需读取与不可变快照。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
-import { loadMemorySnapshot, type MemoryType } from '../../../../src/core/usecases/brain/memory-loader.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  diagnoseMemoryTopics,
+  loadMemorySnapshot,
+} from '../../../../src/core/usecases/brain/memory-loader.js';
 
-/** writeTopic 的宽松类型，允许传入非法 type 用于测试。 */
-function writeTopicRaw(memoryDir: string, filename: string, name: string, description: string, type: string, body = ''): void {
-  const frontmatter = `---
-name: ${name}
-description: ${description}
-type: ${type}
----
-${body}`;
-  writeFileSync(join(memoryDir, 'topics', filename), frontmatter, 'utf-8');
-}
-
-/** 创建临时测试目录并返回路径。 */
-function createTempDir(): string {
-  const dir = join(tmpdir(), `memory-loader-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-/** 在 memoryDir 下创建 topics/ 目录。 */
-function ensureTopicsDir(memoryDir: string): void {
-  const topicsDir = join(memoryDir, 'topics');
-  mkdirSync(topicsDir, { recursive: true });
-}
-
-/** 写入 MEMORY.md。 */
-function writeIndex(memoryDir: string, content: string): void {
-  writeFileSync(join(memoryDir, 'MEMORY.md'), content, 'utf-8');
-}
-
-/** 写入主题文件。 */
-function writeTopic(memoryDir: string, filename: string, name: string, description: string, type: MemoryType, body = ''): void {
-  const frontmatter = `---
-name: ${name}
-description: ${description}
-type: ${type}
----
-${body}`;
-  writeFileSync(join(memoryDir, 'topics', filename), frontmatter, 'utf-8');
-}
-
-/** 生成指定数量的索引行。 */
-function generateIndexLines(count: number): string[] {
-  return Array.from({ length: count }, (_, i) => `- [主题 ${i}](topics/topic-${i}.md) — 第 ${i} 个主题的描述`);
+/** 生成一条合法索引行。 */
+function indexLine(index: number, description = '描述'): string {
+  return `- [主题 ${index}](topics/topic-${index}.md) — ${description}`;
 }
 
 describe('loadMemorySnapshot', () => {
   let memoryDir: string;
 
   beforeEach(() => {
-    memoryDir = createTempDir();
+    memoryDir = mkdtempSync(join(tmpdir(), 'myagent-memory-loader-'));
   });
 
   afterEach(() => {
-    if (existsSync(memoryDir)) {
-      rmSync(memoryDir, { recursive: true, force: true });
-    }
+    rmSync(memoryDir, { recursive: true, force: true });
   });
 
-  // ── 空目录 / 缺失索引 ──
-  describe('空目录与缺失索引', () => {
-    it('完全空目录返回空快照', () => {
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.isEmpty).toBe(true);
-      expect(snapshot.memoryDir).toBe(memoryDir);
-      expect(snapshot.topics).toHaveLength(0);
-      expect(snapshot.isTruncated).toBe(false);
-      // 诊断应无异常
-      expect(diagnostic.truncation).toBeNull();
-    });
+  it('MEMORY.md 缺失时返回合法空快照且不创建文件', () => {
+    const result = loadMemorySnapshot(memoryDir);
 
-    it('目录存在但没有 MEMORY.md 返回空快照', () => {
-      ensureTopicsDir(memoryDir);
-      const { snapshot } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.isEmpty).toBe(true);
-      expect(snapshot.topics).toHaveLength(0);
+    expect(result.status).toBe('empty');
+    expect(result.snapshot).toMatchObject({
+      memoryDir,
+      content: '',
+      isEmpty: true,
+      isTruncated: false,
     });
-
-    it('MEMORY.md 存在但无有效索引行返回空快照', () => {
-      writeIndex(memoryDir, '# 长期记忆\n\n无内容。');
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.isEmpty).toBe(true);
-      expect(snapshot.topics).toHaveLength(0);
-      expect(diagnostic.truncation).toBeNull();
-    });
+    expect(existsSync(join(memoryDir, 'MEMORY.md'))).toBe(false);
+    expect(Object.isFrozen(result.snapshot)).toBe(true);
   });
 
-  // ── 正常加载 ──
-  describe('正常加载', () => {
-    it('加载一条有效主题', () => {
-      ensureTopicsDir(memoryDir);
-      writeTopic(memoryDir, 'user-preference.md', '用户偏好', '用户编码风格偏好', 'user');
-      writeIndex(memoryDir, '- [用户偏好](topics/user-preference.md) — 用户的编码风格偏好\n');
+  it('启动加载只读取 MEMORY.md，不打开或解释 topic frontmatter', () => {
+    const content = `${indexLine(1)}\n`;
+    mkdirSync(join(memoryDir, 'topics'));
+    writeFileSync(
+      join(memoryDir, 'topics', 'topic-1.md'),
+      '---\ntype: unknown\n---\n不应在启动时读取',
+      'utf-8',
+    );
+    writeFileSync(join(memoryDir, 'MEMORY.md'), content, 'utf-8');
 
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.isEmpty).toBe(false);
-      expect(snapshot.topics).toHaveLength(1);
-      expect(snapshot.topics[0]).toMatchObject({
-        slug: 'user-preference',
-        title: '用户偏好',
-        name: '用户偏好',
-        type: 'user',
-      });
-      expect(diagnostic.brokenLinks).toHaveLength(0);
-      expect(diagnostic.invalidFilenames).toHaveLength(0);
-      expect(diagnostic.invalidFrontmatter).toHaveLength(0);
-    });
+    const result = loadMemorySnapshot(memoryDir);
 
-    it('加载四种类型的主题', () => {
-      ensureTopicsDir(memoryDir);
-      const types: MemoryType[] = ['user', 'feedback', 'project', 'reference'];
-      for (const t of types) {
-        writeTopic(memoryDir, `${t}-test.md`, `${t} 主题`, `${t} 描述`, t, `# ${t} 正文`);
-      }
-      writeIndex(memoryDir, [
-        '- [用户](topics/user-test.md) — 用户',
-        '- [反馈](topics/feedback-test.md) — 反馈',
-        '- [项目](topics/project-test.md) — 项目',
-        '- [参考](topics/reference-test.md) — 参考',
-      ].join('\n') + '\n');
-
-      const { snapshot } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(4);
-      expect(snapshot.topics.map((t) => t.type)).toEqual(expect.arrayContaining(types));
-    });
-  });
-
-  // ── 200 行边界 ──
-  describe('200 行边界', () => {
-    it('恰好 200 行不截断', () => {
-      ensureTopicsDir(memoryDir);
-      // 为前 200 行创建对应主题文件
-      for (let i = 0; i < 200; i++) {
-        writeTopic(memoryDir, `topic-${i}.md`, `主题 ${i}`, `描述 ${i}`, 'user');
-      }
-      const lines = generateIndexLines(200);
-      writeIndex(memoryDir, lines.join('\n') + '\n');
-
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.isTruncated).toBe(false);
-      expect(snapshot.topics).toHaveLength(200);
-      expect(diagnostic.truncation).toBeNull();
-    });
-
-    it('超过 200 行触发行截断', () => {
-      ensureTopicsDir(memoryDir);
-      // 创建 210 个主题文件（需要多少创建多少，但测试截断只需前 200 个可用）
-      for (let i = 0; i < 210; i++) {
-        writeTopic(memoryDir, `topic-${i}.md`, `主题 ${i}`, `描述 ${i}`, 'user');
-      }
-      const lines = generateIndexLines(210);
-      writeIndex(memoryDir, lines.join('\n') + '\n');
-
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.isTruncated).toBe(true);
-      expect(diagnostic.truncation).not.toBeNull();
-      expect(diagnostic.truncation!.reason).toBe('line_limit');
-      expect(diagnostic.truncation!.limit).toBe(200);
-      // 截断后只加载前 200 个
-      expect(snapshot.topics).toHaveLength(200);
-    });
-  });
-
-  // ── 20KB 边界 ──
-  describe('20KB 边界', () => {
-    it('恰好 20KB 不截断', () => {
-      ensureTopicsDir(memoryDir);
-      // 构造略低于 20KB 的索引：200 行每行约 96 字节（英文为主避免 UTF-8 膨胀）
-      const line = (i: number) =>
-        `- [Topic ${String(i).padStart(3, '0')}](topics/topic-${i}.md) — ${'x'.repeat(50)} #${String(i).padStart(3, '0')}`;
-      // 验证总字节 < 20KB
-      const testContent = Array.from({ length: 200 }, (_, i) => line(i)).join('\n');
-      if (Buffer.byteLength(testContent, 'utf-8') >= 20 * 1024) {
-        throw new Error(`测试数据超 20KB: ${Buffer.byteLength(testContent, 'utf-8')} bytes`);
-      }
-      for (let i = 0; i < 200; i++) {
-        writeTopic(memoryDir, `topic-${i}.md`, `Topic ${i}`, `Desc ${i}`, 'user');
-      }
-      writeIndex(memoryDir, testContent + '\n');
-
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.isTruncated).toBe(false);
-      expect(diagnostic.truncation).toBeNull();
-    });
-
-    it('超过 20KB 触发字节截断', () => {
-      ensureTopicsDir(memoryDir);
-      // 一行约 200 字节，150 行约 30KB，会触发字节截断
-      for (let i = 0; i < 150; i++) {
-        writeTopic(memoryDir, `topic-${i}.md`, `主题 ${i}`, `描述 ${i}`, 'user');
-      }
-      const lines = Array.from({ length: 150 }, (_, i) =>
-        `- [长度较长的索引标题行 ${String(i).padStart(5, '0')}](topics/topic-${i}.md) — 这是一段较长的描述文本内容用于测试字节截断 ${'x'.repeat(100)}`
-      );
-      writeIndex(memoryDir, lines.join('\n') + '\n');
-
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.isTruncated).toBe(true);
-      expect(diagnostic.truncation).not.toBeNull();
-      expect(diagnostic.truncation!.reason).toBe('byte_limit');
-    });
-
-    it('行边界早于字节边界时必须按 200 行截断', () => {
-      ensureTopicsDir(memoryDir);
-      for (let i = 0; i < 200; i++) {
-        writeTopic(memoryDir, `topic-${i}.md`, `主题 ${i}`, `描述 ${i}`, 'user');
-      }
-      const lines = generateIndexLines(1000);
-      expect(Buffer.byteLength(lines.join('\n'), 'utf-8')).toBeGreaterThan(20 * 1024);
-      writeIndex(memoryDir, lines.join('\n') + '\n');
-
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(200);
-      expect(diagnostic.truncation).toEqual({ reason: 'line_limit', limit: 200 });
-    });
-  });
-
-  // ── 磁盘文件不被修改 ──
-  describe('磁盘文件不被修改', () => {
-    it('加载后 MEMORY.md 内容不变', () => {
-      ensureTopicsDir(memoryDir);
-      writeTopic(memoryDir, 'test.md', '测试', '测试', 'user');
-      const originalIndex = '- [测试](topics/test.md) — 测试\n';
-      writeIndex(memoryDir, originalIndex);
-
-      loadMemorySnapshot(memoryDir);
-      const afterContent = readFileSync(join(memoryDir, 'MEMORY.md'), 'utf-8');
-      expect(afterContent).toBe(originalIndex);
-    });
-
-    it('加载后主题文件内容不变', () => {
-      ensureTopicsDir(memoryDir);
-      writeTopic(memoryDir, 'test.md', '测试', '测试', 'user', '# 原始正文');
-      writeIndex(memoryDir, '- [测试](topics/test.md) — 测试\n');
-
-      loadMemorySnapshot(memoryDir);
-      const afterTopic = readFileSync(join(memoryDir, 'topics', 'test.md'), 'utf-8');
-      expect(afterTopic).toContain('原始正文');
-      expect(afterTopic).toContain('type: user');
-    });
-
-    it('不存在的目录不创建任何文件', () => {
-      const nonExistentDir = join(tmpdir(), `nonexistent-memory-${Date.now()}`);
-      const { snapshot } = loadMemorySnapshot(nonExistentDir);
-      expect(snapshot.isEmpty).toBe(true);
-      expect(existsSync(nonExistentDir)).toBe(false);
-    });
-  });
-
-  // ── 有效与无效条目混合 ──
-  describe('有效与无效条目混合', () => {
-    it('有效条目正常加载，元数据异常条目降级召回并报告诊断', () => {
-      ensureTopicsDir(memoryDir);
-      // 有效主题
-      writeTopic(memoryDir, 'valid.md', '有效', '有效主题', 'user');
-      writeTopic(memoryDir, 'project-notes.md', '项目说明', '项目说明', 'project');
-      // 有效但文件不存在（断链）
-      // 无效文件名格式
-      // 未知类型
-      writeTopicRaw(memoryDir, 'unknown-type.md', '未知类型', '未知类型', 'custom_type');
-      // 无效 frontmatter（缺少 name）
-      writeFileSync(join(memoryDir, 'topics', 'no-name.md'), "---\ndescription: 无名称\ntype: user\n---\n", 'utf-8');
-
-      writeIndex(memoryDir, [
-        '- [有效](topics/valid.md) — 有效',
-        '- [项目说明](topics/project-notes.md) — 项目说明',
-        '- [断链](topics/broken.md) — 不存在的文件',
-        '- [无效文件名](topics/UPPERCASE.md) — 大写非法',
-        '- [未知类型](topics/unknown-type.md) — 未知类型',
-        '- [无名称](topics/no-name.md) — 无 frontmatter 名称',
-      ].join('\n') + '\n');
-
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      // 文件存在且名称合法的条目均可召回，元数据异常项降级为空类型。
-      expect(snapshot.topics).toHaveLength(4);
-      expect(snapshot.topics.map((t) => t.slug)).toEqual(expect.arrayContaining([
-        'valid',
-        'project-notes',
-        'unknown-type',
-        'no-name',
-      ]));
-      expect(snapshot.topics.find((t) => t.slug === 'unknown-type')?.type).toBeUndefined();
-      expect(snapshot.topics.find((t) => t.slug === 'no-name')?.type).toBeUndefined();
-      // 诊断
-      expect(diagnostic.brokenLinks).toContain('broken.md');
-      expect(diagnostic.invalidFilenames).toContain('UPPERCASE.md');
-      expect(diagnostic.unknownTypes.some((s) => s.includes('unknown-type'))).toBe(true);
-      expect(diagnostic.invalidFrontmatter).toContain('no-name.md');
-    });
-  });
-
-  // ── 重复索引 ──
-  describe('重复索引', () => {
-    it('相同文件引用多次报告重复且只保留一次', () => {
-      ensureTopicsDir(memoryDir);
-      writeTopic(memoryDir, 'duplicate.md', '重复', '重复', 'user');
-      writeIndex(memoryDir, [
-        '- [第一次](topics/duplicate.md) — 第一次',
-        '- [第二次](topics/duplicate.md) — 第二次',
-        '- [第三次](topics/duplicate.md) — 第三次',
-      ].join('\n') + '\n');
-
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(1);
-      expect(snapshot.topics[0].slug).toBe('duplicate');
-      // 第一次保留
-      expect(diagnostic.duplicates).toContain('duplicate.md');
-    });
-  });
-
-  // ── 非法 slug ──
-  describe('非法 slug 文件名', () => {
-    it('文件名不符合 kebab-case 被拒绝', () => {
-      ensureTopicsDir(memoryDir);
-      writeTopic(memoryDir, 'Topic_Name.md', '非法', '非法', 'user');
-      writeTopic(memoryDir, 'topic name.md', '非法空格', '非法空格', 'user');
-      writeTopic(memoryDir, 'topic@name.md', '非法字符', '非法字符', 'user');
-      writeTopic(memoryDir, 'topic-中文.md', '中文', '中文', 'user');
-      writeIndex(memoryDir, [
-        '- [非法](topics/Topic_Name.md) — 非法',
-        '- [非法空格](topics/topic name.md) — 非法',
-        '- [非法字符](topics/topic@name.md) — 非法',
-        '- [中文](topics/topic-中文.md) — 中文',
-      ].join('\n') + '\n');
-
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(0);
-      expect(diagnostic.invalidFilenames).toHaveLength(4);
-    });
-  });
-
-  // ── 损坏 frontmatter ──
-  describe('损坏 frontmatter', () => {
-    it('支持 Windows CRLF frontmatter', () => {
-      ensureTopicsDir(memoryDir);
-      writeFileSync(
-        join(memoryDir, 'topics', 'windows-crlf.md'),
-        '---\r\nname: Windows\r\ndescription: CRLF frontmatter\r\ntype: project\r\n---\r\n\r\n# 正文\r\n',
-        'utf-8',
-      );
-      writeIndex(memoryDir, '- [Windows](topics/windows-crlf.md) — CRLF\r\n');
-
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(1);
-      expect(snapshot.topics[0].type).toBe('project');
-      expect(diagnostic.invalidFrontmatter).toHaveLength(0);
-    });
-
-    it('完全无 frontmatter 时使用索引元数据降级召回', () => {
-      ensureTopicsDir(memoryDir);
-      writeFileSync(join(memoryDir, 'topics', 'no-fm.md'), '# 无 frontmatter 的正文\n', 'utf-8');
-      writeIndex(memoryDir, '- [无 frontmatter](topics/no-fm.md) — 无 frontmatter\n');
-
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(1);
-      expect(snapshot.topics[0]).toMatchObject({
-        slug: 'no-fm',
-        name: '无 frontmatter',
-        description: '无 frontmatter',
+    expect(result.status).toBe('loaded');
+    expect(result.snapshot.content).toBe(content);
+    expect(result.snapshot.topics).toEqual([
+      expect.objectContaining({
+        slug: 'topic-1',
+        title: '主题 1',
         type: undefined,
-      });
-      expect(diagnostic.invalidFrontmatter).toContain('no-fm.md');
-    });
+      }),
+    ]);
+    expect(result.diagnostic.unknownTypes).toEqual([]);
+    expect(result.diagnostic.invalidFrontmatter).toEqual([]);
+    expect(result.diagnostic.brokenLinks).toEqual([]);
+  });
 
-    it('frontmatter 缺少 description 时使用索引元数据降级召回', () => {
-      ensureTopicsDir(memoryDir);
-      writeFileSync(join(memoryDir, 'topics', 'no-desc.md'), "---\nname: 无描述\ntype: user\n---\n", 'utf-8');
-      writeIndex(memoryDir, '- [无描述](topics/no-desc.md) — 无描述\n');
+  it('任意非空 MEMORY.md 都是可注入索引内容，不要求必须采用 topic 列表格式', () => {
+    const content = '# 项目记忆\n\n用户偏好简体中文。\n';
+    writeFileSync(join(memoryDir, 'MEMORY.md'), content, 'utf-8');
 
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(1);
-      expect(snapshot.topics[0].type).toBeUndefined();
-      expect(diagnostic.invalidFrontmatter).toContain('no-desc.md');
-    });
+    const result = loadMemorySnapshot(memoryDir);
 
-    it('frontmatter 缺少 type 时使用索引元数据降级召回', () => {
-      ensureTopicsDir(memoryDir);
-      writeFileSync(join(memoryDir, 'topics', 'no-type.md'), "---\nname: 无类型\ndescription: 无类型\n---\n", 'utf-8');
-      writeIndex(memoryDir, '- [无类型](topics/no-type.md) — 无类型\n');
+    expect(result.snapshot.content).toBe(content);
+    expect(result.snapshot.isEmpty).toBe(false);
+    expect(result.snapshot.topics).toEqual([]);
+  });
 
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(1);
-      expect(snapshot.topics[0].type).toBeUndefined();
-      expect(diagnostic.invalidFrontmatter).toContain('no-type.md');
-    });
+  it('恰好 200 行不截断，超过 200 行只保留前 200 行', () => {
+    const twoHundred = Array.from({ length: 200 }, (_, index) => indexLine(index));
+    writeFileSync(join(memoryDir, 'MEMORY.md'), `${twoHundred.join('\n')}\n`, 'utf-8');
 
-    it('frontmatter 为空块时使用索引元数据降级召回', () => {
-      ensureTopicsDir(memoryDir);
-      writeFileSync(join(memoryDir, 'topics', 'empty-fm.md'), "---\n---\n# 正文\n", 'utf-8');
-      writeIndex(memoryDir, '- [空 frontmatter](topics/empty-fm.md) — 空\n');
+    const exact = loadMemorySnapshot(memoryDir);
+    expect(exact.snapshot.isTruncated).toBe(false);
+    expect(exact.snapshot.content.split('\n').filter(Boolean)).toHaveLength(200);
 
-      const { snapshot, diagnostic } = loadMemorySnapshot(memoryDir);
-      expect(snapshot.topics).toHaveLength(1);
-      expect(snapshot.topics[0].type).toBeUndefined();
-      expect(diagnostic.invalidFrontmatter).toContain('empty-fm.md');
+    const overflow = [...twoHundred, indexLine(200)];
+    writeFileSync(join(memoryDir, 'MEMORY.md'), `${overflow.join('\n')}\n`, 'utf-8');
+    const truncated = loadMemorySnapshot(memoryDir);
+    expect(truncated.snapshot.isTruncated).toBe(true);
+    expect(truncated.snapshot.content.split('\n').filter(Boolean)).toHaveLength(200);
+    expect(truncated.diagnostic.truncation).toEqual({
+      reason: 'line_limit',
+      limit: 200,
     });
   });
 
-  // ── 快照不可变性 ──
-  describe('快照不可变', () => {
-    it('MemorySnapshot 及其内容被冻结', () => {
-      ensureTopicsDir(memoryDir);
-      writeTopic(memoryDir, 'immutable.md', '不可变', '不可变测试', 'user');
-      writeIndex(memoryDir, '- [不可变](topics/immutable.md) — 不可变\n');
+  it('超过 25KB 时按最后一个完整换行截断，不保留半个 UTF-8 字符或半行', () => {
+    const lines = Array.from(
+      { length: 190 },
+      (_, index) => indexLine(index, `中文描述-${'甲'.repeat(60)}`),
+    );
+    const original = `${lines.join('\n')}\n`;
+    expect(Buffer.byteLength(original, 'utf-8')).toBeGreaterThan(25 * 1024);
+    writeFileSync(join(memoryDir, 'MEMORY.md'), original, 'utf-8');
 
-      const { snapshot } = loadMemorySnapshot(memoryDir);
-      expect(Object.isFrozen(snapshot)).toBe(true);
-      expect(Object.isFrozen(snapshot.topics)).toBe(true);
-      if (snapshot.topics.length > 0) {
-        expect(Object.isFrozen(snapshot.topics[0])).toBe(true);
-      }
+    const result = loadMemorySnapshot(memoryDir);
+
+    expect(result.snapshot.isTruncated).toBe(true);
+    expect(result.diagnostic.truncation).toEqual({
+      reason: 'byte_limit',
+      limit: 25 * 1024,
     });
+    expect(result.snapshot.content.endsWith('\n')).toBe(true);
+    expect(result.snapshot.content).not.toContain('\uFFFD');
+    expect(Buffer.byteLength(result.snapshot.content, 'utf-8')).toBeLessThanOrEqual(25 * 1024);
   });
 
-  describe('加载状态', () => {
-    it('合法缺失索引返回 empty，读取异常返回 failed', () => {
-      const emptyResult = loadMemorySnapshot(memoryDir);
-      expect(emptyResult.status).toBe('empty');
+  it('重复引用只保留第一条，非法文件名只进入诊断', () => {
+    const content = [
+      '- [第一条](topics/same-topic.md) — first',
+      '- [重复条](topics/same-topic.md) — duplicate',
+      '- [非法](topics/UPPER_CASE.md) — invalid',
+    ].join('\n');
+    writeFileSync(join(memoryDir, 'MEMORY.md'), content, 'utf-8');
 
-      mkdirSync(join(memoryDir, 'MEMORY.md'));
-      const failedResult = loadMemorySnapshot(memoryDir);
-      expect(failedResult.status).toBe('failed');
-      expect(failedResult.diagnostic.warnings[0]).toContain('读取 MEMORY.md 失败');
+    const result = loadMemorySnapshot(memoryDir);
+
+    expect(result.snapshot.topics).toHaveLength(1);
+    expect(result.snapshot.topics[0].title).toBe('第一条');
+    expect(result.diagnostic.duplicates).toEqual(['same-topic.md']);
+    expect(result.diagnostic.invalidFilenames).toEqual(['UPPER_CASE.md']);
+  });
+
+  it('加载器不修改 MEMORY.md 的磁盘内容', () => {
+    const content = `${indexLine(1)}\r\n`;
+    writeFileSync(join(memoryDir, 'MEMORY.md'), content, 'utf-8');
+
+    loadMemorySnapshot(memoryDir);
+
+    expect(readFileSync(join(memoryDir, 'MEMORY.md'), 'utf-8')).toBe(content);
+  });
+
+  it('只有显式诊断才读取 topic，并报告断链、未知 type 与无效 frontmatter', () => {
+    mkdirSync(join(memoryDir, 'topics'));
+    writeFileSync(
+      join(memoryDir, 'MEMORY.md'),
+      [
+        '- [有效](topics/valid.md) — valid',
+        '- [未知](topics/unknown.md) — unknown',
+        '- [损坏](topics/broken.md) — broken',
+        '- [缺失](topics/missing.md) — missing',
+      ].join('\n'),
+      'utf-8',
+    );
+    writeFileSync(
+      join(memoryDir, 'topics', 'valid.md'),
+      '---\nname: 有效主题\ndescription: 有效描述\ntype: project\n---\n正文',
+      'utf-8',
+    );
+    writeFileSync(
+      join(memoryDir, 'topics', 'unknown.md'),
+      '---\nname: 未知主题\ndescription: 未知描述\ntype: secret\n---\n正文',
+      'utf-8',
+    );
+    writeFileSync(
+      join(memoryDir, 'topics', 'broken.md'),
+      '没有 frontmatter',
+      'utf-8',
+    );
+
+    const startup = loadMemorySnapshot(memoryDir);
+    expect(startup.diagnostic).toMatchObject({
+      brokenLinks: [],
+      unknownTypes: [],
+      invalidFrontmatter: [],
     });
+    expect(startup.snapshot.topics.every(topic => topic.type === undefined)).toBe(true);
+
+    const explicit = diagnoseMemoryTopics(memoryDir);
+    expect(explicit.diagnostic.brokenLinks).toEqual(['missing.md']);
+    expect(explicit.diagnostic.unknownTypes).toEqual(['unknown.md']);
+    expect(explicit.diagnostic.invalidFrontmatter).toEqual(['broken.md']);
+    expect(explicit.topics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        slug: 'valid',
+        name: '有效主题',
+        type: 'project',
+      }),
+      expect.objectContaining({
+        slug: 'unknown',
+        type: undefined,
+      }),
+    ]));
   });
 });

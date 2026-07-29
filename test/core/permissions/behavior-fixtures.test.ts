@@ -1,116 +1,172 @@
 /**
- * @file 权限行为夹具测试。
- * 覆盖工具级规则、内容规则、deny/ask/allow 冲突、Bash/PowerShell 复合命令、
- * 路径、MCP、Plan、Auto、dontAsk、bypass 和规则更新。
+ * @file Claude Code 行为夹具加载与校验测试。
+ * 从外部独立 fixture JSON 读取预期行为，不调用 MyAgent 自己的 service 生成 expected。
+ * 拒绝缺少来源引用或使用假想 PascalCase 工具名的 fixture。
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PermissionRuleStore } from '../../../src/core/domain/permissions/rule-store.js';
 import { ToolPermissionService } from '../../../src/core/domain/permissions/tool-permission-service.js';
-import type { AutoClassifier } from '../../../src/core/domain/permissions/tool-permission-service.js';
+import { PermissionSessionState } from '../../../src/core/domain/permissions/permission-session-state.js';
+import type {
+  PermissionMode,
+  PermissionRule,
+} from '../../../src/core/domain/permissions/permission-types.js';
 
-class AllowClassifier implements AutoClassifier {
-  async classify(): Promise<{ allow: boolean; reason: string }> {
-    return { allow: true, reason: 'auto-classified' };
-  }
+/** 当前交付的三种普通模式。 */
+const VALID_MODES: readonly string[] = ['default', 'acceptEdits', 'plan'];
+
+/** 已知的假想 PascalCase 工具名（应被 fixture 拒绝）。 */
+const PASCAL_CASE_PSEUDO_TOOLS = new Set([
+  'Write', 'Edit', 'Read', 'Create', 'ApplyPatch', 'ReadManyFiles',
+]);
+
+/** 测试文件所在目录。 */
+const __testDir = typeof __dirname !== 'undefined'
+  ? __dirname
+  : dirname(fileURLToPath(import.meta.url));
+
+/** Fixture 文件路径（编译后在 dist 外，直接引用源 JSON）。 */
+const FIXTURE_PATH = resolve(__testDir, '../../fixtures/permissions/claude/index.json');
+
+// ── Fixture 类型 ──
+
+interface ClaudePermissionFixture {
+  readonly id: string;
+  readonly scenario: string;
+  readonly description: string;
+  readonly input: {
+    readonly runtimeToolName: string;
+    readonly params: Record<string, unknown>;
+    readonly session: {
+      readonly mode: PermissionMode;
+      readonly rules?: readonly PermissionRule[];
+      readonly additionalDirectories?: readonly string[];
+      readonly memoryDir?: string;
+    };
+  };
+  readonly expectedOutput: {
+    readonly decision: 'allow' | 'ask' | 'deny';
+    readonly decisionReason?: string;
+    readonly actions: readonly string[];
+  };
+  readonly source: string;
+  readonly intentionalDifference?: string;
 }
 
-describe('参考行为夹具', () => {
-  // ── 工具级规则 ──
+/** 加载并校验所有 fixture。 */
+function loadFixtures(): ClaudePermissionFixture[] {
+  if (!existsSync(FIXTURE_PATH)) {
+    throw new Error(`Fixture 文件不存在: ${FIXTURE_PATH}`);
+  }
+  const raw = JSON.parse(readFileSync(FIXTURE_PATH, 'utf-8'));
+  if (!Array.isArray(raw.fixtures)) {
+    throw new Error('Fixture 索引必须包含 fixtures 数组');
+  }
+  return raw.fixtures as ClaudePermissionFixture[];
+}
 
-  describe('工具级规则', () => {
-    it('Bash allow → 允许所有 Bash 调用', async () => {
-      const store = new PermissionRuleStore();
-      store.addRule('userSettings', { source: 'userSettings', ruleBehavior: 'allow', ruleValue: { toolName: 'Bash' } });
-      const svc = new ToolPermissionService({ ruleStore: store });
-      expect((await svc.checkPermissions('Bash', { command: 'ls' }, 'default')).kind).toBe('allow');
-    });
+/** 模块级加载一次（同步）。 */
+const ALL_FIXTURES = loadFixtures();
 
-    it('Bash deny → 拒绝所有 Bash 调用', async () => {
-      const store = new PermissionRuleStore();
-      store.addRule('userSettings', { source: 'userSettings', ruleBehavior: 'deny', ruleValue: { toolName: 'Bash' } });
-      const svc = new ToolPermissionService({ ruleStore: store });
-      expect((await svc.checkPermissions('Bash', { command: 'ls' }, 'default')).kind).toBe('deny');
-    });
+describe('Claude 权限行为夹具', () => {
+  // ── Fixture 结构完整性校验（不依赖 MyAgent service）──
+
+  describe('Fixture 结构校验', () => {
+    for (const fixture of ALL_FIXTURES) {
+      it(`${fixture.id}: 必须包含 source 引用`, () => {
+        expect(fixture.source).toBeTruthy();
+        expect(
+          fixture.source.startsWith('url:') || fixture.source.startsWith('src:'),
+        ).toBe(true);
+      });
+
+      it(`${fixture.id}: runtimeToolName 不能是假想 PascalCase 名称`, () => {
+        expect(PASCAL_CASE_PSEUDO_TOOLS.has(fixture.input.runtimeToolName)).toBe(false);
+      });
+
+      it(`${fixture.id}: mode 必须是有效值`, () => {
+        expect(VALID_MODES).toContain(fixture.input.session.mode);
+      });
+
+      it(`${fixture.id}: 必须有 expectedOutput`, () => {
+        expect(['allow', 'ask', 'deny']).toContain(fixture.expectedOutput.decision);
+      });
+
+      it(`${fixture.id}: 必须有 params`, () => {
+        expect(fixture.input.params).toBeTruthy();
+      });
+    }
   });
 
-  // ── 内容规则 ──
+  // ── 对所有 fixture 执行行为等价验证 ──
 
-  describe('内容限定规则', () => {
-    it('Bash(npm run *) 只匹配 npm 命令', async () => {
-      const store = new PermissionRuleStore();
-      store.addRule('userSettings', { source: 'userSettings', ruleBehavior: 'allow', ruleValue: { toolName: 'Bash', ruleContent: 'npm run *' } });
-      const svc = new ToolPermissionService({ ruleStore: store });
-      expect((await svc.checkPermissions('Bash', { command: 'npm run build' }, 'default')).kind).toBe('allow');
-      expect((await svc.checkPermissions('Bash', { command: 'rm -rf /' }, 'default')).kind).toBe('ask');
-    });
+  describe('行为等价验证', () => {
+    for (const fixture of ALL_FIXTURES) {
+      it(`${fixture.id}: ${fixture.description}`, async () => {
+        const sessionState = new PermissionSessionState({
+          mode: fixture.input.session.mode,
+          rules: fixture.input.session.rules,
+          additionalDirectories: fixture.input.session.additionalDirectories,
+        });
+        // 构造与 fixture mode 匹配的规则存储
+        const ruleStore = new PermissionRuleStore();
+        if (fixture.input.session.rules) {
+          for (const rule of fixture.input.session.rules) {
+            ruleStore.addRule(rule.source, rule);
+          }
+        }
+
+        const svc = new ToolPermissionService({ ruleStore: sessionState.getRuleStore() });
+        const result = await svc.checkPermissions(
+          fixture.input.runtimeToolName,
+          fixture.input.params,
+          fixture.input.session.mode,
+        );
+
+        // 仅非 intentionalDifference 的 fixture 校验决策
+        if (!fixture.intentionalDifference) {
+          expect(result.kind).toBe(fixture.expectedOutput.decision);
+          // 如果 fixture 有预期 decisionReason，校验原因包含该关键词
+          if (fixture.expectedOutput.decisionReason) {
+            expect(result.decisionReason ?? '').toContain(fixture.expectedOutput.decisionReason);
+          }
+        }
+      });
+    }
   });
 
-  // ── deny/ask/allow 冲突 ──
+  // ── 覆盖率校验 ──
 
-  describe('冲突优先级', () => {
-    it('宽 deny 覆盖窄 allow', async () => {
-      const store = new PermissionRuleStore();
-      store.addRule('userSettings', { source: 'userSettings', ruleBehavior: 'deny', ruleValue: { toolName: 'Bash' } });
-      store.addRule('userSettings', { source: 'userSettings', ruleBehavior: 'allow', ruleValue: { toolName: 'Bash', ruleContent: 'npm *' } });
-      const svc = new ToolPermissionService({ ruleStore: store });
-      expect((await svc.checkPermissions('Bash', { command: 'npm run build' }, 'default')).kind).toBe('deny');
+  describe('Fixture 覆盖率', () => {
+    it('至少包含 Manual/Accept edits on/Plan 三种模式的 fixture', () => {
+      const modes = new Set(ALL_FIXTURES.map(f => f.input.session.mode));
+      expect(modes.has('default')).toBe(true);
+      expect(modes.has('acceptEdits')).toBe(true);
+      expect(modes.has('plan')).toBe(true);
     });
-  });
 
-  // ── 模式测试 ──
-
-  describe('Plan 模式', () => {
-    it('拒绝写入操作', async () => {
-      const store = new PermissionRuleStore();
-      const svc = new ToolPermissionService({ ruleStore: store });
-      expect((await svc.checkPermissions('Write', { path: 'test.ts' }, 'plan')).kind).toBe('deny');
+    it('至少包含 writeFile、editFile、createDirectory、deletePath 四种工具的 fixture', () => {
+      const tools = new Set(ALL_FIXTURES.map(f => f.input.runtimeToolName));
+      expect(tools.has('writeFile')).toBe(true);
+      expect(tools.has('editFile')).toBe(true);
+      expect(tools.has('createDirectory')).toBe(true);
+      expect(tools.has('deletePath')).toBe(true);
     });
-  });
 
-  describe('dontAsk 模式', () => {
-    it('将 ask 转为 deny', async () => {
-      const store = new PermissionRuleStore();
-      const svc = new ToolPermissionService({ ruleStore: store });
-      expect((await svc.checkPermissions('Bash', { command: 'ls' }, 'dontAsk')).kind).toBe('deny');
+    it('所有 fixture 都有唯一的 id', () => {
+      const ids = ALL_FIXTURES.map(f => f.id);
+      expect(new Set(ids).size).toBe(ids.length);
     });
-  });
 
-  describe('bypass 模式', () => {
-    it('将 ask 转为 allow', async () => {
-      const store = new PermissionRuleStore();
-      const svc = new ToolPermissionService({ ruleStore: store });
-      expect((await svc.checkPermissions('Bash', { command: 'ls' }, 'bypassPermissions')).kind).toBe('allow');
-    });
-  });
-
-  describe('Auto 模式', () => {
-    it('分类器允许时返回 allow', async () => {
-      const store = new PermissionRuleStore();
-      const svc = new ToolPermissionService({ ruleStore: store, autoClassifier: new AllowClassifier() });
-      expect((await svc.checkPermissions('Read', { path: 'test.ts' }, 'auto')).kind).toBe('allow');
-    });
-  });
-
-  // ── 规则更新 ──
-
-  describe('规则更新', () => {
-    it('session 来源规则仅当前会话有效', () => {
-      const store = new PermissionRuleStore();
-      store.applyUpdate({ operation: 'add', rules: [{ source: 'session', ruleBehavior: 'allow', ruleValue: { toolName: 'Bash' } }] });
-      expect(store.getRules('session').length).toBe(1);
-      store.clearSessionRules();
-      expect(store.getRules('session').length).toBe(0);
-    });
-  });
-
-  // ── passthrough → ask ──
-
-  describe('passthrough 转换', () => {
-    it('passthrough 无规则时转为 ask', async () => {
-      const store = new PermissionRuleStore();
-      const svc = new ToolPermissionService({ ruleStore: store });
-      expect((await svc.checkPermissions('UnknownTool', {}, 'default')).kind).toBe('ask');
+    it('所有 fixture 都有 scenario 和 description', () => {
+      for (const f of ALL_FIXTURES) {
+        expect(f.scenario).toBeTruthy();
+        expect(f.description).toBeTruthy();
+      }
     });
   });
 });

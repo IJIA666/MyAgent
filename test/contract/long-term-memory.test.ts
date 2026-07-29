@@ -70,9 +70,9 @@ describe('长期记忆静态契约', () => {
 
         const { snapshot, diagnostic } = loadMemorySnapshot(dir);
         expect(snapshot.isEmpty).toBe(false);
-        expect(snapshot.topics[0].type).toBe(type);
+        // 启动期不读 topic frontmatter，type 始终为 undefined
+        expect(snapshot.topics[0].type).toBeUndefined();
         expect(diagnostic.unknownTypes).toHaveLength(0);
-        expect(diagnostic.invalidFrontmatter).toHaveLength(0);
 
         rmSync(dir, { recursive: true, force: true });
       });

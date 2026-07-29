@@ -4,13 +4,44 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { ToolCallGateway } from '../../src/adapters/tools/ToolCallGateway.js';
+import {
+  ToolCallGateway,
+  type ExternalGatewayTarget,
+} from '../../src/adapters/tools/ToolCallGateway.js';
 import { PermissionRuleStore } from '../../src/core/domain/permissions/rule-store.js';
 import { ToolPermissionService } from '../../src/core/domain/permissions/tool-permission-service.js';
 import type { NativeTool } from '../../src/adapters/tools/tool-types.js';
 import { PermissionPromptAdapter } from '../../src/core/usecases/plugins/PermissionPromptAdapter.js';
 import type { ToolPermissionCheckResult } from '../../src/core/domain/permissions/permission-types.js';
 import { logger, LOG_EVENT } from '../../src/utils/logger.js';
+import { createTestExecutionPlan } from '../helpers/permission-plan.js';
+import { PermissionSessionState } from '../../src/core/domain/permissions/permission-session-state.js';
+import type { ToolPermissionChecker } from '../../src/core/domain/permissions/tool-permission-service.js';
+import { createTrustedCallContext } from '../../src/core/domain/permissions/trusted-call-context.js';
+import { createMcpToolAuthorizationAdapter } from '../../src/adapters/tools/permissions/mcp-tool-authorization.js';
+import type { ToolExecutionContext } from '../../src/core/usecases/plugins/plugin-types.js';
+import type { SessionEventPort } from '../../src/ports/driven/session/SessionEventPort.js';
+
+const trustedCaller = createTrustedCallContext('gateway-contract', 'interactive');
+
+/** 为 Gateway 契约测试创建带易失 descriptor 的正式 MCP 目标。 */
+function createMcpTarget<T>(
+  toolName: string,
+  checker: ToolPermissionChecker,
+  execute: ExternalGatewayTarget<T>['execute'],
+  getCurrentDescriptorVersion: () => string | undefined = () => 'descriptor-v1',
+): ExternalGatewayTarget<T> {
+  return {
+    authorizationAdapter: createMcpToolAuthorizationAdapter({
+      name: toolName,
+      serverName: 'gateway-contract-server',
+      descriptorVersion: 'descriptor-v1',
+    }),
+    checker,
+    getCurrentDescriptorVersion,
+    execute,
+  };
+}
 
 /** 模拟工具 */
 class MockTool implements NativeTool {
@@ -18,6 +49,7 @@ class MockTool implements NativeTool {
   readonly securityCategory: 'read' | 'write' = 'read';
   readonly definition = {};
   executionCount = 0;
+  lastExecutionContext: ToolExecutionContext | undefined;
   private readonly permissionResult: ToolPermissionCheckResult;
 
   constructor(
@@ -37,8 +69,14 @@ class MockTool implements NativeTool {
     this.permissionResult = permissionResult;
   }
 
-  execute(_args: Record<string, unknown>): Promise<string> {
+  execute(
+    _args: Record<string, unknown>,
+    context?: ToolExecutionContext | SessionEventPort,
+  ): Promise<string> {
     this.executionCount += 1;
+    this.lastExecutionContext = context && 'toolCallId' in context
+      ? context
+      : undefined;
     return Promise.resolve(`executed: ${this.name}`);
   }
 
@@ -75,6 +113,29 @@ describe('ToolCallGateway', () => {
     expect(result.result).toContain('executed');
   });
 
+  it('后台子 Agent 的执行计划必须绑定 sub-agent 凭据受众', async () => {
+    const store = new PermissionRuleStore();
+    const service = new ToolPermissionService({ ruleStore: store });
+    const gateway = new ToolCallGateway(service, store);
+    const tool = new MockTool('BackgroundReadTool');
+    gateway.registerTools([tool]);
+    const caller = createTrustedCallContext(
+      'auto-memory-child',
+      'background',
+      '1.0.0',
+      'subagent',
+    );
+
+    await gateway.execute('BackgroundReadTool', {}, 'bypassPermissions', {
+      caller,
+    });
+
+    expect(tool.lastExecutionContext?.executionPlan.credentialProfile).toMatchObject({
+      audience: 'sub-agent',
+      inheritHostEnv: false,
+    });
+  });
+
   it('tail call 通过 authorizedContext 执行', async () => {
     const store = new PermissionRuleStore();
     const service = new ToolPermissionService({ ruleStore: store });
@@ -88,10 +149,34 @@ describe('ToolCallGateway', () => {
       decisionSource: 'userApproval',
       matchedEvidenceIds: [],
       overridable: false,
-    });
+    }, createTestExecutionPlan('TailTool', {}));
     expect(ctx).not.toBeNull();
     const result = await gateway.executeAuthorized(ctx!);
     expect(result).toContain('executed: TailTool');
+  });
+
+  it('服务签发的上下文只能消费一次，重复消费应被拒绝', async () => {
+    const store = new PermissionRuleStore();
+    const service = new ToolPermissionService({ ruleStore: store });
+    const gateway = new ToolCallGateway(service, store);
+    const tool = new MockTool('OnceTool');
+    gateway.registerTools([tool]);
+
+    const ctx = service.createAuthorizedContext('OnceTool', {}, {
+      kind: 'allow',
+      decisionReason: 'once',
+      decisionSource: 'userApproval',
+      matchedEvidenceIds: [],
+      overridable: false,
+    }, createTestExecutionPlan('OnceTool', {}));
+    expect(ctx).not.toBeNull();
+
+    // 第一次消费应成功
+    const first = await gateway.executeAuthorized(ctx!);
+    expect(first).toContain('executed: OnceTool');
+
+    // 第二次应拒绝
+    await expect(gateway.executeAuthorized(ctx!)).rejects.toThrow();
   });
 
   it('权限拒绝时不应执行工具', async () => {
@@ -133,9 +218,9 @@ describe('ToolCallGateway', () => {
     const gateway = new ToolCallGateway(service, store);
     gateway.registerTools([tool]);
     let promptCount = 0;
-    const promptAdapter = new PermissionPromptAdapter(store, async () => {
+    const promptAdapter = new PermissionPromptAdapter(new PermissionSessionState(), async () => {
       promptCount += 1;
-      return { approved: true, scope: 'once' };
+      return { approved: true };
     });
 
     const result = await gateway.execute('AskTool', { command: 'touch marker.txt' }, 'default', { promptAdapter });
@@ -169,18 +254,21 @@ describe('ToolCallGateway', () => {
           kind: 'file',
           operation: 'write',
           rawExpression: 'secret.txt',
-          resolvedResource: 'C:\\private\\secret.txt',
-          baseContext: 'workspace',
+          canonicalPath: 'C:\\private\\secret.txt',
           scope: 'external',
-          certainty: 'exact',
           sourceNodeId: 'node-1',
-          reason: '测试资源',
+          protected: false,
+          provenance: 'tool-analyzed',
+          channelTrust: 'interactive',
         }],
       },
     });
     const gateway = new ToolCallGateway(service, store);
     gateway.registerTools([tool]);
-    const promptAdapter = new PermissionPromptAdapter(store, async () => ({ approved: true, scope: 'once' }));
+    const promptAdapter = new PermissionPromptAdapter(
+      new PermissionSessionState(),
+      async () => ({ approved: true, actionId: 'allowOnce' }),
+    );
     const logSpy = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
     const records = await (async (): Promise<Record<string, unknown>[]> => {
       try {
@@ -231,7 +319,10 @@ describe('ToolCallGateway', () => {
     });
     const gateway = new ToolCallGateway(service, store);
     gateway.registerTools([tool]);
-    const promptAdapter = new PermissionPromptAdapter(store, async () => ({ approved: false, scope: 'once' }));
+    const promptAdapter = new PermissionPromptAdapter(
+      new PermissionSessionState(),
+      async () => ({ approved: false, actionId: 'deny' }),
+    );
 
     await expect(gateway.execute('RejectedTool', {}, 'default', { promptAdapter })).rejects.toMatchObject({
       code: 'approval_denied_before_execution',
@@ -250,10 +341,10 @@ describe('ToolCallGateway', () => {
     });
     const gateway = new ToolCallGateway(service, store);
     gateway.registerTools([tool]);
-    const promptAdapter = new PermissionPromptAdapter(store, async () => {
+    const promptAdapter = new PermissionPromptAdapter(new PermissionSessionState(), async () => {
       // 模拟用户审批耗时长于工具本身的执行超时。
       await new Promise<void>((resolve) => setTimeout(resolve, 30));
-      return { approved: true, scope: 'once' };
+      return { approved: true };
     });
 
     const result = await gateway.execute(
@@ -272,28 +363,30 @@ describe('ToolCallGateway', () => {
     const service = new ToolPermissionService({ ruleStore: store });
     const order: string[] = [];
     const gateway = new ToolCallGateway(service, store);
-    const promptAdapter = new PermissionPromptAdapter(store, async () => {
+    const state = new PermissionSessionState();
+    const promptAdapter = new PermissionPromptAdapter(state, async () => {
       order.push('approved');
-      return { approved: true, scope: 'once' };
+      return { approved: true, actionId: 'allowOnce' };
     });
 
     await gateway.executeExternal(
       'mcp__demo__prepared',
       {},
       'default',
-      {
-        checker: {
-          checkPermissions: () => ({
-            kind: 'ask', message: '确认执行', decisionReason: '需要审批',
-          }),
+      createMcpTarget(
+        'mcp__demo__prepared',
+        {
+          checkPermissions: () => ({ kind: 'ask', message: '确认执行', decisionReason: '需要审批' }),
         },
-        execute: async () => {
+        async () => {
           order.push('executed');
           return 'ok';
         },
-      },
+      ),
       {
         promptAdapter,
+        permissionState: state,
+        caller: trustedCaller,
         runtime: {
           prepareExecution: async () => {
             order.push('prepared');
@@ -311,19 +404,23 @@ describe('ToolCallGateway', () => {
     const service = new ToolPermissionService({ ruleStore: store });
     const gateway = new ToolCallGateway(service, store);
     let executionCount = 0;
+    const state = new PermissionSessionState();
 
     const execution = gateway.executeExternal(
       'mcp__demo__prepare_failure',
       {},
       'default',
-      {
-        checker: { checkPermissions: () => ({ kind: 'allow' }) },
-        execute: async () => {
+      createMcpTarget(
+        'mcp__demo__prepare_failure',
+        { checkPermissions: () => ({ kind: 'allow' }) },
+        async () => {
           executionCount++;
           return 'unexpected';
         },
-      },
+      ),
       {
+        permissionState: state,
+        caller: trustedCaller,
         runtime: {
           prepareExecution: async () => {
             throw new Error('备份失败');
@@ -343,27 +440,33 @@ describe('ToolCallGateway', () => {
     const store = new PermissionRuleStore();
     const service = new ToolPermissionService({ ruleStore: store });
     const gateway = new ToolCallGateway(service, store);
+    const state = new PermissionSessionState();
 
     const execution = gateway.executeExternal(
       'mcp__demo__slow',
       {},
       'default',
-      {
-        checker: {
+      createMcpTarget(
+        'mcp__demo__slow',
+        {
           checkPermissions: () => ({
             kind: 'allow',
             decisionReason: '模拟已授权外部工具',
           }),
         },
-        execute: (_args, signal) => new Promise<string>((resolve, reject) => {
+        (_args, signal) => new Promise<string>((resolve, reject) => {
           const timer = setTimeout(() => resolve('late result'), 100);
           signal?.addEventListener('abort', () => {
             clearTimeout(timer);
             reject(signal.reason);
           }, { once: true });
         }),
+      ),
+      {
+        permissionState: state,
+        caller: trustedCaller,
+        runtime: { timeoutMs: 10 },
       },
-      { runtime: { timeoutMs: 10 } },
     );
 
     await expect(execution).rejects.toMatchObject({
@@ -373,7 +476,47 @@ describe('ToolCallGateway', () => {
     });
   });
 
-  it('复合命令会按需要批准的子命令保存规则，不保存整串命令', async () => {
+  it('MCP descriptor 在准备阶段刷新后不得消费旧授权', async () => {
+    const store = new PermissionRuleStore();
+    const service = new ToolPermissionService({ ruleStore: store });
+    const gateway = new ToolCallGateway(service, store);
+    const state = new PermissionSessionState();
+    let descriptorVersion = 'descriptor-v1';
+    let executionCount = 0;
+
+    const execution = gateway.executeExternal(
+      'mcp__demo__descriptor_drift',
+      { query: 'safe' },
+      'default',
+      createMcpTarget(
+        'mcp__demo__descriptor_drift',
+        { checkPermissions: () => ({ kind: 'allow', decisionReason: '测试预授权' }) },
+        async () => {
+          executionCount += 1;
+          return 'unexpected';
+        },
+        () => descriptorVersion,
+      ),
+      {
+        permissionState: state,
+        caller: trustedCaller,
+        runtime: {
+          prepareExecution: async () => {
+            descriptorVersion = 'descriptor-v2';
+          },
+        },
+      },
+    );
+
+    await expect(execution).rejects.toMatchObject({
+      code: 'authorization_state_changed_before_execution',
+      phase: 'authorization',
+      executionStarted: false,
+    });
+    expect(executionCount).toBe(0);
+  });
+
+  it('复合命令审批不应从命令文本猜测并持久化规则', async () => {
     const store = new PermissionRuleStore();
     const service = new ToolPermissionService({ ruleStore: store });
     const tool = new MockTool('Bash', {
@@ -396,11 +539,14 @@ describe('ToolCallGateway', () => {
     });
     const gateway = new ToolCallGateway(service, store);
     gateway.registerTools([tool]);
-    const promptAdapter = new PermissionPromptAdapter(store, async () => ({ approved: true, scope: 'session' }));
+    const promptAdapter = new PermissionPromptAdapter(
+      new PermissionSessionState(),
+      async () => ({ approved: true, actionId: 'allowOnce' }),
+    );
 
     await gateway.execute('Bash', { command: 'cat a.txt; touch marker.txt' }, 'default', { promptAdapter });
 
-    expect(store.getMatchingRules('Bash', 'touch marker.txt')).toHaveLength(1);
+    expect(store.getMatchingRules('Bash', 'touch marker.txt')).toHaveLength(0);
     expect(store.getMatchingRules('Bash', 'cat a.txt; touch marker.txt')).toHaveLength(0);
   });
 
@@ -409,6 +555,7 @@ describe('ToolCallGateway', () => {
     const service = new ToolPermissionService({ ruleStore: store });
     const gateway = new ToolCallGateway(service, store);
     let executionCount = 0;
+    const state = new PermissionSessionState();
     const evidence = {
       operationCategory: 'external-tool-call',
       sideEffect: 'read' as const,
@@ -419,12 +566,17 @@ describe('ToolCallGateway', () => {
       'mcp__demo__read',
       { path: 'a.txt' },
       'default',
-      {
-        checker: { checkPermissions: () => ({ kind: 'allow', evidence }) },
-        execute: async () => {
+      createMcpTarget(
+        'mcp__demo__read',
+        { checkPermissions: () => ({ kind: 'allow', evidence }) },
+        async () => {
           executionCount += 1;
           return { content: 'ok' };
         },
+      ),
+      {
+        permissionState: state,
+        caller: trustedCaller,
       },
     );
 

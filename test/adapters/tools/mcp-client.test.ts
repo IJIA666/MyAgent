@@ -4,6 +4,12 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 interface ExposedMcpToolManager {
   connections: Map<string, { client: Client; transport: unknown }>;
+  toolRouter: Map<string, string>;
+  toolDescriptors: Map<string, {
+    name: string;
+    serverName: string;
+    descriptorVersion: string;
+  }>;
 }
 
 describe('McpToolManager 单元测试', () => {
@@ -65,6 +71,45 @@ describe('McpToolManager 单元测试', () => {
     await expect(manager.getMcpTools()).rejects.toThrow('[MCP 命名冲突] 外部服务 [server-two] 与 [server-one] 注册了同名工具 "common_tool"！');
   });
 
+  test('每次刷新工具清单都生成新 descriptorVersion', async () => {
+    const client = new Client({ name: 'refresh-client', version: '1.0' }, { capabilities: {} });
+    vi.spyOn(client, 'listTools').mockResolvedValue({
+      tools: [{
+        name: 'refresh_tool',
+        inputSchema: { type: 'object' },
+        annotations: { readOnlyHint: true },
+      }],
+    });
+    (manager as unknown as ExposedMcpToolManager).connections.set('refresh-server', {
+      client,
+      transport: {},
+    });
+
+    await manager.getMcpTools();
+    const firstVersion = manager.getToolDescriptor('refresh_tool')?.descriptorVersion;
+    await manager.getMcpTools();
+    const secondVersion = manager.getToolDescriptor('refresh_tool')?.descriptorVersion;
+
+    expect(firstVersion).toBeDefined();
+    expect(secondVersion).toBeDefined();
+    expect(secondVersion).not.toBe(firstVersion);
+  });
+
+  test('服务断开时即使连接已丢失也必须清除 descriptor 与路由', async () => {
+    const exposed = manager as unknown as ExposedMcpToolManager;
+    exposed.toolRouter.set('stale_tool', 'stale-server');
+    exposed.toolDescriptors.set('stale_tool', {
+      name: 'stale_tool',
+      serverName: 'stale-server',
+      descriptorVersion: 'stale-v1',
+    });
+
+    await manager.disconnectServer('stale-server');
+
+    expect(manager.getToolDescriptor('stale_tool')).toBeUndefined();
+    expect(exposed.toolRouter.has('stale_tool')).toBe(false);
+  });
+
   test('优雅注销序列与 3 秒延迟自毁测试', async () => {
     const client = new Client({ name: 'c1', version: '1.0' }, { capabilities: {} });
     const mockTransport = {
@@ -106,7 +151,7 @@ describe('McpToolManager 单元测试', () => {
     processOffSpy.mockRestore();
   });
 
-  test('callMcpTool 超时/断连热重启自愈重试测试', async () => {
+  test('callMcpTool 断连重启后使旧 descriptor 授权失效', async () => {
     vi.useRealTimers();
     const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((cb: () => void) => {
       cb();
@@ -126,39 +171,49 @@ describe('McpToolManager 单元测试', () => {
         content: [{ type: 'text', text: 'success_data' }]
       });
 
-    // 写入路由与连接
-    manager['toolRouter'].set('test_tool', 'test-server');
-    (manager as unknown as ExposedMcpToolManager).connections.set('test-server', {
+    // 写入审批时存在的路由、descriptor 与连接。
+    const exposed = manager as unknown as ExposedMcpToolManager;
+    exposed.toolRouter.set('test_tool', 'test-server');
+    exposed.toolDescriptors.set('test_tool', {
+      name: 'test_tool',
+      serverName: 'test-server',
+      descriptorVersion: 'descriptor-v1',
+    });
+    exposed.connections.set('test-server', {
       client: originalClient,
       transport: {}
     });
 
-    // Spy 掉私有的 reconnectServer 并在重连时将 connections 替换为 healthyClient
+    // 重连同时刷新 descriptor，下一次循环必须拒绝消费旧授权。
     const reconnectSpy = vi.spyOn(
       manager as unknown as { reconnectServer: (name: string) => Promise<void> },
       'reconnectServer'
     )
       .mockImplementation(async () => {
-        (manager as unknown as ExposedMcpToolManager).connections.set('test-server', {
+        exposed.connections.set('test-server', {
           client: healthyClient,
           transport: {}
         });
+        exposed.toolDescriptors.set('test_tool', {
+          name: 'test_tool',
+          serverName: 'test-server',
+          descriptorVersion: 'descriptor-v2',
+        });
       });
 
-    const result = await manager.callMcpTool('test_tool', { param: 'val' });
-
-    // 验证结果
-    expect(result).toEqual({
-      content: [{ type: 'text', text: 'success_data' }]
-    });
+    await expect(manager.callMcpTool(
+      'test_tool',
+      { param: 'val' },
+      { serverName: 'test-server', descriptorVersion: 'descriptor-v1' },
+    )).rejects.toThrow('旧授权已失效');
 
     // 验证确实调用了 reconnectServer 且只调用了一次
     expect(reconnectSpy).toHaveBeenCalledTimes(1);
     expect(reconnectSpy).toHaveBeenCalledWith('test-server');
     
-    // 验证两次 callTool 都被触发了
+    // 新连接不能继续执行已由旧 descriptor 批准的调用。
     expect(callToolSpy1).toHaveBeenCalledTimes(1);
-    expect(callToolSpy2).toHaveBeenCalledTimes(1);
+    expect(callToolSpy2).not.toHaveBeenCalled();
 
     setTimeoutSpy.mockRestore();
     vi.useFakeTimers();

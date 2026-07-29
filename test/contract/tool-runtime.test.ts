@@ -27,6 +27,7 @@ function createFakeMcpManager(): McpManagerPort {
   const descriptor: McpToolDescriptor = {
     name: 'remote_tool',
     serverName: 'contract-server',
+    descriptorVersion: 'contract-descriptor-v1',
     annotations: {
       destructiveHint: true,
       openWorldHint: true,
@@ -114,11 +115,6 @@ describe('工具运行时契约', () => {
     expect(tools.length).toBeGreaterThan(0);
     expect(registry.getTool('get_current_time')).toMatchObject({ name: 'get_current_time' });
     expect(registry.getTool('missing_tool')).toBeUndefined();
-    expect(registry.getResourceExtractors().size).toBeGreaterThan(0);
-    expect(registry.getResourceExtractor('readFile')).toBeDefined();
-    expect(registry.getResourceExtractor('missing_tool')).toBeUndefined();
-    expect(registry.getAccessMetadata('readFile')).toBeDefined();
-    expect(registry.getAccessMetadata('missing_tool')).toBeUndefined();
 
     const outcome = await registry.callTool('get_current_time', {});
     expect(outcome.value).toMatchObject({ content: [{ type: 'text' }] });
@@ -141,14 +137,41 @@ describe('工具运行时契约', () => {
       session.setPermissionMode('bypassPermissions');
       const outcome = await registry.callTool('remote_tool', {}, session);
       expect(outcome.value).toEqual({ content: [] });
-      expect(outcome.effect.kind).toBe('write');
+      expect(outcome.effect.kind).toBe('unknown');
     } finally {
       await registry.close();
     }
   });
 
-  // 三次真实工具调用均需完成原生 AST 分析，使用独立预算验证完整规则生命周期。
-  it('本会话授权应复用同一 PowerShell cmdlet 前缀且不放行其它命令', async () => {
+  it('MCP annotations 不得跳过 Manual 的精确单次审批', async () => {
+    const manager = createFakeMcpManager();
+    const registry = new ToolRegistry(manager as unknown as McpToolManager);
+    const session = new SessionContext('tool-runtime-mcp-manual');
+    session.setPermissionMode('default');
+    let observedChoices: ApprovalChoice[] = [];
+    session.approvalInteraction.registerApprovalHandler((id, _call, _prefix, _message, choices) => {
+      observedChoices = choices ?? [];
+      setTimeout(() => {
+        session.approvalInteraction.resolve(id, { action: 'allowOnce' });
+      }, 0);
+    });
+
+    try {
+      const outcome = await registry.callTool('remote_tool', { query: 'status' }, session);
+
+      expect(outcome.value).toEqual({ content: [] });
+      expect(observedChoices.map(choice => choice.choiceId)).toEqual([
+        'allowOnce',
+        'deny',
+      ]);
+      expect(observedChoices.some(choice => choice.choiceId === 'persistent')).toBe(false);
+    } finally {
+      await registry.close();
+    }
+  });
+
+  // 三次真实工具调用均需完成原生 AST 分析，验证 Allow once 不会偷偷生成可复用规则。
+  it('PowerShell 的 Allow once 只放行当前调用，不生成命令前缀规则', async () => {
     initWorkspace(process.cwd());
     const registry = new ToolRegistry();
     if (!registry.getTool('PowerShell')) {
@@ -157,8 +180,7 @@ describe('工具运行时契约', () => {
     }
     const session = new SessionContext('tool-runtime-session-rule');
     session.setPermissionMode('default');
-    session.approvalService.setBypassMode(false);
-    const ruleStore = registry.getPermissionRuleStore();
+    const ruleStore = session.getPermissionSessionState().getRuleStore();
     ruleStore.addRule('session', {
       source: 'session',
       ruleBehavior: 'ask',
@@ -176,46 +198,43 @@ describe('工具运行时契约', () => {
     ) => {
       approvalCount += 1;
       observedChoiceIds.push(choices?.map(choice => choice.choiceId) ?? []);
-      if (approvalCount === 1) {
-        // 首次审批后移除测试专用 ask，让用户选择生成的 session allow 成为唯一匹配规则。
-        ruleStore.removeRule('session', rule => (
-          rule.ruleBehavior === 'ask' && rule.ruleValue.ruleContent === 'Get-Service -Name EventLog'
-        ));
-      }
       setTimeout(() => {
-        session.approvalService.resolve(id, {
-          action: approvalCount === 1 ? 'session' : 'deny',
+        session.approvalInteraction.resolve(id, {
+          action: approvalCount <= 2 ? 'allowOnce' : 'deny',
         });
       }, 0);
     });
-    session.approvalService.registerApprovalHandler(approvalHandler);
+    session.approvalInteraction.registerApprovalHandler(approvalHandler);
 
     try {
       const firstOutcome = await registry.callTool('PowerShell', { command: 'Get-Service -Name EventLog' }, session);
       expect(firstOutcome.effect.executionStarted).toBe(true);
       expect(approvalHandler).toHaveBeenCalledTimes(1);
-      expect(observedChoiceIds[0]).toEqual(['call', 'persistent', 'deny']);
+      expect(observedChoiceIds[0]).toEqual(['allowOnce', 'deny']);
 
-      const repeatedOutcome = await registry.callTool('PowerShell', { command: 'Get-Service -Name Winmgmt' }, session);
+      const repeatedOutcome = await registry.callTool('PowerShell', { command: 'Get-Service -Name EventLog' }, session);
       expect(repeatedOutcome.effect.executionStarted).toBe(true);
-      expect(approvalHandler).toHaveBeenCalledTimes(1);
-      expect(ruleStore.getRules('session').some(rule => rule.ruleBehavior === 'allow')).toBe(true);
+      expect(approvalHandler).toHaveBeenCalledTimes(2);
+      expect(ruleStore.getRules('session').some(rule => rule.ruleBehavior === 'allow')).toBe(false);
 
       await expect(registry.callTool(
         'PowerShell',
         { command: 'Remove-Item dangerous-target.txt' },
         session,
       )).rejects.toThrow('审批拒绝');
-      expect(approvalHandler).toHaveBeenCalledTimes(2);
-      expect(observedChoiceIds[1]).toEqual(['call', 'persistent', 'deny']);
+      expect(approvalHandler).toHaveBeenCalledTimes(3);
+      expect(observedChoiceIds[2]).toEqual(['allowOnce', 'deny']);
     } finally {
       await registry.close();
+      // Registry 关闭不得替会话销毁其规则；会话结束时由状态所有者清理。
+      expect(ruleStore.getRules('session').length).toBeGreaterThan(0);
+      ruleStore.clearSessionRules();
       expect(ruleStore.getRules('session')).toHaveLength(0);
     }
   }, 20_000);
 
-  // 原生 AST 解析需启动独立进程，使用独立预算避免默认超时掩盖权限断言。
-  it('PowerShell 复合命令审批应展示具体规则并提供三种保存范围', async () => {
+  // Shell 尚未有正式规则动作适配器时，审批不得从命令文本猜测持久规则。
+  it('PowerShell 复合命令审批只提供单次放行与拒绝', async () => {
     initWorkspace(process.cwd());
     const registry = new ToolRegistry();
     if (!registry.getTool('PowerShell')) {
@@ -224,11 +243,10 @@ describe('工具运行时契约', () => {
     }
     const session = new SessionContext('tool-runtime-visible-rule');
     session.setPermissionMode('default');
-    session.approvalService.setBypassMode(false);
     let observedChoices: ApprovalChoice[] = [];
-    session.approvalService.registerApprovalHandler((id, _toolCall, _prefix, _message, choices) => {
+    session.approvalInteraction.registerApprovalHandler((id, _toolCall, _prefix, _message, choices) => {
       observedChoices = choices ?? [];
-      session.approvalService.resolve(id, { action: 'deny' });
+      session.approvalInteraction.resolve(id, { action: 'deny' });
     });
 
     try {
@@ -236,17 +254,31 @@ describe('工具运行时契约', () => {
         command: 'vssadmin list shadowstorage /for=c: | Select-String "Used"',
       }, session)).rejects.toThrow('审批拒绝');
 
-      const createRuleChoice = observedChoices.find(choice => choice.choiceId === 'persistent');
-      expect(createRuleChoice?.description).toContain(
-        'PowerShell(vssadmin list shadowstorage *)',
-      );
-      expect(createRuleChoice?.followUp?.choices.map(choice => choice.choiceId)).toEqual([
-        'session',
-        'project',
-        'user',
+      expect(observedChoices.map(choice => choice.choiceId)).toEqual([
+        'allowOnce',
+        'deny',
       ]);
+      expect(observedChoices.some(choice => choice.choiceId === 'persistent')).toBe(false);
     } finally {
       await registry.close();
     }
   }, 15_000);
+});
+
+// ── Effectful entrypoint 覆盖 ──
+
+describe('Effectful entrypoint 覆盖', () => {
+  it('所有 write 级 NativeTool 应携带名称精确匹配的适配器', () => {
+    const catalog = new ToolCatalog(buildNativeTools());
+    const authorizedTools = catalog.getAuthorizedTools();
+    for (const nativeTool of buildNativeTools()) {
+      if (nativeTool.securityCategory !== 'write') continue;
+      expect(authorizedTools.has(nativeTool.name)).toBe(true);
+      expect(authorizedTools.get(nativeTool.name)?.runtimeToolName).toBe(nativeTool.name);
+    }
+  });
+
+  it('所有 write 级 NativeTool 在注册时不会因缺少适配器而抛出', () => {
+    expect(() => new ToolCatalog(buildNativeTools())).not.toThrow();
+  });
 });

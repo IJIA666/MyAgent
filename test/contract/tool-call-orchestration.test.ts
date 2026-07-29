@@ -48,7 +48,7 @@ function createOrchestrator(tracer?: AgentTracer): {
 describe('工具编排合约测试 — 真实装配', () => {
   it('deny 路径：规则拒绝时工具注册表不得执行工具', async () => {
     const { registry, session } = createOrchestrator();
-    registry.getPermissionRuleStore().addRule('session', {
+    session.getPermissionSessionState().getRuleStore().addRule('session', {
       source: 'session',
       ruleBehavior: 'deny',
       ruleValue: { toolName: 'get_current_time' },
@@ -71,8 +71,8 @@ describe('工具编排合约测试 — 真实装配', () => {
         auditRetentionDays: 7,
         auditRetentionSessions: 20
       });
-      const { orchestrator, registry } = createOrchestrator(tracer);
-      registry.getPermissionRuleStore().addRule('session', {
+      const { orchestrator, session } = createOrchestrator(tracer);
+      session.getPermissionSessionState().getRuleStore().addRule('session', {
         source: 'session',
         ruleBehavior: 'deny',
         ruleValue: { toolName: 'get_current_time' },

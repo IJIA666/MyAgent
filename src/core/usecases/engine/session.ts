@@ -14,7 +14,11 @@ import type { TokenEstimatorPort, ApiUsage } from '../../../ports/driven/llm/Tok
 import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
 import { AgentLoop } from './agent-loop.js';
-import type { CliSessionUseCase, CliSkillSummary } from '../../../ports/driving/CliSessionUseCase.js';
+import type {
+  CliMemoryStatus,
+  CliSessionUseCase,
+  CliSkillSummary,
+} from '../../../ports/driving/CliSessionUseCase.js';
 import { TaskAborterPort } from '../../../ports/driven/tools/TaskAborterPort.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { HookEventName, type HookContext, type ApprovalChoice } from '../plugins/plugin-types.js';
@@ -34,13 +38,26 @@ import { CompactionService } from '../brain/CompactionService.js';
 import { ContextHistoryPruner } from '../brain/ContextHistoryPruner.js';
 import { ContextBudgetPlanner } from '../brain/ContextBudgetPlanner.js';
 import { ContextBudgetCoordinator } from '../brain/ContextBudgetCoordinator.js';
-import { ApprovalService } from '../security/ApprovalService.js';
+import { ApprovalInteractionService } from '../security/ApprovalInteractionService.js';
 import {
   createEmptyMemorySnapshot,
+  diagnoseMemoryTopics,
   loadMemorySnapshot,
   type MemoryDiagnostic,
   type MemorySnapshot,
+  type MemoryTopicDiagnosticResult,
 } from '../brain/memory-loader.js';
+import {
+  MemoryCandidateStore,
+  type MemoryCandidate,
+  type StageMemoryCandidateInput,
+} from '../brain/memory-candidate-store.js';
+import type {
+  PermissionUpdate,
+} from '../../domain/permissions/permission-types.js';
+import type {
+  PermissionSessionSnapshot,
+} from '../../domain/permissions/permission-session-state.js';
 
 /**
  * 会话管理与模型交互调度中心。
@@ -65,8 +82,18 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   private isClosed = false;
   /** 当前项目长期记忆目录，用于在 open 阶段加载快照。 */
   private memoryDir: string;
+  /** 是否启用启动期 Auto Memory 加载与投影。 */
+  private autoMemoryEnabled: boolean;
+  /** 当前记忆根是否由受信自定义配置提供。 */
+  private readonly autoMemoryRootKind: 'default' | 'custom';
   /** 当前冻结的长期记忆快照，由 open() 及压缩刷新后装载。 */
   private memorySnapshot: MemorySnapshot;
+  /** 最近一次启动索引加载诊断；不会包含隐式 topic 读取结果。 */
+  private memoryDiagnostic: MemoryDiagnostic;
+  /** 未激活记忆候选的独立暂存仓储。 */
+  private readonly memoryCandidateStore: MemoryCandidateStore;
+  /** Auto Memory 开关使用的统一原子 settings 仓储。 */
+  private readonly settingsRepository: AppConfig['settingsRepository'];
   /** 大语言模型的核心驱动模块 */
   private driver: LlmPort;
   /** 上下文管理与组装适配器 */
@@ -136,8 +163,15 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.contextAdapter = contextAdapter;
 
     // 初始化长期记忆目录与空快照（真实加载延迟到 open() 执行）
-    this.memoryDir = appConfig.applicationPaths.memoryDir;
-    this.memorySnapshot = createEmptyMemorySnapshot(this.memoryDir);
+    this.autoMemoryEnabled = appConfig.autoMemoryEnabled;
+    this.memoryDir = appConfig.autoMemoryDirectory ?? appConfig.applicationPaths.memoryDir;
+    this.autoMemoryRootKind = appConfig.autoMemoryDirectory ? 'custom' : 'default';
+    this.settingsRepository = appConfig.settingsRepository;
+    this.memorySnapshot = createEmptyMemorySnapshot(
+      this.autoMemoryEnabled ? this.memoryDir : '',
+    );
+    this.memoryDiagnostic = createEmptyMemoryDiagnostic();
+    this.memoryCandidateStore = new MemoryCandidateStore(this.memoryDir);
 
     // 初始化领域服务集群
     const paths = appConfig.applicationPaths;
@@ -150,8 +184,12 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     );
     this.contextRepo = new ContextRepository(this.context, paths.sessionsDir);
     this.toolDispatcher = new ToolDispatcher(this.context, this.toolRegistry, paths.toolOutputsDir);
-    // 工具输出位于 workspace 外，仅向当前会话开放该精确目录树的只读访问。
-    this.context.addTemporaryDirectoryScopeReadWhitelist(paths.toolOutputsDir);
+    // 工具输出位于 workspace 外，通过正式会话目录状态开放其精确目录树。
+    this.context.getPermissionSessionState().applyUpdates([{
+      type: 'addDirectories',
+      target: 'session',
+      directories: [paths.toolOutputsDir],
+    }]);
     // 回滚备份必须使用当前项目的应用数据目录，禁止从 workspace 推导旧路径。
     FileBackupManager.setBackupsDir(paths.backupsDir);
     const compactionService = new CompactionService(
@@ -281,8 +319,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    *
    * @returns 审批服务实例
    */
-  public get approvalService(): ApprovalService {
-    return this.context.approvalService;
+  public get approvalInteraction(): ApprovalInteractionService {
+    return this.context.approvalInteraction;
   }
 
   /**
@@ -385,12 +423,103 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   }
 
   /**
+   * 获取 `/memory` 使用的低敏状态摘要。
+   * 不返回 MEMORY.md 内容或候选正文，避免管理视图变成新的内容注入通道。
+   *
+   * @returns 当前开关、根、索引数量和最近加载诊断
+   */
+  public getMemoryStatus(): CliMemoryStatus {
+    return Object.freeze({
+      enabled: this.autoMemoryEnabled,
+      memoryDir: this.memoryDir,
+      rootKind: this.autoMemoryRootKind,
+      isEmpty: this.memorySnapshot.isEmpty,
+      isTruncated: this.memorySnapshot.isTruncated,
+      indexedTopicCount: this.memorySnapshot.topics.length,
+      diagnostic: cloneMemoryDiagnostic(this.memoryDiagnostic),
+    });
+  }
+
+  /**
+   * 持久化用户级 Auto Memory 开关，并只在磁盘成功后更新当前会话。
+   *
+   * @param enabled - 是否启用启动索引投影
+   */
+  public async setAutoMemoryEnabled(enabled: boolean): Promise<void> {
+    if (enabled === this.autoMemoryEnabled) {
+      return;
+    }
+    const updated = await this.settingsRepository.updateField(
+      'user',
+      {
+        field: 'autoMemoryEnabled',
+        value: enabled,
+      },
+    );
+    if (!updated) {
+      throw new Error('Auto Memory 开关持久化失败，当前会话未改变');
+    }
+    this.toolRegistry.configureMemoryAuthorizationRoot?.(
+      enabled ? this.memoryDir : undefined,
+      this.autoMemoryRootKind,
+      this.memoryDir,
+    );
+    this.autoMemoryEnabled = enabled;
+    this.refreshMemorySnapshot();
+  }
+
+  /**
+   * 显式按需诊断索引引用的 topic 文件。
+   * 会话启动和普通刷新不会调用此方法。
+   *
+   * @returns topic 元数据与结构化诊断
+   */
+  public diagnoseMemoryTopics(): MemoryTopicDiagnosticResult {
+    return diagnoseMemoryTopics(this.memoryDir);
+  }
+
+  /**
+   * 暂存一个不会自动注入的候选记忆。
+   *
+   * @param input - 候选正文、摘要和来源证明
+   * @returns 已持久化候选
+   */
+  public stageMemoryCandidate(input: StageMemoryCandidateInput): MemoryCandidate {
+    return this.memoryCandidateStore.stage(input);
+  }
+
+  /**
+   * 列出尚未激活的候选及 provenance。
+   *
+   * @returns 冻结候选数组
+   */
+  public listMemoryCandidates(): readonly MemoryCandidate[] {
+    return this.memoryCandidateStore.list();
+  }
+
+  /**
+   * 撤销一个尚未激活的候选。
+   *
+   * @param candidateId - 候选 UUID
+   * @returns 候选存在并删除时为 true
+   */
+  public discardMemoryCandidate(candidateId: string): boolean {
+    return this.memoryCandidateStore.discard(candidateId);
+  }
+
+  /**
    * 从磁盘重新加载长期记忆快照，原子替换当前内存快照。
    * 刷新失败时记录结构化诊断并保留旧快照。
    *
    * @returns 刷新成功或磁盘上合法为空时返回 true，读取失败返回 false
    */
   public refreshMemorySnapshot(): boolean {
+    if (!this.autoMemoryEnabled) {
+      // 空 memoryDir 是请求组装器“不投影 memory 边界”的显式信号。
+      this.memorySnapshot = createEmptyMemorySnapshot('');
+      this.memoryDiagnostic = createEmptyMemoryDiagnostic();
+      return true;
+    }
     try {
       const result = loadMemorySnapshot(this.memoryDir);
       this.logMemoryDiagnostic(result.diagnostic);
@@ -404,6 +533,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       }
 
       this.memorySnapshot = result.snapshot;
+      this.memoryDiagnostic = result.diagnostic;
       return true;
     } catch (error: unknown) {
       logger.warn('[记忆] refresh_memory_snapshot_failed', {
@@ -470,7 +600,9 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
 
   /**
    * 关闭会话，派发 SessionClosing / SessionClosed 生命周期事件，
-   * 终止推理流、清理挂起审批、清除临时白名单、强制终止所有后台子进程并关闭 MCP 连接。
+   * 终止推理流、拒绝挂起审批、强制终止所有后台子进程并关闭 MCP 连接。
+   * PermissionSessionState 由当前 SessionContext 独占，不落盘也不进入进程级共享容器；
+   * 会话关闭后该状态不再能被新的运行或会话复用。
    *
    * @returns 无返回值的 Promise
    */
@@ -492,7 +624,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     }
 
     this.abort();
-    this.approvalService.rejectAll('Session is closing');
+    this.approvalInteraction.rejectAll('Session is closing');
 
     // 清理待回答的人机中断交互
     this.context.cancelPendingInteraction();
@@ -503,9 +635,6 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
 
     // 代理给 ToolRegistryPort close，物理断开并清理所有物理连接（含 MCP）
     await this.toolRegistry.close();
-
-    // 清除会话级临时白名单（原在 AgentLoop finally 中执行，现已迁移至此）
-    this.context.clearTemporaryWhitelists();
 
     // 关闭一旦走到此处已不可逆，先设置幂等标记，避免 SessionClosed 收尾异常导致重复清理
     this.isClosed = true;
@@ -949,7 +1078,39 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   }
 
   /**
-   * 注册审批处理器回调，委托给内部的 ApprovalService。
+   * 获取当前唯一权限状态的不可变快照。
+   *
+   * @returns 当前权限状态快照
+   */
+  public getPermissionSnapshot(): PermissionSessionSnapshot {
+    const getSnapshot = this.toolRegistry.getPermissionSnapshot;
+    return getSnapshot
+      ? getSnapshot.call(this.toolRegistry, this.context)
+      : this.context.getPermissionSessionState().snapshot();
+  }
+
+  /**
+   * 通过工具注册表的统一持久化边界提交权限更新。
+   *
+   * @param updates - 待提交权限更新
+   */
+  public async applyPermissionUpdates(
+    updates: readonly PermissionUpdate[],
+  ): Promise<void> {
+    const applyUpdates = this.toolRegistry.applyPermissionUpdates;
+    if (!applyUpdates) {
+      const hasPersistentUpdate = updates.some(update => update.target !== 'session');
+      if (hasPersistentUpdate) {
+        throw new Error('当前运行时未装配权限设置仓储，无法持久化该更新');
+      }
+      this.context.getPermissionSessionState().applyUpdates(updates);
+      return;
+    }
+    await applyUpdates.call(this.toolRegistry, updates, this.context);
+  }
+
+  /**
+   * 注册审批处理器回调，委托给内部的审批交互等待器。
    *
    * @param handler - 审批处理器函数
    */
@@ -963,6 +1124,37 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       signal?: AbortSignal,
     ) => void | Promise<void>
   ): void {
-    this.approvalService.registerApprovalHandler(handler);
+    this.approvalInteraction.registerApprovalHandler(handler);
   }
+}
+
+/** 创建不含任何 topic 隐式读取结果的空记忆诊断。 */
+function createEmptyMemoryDiagnostic(): MemoryDiagnostic {
+  return Object.freeze({
+    truncation: null,
+    duplicates: Object.freeze([]),
+    brokenLinks: Object.freeze([]),
+    invalidFilenames: Object.freeze([]),
+    unknownTypes: Object.freeze([]),
+    invalidFrontmatter: Object.freeze([]),
+    warnings: Object.freeze([]),
+  });
+}
+
+/** 复制并冻结诊断，避免 CLI 持有会话内部数组引用。 */
+function cloneMemoryDiagnostic(diagnostic: MemoryDiagnostic): MemoryDiagnostic {
+  return Object.freeze({
+    truncation: diagnostic.truncation
+      ? Object.freeze({
+          reason: diagnostic.truncation.reason,
+          limit: diagnostic.truncation.limit,
+        })
+      : null,
+    duplicates: Object.freeze([...diagnostic.duplicates]),
+    brokenLinks: Object.freeze([...diagnostic.brokenLinks]),
+    invalidFilenames: Object.freeze([...diagnostic.invalidFilenames]),
+    unknownTypes: Object.freeze([...diagnostic.unknownTypes]),
+    invalidFrontmatter: Object.freeze([...diagnostic.invalidFrontmatter]),
+    warnings: Object.freeze([...diagnostic.warnings]),
+  });
 }

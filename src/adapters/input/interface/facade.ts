@@ -100,7 +100,7 @@ export class CliFacade {
           input: process.stdin,
           output: process.stdout
         });
-        // 上游取消时关闭当前审批 UI；ApprovalService 负责撤销对应的挂起审批。
+        // 上游取消时关闭当前审批 UI；审批交互等待器负责撤销对应的挂起项。
         approvalAbortHandler = () => {
           rl.close();
           resolve('deny');
@@ -214,9 +214,9 @@ export class CliFacade {
         signal?.removeEventListener('abort', approvalAbortHandler);
       }
 
-      // Directly return external user decision back to ApprovalService to resume core
+      // 将外部用户选择交还审批交互等待器以恢复 core。
       if (!signal?.aborted) {
-        this.session.approvalService.resolve(id, { action: decision });
+        this.session.approvalInteraction.resolve(id, { action: decision });
       }
 
       // Physical rebuild of global listener. Since generation is still busy, keep it paused to prevent stdin capture
@@ -390,7 +390,7 @@ export class CliFacade {
         break;
 
       case 'tool_call_result':
-        console.log(renderToolCallResult(event.functionName, event.result));
+        console.log(renderToolCallResult(event.functionName, event.result, event.status));
         break;
 
       case 'interaction_request':

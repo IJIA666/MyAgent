@@ -1,10 +1,10 @@
 import { existsSync, statSync, readFileSync } from 'fs';
-import { resolve } from 'path';
-import { secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import { secureResolveReadPath } from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { extractFileOutline } from './read-many-files-helper.js';
+import { createFileResourceEvidence } from '../../permissions/path-resource-evidence.js';
 
 /**
  * 批量文件读取工具类。
@@ -62,12 +62,11 @@ export class ReadManyFilesTool implements NativeTool {
       paths = trimmed.split(',').map(path => path.trim()).filter(Boolean);
     }
 
-    const rootDir = getAuthorizedDir();
-    const resources = paths.map(path => ({
-      kind: 'path',
-      access: 'read',
-      normalizedPath: getPhysicalRealPath(resolve(rootDir!, path)),
-    }));
+    const resources = paths.map((path, index) => createFileResourceEvidence(
+      path,
+      'read',
+      `read-many-files:${index}`,
+    ));
     const evidence = {
       operationCategory: 'file-read',
       sideEffect: 'read' as const,

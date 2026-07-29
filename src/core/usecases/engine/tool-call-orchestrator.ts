@@ -190,7 +190,12 @@ export class ToolCallOrchestrator {
         const toolResult = `错误：工具调用被插件拦截：${beforeToolResult.control.reason ?? '安全策略限制'}`;
         taskFinalCallUpdate.error = beforeToolResult.control.reason ?? '安全策略限制';
         taskEvents.push({ type: 'error', message: `[插件拦截] 工具调用被拦截阻断：${beforeToolResult.control.reason ?? '策略安全限制'}` });
-        taskEvents.push({ type: 'tool_call_result', functionName, result: toolResult });
+        taskEvents.push({
+          type: 'tool_call_result',
+          functionName,
+          result: toolResult,
+          status: 'error',
+        });
         toolMessage = {
           role: 'tool',
           tool_call_id: toolCall.id,
@@ -305,9 +310,6 @@ export class ToolCallOrchestrator {
           );
         }
         throw toolError;
-      } finally {
-        // 消费 call capability 令牌（无论成功/失败/abort），含主调用和 tail call
-        this.context.consumeCapability(toolCall.id);
       }
 
       if (signal.aborted) {
@@ -381,16 +383,10 @@ export class ToolCallOrchestrator {
           throw new Error(`尾随工具调用被插件拦截：${tailBeforeToolResult.control.reason ?? '安全策略限制'}`);
         }
 
-        let tailResultRaw: unknown;
-        try {
-          const tailOutcome = await this.toolRegistry.callTool(
-            tailCall.name, tailCall.args, this.context, this.interactionPort, signal, tailCallId, executionTimeoutMs
-          );
-          tailResultRaw = tailOutcome.value;
-        } finally {
-          // 消费 tail call 的 capability 令牌
-          this.context.consumeCapability(tailCallId);
-        }
+        const tailOutcome = await this.toolRegistry.callTool(
+          tailCall.name, tailCall.args, this.context, this.interactionPort, signal, tailCallId, executionTimeoutMs
+        );
+        const tailResultRaw: unknown = tailOutcome.value;
 
         // tail call 同样需要进入 AfterTool 生命周期
         const tailToolResult = JSON.stringify(tailResultRaw);
@@ -413,7 +409,12 @@ export class ToolCallOrchestrator {
         taskFinalCallUpdate.result = tailAfterToolResult.toolResult?.content ?? tailToolResult;
       }
 
-      taskEvents.push({ type: 'tool_call_result', functionName, result: taskFinalCallUpdate.result ?? '' });
+      taskEvents.push({
+        type: 'tool_call_result',
+        functionName,
+        result: taskFinalCallUpdate.result ?? '',
+        status: 'success',
+      });
 
       toolMessage = {
         role: 'tool',
@@ -457,7 +458,12 @@ export class ToolCallOrchestrator {
         message: formatLifecycleEventMessage(lifecycleError, errorMsg),
         cause: toolError,
       });
-      taskEvents.push({ type: 'tool_call_result', functionName, result: finalErrorMsg });
+      taskEvents.push({
+        type: 'tool_call_result',
+        functionName,
+        result: finalErrorMsg,
+        status: 'error',
+      });
       // 生命周期错误携带真实执行事实，不再从展示文案反推是否已经启动。
       resolvedEffect = lifecycleError && !finalExecutionStarted
         ? {

@@ -1,6 +1,6 @@
 /**
  * @file ApprovalPort.ts
- * @description 端口层拥有的审批交互契约。消除 ChatUseCase 对 core 中 ApprovalService 类的直接引用。
+ * @description 端口层拥有的审批交互契约，隔离输入适配器与 core 实现类。
  */
 
 import type { ApprovalChoice, ApprovalChoiceId } from '../shared/approval-types.js';
@@ -13,7 +13,7 @@ export interface ApprovalDecision {
 
 /**
  * 端口层审批交互契约接口。
- * 仅暴露输入适配器实际需要的审批能力，不暴露 rejectAll、setBypassMode 等管理方法。
+ * 仅暴露输入适配器实际需要的审批能力，不暴露会话关闭等管理方法。
  */
 export interface ApprovalPort {
   /**

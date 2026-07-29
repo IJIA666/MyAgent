@@ -27,6 +27,8 @@ import type {
 } from '../../../../core/domain/permissions/permission-types.js';
 import type { ToolPermissionChecker } from '../../../../core/domain/permissions/tool-permission-service.js';
 import { PermissionRuleStore } from '../../../../core/domain/permissions/rule-store.js';
+import type { ToolAuthorizationAdapter } from '../../../../ports/driven/tools/ToolAuthorizationAdapter.js';
+import { createShellToolAuthorizationAdapter } from '../../permissions/shell-tool-authorization.js';
 
 /** Shell 工具构造参数。 */
 interface ShellToolOptions {
@@ -146,6 +148,9 @@ class BaseShellTool implements NativeTool {
   /** 工具名称。 */
   readonly name: string;
 
+  /** 将既有 Shell AST 分析投影为正式 PermissionRequest。 */
+  readonly authorizationAdapter: ToolAuthorizationAdapter;
+
   /** 当前工具固定使用的 Shell。 */
   private readonly configuredShellKind: ShellKind;
 
@@ -167,6 +172,10 @@ class BaseShellTool implements NativeTool {
     this.configuredShellKind = options.shellKind;
     this.compoundFeatures = Object.freeze({ ...options.features });
     this.definition = createShellToolDefinition(this.name, options.shellKind, options.description);
+    this.authorizationAdapter = createShellToolAuthorizationAdapter({
+      runtimeToolName: options.name,
+      shellKind: options.shellKind === 'powershell' ? 'powershell' : 'posix',
+    });
   }
 
   /**
@@ -273,10 +282,16 @@ class BaseShellTool implements NativeTool {
    * @returns 终端输出摘要结果
    */
   async execute(args: Record<string, unknown>, _context?: ToolExecutionContext | SessionEventPort, signal?: AbortSignal): Promise<string> {
-    // 从 ToolExecutionContext 中提取 sessionContext，保持原有持久化白名单逻辑
-    const sessionContext = (_context && typeof _context === 'object' && 'toolCallId' in _context)
-      ? (_context as ToolExecutionContext).sessionContext
+    // 从统一上下文中同时提取会话能力与授权计划；后台 Agent 可以没有交互会话。
+    const toolExecutionContext = (_context && typeof _context === 'object' && 'toolCallId' in _context)
+      ? _context as ToolExecutionContext
+      : undefined;
+    const sessionContext = toolExecutionContext
+      ? toolExecutionContext.sessionContext
       : _context as (SessionEventPort & EventNotificationPort) | undefined;
+    const credentialAudience = toolExecutionContext?.executionPlan.credentialProfile.audience === 'sub-agent'
+      ? 'sub-agent'
+      : 'terminal';
     const command = args.command;
     if (typeof command !== 'string') {
       throw new Error("command 必须是字符串");
@@ -312,6 +327,7 @@ class BaseShellTool implements NativeTool {
       {
         watch_patterns,
         signal,
+        credentialAudience,
         onNotification: (event) => {
           if (sessionContext) {
             let summary = `Background command "${command}" triggered ${event.type} notification.`;
@@ -401,10 +417,6 @@ export class PowerShellTool extends BaseShellTool {
 // 导出配置管理与进程引擎相关的公共类型及工具函数
 
 export {
-  getPermissionMode,
-  setPermissionMode,
-  loadPermissionMode,
-  savePermissionMode,
   extractSafePrefix,
   getDefaultShellFamily,
   setDefaultShellFamily,

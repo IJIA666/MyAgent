@@ -1,19 +1,26 @@
 import { mkdirSync, existsSync, statSync, rmSync, renameSync } from 'fs';
-import { dirname, resolve } from 'path';
-import { secureResolveWritePath, secureResolveReadPath, getAuthorizedDir, getPhysicalRealPath } from '../base.js';
+import { dirname } from 'path';
+import {
+  secureResolveWritePath,
+  secureResolveReadPath,
+  getAuthorizedDir,
+  getAuthorizedMemoryDir,
+  getAuthorizedMemoryRootKind,
+} from '../base.js';
 import type { NativeTool } from '../../tool-types.js';
 import { copyRecursiveSync } from './directory-manager-helper.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
+import { isAutoMemPath } from '../../permissions/memory-path-policy.js';
+import { createFileResourceEvidence } from '../../permissions/path-resource-evidence.js';
+import type { FileResourceEvidence } from '../../../../core/domain/permissions/permission-types.js';
 
 /** 将工具参数中的路径转换为权限层使用的结构化资源证据。 */
-function createPathResource(path: string, access: 'read' | 'write'): Readonly<Record<string, unknown>> {
-  const rootDir = getAuthorizedDir();
-  return {
-    kind: 'path',
-    access,
-    normalizedPath: getPhysicalRealPath(resolve(rootDir!, path)),
-  };
+function createPathResource(
+  path: string,
+  operation: FileResourceEvidence['operation'],
+): FileResourceEvidence {
+  return createFileResourceEvidence(path, operation, 'directory-manager:path');
 }
 
 /**
@@ -58,16 +65,29 @@ export class CreateDirectoryTool implements NativeTool {
     if (typeof directoryPath !== 'string') {
       return { kind: 'deny', decisionReason: 'directoryPath 必须是字符串' };
     }
+    const evidence = {
+      operationCategory: 'file-write',
+      sideEffect: 'write' as const,
+      riskReason: `创建目录: ${directoryPath}`,
+      resources: [createPathResource(directoryPath, 'create')],
+    };
+    const memoryDirectory = getAuthorizedMemoryDir();
+    if (
+      getAuthorizedMemoryRootKind() === 'default'
+      && memoryDirectory
+      && isAutoMemPath(directoryPath, memoryDirectory, getAuthorizedDir() ?? process.cwd())
+    ) {
+      return {
+        kind: 'allow',
+        decisionReason: 'Claude 默认 Auto Memory 根内创建目录',
+        evidence,
+      };
+    }
     return {
       kind: 'ask',
       message: `创建目录 ${directoryPath}`,
       decisionReason: '创建目录会修改文件系统',
-      evidence: {
-        operationCategory: 'file-write',
-        sideEffect: 'write',
-        riskReason: `创建目录: ${directoryPath}`,
-        resources: [createPathResource(directoryPath, 'write')],
-      },
+      evidence,
     };
   }
 
@@ -101,7 +121,7 @@ export class CreateDirectoryTool implements NativeTool {
 
 /**
  * 安全路径删除工具类。
- * 用于安全删除指定的文件或目录，支持在底层接入 ApprovalService 确权拦截机制。
+ * 用于安全删除指定的文件或目录，权限由统一网关在执行前裁决。
  */
 export class DeletePathTool implements NativeTool {
   /** 工具的安全类别。 */
@@ -149,7 +169,7 @@ export class DeletePathTool implements NativeTool {
         operationCategory: 'file-delete',
         sideEffect: 'write',
         riskReason: `删除路径: ${targetPath}`,
-        resources: [createPathResource(targetPath, 'write')],
+        resources: [createPathResource(targetPath, 'delete')],
       },
     };
   }
@@ -234,7 +254,7 @@ export class MovePathTool implements NativeTool {
         operationCategory: 'file-move',
         sideEffect: 'write',
         riskReason: `移动: ${sourcePath} → ${destinationPath}`,
-        resources: [createPathResource(sourcePath, 'write'), createPathResource(destinationPath, 'write')],
+        resources: [createPathResource(sourcePath, 'move'), createPathResource(destinationPath, 'move')],
       },
     };
   }
@@ -340,7 +360,7 @@ export class CopyPathTool implements NativeTool {
         operationCategory: 'file-copy',
         sideEffect: 'write',
         riskReason: `复制: ${sourcePath} → ${destinationPath}`,
-        resources: [createPathResource(sourcePath, 'read'), createPathResource(destinationPath, 'write')],
+        resources: [createPathResource(sourcePath, 'read'), createPathResource(destinationPath, 'copy')],
       },
     };
   }

@@ -1,17 +1,21 @@
-## ADDED Requirements
+## Purpose
+
+定义跨模块生产组合边界的合约测试范围和替身原则。该规范要求授权、会话仓储与日志链路保留真实装配，只替换不可控外部依赖，避免 mock 自己证明自己。
+
+## Requirements
 
 ### Requirement: 关键组合边界的合约测试
 
 系统必须（MUST）对以下真实生产边界提供自动化合约测试：
 
-1. `ToolRegistry`、其 `policyPort`、`HumanApprovalPlugin` 与 `ToolCallOrchestrator` 的工具审批编排链路；
+1. `ToolCatalog`、`ToolAuthorizationAdapter`、`ToolCallGateway`、`ToolPermissionService`、ask-only 审批交互与 `ToolCallOrchestrator` 的统一授权执行链路；
 2. `ContextRepository.saveState()` 与 `loadState()` 的会话快照读写链路；
 3. `src/utils/logger.ts` 与 LogTape sink 的结构化日志输出链路。
 
-#### Scenario: 工具注册与审批插件的真实装配
+#### Scenario: 工具注册与统一权限网关的真实装配
 
-- **WHEN** 使用真实 `ToolRegistry` 的内建工具和 `policyPort`，注册具体的 `HumanApprovalPlugin`，并通过真实 `ToolDispatcher` 与 `ToolCallOrchestrator` 提交需要审批的工具调用
-- **THEN** 审批插件必须（MUST）能够拦截该请求，使用确定性审批决策完成 pass、deny、suspend/允许路径，并将拒绝结果正确传递回编排层；测试不得依赖 `ToolRegistryPort.getTool().checkSafety()` 之类不存在的接口。
+- **WHEN** 使用真实 `ToolRegistry`、ToolCatalog 中注册的正式适配器和 ToolCallGateway，并通过 `ToolCallOrchestrator` 提交需要审批的工具调用
+- **THEN** 测试必须（MUST）覆盖最终 allow、ask、deny、可信 ApprovalAction 提交和 execution grant 消费，并将执行前拒绝正确传递回编排层；测试不得直接调用 ToolExecutor、伪造授权上下文或重新引入第二套安全接口。
 
 #### Scenario: 会话快照保存与恢复
 
@@ -25,7 +29,7 @@
 
 ### Requirement: 确定性外部依赖替身
 
-合约测试必须（MUST）使用受控的 Fake 替代真实 LLM、网络、向量服务和外部交互依赖；真实的工具注册、策略适配、审批插件、会话仓储和日志适配器应保持真实装配。
+合约测试必须（MUST）使用受控的 Fake 替代真实 LLM、网络、向量服务和外部交互依赖；真实的工具注册、权限适配器、权限网关、审批交互边界、会话仓储和日志适配器应保持真实装配。
 
 #### Scenario: Fake 实现的使用
 

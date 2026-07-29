@@ -145,6 +145,7 @@ export class AgentLoop {
     this.pluginRegistry = options.pluginRegistry;
     const memorySnapshotProvider = options.memorySnapshotProvider ?? (() => Object.freeze({
       memoryDir: '',
+      content: '',
       topics: Object.freeze([]),
       isTruncated: false,
       isEmpty: true,
@@ -528,7 +529,12 @@ export class AgentLoop {
                 const errorMsg = res.reason instanceof Error ? res.reason.message : String(res.reason);
                 finalToolCalls[i].error = errorMsg;
                 yield { type: 'error', message: `工具运行发生灾难性内部异常：${errorMsg}`, cause: res.reason };
-                yield { type: 'tool_call_result', functionName: toolCall.function.name, result: `错误：${errorMsg}` };
+                yield {
+                  type: 'tool_call_result',
+                  functionName: toolCall.function.name,
+                  result: `错误：${errorMsg}`,
+                  status: 'error',
+                };
                 this.context.addMessage({
                   role: 'tool',
                   tool_call_id: toolCall.id,

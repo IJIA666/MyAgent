@@ -11,6 +11,10 @@ import { ToolCatalog } from '../../../src/adapters/tools/ToolCatalog.js';
 import { ToolExecutor } from '../../../src/adapters/tools/ToolExecutor.js';
 import { runCommandEngine } from '../../../src/adapters/tools/impl/system/terminal-engine.js';
 import type { AuthorizedExecutionContext } from '../../../src/core/domain/permissions/tool-permission-service.js';
+import { ToolPermissionService } from '../../../src/core/domain/permissions/tool-permission-service.js';
+import { PermissionRuleStore } from '../../../src/core/domain/permissions/rule-store.js';
+import { ExecutionPlan } from '../../../src/core/domain/permissions/execution-plan.js';
+import { createSandboxAttestation } from '../../../src/core/domain/security/sandbox-attestation.js';
 
 describe('安全与并发增强特性测试', () => {
   const testWorkspace = process.cwd();
@@ -35,29 +39,54 @@ describe('安全与并发增强特性测试', () => {
 
     it('已授权上下文应执行已注册工具，并拒绝不存在的工具', async () => {
       const catalog = new ToolCatalog(buildNativeTools());
-      const executor = new ToolExecutor(catalog, () => true);
-      const authorizedContext: AuthorizedExecutionContext = {
-        nonce: 'test-authorized-context',
-        toolName: 'get_current_time',
-        args: {},
-        decision: { kind: 'allow', decisionReason: '测试授权' },
-        evidence: {
+      const service = new ToolPermissionService({ ruleStore: new PermissionRuleStore() });
+      const executor = new ToolExecutor(
+        catalog,
+        context => service.consumeAuthorizedContext(context),
+      );
+      const createContext = (toolName: string): AuthorizedExecutionContext => {
+        const evidence = {
           operationCategory: 'time-read',
-          sideEffect: 'read',
+          sideEffect: 'read' as const,
           riskReason: '仅读取当前系统时间',
           resources: [],
-        },
+        };
+        const attestation = createSandboxAttestation();
+        const plan = new ExecutionPlan({
+          runtimeToolName: toolName,
+          permissionIdentity: 'FileRead',
+          normalizedArgs: {},
+          resourceEvidences: [],
+          evidenceDigest: 'time-read',
+          callerId: 'test-local',
+          stateVersion: 0,
+          hostPolicyVersion: 'test',
+          sandboxProfile: {
+            platform: attestation.platform,
+            containment: attestation.level,
+            version: attestation.version,
+          },
+          expiryMs: 30_000,
+        });
+        return service.createAuthorizedContext(toolName, {}, {
+          kind: 'allow',
+          decisionReason: '测试授权',
+          evidence,
+          decisionSource: 'invariant',
+          matchedEvidenceIds: [],
+          overridable: false,
+        }, plan)!;
       };
+      const authorizedContext = createContext('get_current_time');
 
       const outcome = await executor.executeAuthorized(authorizedContext);
       expect(outcome.value.content).toHaveLength(1);
       expect(outcome.effect.kind).toBe('read');
       expect(outcome.effect.reason).toBe('permission_evidence');
 
-      await expect(executor.executeAuthorized({
-        ...authorizedContext,
-        toolName: 'missing_tool',
-      })).rejects.toThrow('Tool is not registered');
+      await expect(executor.executeAuthorized(
+        createContext('missing_tool'),
+      )).rejects.toThrow('Tool is not registered');
     });
   });
 

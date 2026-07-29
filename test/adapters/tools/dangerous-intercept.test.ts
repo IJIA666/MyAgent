@@ -38,8 +38,6 @@ describe('高危操作安全硬拦截单元测试', () => {
     toolRegistry = createToolRegistry();
     sessionContext = new SessionContext('test-session-dangerous');
     ReadFileTool.readFileState.clear();
-    // 强制关闭 bypass 模式以验证拦截挂起机制
-    sessionContext.approvalService.setBypassMode(false);
   });
 
   it('1. 调用 deletePath 工具时，应该触发审批挂起并在拒绝时被成功拦截', async () => {
@@ -47,10 +45,10 @@ describe('高危操作安全硬拦截单元测试', () => {
     const handler = vi.fn((id) => {
       // 使用 setTimeout 延迟 resolve，避免在 wait 还没存入 pendingApprovals 映射表时的时序冲突
       setTimeout(() => {
-        sessionContext.approvalService.resolve(id, { action: 'deny' });
+        sessionContext.approvalInteraction.resolve(id, { action: 'deny' });
       }, 0);
     });
-    sessionContext.approvalService.registerApprovalHandler(handler);
+    sessionContext.approvalInteraction.registerApprovalHandler(handler);
 
     await expect(toolRegistry.callTool(
       'deletePath',
@@ -70,10 +68,10 @@ describe('高危操作安全硬拦截单元测试', () => {
     const handler = vi.fn((id) => {
       // 使用 setTimeout 延迟 resolve
       setTimeout(() => {
-        sessionContext.approvalService.resolve(id, { action: 'call' });
+        sessionContext.approvalInteraction.resolve(id, { action: 'allowOnce' });
       }, 0);
     });
-    sessionContext.approvalService.registerApprovalHandler(handler);
+    sessionContext.approvalInteraction.registerApprovalHandler(handler);
 
     const callResult = await toolRegistry.callTool(
       'deletePath',
@@ -94,10 +92,10 @@ describe('高危操作安全硬拦截单元测试', () => {
     // 注册审批提问处理器，模拟用户拒绝
     const handler = vi.fn((id) => {
       setTimeout(() => {
-        sessionContext.approvalService.resolve(id, { action: 'deny' });
+        sessionContext.approvalInteraction.resolve(id, { action: 'deny' });
       }, 0);
     });
-    sessionContext.approvalService.registerApprovalHandler(handler);
+    sessionContext.approvalInteraction.registerApprovalHandler(handler);
 
     await expect(toolRegistry.callTool(
       'writeFile',
@@ -123,7 +121,7 @@ describe('高危操作安全硬拦截单元测试', () => {
     }
 
     const handler = vi.fn();
-    sessionContext.approvalService.registerApprovalHandler(handler);
+    sessionContext.approvalInteraction.registerApprovalHandler(handler);
 
     const callResult = await toolRegistry.callTool(
       'writeFile',
@@ -141,15 +139,14 @@ describe('高危操作安全硬拦截单元测试', () => {
     }
   });
 
-  it('5. 已进入新生命周期且命中 session grant 的 writeFile，不应再被旧 waitApproval 兜底重复拦截', async () => {
+  it('5. bypass 模式的工作区外精确写入应由本次 ExecutionPlan 承载，不依赖临时白名单', async () => {
     sessionContext.setPermissionMode('bypassPermissions');
     const outsideFilePath = resolve(testWorkspace, '..', 'test_temp_whitelist_write.txt');
     writeFileSync(outsideFilePath, 'original_content', 'utf-8');
-    sessionContext.addTemporaryWriteWhitelist(outsideFilePath);
     ReadFileTool.readFileState.set(outsideFilePath, { mtimeMs: Date.now() });
 
     const handler = vi.fn();
-    sessionContext.approvalService.registerApprovalHandler(handler);
+    sessionContext.approvalInteraction.registerApprovalHandler(handler);
 
     const callResult = await toolRegistry.callTool(
       'writeFile',
@@ -166,6 +163,50 @@ describe('高危操作安全硬拦截单元测试', () => {
 
     if (existsSync(outsideFilePath)) {
       unlinkSync(outsideFilePath);
+    }
+  });
+
+  it('6. 选择“允许并开启 Accept edits on”后，本会话后续普通编辑应自动执行', async () => {
+    const firstPath = resolve(testWorkspace, 'accept-edits-first.txt');
+    const secondPath = resolve(testWorkspace, 'accept-edits-second.txt');
+    const observedChoices: string[][] = [];
+    const handler = vi.fn((
+      id: string,
+      _toolCall: unknown,
+      _prefix: string | undefined,
+      _message: string | undefined,
+      choices: Array<{ choiceId: string }> | undefined,
+    ) => {
+      observedChoices.push(choices?.map(choice => choice.choiceId) ?? []);
+      sessionContext.approvalInteraction.resolve(id, {
+        action: 'allowAndSetMode',
+      });
+    });
+    sessionContext.approvalInteraction.registerApprovalHandler(handler);
+
+    try {
+      await toolRegistry.callTool(
+        'writeFile',
+        { targetPath: 'accept-edits-first.txt', content: 'first' },
+        sessionContext,
+      );
+      expect(sessionContext.getPermissionMode()).toBe('acceptEdits');
+      expect(observedChoices[0]).toEqual([
+        'allowOnce',
+        'allowAndSetMode',
+        'deny',
+      ]);
+
+      await toolRegistry.callTool(
+        'writeFile',
+        { targetPath: 'accept-edits-second.txt', content: 'second' },
+        sessionContext,
+      );
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(existsSync(secondPath)).toBe(true);
+    } finally {
+      rmSync(firstPath, { force: true });
+      rmSync(secondPath, { force: true });
     }
   });
 });

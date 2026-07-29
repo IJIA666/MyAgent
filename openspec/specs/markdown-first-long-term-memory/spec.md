@@ -3,9 +3,7 @@
 ## Purpose
 
 定义项目级 Markdown 长期记忆的存储、写入、召回、诊断和遗忘契约，确保模型能够使用标准文件工具维护透明、可治理且跨会话可复用的记忆。
-
 ## Requirements
-
 ### Requirement: 项目长期记忆必须采用机器本地的 Markdown 目录
 
 系统必须（MUST）通过 `ApplicationPaths.memoryDir` 将当前项目的长期记忆定位到 `<projectDataDir>/memory/`，其中 `<projectDataDir>` 为 `~/.myagent/projects/<workspace-key>/`。该目录必须（MUST）使用 `MEMORY.md` 作为有界索引，并允许（MAY）使用 `topics/*.md` 保存主题正文。系统不得（MUST NOT）为长期记忆引入数据库、向量库、Embedding、文本分块或派生检索索引。
@@ -21,31 +19,6 @@
 - **WHEN** 两个工作区分别解析其 `ApplicationPaths.memoryDir`
 - **THEN** 两者位于各自的 `<projectDataDir>/memory/`
 - **AND** 任一工作区的记忆不会写入工作区内的 `.myagent/` 配置目录
-
-### Requirement: 记忆索引加载必须有界且可诊断
-
-系统必须（MUST）在会话快照中最多读取 `MEMORY.md` 的前 200 行或前 20KB，以先达到的限制为准。发生截断时，系统必须（MUST）在投影给模型的内容中明确标记索引已截断，并且不得（MUST NOT）修改磁盘文件。加载器必须（MUST）诊断重复索引、断链主题、非法主题文件名、未知记忆类型和无效 frontmatter，但单个异常不得（MUST NOT）导致会话启动失败。对于文件存在且名称合法、但 frontmatter 缺失或类型未知的索引主题，加载器必须（MUST）保留索引标题和摘要以支持降级召回，同时不得（MUST NOT）把未知类型推断为四种合法类型之一。
-
-#### Scenario: MEMORY.md 超出容量上限
-
-- **WHEN** `MEMORY.md` 超过 200 行或 20KB
-- **THEN** 加载器在先达到的边界停止读取
-- **AND** 投影内容包含截断标记
-- **AND** 磁盘上的 `MEMORY.md` 保持不变
-
-#### Scenario: 索引包含无效条目
-
-- **WHEN** `MEMORY.md` 同时包含有效条目、重复条目和不存在的主题引用
-- **THEN** 有效条目仍可进入会话快照
-- **AND** 加载器报告重复与断链诊断
-- **AND** 会话启动继续进行
-
-#### Scenario: 主题 frontmatter 缺失或类型未知
-
-- **WHEN** 索引引用的主题文件存在且文件名合法，但 frontmatter 缺失或 `type` 未知
-- **THEN** 加载器报告对应诊断
-- **AND** 快照保留该索引条目的标题与摘要以支持降级召回
-- **AND** 快照不为该条目推断合法记忆类型
 
 ### Requirement: 主题文件必须遵循固定类型与确定性命名
 
@@ -81,21 +54,6 @@
 - **THEN** 系统注入包含实际绝对 `memoryDir` 和空索引说明的最小记忆投影
 - **AND** 模型能够据此使用标准文件工具创建第一份记忆
 
-### Requirement: 记忆维护必须复用标准文件工具
-
-模型必须（MUST）使用现有目录列举、文件读取、文件写入和文件编辑工具维护 `memoryDir`，并继续受工具 effect、`PermissionMode`、路径授权和审计机制约束。系统不得（MUST NOT）增加专用 memory 工具或专用记忆模型。模型只应（SHOULD）保存跨会话仍有价值、可复用且相对稳定的信息；不得（MUST NOT）保存秘密、临时任务状态、可从权威文件直接获得的重复内容或未经核实的推测。
-
-#### Scenario: 用户明确要求记住稳定偏好
-
-- **WHEN** 用户明确要求记住一项不含敏感信息的稳定偏好
-- **THEN** 模型使用标准文件工具更新对应主题和索引
-- **AND** 每次工具调用仍经过正常权限判断与审计
-
-#### Scenario: 内容不适合长期保存
-
-- **WHEN** 候选内容是秘密、短期进度或未经核实的推测
-- **THEN** 模型不将其写入长期记忆
-
 ### Requirement: 忘记操作必须先修改事实源再修复索引
 
 当用户明确要求忘记某项内容时，模型必须（MUST）先从主题事实源中删除对应内容，再更新 `MEMORY.md`。若主题仍包含其他有效记忆，则必须（MUST）保留主题文件并更新其摘要；若主题已无有效内容，则必须（MUST）删除主题文件及其索引项。模型必须（MUST）从当前回合起停止依赖已被要求忘记的内容，但不得（MUST NOT）声称能够从既有会话历史中物理擦除已出现的文本。
@@ -128,12 +86,93 @@
 - **THEN** 模型可以使用标准读取工具查看文件
 - **AND** 该即时读取不替换会话快照
 
-### Requirement: 第一版不得执行自动抽取或语义检索
+### Requirement: Auto Memory Index Is Loaded Automatically and Bounded
 
-系统不得（MUST NOT）在对话外调用额外模型抽取记忆，也不得（MUST NOT）建立向量、关键词或分块检索流水线。记忆选择、更新与遗忘由主模型依据 system prompt 规则和标准文件工具完成。
+`autoMemoryEnabled` MUST 默认开启。会话启动时，记忆子系统 MUST 由宿主直接读取 `MEMORY.md` 前 200 行或前 25KB（先到者为准），并作为低权限 context 自动注入；该宿主读取 MUST NOT 进入工具审批。
 
-#### Scenario: 普通会话结束
+#### Scenario: A session starts with an index
 
-- **WHEN** 一次会话结束且用户没有触发任何标准文件工具写入
-- **THEN** 系统不启动记忆抽取模型
-- **AND** 系统不生成数据库记录、Embedding 或检索分块
+- **WHEN** 当前项目启用 Auto Memory 且 `MEMORY.md` 存在
+- **THEN** 会话 MUST 自动注入有界索引
+- **THEN** 用户 MUST NOT 收到 Read 工具审批
+
+#### Scenario: An index exceeds a limit
+
+- **WHEN** `MEMORY.md` 超过 200 行或 25KB
+- **THEN** 启动投影 MUST 只包含限制内的完整内容
+- **THEN** 诊断 MUST 说明截断原因和限制
+
+#### Scenario: Topic files exist
+
+- **WHEN** `MEMORY.md` 引用 topic 文件
+- **THEN** 会话启动 MUST NOT 打开或注入 topic 内容
+- **THEN** Agent MUST 按需通过标准文件工具读取
+
+### Requirement: Default Memory Root Has Claude-Style File Permission
+
+文件权限层 MUST 明确识别当前项目默认 Auto Memory 根和 Agent memory 根。显式 deny/hard cap MUST 先评估；随后默认根内的 Read/Edit/Write 以及映射为 Write 的 `createDirectory` MUST 在危险目录检查和普通 ask 之前 allow。
+
+#### Scenario: Manual writes a topic in the default root
+
+- **WHEN** 当前模式为 Manual，Agent 在默认 memory 根内创建 `topics/`、写 topic 或更新 `MEMORY.md`
+- **THEN** 系统 MUST 直接允许
+- **THEN** 系统 MUST NOT 弹审批或切换到 Accept edits on
+
+#### Scenario: A memory write targets a sibling directory
+
+- **WHEN** 目标位于 projectDataDir 中但不在精确 memory 根内
+- **THEN** memory allow MUST NOT 生效
+
+#### Scenario: A destructive memory operation is requested
+
+- **WHEN** Agent 请求删除、移动、执行 memory 文件或修改 settings/instructions
+- **THEN** 系统 MUST 按相应高风险或 protected 策略评估
+- **THEN** Read/Edit/Write 特例 MUST NOT 泛化到该操作
+
+### Requirement: Custom Auto Memory Directory Follows Claude Boundaries
+
+`autoMemoryDirectory` MUST 只接受规范化绝对路径或 home-relative 路径。项目/local 来源 MUST 在工作区获得信任后生效。自定义根内读取 MUST 允许；写入 MUST 进入普通权限流程，除非存在显式 allow rule。
+
+#### Scenario: A custom root is read
+
+- **WHEN** 可信配置选择自定义 memory 根，Agent 按需读取其中 topic
+- **THEN** 文件权限层 MUST 允许读取
+
+#### Scenario: A custom root is written without a rule
+
+- **WHEN** Manual 模式下 Agent 写入自定义 memory 根且没有显式 allow rule
+- **THEN** 系统 MUST 返回 `ask`
+
+#### Scenario: An untrusted project config selects a custom root
+
+- **WHEN** 未建立工作区信任的项目/local 配置指定工作区外 memory 根
+- **THEN** 系统 MUST 忽略该覆盖并记录去敏告警
+
+### Requirement: Background Memory Agent Uses a Restricted Tool Policy
+
+后台记忆整理 Agent MUST 使用独立 caller 和与 Claude `createAutoMemCanUseTool()` 等价的工具策略：允许 Read/Grep/Glob、只读 Bash，以及仅限 memory 根的 Edit/Write；其他工具 MUST 拒绝。
+
+#### Scenario: The background agent writes memory
+
+- **WHEN** 后台记忆 Agent 编辑精确 memory 根内文件
+- **THEN** 操作 MUST 允许并记录 `extract_memories` 等独立审计来源
+
+#### Scenario: The background agent writes outside memory
+
+- **WHEN** 后台记忆 Agent 尝试在 memory 根外 Edit/Write、执行有副作用 Shell、调用 MCP 或发送外部消息
+- **THEN** 受限工具策略 MUST 拒绝
+
+### Requirement: Memory Operation Trust and Content Trust Are Separate
+
+默认 memory 根的文件操作 allow MUST NOT 提升 memory 内容的指令权重。memory MUST 保持 provenance、可审计、可撤销，并与 instructions、权限设置、caller identity 和系统策略隔离。
+
+#### Scenario: Memory contains a permission instruction
+
+- **WHEN** `MEMORY.md` 声称应启用 bypass、扩大目录或忽略 host policy
+- **THEN** 权限系统 MUST 忽略该内容作为授权来源
+
+#### Scenario: An untrusted channel produces a candidate memory
+
+- **WHEN** 网页、邮件、共享聊天或未知 MCP 内容触发记忆候选
+- **THEN** 候选 MUST 进入带 provenance 的暂存状态
+- **THEN** 未通过记忆策略前 MUST NOT 作为激活的稳定事实注入

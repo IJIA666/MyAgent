@@ -6,12 +6,11 @@
 import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
 import type { SessionContext, ContextTokenUsage } from '../../domain/context.js';
 import type { AgentPlugin } from '../../../ports/driven/tools/AgentPlugin.js';
-import type { SafetyResource } from '../../../ports/shared/safety-resource.js';
 import type { PortHookContext } from '../../../ports/shared/plugin-types.js';
 import type { ApprovalChoice, ApprovalChoiceId } from '../../../ports/shared/approval-types.js';
 import type { SessionEventPort } from '../../../ports/driven/session/SessionEventPort.js';
-import type { CallCapabilityPort } from '../../../ports/driven/session/CallCapabilityPort.js';
 import type { EventNotificationPort } from '../../../ports/driven/session/EventNotificationPort.js';
+import type { ExecutionPlan } from '../../domain/permissions/execution-plan.js';
 export type { ApprovalChoice, ApprovalChoiceId };
 export type { PermissionDecision } from '../../domain/permissions/permission-types.js';
 
@@ -74,16 +73,17 @@ export type Plugin = AgentPlugin<HookContext>;
  * 仅暴露端口层能力，使工具实现不依赖核心层具体 SessionContext。
  */
 export interface ToolExecutionContext {
-  /** 当前会话的端口层能力视图。 */
-  sessionContext: SessionEventPort & CallCapabilityPort & EventNotificationPort;
+  /**
+   * 当前会话的端口层能力视图。
+   * 后台子 Agent 可以没有交互会话，但仍必须收到 ExecutionPlan。
+   */
+  sessionContext?: SessionEventPort & EventNotificationPort;
   /** 本次工具调用的唯一标识。 */
   toolCallId: string;
   /** 被调用的工具名称。 */
   toolName: string;
-  /** 规范化参数摘要，用于 capability 令牌匹配。 */
-  argumentsDigest: string;
-  /** 本次调用已领取的授权资源。 */
-  claimedResources: SafetyResource[];
+  /** 权限阶段签发并在执行前验证的不可变计划。 */
+  executionPlan: ExecutionPlan;
   /** 权限阶段生成并绑定到本次调用的工具专用分析结果。 */
   permissionAnalysis?: unknown;
 }

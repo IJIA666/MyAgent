@@ -61,7 +61,15 @@ async function main() {
   await configureFileSink(appConfig.applicationPaths.logsDir);
 
   // 5. 初始化工作区沙箱路径与长期记忆目录
-  initWorkspace(appConfig.workspace, appConfig.applicationPaths.memoryDir);
+  const activeMemoryDirectory = appConfig.autoMemoryEnabled
+    ? appConfig.autoMemoryDirectory ?? appConfig.applicationPaths.memoryDir
+    : undefined;
+  initWorkspace(
+    appConfig.workspace,
+    activeMemoryDirectory,
+    appConfig.autoMemoryDirectory ? 'custom' : 'default',
+    appConfig.autoMemoryDirectory ?? appConfig.applicationPaths.memoryDir,
+  );
 
   // 6. 打印系统启动与配置信息，在 Banner 中追加展示当前的上下文窗口总大小限制
   const banner = `====================================================

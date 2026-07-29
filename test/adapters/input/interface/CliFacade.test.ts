@@ -26,7 +26,7 @@ vi.mock('../../../../src/adapters/input/interface/cli.js', () => {
 class MockChatUseCase extends EventEmitter {
   getIsGenerating = vi.fn().mockReturnValue(false);
   getModelName = vi.fn().mockReturnValue('mock-llama-3');
-  getPermissionMode = vi.fn().mockReturnValue('auto');
+  getPermissionMode = vi.fn().mockReturnValue('acceptEdits');
   setPermissionMode = vi.fn();
   abort = vi.fn();
   rollback = vi.fn();
@@ -55,7 +55,7 @@ class MockChatUseCase extends EventEmitter {
     getTool: vi.fn(),
     close: vi.fn().mockResolvedValue(undefined)
   };
-  approvalService = {
+  approvalInteraction = {
     wait: vi.fn(),
     resolve: vi.fn(),
   };
@@ -287,13 +287,27 @@ describe('CliFacade', () => {
       mockSession.emit('agent_event', {
         type: 'tool_call_result',
         functionName: 'readFile',
-        result: 'file content text'
+        result: 'file content text',
+        status: 'success',
       });
 
       const output = getCleanedOutput();
       expect(output).toContain('[⚡ 正在调用工具 "readFile"]');
       expect(output).toContain('index.ts');
       expect(output).toContain('执行完毕，返回了 17 字节的数据');
+    });
+
+    it('工具拒绝或失败时不得渲染为执行完毕', () => {
+      mockSession.emit('agent_event', {
+        type: 'tool_call_result',
+        functionName: 'writeFile',
+        result: '错误：审批拒绝',
+        status: 'error',
+      });
+
+      const output = getCleanedOutput();
+      expect(output).toContain('工具 "writeFile" 调用失败');
+      expect(output).not.toContain('执行完毕');
     });
 
     it('should correctly render "error" events', () => {
@@ -405,7 +419,7 @@ describe('CliFacade', () => {
     });
   });
 
-  describe('approvalService.registerApprovalHandler 安全审批交互', () => {
+  describe('approvalInteraction.registerApprovalHandler 安全审批交互', () => {
     let handler: (
       id: string,
       toolCall: { name: string; arguments: Record<string, unknown> },
@@ -450,7 +464,7 @@ describe('CliFacade', () => {
 
       expect(closeSpy).toHaveBeenCalled();
       expect(resumeStdinSpy).toHaveBeenCalled();
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-1', { action: 'call' });
+      expect(mockSession.approvalInteraction.resolve).toHaveBeenCalledWith('req-1', { action: 'call' });
       expect(startSpy).toHaveBeenCalledWith(true);
       
       const output = getCleanedOutput();
@@ -467,7 +481,7 @@ describe('CliFacade', () => {
 
       await handler('req-2', { name: 'run_cmd', arguments: { command: 'dir' } }, 'dir');
 
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-2', { action: 'persistent' });
+      expect(mockSession.approvalInteraction.resolve).toHaveBeenCalledWith('req-2', { action: 'persistent' });
       const output = getCleanedOutput();
       expect(output).toContain('Agent 企图执行以下终端命令');
     });
@@ -479,7 +493,7 @@ describe('CliFacade', () => {
 
       await handler('req-3', { name: 'run_cmd', arguments: { command: 'dir' } }, 'dir');
 
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-3', { action: 'deny' });
+      expect(mockSession.approvalInteraction.resolve).toHaveBeenCalledWith('req-3', { action: 'deny' });
     });
 
     it('当受信选项包含下一层范围时，应当先确认规则再返回项目范围', async () => {
@@ -512,7 +526,7 @@ describe('CliFacade', () => {
         ],
       );
 
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-nested', { action: 'project' });
+      expect(mockSession.approvalInteraction.resolve).toHaveBeenCalledWith('req-nested', { action: 'project' });
       const output = getCleanedOutput();
       expect(output).toContain('PowerShell(Get-CimInstance Win32_OperatingSystem)');
       expect(output).toContain('规则保存到哪里？');
@@ -531,7 +545,7 @@ describe('CliFacade', () => {
 
       await handler('req-4', { name: 'run_cmd', arguments: { command: 'dir' } }, 'dir');
 
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-4', { action: 'call' });
+      expect(mockSession.approvalInteraction.resolve).toHaveBeenCalledWith('req-4', { action: 'call' });
       expect(callCount).toBe(2);
       expect(getCleanedOutput()).toContain('无效选择，请重新输入');
     });
@@ -543,7 +557,7 @@ describe('CliFacade', () => {
 
       await handler('req-5', { name: 'run_cmd', arguments: {} });
 
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-5', { action: 'call' });
+      expect(mockSession.approvalInteraction.resolve).toHaveBeenCalledWith('req-5', { action: 'call' });
     });
 
     it('当无 allowedPrefix 且用户输入 2 时，应当拒绝 deny', async () => {
@@ -553,7 +567,7 @@ describe('CliFacade', () => {
 
       await handler('req-6', { name: 'run_cmd', arguments: {} });
 
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-6', { action: 'deny' });
+      expect(mockSession.approvalInteraction.resolve).toHaveBeenCalledWith('req-6', { action: 'deny' });
     });
 
     it('当无 allowedPrefix 且用户输入无效值时，应当提示无效并递归提问，直到输入有效值为止', async () => {
@@ -569,7 +583,7 @@ describe('CliFacade', () => {
 
       await handler('req-7', { name: 'run_cmd', arguments: {} });
 
-      expect(mockSession.approvalService.resolve).toHaveBeenCalledWith('req-7', { action: 'deny' });
+      expect(mockSession.approvalInteraction.resolve).toHaveBeenCalledWith('req-7', { action: 'deny' });
       expect(callCount).toBe(2);
       expect(getCleanedOutput()).toContain('无效选择，请重新输入');
     });

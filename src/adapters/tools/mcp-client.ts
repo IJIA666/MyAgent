@@ -4,7 +4,12 @@ import { McpConfig, McpServerEntry, buildSubprocessEnv } from '../../config/inde
 import { logger } from '../../utils/logger.js'; // 导入统一日志单例 logger
 import { Readable } from 'node:stream';
 import { execSync } from 'node:child_process';
-import { McpManagerPort, McpToolDescriptor } from '../../ports/driven/tools/McpManagerPort.js';
+import { randomBytes } from 'node:crypto';
+import {
+  McpManagerPort,
+  McpToolDescriptor,
+  type McpCallAuthorization,
+} from '../../ports/driven/tools/McpManagerPort.js';
 
 // 系统本地内置文件操作及技能载入工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
 const BUILTIN_TOOL_NAMES = new Set([
@@ -24,6 +29,10 @@ export class McpToolManager implements McpManagerPort {
   private toolRouter = new Map<string, string>();
   /** 工具描述缓存（在 getMcpTools() 时同步建立） */
   private toolDescriptors = new Map<string, McpToolDescriptor>();
+  /** 当前管理器实例的 descriptor 命名空间。 */
+  private readonly descriptorInstanceId = randomBytes(8).toString('hex');
+  /** 每次发现、刷新或重连工具时递增，保证旧授权失效。 */
+  private descriptorRevision = 0;
   private isClosed = false;
   // 已加载的 MCP 配置（通过构造函数注入）
   private config: McpConfig;
@@ -164,6 +173,7 @@ export class McpToolManager implements McpManagerPort {
    */
   async disconnectServer(name: string): Promise<void> {
     const connection = this.connections.get(name);
+    this.invalidateServerDescriptors(name);
     if (!connection) {
       return;
     }
@@ -234,19 +244,7 @@ export class McpToolManager implements McpManagerPort {
           // 记录工具属于哪个 server
           this.toolRouter.set(tool.name, serverName);
           // 缓存工具描述，供策略端口查询
-          this.toolDescriptors.set(tool.name, {
-            name: tool.name,
-            serverName,
-            annotations: 'annotations' in tool ? (() => {
-              const ann = (tool as Record<string, unknown>).annotations as Record<string, unknown> | undefined;
-              return ann ? {
-                readOnlyHint: ann.readOnlyHint as boolean | undefined,
-                destructiveHint: ann.destructiveHint as boolean | undefined,
-                idempotentHint: ann.idempotentHint as boolean | undefined,
-                openWorldHint: ann.openWorldHint as boolean | undefined,
-              } : undefined;
-            })() : undefined,
-          });
+          this.cacheToolDescriptor(serverName, tool);
           allTools.push({
             type: "function",
             function: {
@@ -275,7 +273,12 @@ export class McpToolManager implements McpManagerPort {
    * @param signal - 可选的取消信号
    * @returns 工具执行后的返回结果 Promise
    */
-  async callMcpTool(name: string, args: Record<string, unknown>, signal?: AbortSignal) {
+  async callMcpTool(
+    name: string,
+    args: Record<string, unknown>,
+    authorization: McpCallAuthorization,
+    signal?: AbortSignal,
+  ) {
     if (this.isClosed) {
       throw new Error("MCP Client 已关闭");
     }
@@ -290,6 +293,7 @@ export class McpToolManager implements McpManagerPort {
     let delay = 1000;
 
     while (true) {
+      this.assertDescriptorCurrent(name, authorization);
       const connection = this.connections.get(serverName);
       if (!connection) {
         attempts++;
@@ -406,6 +410,56 @@ export class McpToolManager implements McpManagerPort {
     const response = await connection.client.listTools();
     for (const tool of response.tools) {
       this.toolRouter.set(tool.name, name);
+      this.cacheToolDescriptor(name, tool);
+    }
+  }
+
+  /** 为一次工具发现创建新的易失 descriptor 版本。 */
+  private cacheToolDescriptor(
+    serverName: string,
+    tool: { readonly name: string; readonly annotations?: unknown },
+  ): void {
+    const ann = tool.annotations && typeof tool.annotations === 'object'
+      ? tool.annotations as Record<string, unknown>
+      : undefined;
+    this.descriptorRevision += 1;
+    this.toolDescriptors.set(tool.name, {
+      name: tool.name,
+      serverName,
+      descriptorVersion: `${this.descriptorInstanceId}:${this.descriptorRevision}`,
+      annotations: ann ? {
+        readOnlyHint: ann.readOnlyHint as boolean | undefined,
+        destructiveHint: ann.destructiveHint as boolean | undefined,
+        idempotentHint: ann.idempotentHint as boolean | undefined,
+        openWorldHint: ann.openWorldHint as boolean | undefined,
+      } : undefined,
+    });
+  }
+
+  /** 清除某个服务的全部路由和 descriptor，立即使旧授权失效。 */
+  private invalidateServerDescriptors(serverName: string): void {
+    for (const [toolName, descriptor] of this.toolDescriptors.entries()) {
+      if (descriptor.serverName === serverName) {
+        this.toolDescriptors.delete(toolName);
+        this.toolRouter.delete(toolName);
+      }
+    }
+  }
+
+  /** 在真实外部调用前验证 descriptor 仍与审批时完全一致。 */
+  private assertDescriptorCurrent(
+    toolName: string,
+    authorization: McpCallAuthorization,
+  ): void {
+    const descriptor = this.toolDescriptors.get(toolName);
+    const routedServer = this.toolRouter.get(toolName);
+    if (
+      !descriptor
+      || descriptor.serverName !== authorization.serverName
+      || routedServer !== authorization.serverName
+      || descriptor.descriptorVersion !== authorization.descriptorVersion
+    ) {
+      throw new Error(`MCP 工具 "${toolName}" 的 descriptor 已变化，旧授权已失效`);
     }
   }
 

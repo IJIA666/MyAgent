@@ -18,8 +18,8 @@ import type { ConfigPermissionMode } from '../../config/index.js';
  * CLI 门面或其它输入适配器通过该用例驱动智能体系统的状态变化与推理周期。
  */
 export interface ChatUseCase {
-  /** 协同审批服务实例（端口层契约） */
-  readonly approvalService: ApprovalPort;
+  /** 协同审批交互端口实例。 */
+  readonly approvalInteraction: ApprovalPort;
 
   /**
    * 获取当前激活的语言模型名称。
@@ -122,7 +122,7 @@ export interface ChatUseCase {
   setInteractionPort(port: InteractionPort): void;
 
   /**
-   * 注册审批处理器回调，当工具调用触发安全审批时由 ApprovalService 调用。
+   * 注册审批处理器回调，当工具调用触发安全审批时由审批交互等待器调用。
    *
    * @param handler - 审批处理器函数
    */

@@ -5,6 +5,11 @@
 
 import { spawn } from 'child_process';
 import { resolveShellLauncher } from '../terminal-plan.js';
+import { getRuntimeEnv } from '../../../../../config/env.js';
+import {
+  createCredentialEnvironment,
+  createCredentialProfile,
+} from '../../../../../core/domain/security/credential-profile.js';
 import type {
   CommandRedirectionAnalysis,
   CommandRiskSignal,
@@ -690,6 +695,12 @@ function runNativePowerShellParser(
 
   return new Promise<string>((resolve, reject) => {
     const child = spawn(launcher.executable, [...launcher.argsPrefix, POWERSHELL_AST_SCRIPT], {
+      env: {
+        ...createCredentialEnvironment(
+          createCredentialProfile('terminal'),
+          getRuntimeEnv(),
+        ),
+      },
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });

@@ -14,6 +14,7 @@ import type {
 import type {
   ToolExecutionContext,
 } from '../../../src/core/domain/permissions/tool-permission-service.js';
+import { createTestExecutionPlan } from '../../helpers/permission-plan.js';
 
 describe('ToolPermissionService', () => {
   // ── 基础 passthrough → ask ──
@@ -561,12 +562,12 @@ describe('ToolPermissionService', () => {
           kind: 'file' as const,
           operation: 'read' as const,
           rawExpression: 'secret.txt',
-          resolvedResource: 'D:\\workspace\\secret.txt',
-          baseContext: 'D:\\workspace',
+          canonicalPath: 'D:\\workspace\\secret.txt',
           scope: 'workspace' as const,
-          certainty: 'exact' as const,
           sourceNodeId: 'resource:secret',
-          reason: '命令参数中的文件',
+          protected: false,
+          provenance: 'tool-analyzed' as const,
+          channelTrust: 'interactive' as const,
         }],
       };
       const toolChecker = {
@@ -628,13 +629,61 @@ describe('ToolPermissionService', () => {
   // ── acceptEdits 模式 ──
 
   describe('acceptEdits 模式', () => {
-    it('acceptEdits 应对编辑操作自动 allow', async () => {
+    it('acceptEdits 应依据真实文件适配器证据允许普通编辑', async () => {
       const store = new PermissionRuleStore();
       const service = new ToolPermissionService({ ruleStore: store });
+      for (const [toolName, operationCategory] of [
+        ['writeFile', 'file-write'],
+        ['editFile', 'file-edit'],
+        ['applyPatch', 'file-edit'],
+        ['createDirectory', 'file-write'],
+      ] as const) {
+        const checker = {
+          checkPermissions(): ToolPermissionCheckResult {
+            return {
+              kind: 'ask',
+              decisionReason: '普通编辑需要授权',
+              evidence: {
+                operationCategory,
+                sideEffect: 'write',
+                riskReason: '普通工作区编辑',
+              },
+            };
+          },
+        };
+        const result = await service.checkPermissions(
+          toolName,
+          { targetPath: '/workspace/file.ts' },
+          'acceptEdits',
+          checker,
+        );
+        expect(result.kind).toBe('allow');
+        expect(result.decisionReason).toContain('acceptEdits');
+      }
+    });
 
-      const result = await service.checkPermissions('Write', { path: '/workspace/file.ts' }, 'acceptEdits');
-      expect(result.kind).toBe('allow');
-      expect(result.decisionReason).toContain('acceptEdits');
+    it('acceptEdits 不应放行删除、移动或复制', async () => {
+      const store = new PermissionRuleStore();
+      const service = new ToolPermissionService({ ruleStore: store });
+      for (const operationCategory of ['file-delete', 'file-move', 'file-copy']) {
+        const result = await service.checkPermissions(
+          operationCategory,
+          {},
+          'acceptEdits',
+          {
+            checkPermissions: () => ({
+              kind: 'ask',
+              decisionReason: '破坏性文件操作',
+              evidence: {
+                operationCategory,
+                sideEffect: 'write',
+                riskReason: '破坏性文件操作',
+              },
+            }),
+          },
+        );
+        expect(result.kind).toBe('ask');
+      }
     });
 
     it('acceptEdits 不应自动允许终端命令', async () => {
@@ -760,7 +809,7 @@ describe('ToolPermissionService', () => {
         decisionSource: 'userApproval',
         matchedEvidenceIds: [],
         overridable: false,
-      });
+      }, createTestExecutionPlan('Bash', { command: 'ls' }));
       expect(ctx).not.toBeNull();
       expect(ctx!.toolName).toBe('Bash');
       expect(ctx!.nonce).toMatch(/^auth_/);
@@ -776,7 +825,7 @@ describe('ToolPermissionService', () => {
         decisionSource: 'invariant',
         matchedEvidenceIds: [],
         overridable: false,
-      });
+      }, createTestExecutionPlan('Bash', { command: 'ls' }));
       expect(ctx).toBeNull();
     });
 
@@ -797,77 +846,14 @@ describe('ToolPermissionService', () => {
       const decision = await service.checkPermissions('Bash', { command: 'touch a' }, 'bypassPermissions', toolChecker);
       expect(decision).toMatchObject({ kind: 'allow', evidence });
 
-      const context = service.createAuthorizedContext('Bash', { command: 'touch a' }, decision);
+      const context = service.createAuthorizedContext(
+        'Bash',
+        { command: 'touch a' },
+        decision,
+        createTestExecutionPlan('Bash', { command: 'touch a' }),
+      );
       expect(context?.evidence).toBe(evidence);
     });
   });
 
-  // ── headless + auto ──
-
-  describe('headless 模式', () => {
-    it('headless + auto + 无分类器应返回 deny', async () => {
-      const store = new PermissionRuleStore();
-      const service = new ToolPermissionService({ ruleStore: store, headless: true });
-
-      const result = await service.checkPermissions('Bash', { command: 'ls' }, 'auto');
-      expect(result.kind).toBe('deny');
-    });
-  });
-
-  describe('auto 模式证据传递', () => {
-    it('普通工具应根据实际命令证据得到不同结果', async () => {
-      const store = new PermissionRuleStore();
-      let receivedSideEffect: string | undefined;
-      const service = new ToolPermissionService({
-        ruleStore: store,
-        autoClassifier: {
-          async classify(_toolName, _args, evidence) {
-            receivedSideEffect = evidence?.sideEffect;
-            return { allow: false, reason: '写入证据不允许自动执行' };
-          },
-        },
-      });
-      const readChecker = {
-        checkPermissions(): ToolPermissionCheckResult {
-          return {
-            kind: 'passthrough',
-            evidence: {
-              operationCategory: 'command-execute',
-              sideEffect: 'read',
-              riskReason: '读取 package.json',
-            },
-          };
-        },
-      };
-      const writeChecker = {
-        checkPermissions(): ToolPermissionCheckResult {
-          return {
-            kind: 'passthrough',
-            evidence: {
-              operationCategory: 'command-execute',
-              sideEffect: 'write',
-              riskReason: '写入 output.txt',
-            },
-          };
-        },
-      };
-
-      const readResult = await service.checkPermissions(
-        'ExternalCommand',
-        { command: 'read package.json' },
-        'auto',
-        readChecker,
-      );
-      const writeResult = await service.checkPermissions(
-        'ExternalCommand',
-        { command: 'write output.txt' },
-        'auto',
-        writeChecker,
-      );
-
-      expect(readResult).toMatchObject({ kind: 'allow', decisionSource: 'builtInBaseline' });
-      expect(writeResult).toMatchObject({ kind: 'deny', decisionSource: 'classifier' });
-      expect(receivedSideEffect).toBe('write');
-    });
-  });
 });

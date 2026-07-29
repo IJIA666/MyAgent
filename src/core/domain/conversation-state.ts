@@ -1,6 +1,6 @@
 import type { ChatMessage } from '../../ports/driven/llm/LlmPort.js';
 import type { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
-import { computeStringHash } from './call-capability.js';
+import { createHash } from 'node:crypto';
 
 /**
  * 内部会话扩展消息接口契约，继承底层大模型消息，
@@ -166,4 +166,9 @@ export class ConversationState {
     this.lastApiUsage = null;
     this.lastApiHistoryLength = 0;
   }
+}
+
+/** 计算消息正文摘要，用于检测历史内容是否变化。 */
+function computeStringHash(text: string): string {
+  return createHash('md5').update(text).digest('hex');
 }

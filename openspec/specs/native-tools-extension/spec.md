@@ -1,18 +1,22 @@
-## 新增需求
+## Purpose
 
-### 需求: 目录与路径的跨平台安全管理
+定义原生文件、目录、搜索、补丁和只读辅助工具的扩展契约。该规范要求每个有副作用入口使用正式授权适配器，并让批量工具在物理路径、预算、部分失败和结果完整性方面保持可验证行为。
 
-工具必须在物理层面彻底磨平 Windows 与 Linux/Unix 等不同操作系统在目录创建、路径删除、复制与移动上的命令选项差异。同时，所有敏感操作工具必须在底层强制执行工作区沙箱越权校验，阻断任何超出授权范围的路径访问。
+## Requirements
 
-#### 场景: 安全删除工作区内有效路径
+### Requirement: 目录与路径的跨平台安全管理
+
+工具 MUST 在物理层面彻底磨平 Windows 与 Linux/Unix 等不同操作系统在目录创建、路径删除、复制与移动上的命令选项差异。同时，所有敏感操作工具必须在底层强制执行工作区沙箱越权校验，阻断任何超出授权范围的路径访问。
+
+#### Scenario: 安全删除工作区内有效路径
 - **WHEN** 大模型发起 `deletePath` 工具调用，并传入了工作区内合法的目标路径 `src/utils/temp.ts` 以及通过校验的凭证。
 - **THEN** 工具调用原生的文件删除 API 成功移除该路径，并返回删除成功的 JSON 信息。
 
-#### 场景: 超出授权工作区路径的删除被阻断
+#### Scenario: 超出授权工作区路径的删除被阻断
 - **WHEN** 大模型试图调用 `deletePath` 删除工作区外的系统目录（ 例如传入路径 `C:/Windows` ）。
 - **THEN** 工具在底层路径安全校验逻辑中检测到该路径超出了授权工作区，立刻物理阻断执行并抛出错误异常 `"拒绝越权操作：目标路径超出了授权的工作区范围"` 。
 
-#### 场景: 目录的跨平台递归创建
+#### Scenario: 目录的跨平台递归创建
 - **WHEN** 大模型发起 `createDirectory` 工具调用，传入多级未创建的目录路径 `src/components/common/buttons` 。
 - **THEN** 工具在底层自动执行递归创建，成功在磁盘上生成所有缺失的父级文件夹，不再依赖各系统下的 `mkdir` 命令。
 
@@ -54,70 +58,70 @@
 - **WHEN** 扫描达到 maxEntries 但仍有未访问条目
 - **THEN** 结果必须标记为非完整，给出截断原因，且不得把 observedSizeBytes 声称为完整总大小
 
-### 需求: 高吞吐读取的前置体积熔断与拒签机制
+### Requirement: 高吞吐读取的前置体积熔断与拒签机制
 
-批量读取多文件工具必须采用“前置体积熔断”机制代替“尾部物理硬截断”，以防大模型接收到不完整代码导致解析幻觉。当请求的一批文件字符体积超限时，必须原生地报错熔断并返回带结构化大小清单的拒签信息。
+批量读取多文件工具 MUST 采用“前置体积熔断”机制代替“尾部物理硬截断”，以防大模型接收到不完整代码导致解析幻觉。当请求的一批文件字符体积超限时，必须原生地报错熔断并返回带结构化大小清单的拒签信息。
 
 为了确保超大文件解析时的系统性能并规避内存卡顿风险，工具在提取大纲结构时**严禁使用重型的 TS Compiler API 等编译级 AST 解析器**。必须采用轻量级正则表达式行捕获（ 提取 `class` / `function` / `interface` / `export const` 等关键字行号与签名 ），对于无法进行正则提取的类型文件，直接降级返回“文件总行数与首尾各 20 行代码”作为结构大纲，保障熔断性能。
 
-#### 场景: 批量读取文件总体积超限熔断
+#### Scenario: 批量读取文件总体积超限熔断
 - **WHEN** 大模型发起 `readManyFiles` 工具调用并传入 5 个文件路径，这 5 个文件的字符总数达到了 80,000 字符（ 超出了 50,000 字符的安全熔断阈值 ）。
 - **THEN** 工具执行前置拦截，直接抛出拒签错误 `"Size limit exceeded"` 并以 JSON 格式返回这 5 个文件的实际大小清单、行数、以及通过轻量正则捕获的接口/类定义结构大纲（ 或降级为首尾各 20 行的文本片段 ）。
 
 ---
 
-### 需求: 补丁修补双轨并行控制
+### Requirement: 补丁修补双轨并行控制
 
-代码修补必须支持“严格模式补丁”与“上下文签名特征块替换”的双轨并行控制。必须杜绝使用可能导致偏置覆盖的自研模糊匹配算法。
+代码修补 MUST 支持“严格模式补丁”与“上下文签名特征块替换”的双轨并行控制。必须杜绝使用可能导致偏置覆盖的自研模糊匹配算法。
 
-#### 场景: 严格 Patch 模式下上下文错位报错
+#### Scenario: 严格 Patch 模式下上下文错位报错
 - **WHEN** 大模型使用 `applyPatch` 工具的严格模式传入了一段带有空格偏移或行号冲突的 Unified Diff 补丁。
 - **THEN** 工具经过标准补丁库解析发现无法精确对齐，立即放弃任何修改，物理阻断并返回错误提示 `"Patch apply failed: context mismatch"` 。
 
-#### 场景: 上下文签名特征块替换精确定位
+#### Scenario: 上下文签名特征块替换精确定位
 - **WHEN** 大模型在由于先前修改产生行号漂移时，调用 `applyPatch` 的块替换模式，并传入了 `[startLine, endLine]` 大致范围、以及期望原文特征签名 `expectedContent` （ 提供 2-3 行 ）和替换的新内容。
 - **THEN** 工具在指定范围内滑动窗口，成功匹配特征签名定位，完成块内容替换并写入文件，成功规避行号漂移。
 
 ---
 
-### 需求: 只读版 Git 辅助信息拉取
+### Requirement: 只读版 Git 辅助信息拉取
 
-Git 工具链必须被强行限制在只读范围内，绝对不允许调用任何会产生 write / commit / push 等物理变更的 Git 指令。所有 Git 只读工具必须对控制台 stdout 的 ANSI 颜色标记进行过滤，返回纯净结构化的数据。
+Git 工具链 MUST 被强行限制在只读范围内，绝对不允许调用任何会产生 write / commit / push 等物理变更的 Git 指令。所有 Git 只读工具必须对控制台 stdout 的 ANSI 颜色标记进行过滤，返回纯净结构化的数据。
 
-#### 场景: 只读拉取 Git 状态
+#### Scenario: 只读拉取 Git 状态
 - **WHEN** 大模型调用 `gitShowStatus` 工具检索修改列表。
 - **THEN** 工具在底层调用只读 `git status` ，经过滤后将未跟踪（ untracked ）、已修改（ modified ）等相对文件路径列表以结构化 JSON 数据返回。
 
 ---
 
-### 需求: 高危操作的挂起式安全确权拦截
+### Requirement: 高危操作的挂起式安全确权拦截
 
-所有底层涉及目录或文件删除的破坏性操作（ 如 `deletePath` ），必须接入系统底座原生的挂起式安全审批服务。工具在执行删除逻辑前，必须向 `ApprovalService` 提交确权审批请求，在 CLI 层面安全挂起工具执行，由用户进行单次或始终放行决策后恢复 Promise 执行。
+所有底层涉及目录或文件删除的破坏性操作（如 `deletePath`）MUST 接入统一 ToolCallGateway。工具适配器必须把删除声明为独立 destructive operation；最终决策为 ask 时，CLI 只能展示适配器签发的 Allow once 或 Deny，不得把普通编辑模式或目录授权扩展到删除操作。
 
-#### 场景: 高危删除操作触发挂起确权
+#### Scenario: 高危删除操作触发挂起确权
 - **WHEN** 大模型发起 `deletePath` 试图删除工作区内的临时文件，在工具被调用时。
-- **THEN** 底层工具被 `ApprovalService` 同步挂起，控制台弹出放行或拒绝的选择菜单，当用户键入 `1` （ 放行 ）后，工具恢复执行并完成物理删除。
+- **THEN** ToolCallGateway 必须在实际删除前产生 ask 并等待 actionId；只有 Allow once 完整提交并签发单次 execution grant 后，ToolExecutor 才能执行物理删除。
 
 ---
 
-### 需求: 工具自带访问元数据声明
+### Requirement: 有副作用工具自带正式授权适配器
 
-内建工具应（SHALL）通过 `NativeTool` 接口上新增的 `resourceExtractor` 和 `accessMetadata` 可选字段声明自身的访问元数据，替代 `registerExtractorsForBuiltinTools()` 集中式名称分支。
+有副作用内建工具必须（MUST）通过 `NativeTool.authorizationAdapter` 声明稳定 permission identity、真实参数规范化、类型化资源证据和安全审批动作。生产运行时不得继续装配独立 `resourceExtractor`/`accessMetadata` 端口作为第二套授权资源模型。
 
-#### 场景: 文件工具声明资源提取器
+#### Scenario: 文件工具声明正式授权适配器
 
 - **WHEN** 定义一个文件操作类内建工具
-- **THEN** 其 `resourceExtractor` 字段应返回一个接收 `(args)` 的函数，解析工具参数中的目标路径并构造 `SafetyResource` 数组
+- **THEN** 其 authorizationAdapter 必须解析真实路径参数，并构造 file 或 directory-scope ResourceEvidence
 
-#### 场景: 命令工具声明资源提取器
+#### Scenario: 命令工具声明 Shell 授权适配器
 
 - **WHEN** 定义一个命令执行类内建工具
-- **THEN** 其 `resourceExtractor` 字段应返回标记为 `{ kind: 'command-prefix' }` 的安全资源
+- **THEN** 其 authorizationAdapter 必须按已决议 Shell family 复用结构化命令分析，并逐节点构造 command、network 和 file evidence
 
-#### 场景: 新工具无需修改中心注册函数
+#### Scenario: 缺少适配器的有副作用工具 fail closed
 
-- **WHEN** 新增一个内建工具类且它实现了 `resourceExtractor` 和 `accessMetadata` 字段
-- **THEN** `ToolAccessMetadataProvider` 能自动聚合其元数据，无需在 `registerExtractorsForBuiltinTools()` 中添加新的 switch-case 分支
+- **WHEN** 新增一个 effectful 内建工具但没有注册 authorizationAdapter
+- **THEN** ToolCatalog 必须拒绝注册，effectful entrypoint coverage 测试必须失败
 
 ---
 

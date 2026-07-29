@@ -1,43 +1,28 @@
-## 需求
+## Purpose
 
-### 需求: 资源提取器查询
+定义工具授权所需资源与访问元数据的查询和声明契约。该规范确保每个有副作用工具提供可验证的类型化资源证据，未知资源不能依靠宽泛兼容字段或工具自称获得放行。
+## Requirements
+### Requirement: Typed Authorization Resource Evidence
 
-`ToolAccessMetadataProvider` 必须（MUST）支持按工具名称查询对应的资源提取器函数。
+工具访问元数据 MUST 使用穷尽判别联合描述文件、目录范围、命令、网络端点、外部副作用、MCP 调用和未知资源。每种证据 MUST 包含原始表达式、规范化资源、操作、范围、来源节点、敏感度、provenance 和可信度。
 
-#### 场景: 查询已注册工具的资源提取器
+#### Scenario: A file resource is produced
 
-- **WHEN** 调用 `ToolAccessMetadataProvider.getResourceExtractor(toolName)` 查询已注册元数据的工具
-- **THEN** 返回该工具对应的 `(args) => SafetyResource[]` 函数
+- **WHEN** 文件工具适配器解析目标路径
+- **THEN** 证据 MUST 携带真实物理路径、read/write 操作、精确或目录范围、protected 状态和 `host-verified` 可信度
 
-#### 场景: 查询未注册元数据的工具
+#### Scenario: An MCP server claims a resource
 
-- **WHEN** 调用 `ToolAccessMetadataProvider.getResourceExtractor(toolName)` 查询未声明资源提取器的工具
-- **THEN** 返回 `undefined`
+- **WHEN** MCP annotations 或服务响应声明某资源只读
+- **THEN** 证据 MUST 标记为 `external-claimed`
+- **THEN** 该证据 MUST NOT 独立产生 allow 或可复用路径授权
 
-### 需求: 工具自带元数据声明
+### Requirement: Unknown Resource Evidence Fails Conservatively
 
-每个实现 `NativeTool` 接口的工具应（SHALL）可选地通过 `resourceExtractor` 和 `accessMetadata` 字段声明自身的访问元数据，替代集中式 `registerExtractorsForBuiltinTools()`。
+系统 MUST 使用显式 `unknown` 证据表示无法规范化或无法由宿主验证的资源，不得退回宽泛字典或空资源来表示任意访问。
 
-#### 场景: 文件写入工具声明其资源提取器
+#### Scenario: An effectful resource cannot be normalized
 
-- **WHEN** 定义一个文件写入类工具
-- **THEN** 其 `resourceExtractor` 函数接收 `(args)`，返回读取文件路径并标记为 `{ kind: 'path', access: 'write', normalizedPath }` 的 `SafetyResource` 数组
-
-#### 场景: 文件只读工具声明其资源提取器
-
-- **WHEN** 定义一个文件只读类工具
-- **THEN** 其 `resourceExtractor` 函数接收 `(args)`，返回标记为 `{ kind: 'path', access: 'read', normalizedPath }` 的资源
-
-#### 场景: 命令执行工具声明其资源提取器
-
-- **WHEN** 定义一个命令执行类工具
-- **THEN** 其 `resourceExtractor` 返回 `{ kind: 'command-prefix', prefix }` 类型的 `SafetyResource`
-
-### 需求: 访问元数据端口契约
-
-`ToolAccessMetadataPort` 必须（MUST）作为独立端口暴露，使核心层无需依赖 `ToolRegistry` 具体实现。
-
-#### 场景: 核心层通过端口获取资源提取器
-
-- **WHEN** `session.ts` 需要获取某工具的资源提取器
-- **THEN** 通过注入的 `ToolAccessMetadataPort` 调用 `getResourceExtractor(toolName)`，而不是将 `ToolRegistryPort` 强转为 `ToolRegistry` 后访问
+- **WHEN** 有副作用工具无法确定目标资源或访问范围
+- **THEN** 最终候选 MUST 至少为 `ask`
+- **THEN** headless、dontAsk 或缺少可信审批时 MUST 拒绝

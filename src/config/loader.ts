@@ -5,8 +5,9 @@
  * 以及最终全局配置对象的拼装、必填项校验和防御性冻结。
  */
 
-import { resolve } from 'path';
+import { isAbsolute, resolve } from 'path';
 import { existsSync, copyFileSync, readFileSync, writeFileSync, realpathSync } from 'fs';
+import { homedir } from 'os';
 import { config as dotenvConfig } from 'dotenv';
 
 
@@ -212,6 +213,84 @@ function parseEnvPositiveInt(val: string | undefined, defaultValue: number): num
   return parsed > 0 ? parsed : defaultValue;
 }
 
+/** Auto Memory 运行配置。 */
+interface AutoMemoryConfig {
+  /** 是否加载并投影记忆索引。 */
+  readonly enabled: boolean;
+  /** 受信配置提供的自定义记忆根。 */
+  readonly directory?: string;
+}
+
+/**
+ * 将绝对路径或 `~/` home-relative 路径规范为绝对路径。
+ *
+ * @param candidate - 未经信任的配置值
+ * @returns 合法的规范绝对路径；非法值返回 undefined
+ */
+function normalizeAutoMemoryDirectory(candidate: unknown): string | undefined {
+  if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+    return undefined;
+  }
+  const value = candidate.trim();
+  if (value === '~') {
+    return resolve(homedir());
+  }
+  if (value.startsWith('~/') || value.startsWith('~\\')) {
+    return resolve(homedir(), value.slice(2));
+  }
+  return isAbsolute(value) ? resolve(value) : undefined;
+}
+
+/**
+ * 从环境变量与受信 settings 来源加载 Auto Memory 配置。
+ * 项目与 local settings 尚无 workspace trust 证明，因此不得选择自定义外部根。
+ *
+ * @param env - 运行环境变量
+ * @param settingsRepository - 统一 settings 仓储
+ * @returns 已校验的 Auto Memory 配置
+ */
+function loadAutoMemoryConfig(
+  env: Record<string, string | undefined>,
+  settingsRepository: SettingsRepository,
+): AutoMemoryConfig {
+  const effective = settingsRepository.readEffectiveConfig();
+  const rawEnabled = env.AGENT_AUTO_MEMORY_ENABLED;
+  let enabled = typeof effective.autoMemoryEnabled === 'boolean'
+    ? effective.autoMemoryEnabled
+    : true;
+  if (rawEnabled !== undefined) {
+    const normalized = rawEnabled.trim().toLowerCase();
+    if (normalized === 'true' || normalized === 'false') {
+      enabled = normalized === 'true';
+    } else {
+      logger.warn('[配置] Auto Memory 开关非法，已采用 settings 或默认值。', {
+        component: 'config',
+        event: 'auto_memory_enabled_invalid',
+      });
+    }
+  }
+
+  const projectDirectory = settingsRepository.readDocument('project').autoMemoryDirectory;
+  const localDirectory = settingsRepository.readDocument('local').autoMemoryDirectory;
+  if (projectDirectory !== undefined || localDirectory !== undefined) {
+    logger.warn('[配置] 项目级 Auto Memory 自定义目录缺少 workspace trust，已忽略。', {
+      component: 'config',
+      event: 'auto_memory_directory_untrusted',
+    });
+  }
+
+  const userDirectory = settingsRepository.readDocument('user').autoMemoryDirectory;
+  const configuredDirectory = env.AGENT_AUTO_MEMORY_DIRECTORY ?? userDirectory;
+  const directory = normalizeAutoMemoryDirectory(configuredDirectory);
+  if (configuredDirectory !== undefined && directory === undefined) {
+    logger.warn('[配置] Auto Memory 自定义目录必须是绝对路径或 home-relative 路径，已忽略。', {
+      component: 'config',
+      event: 'auto_memory_directory_invalid',
+    });
+  }
+  return directory ? { enabled, directory } : { enabled };
+}
+
 /**
  * 应用配置加载主入口。
  * 支持环境变量的依赖注入，隔离物理 dotenv 读写文件副作用。
@@ -253,6 +332,7 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
 
   // 6. 组装配置对象，从统一 settings 仓储读取默认 PermissionMode。
   const permissionMode = loadDefaultPermissionMode(env, settingsRepository);
+  const autoMemory = loadAutoMemoryConfig(env, settingsRepository);
 
   const maxIterations = parseEnvInt(env.AGENT_MAX_ITERATIONS, 20);
   const largeToolOutputLimit = parseEnvInt(env.AGENT_LARGE_TOOL_OUTPUT_LIMIT, 8000);
@@ -288,6 +368,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
     },
     applicationPaths,
     settingsRepository,
+    autoMemoryEnabled: autoMemory.enabled,
+    ...(autoMemory.directory ? { autoMemoryDirectory: autoMemory.directory } : {}),
     enablePlanToolStripping,
     runtimeLimits: {
       maxIterations,
@@ -374,10 +456,15 @@ export function loadDefaultPermissionMode(
   env: Record<string, string | undefined> = getRuntimeEnv(),
   settingsRepository?: SettingsRepository,
 ): ConfigPermissionMode {
-  const validModes: ConfigPermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'];
+  const validModes: ConfigPermissionMode[] = ['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions'];
 
   // 环境变量（CLI 临时值）具有最高优先级
   const envMode = env.AGENT_PERMISSION_MODE;
+  if (envMode === 'auto') {
+    logger.warn('[配置迁移] AGENT_PERMISSION_MODE=auto 尚未交付，已回退到 Manual。');
+    cachedDefaultPermissionMode = DEFAULT_PERMISSION_MODE;
+    return cachedDefaultPermissionMode;
+  }
   if (envMode && validModes.includes(envMode as ConfigPermissionMode)) {
     cachedDefaultPermissionMode = envMode as ConfigPermissionMode;
     return cachedDefaultPermissionMode;
@@ -387,9 +474,14 @@ export function loadDefaultPermissionMode(
   if (settingsRepository) {
     try {
       const effective = settingsRepository.readEffectiveConfig();
-      const mode = effective.permission?.defaultMode;
-      if (mode && validModes.includes(mode)) {
-        cachedDefaultPermissionMode = mode;
+      const rawMode = effective.permission?.defaultMode as string | undefined;
+      if (rawMode === 'auto') {
+        logger.warn('[配置迁移] settings 中的 permission.defaultMode=auto 尚未交付，已回退到 Manual。');
+        cachedDefaultPermissionMode = DEFAULT_PERMISSION_MODE;
+        return cachedDefaultPermissionMode;
+      }
+      if (rawMode && validModes.includes(rawMode as ConfigPermissionMode)) {
+        cachedDefaultPermissionMode = rawMode as ConfigPermissionMode;
         return cachedDefaultPermissionMode;
       }
     } catch {

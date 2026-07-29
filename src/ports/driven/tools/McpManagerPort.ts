@@ -17,6 +17,8 @@ export interface McpToolDescriptor {
   readonly name: string;
   /** 所属 MCP 服务端名称 */
   readonly serverName: string;
+  /** 当前连接与工具声明共同确定的易失版本；刷新、移除或重连后必须变化。 */
+  readonly descriptorVersion: string;
   /** 标准 annotations 字段（若有则如实复制） */
   readonly annotations?: McpToolAnnotations;
 }
@@ -26,6 +28,14 @@ export interface McpServerStatus {
   enabled: boolean;
   connected: boolean;
   command: string;
+}
+
+/** 已获批 MCP 调用绑定的易失 descriptor 身份。 */
+export interface McpCallAuthorization {
+  /** 授权时的服务端名称。 */
+  readonly serverName: string;
+  /** 授权时的 descriptor 版本。 */
+  readonly descriptorVersion: string;
 }
 
 /**
@@ -68,7 +78,12 @@ export interface McpManagerPort {
    * @param args - 工具参数键值对
    * @param signal - 可选的 AbortSignal，用于物理取消工具执行
    */
-  callMcpTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
+  callMcpTool(
+    name: string,
+    args: Record<string, unknown>,
+    authorization: McpCallAuthorization,
+    signal?: AbortSignal,
+  ): Promise<unknown>;
 
   /**
    * 获取所有已注册 MCP 工具的只读描述列表。

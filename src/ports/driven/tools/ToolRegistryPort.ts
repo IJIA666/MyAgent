@@ -4,12 +4,22 @@
  */
 
 import type { SessionEventPort } from '../session/SessionEventPort.js';
-import type { CallCapabilityPort } from '../session/CallCapabilityPort.js';
 import type { EventNotificationPort } from '../session/EventNotificationPort.js';
 import type { McpManagerPort } from './McpManagerPort.js';
 import type { ApprovalPort } from '../session/ApprovalPort.js';
 import type { InteractionPort } from '../session/InteractionPort.js';
 import type { ToolExecutionOutcome } from '../../../adapters/tools/tool-types.js';
+import type {
+  PermissionUpdate,
+  ToolPermissionCheckResult,
+} from '../../../core/domain/permissions/permission-types.js';
+import type {
+  PermissionSessionState,
+  PermissionSessionSnapshot,
+} from '../../../core/domain/permissions/permission-session-state.js';
+import type {
+  TrustedCallContext,
+} from '../../../core/domain/permissions/trusted-call-context.js';
 
 /**
  * 统一的工具元数据接口契约。
@@ -37,6 +47,21 @@ export interface ToolExecutionLifecycleHooks {
    * @returns 准备完成后的可选清理函数
    */
   readonly prepareExecution?: () => Promise<(() => void) | void>;
+  /**
+   * 由宿主创建的受限执行安全上下文。
+   * 普通模型工具调用不得构造此对象；后台 Agent 用它绑定独立 caller、
+   * 父会话权限快照并禁用人工审批。
+   */
+  readonly securityContext?: {
+    /** 后台调用使用的宿主验证 caller。 */
+    readonly caller: TrustedCallContext;
+    /** 与父会话隔离的权限状态快照。 */
+    readonly permissionState: PermissionSessionState;
+    /** false 表示 ask 必须直接拒绝，禁止借用父会话审批界面。 */
+    readonly approvalAllowed: boolean;
+    /** 去敏审计来源，如 extract_memories。 */
+    readonly auditSource: string;
+  };
 }
 
 /**
@@ -69,7 +94,7 @@ export interface ToolRegistryPort {
   callTool(
     functionName: string,
     functionArgs: Record<string, unknown>,
-    sessionContext?: SessionEventPort & ApprovalPort & CallCapabilityPort & EventNotificationPort,
+    sessionContext?: SessionEventPort & ApprovalPort & EventNotificationPort,
     interactionPort?: InteractionPort,
     signal?: AbortSignal,
     toolCallId?: string,
@@ -85,6 +110,56 @@ export interface ToolRegistryPort {
    * @returns 包含工具元信息的对象，若未找到则返回 undefined
    */
   getTool(name: string): ToolMetadata | undefined;
+
+  /**
+   * 运行本地工具自己的候选分析，但不产生最终授权也不执行工具。
+   * 受限后台 Agent 用它复用 Shell 的只读分析；外部 MCP 或未知工具返回 undefined。
+   *
+   * @param name - 本地工具名称
+   * @param args - 尚未授权的工具参数
+   * @param permissionState - 当前受限权限状态
+   * @returns 工具候选结果；工具无候选分析时返回 undefined
+   */
+  evaluateToolPermissionCandidate?(
+    name: string,
+    args: Record<string, unknown>,
+    permissionState: PermissionSessionState,
+  ): Promise<ToolPermissionCheckResult | undefined>;
+
+  /**
+   * 同步当前会话启用的 Auto Memory 文件授权根。
+   * 该入口只由宿主 `/memory` 管理动作调用，不能由模型参数触发。
+   *
+   * @param memoryDir - 启用时的精确根；undefined 表示关闭
+   * @param rootKind - 默认根或受信自定义根
+   * @param candidateMemoryDir - 即使关闭投影也必须保护的候选仓储所属根
+   */
+  configureMemoryAuthorizationRoot?(
+    memoryDir: string | undefined,
+    rootKind: 'default' | 'custom',
+    candidateMemoryDir: string,
+  ): void;
+
+  /**
+   * 获取指定会话当前唯一权限状态快照。
+   *
+   * @param sessionContext - 当前会话事件上下文
+   * @returns 权限状态快照
+   */
+  getPermissionSnapshot?(
+    sessionContext: SessionEventPort,
+  ): PermissionSessionSnapshot;
+
+  /**
+   * 通过与工具审批相同的持久化边界提交权限更新。
+   *
+   * @param updates - 待原子提交的权限更新
+   * @param sessionContext - 当前会话事件上下文
+   */
+  applyPermissionUpdates?(
+    updates: readonly PermissionUpdate[],
+    sessionContext: SessionEventPort,
+  ): Promise<void>;
 
   /**
    * 优雅断开并清理工具注册表内管理的所有物理连接（如 MCP 子进程），防止产生僵尸进程。
