@@ -16,6 +16,15 @@ import { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdap
 import { AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
 import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
+import { createApplicationPaths } from '../../../../src/config/application-paths.js';
+import { ToolRegistry } from '../../../../src/adapters/tools/toolRegistry.js';
+import { SkillLibrary } from '../../../../src/core/usecases/brain/skill-library.js';
+import { SkillUsageStore } from '../../../../src/core/usecases/brain/skill-usage-store.js';
+import {
+  SkillPendingStore,
+  SkillWriteApprovalController,
+} from '../../../../src/core/usecases/brain/skill-pending-store.js';
+import type { SkillCurator } from '../../../../src/core/usecases/brain/skill-curator.js';
 
 interface VirtualAgentLoop {
   checkCacheAndCalibrate: (usage: unknown) => Generator<AgentEvent, void, unknown>;
@@ -47,6 +56,39 @@ function createMockEstimator(total = 0): TokenEstimatorPort {
     ),
     getCompactionThreshold: () => 100000,
   };
+}
+
+/** 构造测试用的最小合法 Skill 文档。 */
+function skillContent(name: string): string {
+  return [
+    '---',
+    `name: ${name}`,
+    'description: SessionManager pending 流程测试 Skill',
+    '---',
+    '',
+    '# Test Skill',
+    '',
+  ].join('\n');
+}
+
+/** 从 ToolRegistry 的 MCP 兼容包络中解析 skill_manage JSON 结果。 */
+function parseRegistryPayload(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || !('content' in value)) {
+    throw new Error('工具结果缺少 content');
+  }
+  const content = (value as { content?: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) {
+    throw new Error('工具结果 content 为空');
+  }
+  const first = content[0];
+  if (!first || typeof first !== 'object' || !('text' in first)) {
+    throw new Error('工具结果缺少文本内容');
+  }
+  const text = (first as { text?: unknown }).text;
+  if (typeof text !== 'string') {
+    throw new Error('工具结果文本格式无效');
+  }
+  return JSON.parse(text) as Record<string, unknown>;
 }
 
 describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
@@ -392,6 +434,60 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     await expect(session.open()).resolves.toBeUndefined();
   });
 
+  it('open() 以 fire-and-forget 方式安排 Curator due-check', async () => {
+    let finishRun: (() => void) | undefined;
+    const run = vi.fn(() => new Promise(resolve => {
+      finishRun = () => resolve({
+        status: 'completed',
+        plan: null,
+        applied: [],
+        skipped: [],
+        backup: null,
+      });
+    }));
+    const curator = {
+      run,
+      recordActivity: vi.fn(),
+    } as unknown as SkillCurator;
+    const session = new SessionManager(
+      { model: 'mock-model' } as unknown as LlmConfig,
+      {
+        getModelName: () => 'Mock',
+        switchModel: vi.fn(),
+        abort: vi.fn(),
+      } as unknown as LlmPort,
+      createMockEstimator(),
+      {
+        getTools: async () => [],
+        callTool: async () => ({
+          value: {},
+          effect: {
+            kind: 'read' as const,
+            executionStarted: true,
+            completed: true,
+            resources: [],
+            reason: 'declared_read_tool' as const,
+          },
+        }),
+      } as unknown as ToolRegistryPort,
+      {
+        assemble: (baseHistory: ChatMessage[]) => baseHistory,
+      } as unknown as ContextAdapter,
+      createMockAppConfig(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      curator,
+    );
+
+    await expect(session.open()).resolves.toBeUndefined();
+    expect(run).toHaveBeenCalledTimes(1);
+    finishRun?.();
+    await Promise.resolve();
+  });
+
   it('close() 应该派发 SessionClosing，清理资源，清除白名单，并派发 SessionClosed', async () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockDriver = { getModelName: () => 'Mock', switchModel: vi.fn(), abort: vi.fn() } as unknown as LlmPort;
@@ -654,6 +750,93 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
         rmSync(tempRoot, { recursive: true, force: true });
       }
     });
+  });
+
+  it('writeApproval 开启时只暂存，批准后经 ToolGateway 应用，拒绝不改 Skill', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'session-skill-pending-'));
+    const paths = createApplicationPaths(tempDir, {
+      appDataRoot: join(tempDir, 'app-data'),
+    });
+    const appConfig = createMockAppConfig({
+      workspace: tempDir,
+      applicationPaths: paths,
+      skills: {
+        backgroundReviewEnabled: true,
+        creationNudgeInterval: 10,
+        writeApproval: true,
+      },
+    });
+    const usageStore = new SkillUsageStore(paths.skillUsagePath);
+    const library = new SkillLibrary(
+      paths.userSkillsDir,
+      paths.projectSkillsDir,
+      paths.skillArchiveDir,
+      usageStore,
+      { enableWatcher: false },
+    );
+    const pendingStore = new SkillPendingStore(paths.skillPendingDir, library);
+    const approvalController = new SkillWriteApprovalController(true);
+    const registry = new ToolRegistry(undefined, {
+      skillLibrary: library,
+      skillPendingStore: pendingStore,
+      skillWriteApprovalController: approvalController,
+    });
+    const driver = {
+      getModelName: () => 'MockModel',
+      switchModel: vi.fn(),
+      abort: vi.fn(),
+      streamChat: async function* () { },
+    } as unknown as LlmPort;
+    const contextAdapter = {
+      assemble: (baseHistory: ChatMessage[]) => baseHistory,
+    } as unknown as ContextAdapter;
+    const session = new SessionManager(
+      { model: 'mock-model' } as unknown as LlmConfig,
+      driver,
+      createMockEstimator(),
+      registry,
+      contextAdapter,
+      appConfig,
+      undefined,
+      library,
+      pendingStore,
+      approvalController,
+    );
+
+    try {
+      const firstOutcome = await registry.callTool('skill_manage', {
+        action: 'create',
+        name: 'pending-first',
+        content: skillContent('pending-first'),
+      }, session.getContext());
+      const firstPayload = parseRegistryPayload(firstOutcome.value);
+      expect(firstPayload.status).toBe('staged');
+      expect(library.get('pending-first')).toBeUndefined();
+      expect(session.listSkillPending()).toHaveLength(1);
+
+      const approved = await session.approveSkillPending(String(firstPayload.pendingId));
+      expect(approved[0]?.status, approved[0]?.summary).toBe('success');
+      expect(library.get('pending-first')).toBeDefined();
+      expect(session.listSkillPending()).toHaveLength(0);
+
+      const secondOutcome = await registry.callTool('skill_manage', {
+        action: 'create',
+        name: 'pending-second',
+        content: skillContent('pending-second'),
+      }, session.getContext());
+      const secondPayload = parseRegistryPayload(secondOutcome.value);
+      expect(session.rejectSkillPending(String(secondPayload.pendingId)))
+        .toMatchObject([{ status: 'success' }]);
+      expect(library.get('pending-second')).toBeUndefined();
+
+      await session.setSkillWriteApprovalEnabled(false);
+      expect(approvalController.isEnabled()).toBe(false);
+      expect(appConfig.settingsRepository.readDocument('user').skills?.writeApproval)
+        .toBe(false);
+    } finally {
+      await session.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('SessionClosed 阶段单个插件失败或不调用 next，不应阻断后续订阅者和 close() 完成', async () => {

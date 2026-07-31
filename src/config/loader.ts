@@ -11,7 +11,7 @@ import { homedir } from 'os';
 import { config as dotenvConfig } from 'dotenv';
 
 
-import { AppConfig, McpConfig, ConfigPermissionMode, DiagnosticDataConfig, DEFAULT_DIAGNOSTIC_DATA_CONFIG, DEFAULT_PERMISSION_MODE } from './types.js';
+import { AppConfig, McpConfig, ConfigPermissionMode, DiagnosticDataConfig, DEFAULT_DIAGNOSTIC_DATA_CONFIG, DEFAULT_PERMISSION_MODE, ResolvedSkillConfig, ResolvedCuratorConfig } from './types.js';
 import { getModelConfig } from './models.js';
 import { getRuntimeEnv, interpolateEnvVars } from './env.js';
 import { logger, setDiagnosticSanitizerPatterns } from '../utils/logger.js';
@@ -358,6 +358,62 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
     ? env.ENABLE_PLAN_TOOL_STRIPPING.trim().toLowerCase() === 'true'
     : false;
 
+  // 从统一 settings 仓储加载技能与 Curator 配置（纯 settings 驱动，无环境变量）。
+  const effectiveSettings = settingsRepository.readEffectiveConfig();
+  const rawSkills = effectiveSettings.skills ?? {};
+  const rawCurator = effectiveSettings.curator ?? {};
+  const rawBackup = rawCurator.backup ?? {};
+  const skillsConfig: ResolvedSkillConfig = Object.freeze({
+    backgroundReviewEnabled: typeof rawSkills.backgroundReviewEnabled === 'boolean'
+      ? rawSkills.backgroundReviewEnabled : true,
+    creationNudgeInterval: typeof rawSkills.creationNudgeInterval === 'number'
+      && Number.isInteger(rawSkills.creationNudgeInterval)
+      && rawSkills.creationNudgeInterval > 0
+      ? rawSkills.creationNudgeInterval : 10,
+    writeApproval: typeof rawSkills.writeApproval === 'boolean'
+      ? rawSkills.writeApproval : false,
+  });
+  const resolvedStaleDays = typeof rawCurator.staleAfterDays === 'number'
+    && Number.isInteger(rawCurator.staleAfterDays)
+    && rawCurator.staleAfterDays > 0
+    ? rawCurator.staleAfterDays : 30;
+  const resolvedArchiveDays = typeof rawCurator.archiveAfterDays === 'number'
+    && Number.isInteger(rawCurator.archiveAfterDays)
+    && rawCurator.archiveAfterDays > 0
+    ? rawCurator.archiveAfterDays : 90;
+  // 阈值交叉校验：staleAfterDays 必须小于 archiveAfterDays
+  const finalStaleDays = resolvedStaleDays < resolvedArchiveDays
+    ? resolvedStaleDays : 30;
+  const finalArchiveDays = resolvedStaleDays < resolvedArchiveDays
+    ? resolvedArchiveDays : 90;
+  if (finalStaleDays !== resolvedStaleDays || finalArchiveDays !== resolvedArchiveDays) {
+    logger.warn('[配置] curator.staleAfterDays 必须小于 archiveAfterDays，已回退到默认值 30/90。', {
+      component: 'config',
+      event: 'curator_threshold_fallback',
+    });
+  }
+  const curatorConfig: ResolvedCuratorConfig = Object.freeze({
+    enabled: typeof rawCurator.enabled === 'boolean' ? rawCurator.enabled : true,
+    intervalHours: typeof rawCurator.intervalHours === 'number'
+      && Number.isInteger(rawCurator.intervalHours)
+      && rawCurator.intervalHours > 0
+      ? rawCurator.intervalHours : 168,
+    minIdleHours: typeof rawCurator.minIdleHours === 'number'
+      && Number.isInteger(rawCurator.minIdleHours)
+      && rawCurator.minIdleHours > 0
+      ? rawCurator.minIdleHours : 2,
+    staleAfterDays: finalStaleDays,
+    archiveAfterDays: finalArchiveDays,
+    consolidate: typeof rawCurator.consolidate === 'boolean' ? rawCurator.consolidate : false,
+    backup: Object.freeze({
+      enabled: typeof rawBackup.enabled === 'boolean' ? rawBackup.enabled : true,
+      keep: typeof rawBackup.keep === 'number'
+        && Number.isInteger(rawBackup.keep)
+        && rawBackup.keep > 0
+        ? rawBackup.keep : 5,
+    }),
+  });
+
   const config: AppConfig = {
     llm,
     ...(language ? { language } : {}),
@@ -371,6 +427,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
     autoMemoryEnabled: autoMemory.enabled,
     ...(autoMemory.directory ? { autoMemoryDirectory: autoMemory.directory } : {}),
     enablePlanToolStripping,
+    skills: skillsConfig,
+    curator: curatorConfig,
     runtimeLimits: {
       maxIterations,
       largeToolOutputLimit,
@@ -396,6 +454,8 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   Object.freeze(config.runtimeLimits);
   Object.freeze(config.diagnostics);
   Object.freeze(config.diagnostics.customPatterns);
+  // skills 与 curator 已在构造时由 Object.freeze 冻结（含 backup 内嵌对象）。
+  // AppConfig 的 skills/curator 通过 readonly 接口类型确保不变性。
   // mcpServers 内的每个 entry 也需要冻结
   if (config.mcp.mcpServers) {
     Object.freeze(config.mcp.mcpServers);

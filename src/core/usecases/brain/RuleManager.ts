@@ -11,6 +11,7 @@ import {
   readSkillContent,
   SkillMetadata,
 } from './contextLoader.js';
+import type { SkillLibrary } from './skill-library.js';
 
 /**
  * RuleManager 构造选项。
@@ -76,6 +77,10 @@ export class RuleManager {
   private readonly userSkillsDir: string;
   /** 项目 skills 目录（watcher 监听此目录）。 */
   private readonly projectSkillsDir: string;
+  /** 可选的共享 SkillLibrary，提供统一扫描视图。 */
+  private readonly skillLibrary?: SkillLibrary;
+  /** SkillLibrary 变更订阅取消函数。 */
+  private skillLibraryUnsubscribe?: () => void;
 
   /**
    * @param context - 会话上下文管理实例
@@ -84,6 +89,7 @@ export class RuleManager {
    * @param userSkillsDir - 用户 skills 目录绝对路径
    * @param projectSkillsDir - 项目 skills 目录绝对路径
    * @param options - 可选构造选项
+   * @param skillLibrary - 可选的共享 SkillLibrary 实例
    */
   constructor(
     private context: SessionContext,
@@ -92,10 +98,12 @@ export class RuleManager {
     userSkillsDir: string,
     projectSkillsDir: string,
     options?: RuleManagerOptions,
+    skillLibrary?: SkillLibrary,
   ) {
     this.enableWatcher = options?.enableWatcher ?? true;
     this.userSkillsDir = userSkillsDir;
     this.projectSkillsDir = projectSkillsDir;
+    this.skillLibrary = skillLibrary;
     this.loadRulesToCache();
     this.refreshSkillsCache();
 
@@ -104,6 +112,20 @@ export class RuleManager {
       this.cachedProjectRules || undefined,
       this.getSkills()
     );
+
+    // 订阅 SkillLibrary 的变更通知（当 SkillLibrary 提供时）
+    if (skillLibrary) {
+      this.skillLibraryUnsubscribe = skillLibrary.subscribe(() => {
+        if (this.closed) return;
+        // 收到变更通知后刷新缓存并更新上下文
+        this.refreshSkillsCache();
+        this.context.updateSystemPrompt(
+          this.cachedUserRules || undefined,
+          this.cachedProjectRules || undefined,
+          this.getSkills()
+        );
+      });
+    }
   }
 
   /**
@@ -138,6 +160,7 @@ export class RuleManager {
 
   /**
    * 惰性获取指定技能的完整 Markdown 内容。
+   * 当注入 SkillLibrary 时复用其正文读取逻辑。
    *
    * @param name - 技能名称
    * @returns 技能正文内容，找不到则返回 null
@@ -145,7 +168,27 @@ export class RuleManager {
   public getSkillContent(name: string): string | null {
     const meta = this.skillsCache.get(name);
     if (!meta) return null;
+    if (this.skillLibrary) {
+      return this.skillLibrary.read(name);
+    }
     return readSkillContent(meta.filePath);
+  }
+
+  /**
+   * 手动重载缓存（包括 skills）。
+   * 当注入 SkillLibrary 时调用其 reloadSkills() 刷新扫描视图，
+   * 否则自行重新扫描。
+   */
+  public reloadSkills(): void {
+    if (this.skillLibrary) {
+      this.skillLibrary.reloadSkills();
+    }
+    this.refreshSkillsCache();
+    this.context.updateSystemPrompt(
+      this.cachedUserRules || undefined,
+      this.cachedProjectRules || undefined,
+      this.getSkills()
+    );
   }
 
   /**
@@ -190,7 +233,16 @@ export class RuleManager {
   private precomputeSkillHashes(): void {
     this.skillContentHashes.clear();
     try {
-      const list = scanSkills(this.userSkillsDir, this.projectSkillsDir);
+      let list: SkillMetadata[];
+      if (this.skillLibrary) {
+        list = this.skillLibrary.list().map(item => ({
+          name: item.name,
+          description: item.description,
+          filePath: item.filePath,
+        }));
+      } else {
+        list = scanSkills(this.userSkillsDir, this.projectSkillsDir);
+      }
       for (const item of list) {
         const hash = computeFileHash(item.filePath);
         if (hash) this.skillContentHashes.set(item.filePath, hash);
@@ -209,7 +261,15 @@ export class RuleManager {
     // 扫描当前技能元数据
     let currentList: SkillMetadata[];
     try {
-      currentList = scanSkills(this.userSkillsDir, this.projectSkillsDir);
+      if (this.skillLibrary) {
+        currentList = this.skillLibrary.list().map(item => ({
+          name: item.name,
+          description: item.description,
+          filePath: item.filePath,
+        }));
+      } else {
+        currentList = scanSkills(this.userSkillsDir, this.projectSkillsDir);
+      }
     } catch {
       return;
     }
@@ -258,13 +318,26 @@ export class RuleManager {
 
   /**
    * 刷新当前实例的技能索引缓存（原子替换）。
+   * 当注入 SkillLibrary 时复用其统一扫描视图，否则回退到 contextLoader 的独立扫描。
    */
   private refreshSkillsCache(): void {
     const newCache = new Map<string, SkillMetadata>();
     try {
-      const list = scanSkills(this.userSkillsDir, this.projectSkillsDir);
-      for (const item of list) {
-        newCache.set(item.name, item);
+      if (this.skillLibrary) {
+        const list = this.skillLibrary.list();
+        for (const item of list) {
+          newCache.set(item.name, {
+            name: item.name,
+            description: item.description,
+            filePath: item.filePath,
+          });
+        }
+      } else {
+        // 回退到独立扫描（测试场景）
+        const list = scanSkills(this.userSkillsDir, this.projectSkillsDir);
+        for (const item of list) {
+          newCache.set(item.name, item);
+        }
       }
     } catch (e) {
       logger.warn(`[RuleManager] 刷新技能缓存失败: ${e}`);
@@ -326,6 +399,11 @@ export class RuleManager {
       if (this.watcher) {
         this.watcher.close();
         this.watcher = null;
+      }
+      // 取消 SkillLibrary 订阅
+      if (this.skillLibraryUnsubscribe) {
+        this.skillLibraryUnsubscribe();
+        this.skillLibraryUnsubscribe = undefined;
       }
       this.candidateSkillPaths.clear();
       this.isWatching = false;

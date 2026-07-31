@@ -13,11 +13,22 @@ import { getInteractionTools } from './impl/interaction/index.js';
 import { getBrowserTools } from './impl/browser/browser-tool-registry.js';
 import type { NativeTool } from './tool-types.js';
 import type { ShellCompoundFeatureConfig } from './impl/system/command-analysis/index.js';
+import type { SkillLibrary } from '../../core/usecases/brain/skill-library.js';
+import type {
+  SkillPendingStore,
+  SkillWriteApprovalController,
+} from '../../core/usecases/brain/skill-pending-store.js';
 
 /** buildNativeTools 的选项参数 */
 export interface BuildNativeToolsOptions {
-  /** 技能加载函数，按名称解析技能内容 */
+  /** 技能加载函数，按名称解析技能内容（向后兼容） */
   loadSkill?: (name: string) => string | null;
+  /** 可选注入的共享 SkillLibrary（优先使用） */
+  skillLibrary?: SkillLibrary;
+  /** Skill 写入 pending 仓储。 */
+  skillPendingStore?: SkillPendingStore;
+  /** writeApproval 运行时开关。 */
+  skillWriteApprovalController?: SkillWriteApprovalController;
   /** Shell 复合命令能力开关。 */
   shellCompoundFeatures?: Readonly<ShellCompoundFeatureConfig>;
 }
@@ -35,7 +46,12 @@ export function buildNativeTools(options?: BuildNativeToolsOptions): NativeTool[
     ...gitTools,
     ...fileSystemTools,
     ...buildSystemTools(options?.shellCompoundFeatures),
-    ...getSkillTools(options?.loadSkill),
+    ...getSkillTools(
+      options?.loadSkill,
+      options?.skillLibrary,
+      options?.skillPendingStore,
+      options?.skillWriteApprovalController,
+    ),
     ...getInteractionTools(),
     ...getBrowserTools(),
   ];

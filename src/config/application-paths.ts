@@ -51,6 +51,38 @@ export interface ApplicationPaths {
   /** 用户 skills 目录。 */
   readonly userSkillsDir: string;
 
+  // ── Skill 生命周期元数据路径（位于 ~/.myagent 下，不入 workspace） ──
+  /**
+   * Skill 使用遥测 sidecar 路径：`<userConfigDir>/skills/.usage.json`。
+   * 记录 agent-created 标记、查看/使用/修改计数、active/stale/archived 状态。
+   */
+  readonly skillUsagePath: string;
+  /**
+   * Skill 归档目录：`<userConfigDir>/skills/.archive/`。
+   * Curator 归档的完整 Skill 包移入此处，支持 restore 恢复。
+   */
+  readonly skillArchiveDir: string;
+  /**
+   * Skill 写入暂存批准记录目录：`<userConfigDir>/pending/skills/`。
+   * writeApproval=true 时 skill_manage 的调用暂存于此，待用户批准或拒绝。
+   */
+  readonly skillPendingDir: string;
+  /**
+   * Curator 调度状态路径：`<userConfigDir>/skills/.curator-state.json`。
+   * 持久化 lastRunAt、lastActivityAt、paused 和最近报告 id。
+   */
+  readonly skillCuratorStatePath: string;
+  /**
+   * Curator 运行前备份目录：`<userConfigDir>/skills/.curator-backups/`。
+   * 每次真实变更运行前备份活动 Skill、archive 和生命周期元数据。
+   */
+  readonly skillCuratorBackupsDir: string;
+  /**
+   * Curator 运行日志目录：`<userConfigDir>/logs/curator/`。
+   * 每次运行写入 run.json 与 REPORT.md，区分 transitions/consolidations/prunings/kept/failed。
+   */
+  readonly skillCuratorLogsDir: string;
+
   // ── 当前项目运行数据路径（位于 ~/.myagent/projects/<workspace-key>/ 下） ──
   /** 当前项目的运行数据根目录。 */
   readonly projectDataDir: string;
@@ -140,6 +172,14 @@ export function createApplicationPaths(
     userSettingsPath: resolve(userConfigDir, 'settings.json'),
     userRulesDir: resolve(userConfigDir, 'rules'),
     userSkillsDir: resolve(userConfigDir, 'skills'),
+
+    // Skill 生命周期元数据
+    skillUsagePath: resolve(userConfigDir, 'skills', '.usage.json'),
+    skillArchiveDir: resolve(userConfigDir, 'skills', '.archive'),
+    skillPendingDir: resolve(userConfigDir, 'pending', 'skills'),
+    skillCuratorStatePath: resolve(userConfigDir, 'skills', '.curator-state.json'),
+    skillCuratorBackupsDir: resolve(userConfigDir, 'skills', '.curator-backups'),
+    skillCuratorLogsDir: resolve(userConfigDir, 'logs', 'curator'),
 
     // 项目运行数据
     projectDataDir,

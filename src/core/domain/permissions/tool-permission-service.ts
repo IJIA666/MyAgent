@@ -1,10 +1,3 @@
-/**
- * @file 统一工具权限服务。
- * 按固定顺序执行权限决策流程：全局规则 → 工具 checkPermissions →
- * 工具级安全结果 → bypass → allow → passthrough → 模式后处理。
- * 只产生最终 allow / ask / deny 三种决策。
- */
-
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, relative } from 'node:path';
 import type {
@@ -238,6 +231,7 @@ export class ToolPermissionService {
     const { runtimeToolName, normalizedArgs, permissionIdentity, isEditOperation: isEdit } = request;
     const caller = context.caller ?? UNTRUSTED_CALLER;
     const isAuthorizedEditScope = isEdit && isRequestWithinEditScope(request, state);
+    const toolResult = bindRequestAnalysis(context.toolResult, request.analysis);
 
     // managed/trusted-user 资源上限必须先于 caller、普通规则、模式和 memory 特例。
     const protectedDecision = evaluateProtectedRequest(request);
@@ -259,14 +253,14 @@ export class ToolPermissionService {
     }
 
     // 工具硬拒绝代表输入或分析不完整，任何规则与模式都不能覆盖。
-    if (context.toolResult?.kind === 'deny') {
-      const toolResult = attachRequestResources(context.toolResult, request);
+    if (toolResult?.kind === 'deny') {
+      const deniedToolResult = attachRequestResources(toolResult, request);
       return {
         kind: 'deny',
-        decisionReason: toolResult.decisionReason,
-        evidence: toolResult.evidence,
-        decisionCode: toolResult.decisionCode,
-        analysis: toolResult.analysis,
+        decisionReason: deniedToolResult.decisionReason,
+        evidence: deniedToolResult.evidence,
+        decisionCode: deniedToolResult.decisionCode,
+        analysis: deniedToolResult.analysis,
         decisionSource: 'invariant',
         matchedEvidenceIds: request.resourceEvidences.map(createResourceEvidenceId),
         overridable: false,
@@ -288,19 +282,19 @@ export class ToolPermissionService {
         runtimeToolName,
         isAuthorizedEditScope,
         permissionIdentity,
-        context.toolResult,
+        toolResult,
       );
     }
 
     // 默认 memory 等工具专属内置候选在显式规则之后生效。
     if (
-      context.toolResult
-      && context.toolResult.kind !== 'passthrough'
+      toolResult
+      && toolResult.kind !== 'passthrough'
     ) {
-      const toolResult = attachRequestResources(context.toolResult, request);
+      const requestToolResult = attachRequestResources(toolResult, request);
       const toolDecision = attachToolMetadata(
-        this.createBuiltInBaseline(runtimeToolName, toolResult),
-        toolResult,
+        this.createBuiltInBaseline(runtimeToolName, requestToolResult),
+        requestToolResult,
       );
       return this.applyRequestMode(
         toolDecision,
@@ -308,19 +302,22 @@ export class ToolPermissionService {
         runtimeToolName,
         isAuthorizedEditScope,
         permissionIdentity,
-        context.toolResult,
+        toolResult,
       );
     }
 
     // 没有命中规则时，根据权限身份产生基线
-    const baselineDecision = this.createPermissionBaseline(permissionIdentity, runtimeToolName, request);
+    const baselineDecision = withBoundAnalysis(
+      this.createPermissionBaseline(permissionIdentity, runtimeToolName, request),
+      request.analysis,
+    );
     return this.applyRequestMode(
       baselineDecision,
       mode,
       runtimeToolName,
       isAuthorizedEditScope,
       permissionIdentity,
-      context.toolResult,
+      toolResult,
     );
   }
 
@@ -377,7 +374,10 @@ export class ToolPermissionService {
     identity: PermissionIdentity,
     toolResult: ToolPermissionCheckResult | undefined,
   ): Promise<PermissionDecision> {
-    if (decision.kind === 'deny' || !decision.overridable) return decision;
+    const currentDecision = withBoundAnalysis(decision, toolResult?.analysis);
+    if (currentDecision.kind === 'deny' || !currentDecision.overridable) {
+      return currentDecision;
+    }
 
     switch (mode) {
       case 'acceptEdits': {
@@ -385,13 +385,14 @@ export class ToolPermissionService {
           return {
             kind: 'allow',
             decisionReason: `acceptEdits: "${toolName}" 为普通编辑操作 (${identity})`,
-            evidence: decision.evidence,
+            evidence: currentDecision.evidence,
+            analysis: currentDecision.analysis,
             decisionSource: 'mode',
-            matchedEvidenceIds: decision.matchedEvidenceIds,
+            matchedEvidenceIds: currentDecision.matchedEvidenceIds,
             overridable: false,
           };
         }
-        return decision;
+        return currentDecision;
       }
       case 'plan': {
         const isVerifiedReadOnlyShell = (
@@ -405,38 +406,39 @@ export class ToolPermissionService {
             kind: 'deny',
             decisionReason: `plan 模式不允许 "${toolName}" (${identity})`,
             decisionSource: 'mode',
-            matchedEvidenceIds: decision.matchedEvidenceIds,
+            matchedEvidenceIds: currentDecision.matchedEvidenceIds,
             overridable: false,
           };
         }
-        return decision;
+        return currentDecision;
       }
       case 'dontAsk': {
-        if (decision.kind === 'ask') {
+        if (currentDecision.kind === 'ask') {
           return {
             kind: 'deny',
             decisionReason: `dontAsk 模式: "${toolName}" 需要权限但不允许交互`,
             decisionSource: 'mode',
-            matchedEvidenceIds: decision.matchedEvidenceIds,
+            matchedEvidenceIds: currentDecision.matchedEvidenceIds,
             overridable: false,
           };
         }
-        return decision;
+        return currentDecision;
       }
       case 'bypassPermissions': {
-        if (decision.kind === 'ask') {
+        if (currentDecision.kind === 'ask') {
           return {
             kind: 'allow',
             decisionReason: `bypassPermissions 模式: "${toolName}" 已绕过询问`,
+            analysis: currentDecision.analysis,
             decisionSource: 'mode',
-            matchedEvidenceIds: decision.matchedEvidenceIds,
+            matchedEvidenceIds: currentDecision.matchedEvidenceIds,
             overridable: false,
           };
         }
-        return decision;
+        return currentDecision;
       }
       default:
-        return decision;
+        return currentDecision;
     }
   }
 
@@ -1118,6 +1120,40 @@ function attachRequestResources<T extends ToolPermissionCheckResult>(
       resources: request.resourceEvidences,
     },
   } as T;
+}
+
+/** 将适配器生成的受信分析绑定到工具候选，供最终决策和执行期复用。 */
+function bindRequestAnalysis(
+  toolResult: ToolPermissionCheckResult | undefined,
+  analysis: unknown,
+): ToolPermissionCheckResult | undefined {
+  if (analysis === undefined) {
+    return toolResult;
+  }
+  if (!toolResult) {
+    return {
+      kind: 'passthrough',
+      analysis,
+    };
+  }
+  return {
+    ...toolResult,
+    analysis,
+  };
+}
+
+/** 在不改变决定判别字段的前提下附加执行期分析。 */
+function withBoundAnalysis(
+  decision: PermissionDecision,
+  analysis: unknown,
+): PermissionDecision {
+  if (analysis === undefined || decision.analysis === analysis) {
+    return decision;
+  }
+  return {
+    ...decision,
+    analysis,
+  };
 }
 
 /** 将正式请求中的资源转成现有执行 effect 可消费的证据。 */

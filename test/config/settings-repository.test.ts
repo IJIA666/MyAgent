@@ -130,6 +130,141 @@ describe('SettingsRepository', () => {
       expect(config.permission?.allow).toHaveLength(1);
       expect(config.permission?.allow![0].toolName).toBe('node');
     });
+
+    it('Skill 与 Curator 缺省值完整且稳定', () => {
+      const { repo } = createRepo();
+
+      expect(repo.readEffectiveConfig()).toMatchObject({
+        skills: {
+          backgroundReviewEnabled: true,
+          creationNudgeInterval: 10,
+          writeApproval: false,
+        },
+        curator: {
+          enabled: true,
+          intervalHours: 168,
+          minIdleHours: 2,
+          staleAfterDays: 30,
+          archiveAfterDays: 90,
+          consolidate: false,
+          backup: {
+            enabled: true,
+            keep: 5,
+          },
+        },
+      });
+    });
+
+    it('Skill 与 Curator 字段按 session/local/project/user 逐字段合并', () => {
+      const { repo } = createRepo(
+        {
+          version: 1,
+          skills: { backgroundReviewEnabled: true, creationNudgeInterval: 20 },
+          curator: { intervalHours: 120, backup: { keep: 7 } },
+        },
+        {
+          version: 1,
+          skills: { backgroundReviewEnabled: false, writeApproval: true },
+          curator: { enabled: false, staleAfterDays: 25 },
+        },
+        {
+          version: 1,
+          skills: { creationNudgeInterval: 30 },
+          curator: { minIdleHours: 4, archiveAfterDays: 80 },
+        },
+      );
+
+      const effective = repo.readEffectiveConfig({
+        skills: { writeApproval: false },
+        curator: { consolidate: true, backup: { enabled: false } },
+      });
+      expect(effective.skills).toEqual({
+        backgroundReviewEnabled: false,
+        creationNudgeInterval: 30,
+        writeApproval: false,
+      });
+      expect(effective.curator).toEqual({
+        enabled: false,
+        intervalHours: 120,
+        minIdleHours: 4,
+        staleAfterDays: 25,
+        archiveAfterDays: 80,
+        consolidate: true,
+        backup: {
+          enabled: false,
+          keep: 7,
+        },
+      });
+    });
+
+    it('project/local 可以关闭后台能力，受信 user/session 可以再次覆盖', () => {
+      const { repo } = createRepo(
+        {
+          version: 1,
+          skills: { backgroundReviewEnabled: true },
+          curator: { enabled: true },
+        },
+        {
+          version: 1,
+          skills: { backgroundReviewEnabled: false },
+        },
+        {
+          version: 1,
+          curator: { enabled: false },
+        },
+      );
+
+      expect(repo.readEffectiveConfig()).toMatchObject({
+        skills: { backgroundReviewEnabled: false },
+        curator: { enabled: false },
+      });
+      expect(repo.readEffectiveConfig({
+        skills: { backgroundReviewEnabled: true },
+        curator: { enabled: true },
+      })).toMatchObject({
+        skills: { backgroundReviewEnabled: true },
+        curator: { enabled: true },
+      });
+    });
+
+    it('非法高优先级字段不遮蔽低优先级合法值且告警不泄露原值', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const secretValue = 'secret-invalid-value';
+      const { repo } = createRepo(
+        {
+          version: 1,
+          skills: { creationNudgeInterval: 24 },
+          curator: { minIdleHours: 3, backup: { keep: 6 } },
+        },
+        {
+          version: 1,
+          skills: { creationNudgeInterval: secretValue },
+          curator: { minIdleHours: 0, backup: { keep: -1 } },
+        },
+      );
+
+      const effective = repo.readEffectiveConfig();
+      expect(effective.skills?.creationNudgeInterval).toBe(24);
+      expect(effective.curator?.minIdleHours).toBe(3);
+      expect(effective.curator?.backup?.keep).toBe(6);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secretValue);
+    });
+
+    it('stale/archive 无效组合整体回退到 30/90', () => {
+      const { repo } = createRepo({
+        version: 1,
+        curator: {
+          staleAfterDays: 90,
+          archiveAfterDays: 30,
+        },
+      });
+
+      expect(repo.readEffectiveConfig().curator).toMatchObject({
+        staleAfterDays: 30,
+        archiveAfterDays: 90,
+      });
+    });
   });
 
   describe('缺失/空/畸形文件', () => {

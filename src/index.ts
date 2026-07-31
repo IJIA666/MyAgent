@@ -13,13 +13,21 @@ import { TiktokenEstimator } from './adapters/llm/TiktokenEstimator.js';
 import { abortSessionTasks } from './adapters/tools/impl/system/terminal-engine.js';
 import { setBrowserPaths } from './adapters/tools/impl/browser/browser-action.js';
 import { DefaultContextAdapter } from './adapters/context/DefaultContextAdapter.js';
-import { findSkillFiles, parseSkillFrontmatter } from './core/usecases/brain/contextLoader.js';
-import { readFileSync } from 'fs';
 import { initLogger, configureFileSink, logger } from './utils/logger.js';
 import { ensureAppDataRoot } from './config/application-paths.js';
 import { detectLegacyLayout, warnLegacyLayout } from './config/legacy-layout-detector.js';
 import { setSkillPaths, setSessionsDir } from './adapters/input/interface/command.js';
 import { setSettingsRepository } from './adapters/tools/impl/system/terminal-config.js';
+import { SkillUsageStore } from './core/usecases/brain/skill-usage-store.js';
+import { SkillLibrary } from './core/usecases/brain/skill-library.js';
+import {
+  SkillPendingStore,
+  SkillWriteApprovalController,
+} from './core/usecases/brain/skill-pending-store.js';
+import { SkillCuratorStateStore } from './core/usecases/brain/skill-curator-state-store.js';
+import { SkillCuratorBackupStore } from './core/usecases/brain/skill-curator-backup.js';
+import { SkillCurator } from './core/usecases/brain/skill-curator.js';
+import { SkillCuratorReportStore } from './core/usecases/brain/skill-curator-report.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -93,23 +101,49 @@ async function main() {
     const { BrowserSession } = await import('./adapters/tools/impl/browser/browser-action.js');
     LifecycleManager.register('browser-session', () => BrowserSession.close());
     const permissionSettingsStore = new PermissionSettingsStore(appConfig.settingsRepository);
+
+    // 构造共享 Skill 生命周期组件
+    const skillUsageStore = new SkillUsageStore(appConfig.applicationPaths.skillUsagePath);
+    const skillLibrary = new SkillLibrary(
+      appConfig.applicationPaths.userSkillsDir,
+      appConfig.applicationPaths.projectSkillsDir,
+      appConfig.applicationPaths.skillArchiveDir,
+      skillUsageStore,
+    );
+    const skillPendingStore = new SkillPendingStore(
+      appConfig.applicationPaths.skillPendingDir,
+      skillLibrary,
+    );
+    const skillWriteApprovalController = new SkillWriteApprovalController(
+      appConfig.skills.writeApproval,
+    );
+    const skillCuratorStateStore = new SkillCuratorStateStore(
+      appConfig.applicationPaths.skillCuratorStatePath,
+    );
+    const skillCuratorBackupStore = new SkillCuratorBackupStore(
+      appConfig.applicationPaths.userSkillsDir,
+      appConfig.applicationPaths.skillArchiveDir,
+      appConfig.applicationPaths.skillUsagePath,
+      appConfig.applicationPaths.skillCuratorStatePath,
+      appConfig.applicationPaths.skillCuratorBackupsDir,
+      appConfig.curator.backup.keep,
+    );
+    const skillCuratorReportStore = new SkillCuratorReportStore(
+      appConfig.applicationPaths.skillCuratorLogsDir,
+    );
+    const skillCurator = new SkillCurator(
+      appConfig.curator,
+      skillLibrary,
+      skillUsageStore,
+      skillCuratorStateStore,
+      skillCuratorBackupStore,
+      skillCuratorReportStore,
+    );
+
     const toolRegistry = new ToolRegistry(mcpManager, {
-      loadSkill: (name: string) => {
-        const skillsDir = appConfig.applicationPaths.projectSkillsDir;
-        const files = findSkillFiles(skillsDir);
-        for (const file of files) {
-          try {
-            const raw = readFileSync(file, 'utf-8');
-            const parsed = parseSkillFrontmatter(raw);
-            if (parsed.name === name) {
-              return parsed.body;
-            }
-          } catch {
-            // 忽略单个解析失败，继续寻找
-          }
-        }
-        return null;
-      }
+      skillLibrary,
+      skillPendingStore,
+      skillWriteApprovalController,
     }, permissionSettingsStore);
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
@@ -121,7 +155,12 @@ async function main() {
       toolRegistry,
       contextAdapter,
       appConfig,
-      abortSessionTasks
+      abortSessionTasks,
+      skillLibrary,
+      skillPendingStore,
+      skillWriteApprovalController,
+      undefined,
+      skillCurator,
     );
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);

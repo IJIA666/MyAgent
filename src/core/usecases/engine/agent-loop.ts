@@ -17,6 +17,10 @@ import { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js'
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { HookEventName } from '../plugins/plugin-types.js';
+import type {
+  AgentRunSummary,
+  AgentRunTerminalStatus,
+} from '../plugins/plugin-types.js';
 import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 
 // 导入领域服务
@@ -73,6 +77,8 @@ export interface AgentLoopOptions {
   maxIterations?: number;
   /** 长期记忆快照提供器，为空时使用空快照。 */
   memorySnapshotProvider?: () => MemorySnapshot;
+  /** 是否向最新用户消息注入日期与 CWD；隔离后台 Agent 可关闭。 */
+  includeRuntimeReminder?: boolean;
 }
 /** 缓存击穿校验：缓存跌幅百分比阈值（5% = 0.95 倍） */
 const CACHE_DROP_RATIO_THRESHOLD = 0.95;
@@ -153,7 +159,8 @@ export class AgentLoop {
     this.modelRequestAssembler = new ModelRequestAssembler(
       this.toolRegistry, this.contextAdapter, this.ruleManager,
       this.pluginRegistry, this.context, this.contextBudgetCoordinator,
-      memorySnapshotProvider
+      memorySnapshotProvider,
+      options.includeRuntimeReminder ?? true,
     );
     this.toolCallOrchestrator = new ToolCallOrchestrator(
       this.toolRegistry, this.toolDispatcher, this.pluginRegistry,
@@ -241,6 +248,13 @@ export class AgentLoop {
   ): AsyncGenerator<AgentEvent, void, unknown> {
     // 初始化迭代计数器
     let iteration = 0;
+    // RunEnd 摘要只统计真实模型终态，不把并行工具数量混入迭代数。
+    let toolIterationCount = 0;
+    let requestedToolCallCount = 0;
+    let hasFinalResponse = false;
+    let waitingForInteraction = false;
+    let terminalStatus: AgentRunTerminalStatus = 'error';
+    const historyStartIndex = this.context.getHistory().length;
     // 连续预算恢复只覆盖真实模型调用前的请求重组，模型成功调用后清零。
     let consecutiveCompactionRestarts = 0;
     let overflowRecoveryUsed = false;
@@ -252,19 +266,20 @@ export class AgentLoop {
       eventQueue.push(event as AgentEvent);
     };
 
-    // 触发 RunStart 钩子
-    const runStartResult = await runHookPipeline(
-      HookEventName.RunStart,
-      this.context,
-      this.pluginRegistry.getPluginsForEvent(HookEventName.RunStart),
-      { emitEvent }
-    );
-    while (eventQueue.length > 0) {
-      yield eventQueue.shift()!;
-    }
-
     try {
+      // 触发 RunStart 钩子；它也位于 run 的 finally 边界内，异常时仍发出 RunEnd。
+      const runStartResult = await runHookPipeline(
+        HookEventName.RunStart,
+        this.context,
+        this.pluginRegistry.getPluginsForEvent(HookEventName.RunStart),
+        { emitEvent }
+      );
+      while (eventQueue.length > 0) {
+        yield eventQueue.shift()!;
+      }
+
       if (runStartResult.control.action === 'abort') {
+        terminalStatus = 'aborted';
         yield { type: 'error', message: `[插件终止] Run 启动被拦截：${runStartResult.control.reason ?? '无原因'}` };
         return;
       }
@@ -287,6 +302,7 @@ export class AgentLoop {
         }
 
         if (assembly.control.action === 'abort') {
+          terminalStatus = 'aborted';
           yield { type: 'error', message: `[插件终止] 触发终止信号：${assembly.control.reason ?? '无原因'}` };
           return;
         }
@@ -407,7 +423,12 @@ export class AgentLoop {
           } else if (event.type === 'content') {
             yield event;
           } else if (event.type === 'tool_calls') {
-            hasToolCalls = true;
+            // 一个非空 tool_calls 响应只算一次模型工具迭代，并行调用按数组长度累计。
+            if (event.toolCalls.length > 0) {
+              hasToolCalls = true;
+              toolIterationCount++;
+              requestedToolCallCount += event.toolCalls.length;
+            }
 
             // 触发 AfterModel 钩子，对模型返回的助理消息做拦截和改写
             const afterModelResult = await runHookPipeline(
@@ -421,6 +442,7 @@ export class AgentLoop {
             }
 
             if (afterModelResult.control.action === 'abort') {
+              terminalStatus = 'aborted';
               yield { type: 'error', message: `[插件终止] 触发终止信号：${afterModelResult.control.reason ?? '无原因'}` };
               return;
             }
@@ -521,6 +543,7 @@ export class AgentLoop {
                 }
 
                 if (taskRes.aborted) {
+                  terminalStatus = 'aborted';
                   yield { type: 'error', message: `[插件终止] 触发终止信号：${taskRes.abortReason ?? '无原因'}` };
                   return;
                 }
@@ -545,6 +568,8 @@ export class AgentLoop {
             }
 
             if (pausedForInteraction) {
+              waitingForInteraction = true;
+              terminalStatus = 'waiting_for_interaction';
               await this.contextRepo.saveState();
               return;
             }
@@ -569,6 +594,7 @@ export class AgentLoop {
 
             // 用户拒绝表示本轮不再尝试等价工具调用；回执与审计已经在上方完整保留。
             if (stoppedByUserDenial) {
+              terminalStatus = 'user_denied';
               return;
             }
 
@@ -585,6 +611,7 @@ export class AgentLoop {
             }
 
             if (afterModelResult.control.action === 'abort') {
+              terminalStatus = 'aborted';
               yield { type: 'error', message: `[插件终止] 触发终止信号：${afterModelResult.control.reason ?? '无原因'}` };
               return;
             }
@@ -595,6 +622,7 @@ export class AgentLoop {
 
             const finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatMessage;
             this.context.addMessage(finalAssistantMessage);
+            hasFinalResponse = true;
 
             if (event.usage) {
               const diagGen = this.checkCacheAndCalibrate(event.usage as ApiUsage);
@@ -621,6 +649,7 @@ export class AgentLoop {
 
             this.context.flushPendingNotifications();
             await this.contextRepo.saveState();
+            terminalStatus = 'completed';
             return;
           }
         }
@@ -674,6 +703,7 @@ export class AgentLoop {
 
         // 如果是系统或用户主动下发的中断打断信号，进行安全脱离而不当一致性崩溃处理
         if (errorMsg.includes('APIUserAbortError') || errorMsg.includes('abort') || (apiError instanceof Error && apiError.name === 'AbortError')) {
+          terminalStatus = 'aborted';
           yield { type: 'error', message: '已收到中断指令，强行终止推理生成。' };
           // 中断后的会话状态由下方 finally 统一完成物理落盘。
           return;
@@ -691,14 +721,24 @@ export class AgentLoop {
     }
 
       // 达到最大允许轮数依然没有完结退出，抛出死循环超载保护异常
+      terminalStatus = 'max_iterations';
       throw new Error(`超出了工具调用的最大迭代轮数限制（${this.maxIterations} 轮）。`);
     } finally {
+      const runSummary: Readonly<AgentRunSummary> = Object.freeze({
+        terminalStatus,
+        toolIterationCount,
+        requestedToolCallCount,
+        historyStartIndex,
+        historyEndIndex: this.context.getHistory().length,
+        hasFinalResponse,
+        waitingForInteraction: waitingForInteraction || this.context.pendingInteraction !== null,
+      });
       // 触发 RunEnd 钩子以作最终清理和 patches 审计，整个 run 生命周期仅触发一次
       await runHookPipeline(
         HookEventName.RunEnd,
         this.context,
         this.pluginRegistry.getPluginsForEvent(HookEventName.RunEnd),
-        { emitEvent }
+        { emitEvent, runSummary }
       );
       while (eventQueue.length > 0) {
         yield eventQueue.shift()!;

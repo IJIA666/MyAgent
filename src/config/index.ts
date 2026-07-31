@@ -9,3 +9,19 @@ export * from './env.js';
 export * from './models.js';
 export * from './mcp-env.js';
 export * from './loader.js';
+export type {
+  SettingsRepository,
+  SettingsDocumentV1,
+  PermissionSettings,
+  PermissionRuleEntry,
+  TerminalSettings,
+  SkillSettings,
+  CuratorSettings,
+  SettingsScope,
+  SettingsFieldUpdate,
+  SettingsDocumentUpdater,
+  SettingsDocumentVersion,
+  VersionedSettingsDocument,
+  SettingsUpdateOutcome,
+  SettingsRepositoryOptions,
+} from './settings-repository.js';

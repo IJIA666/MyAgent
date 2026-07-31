@@ -1,9 +1,3 @@
-/**
- * @file 统一 settings 文件仓储。
- * 定义 version 1 settings schema 与 {@link SettingsRepository}，
- * 作为 settings JSON 的解析、作用域合并、字段更新和原子文件替换的唯一所有者。
- */
-
 import {
   closeSync,
   existsSync,
@@ -45,6 +39,39 @@ export interface TerminalSettings {
   defaultShellFamily?: string;
 }
 
+/** Version 1 settings 结构中 Skill 学习与工具配置段。 */
+export interface SkillSettings {
+  /** 是否启用后台 Skill Review（主回复后异步复盘）。默认 true。 */
+  backgroundReviewEnabled?: boolean;
+  /** 累计多少次含工具调用的模型迭代后触发一次后台 Review。默认 10。 */
+  creationNudgeInterval?: number;
+  /** 是否开启写入暂存批准模式。false 时直接写入，true 时暂存为 pending。默认 false。 */
+  writeApproval?: boolean;
+}
+
+/** Version 1 settings 结构中 Curator 生命周期管理配置段。 */
+export interface CuratorSettings {
+  /** 是否启用 Curator 自动维护。默认 true。 */
+  enabled?: boolean;
+  /** 两次自动运行之间的最小间隔（小时）。默认 168（7天）。 */
+  intervalHours?: number;
+  /** 触发维护前距上次活动的最小空闲小时数。默认 2。 */
+  minIdleHours?: number;
+  /** 无活动多少天后标记为 stale。默认 30。 */
+  staleAfterDays?: number;
+  /** 无活动多少天后归档。默认 90。 */
+  archiveAfterDays?: number;
+  /** 是否启用 LLM umbrella 融合。默认 false。 */
+  consolidate?: boolean;
+  /** 备份配置。 */
+  backup?: {
+    /** 是否在变更前创建备份。默认 true。 */
+    enabled?: boolean;
+    /** 保留的备份数量。默认 5。 */
+    keep?: number;
+  };
+}
+
 /** Version 1 settings schema 的完整结构。 */
 export interface SettingsDocumentV1 {
   /** schema 版本；缺失时空文档视为 version 1。 */
@@ -53,6 +80,10 @@ export interface SettingsDocumentV1 {
   settingsRevision?: number;
   permission?: PermissionSettings;
   terminal?: TerminalSettings;
+  /** Skill 学习与工具配置段。 */
+  skills?: SkillSettings;
+  /** Curator 生命周期管理配置段。 */
+  curator?: CuratorSettings;
   /** 是否在会话启动时自动加载并投影长期记忆索引。 */
   autoMemoryEnabled?: boolean;
   /** 自定义长期记忆根；只有受信来源可以令其生效。 */
@@ -599,6 +630,150 @@ export class SettingsRepository {
         ?? 'auto',
     };
 
+    // skills 段：session > local > project > user > 默认。
+    // 各字段按优先级逐字段合并；非法高优先级值被忽略，继续寻找较低层合法值。
+    const userSkills = user.skills ?? {};
+    const projectSkills = project.skills ?? {};
+    const localSkills = local.skills ?? {};
+    const sessionSkills = session.skills ?? {};
+    result.skills = {
+      backgroundReviewEnabled: selectBooleanSetting(
+        [
+          sessionSkills.backgroundReviewEnabled,
+          localSkills.backgroundReviewEnabled,
+          projectSkills.backgroundReviewEnabled,
+          userSkills.backgroundReviewEnabled,
+        ],
+        true,
+        'skills.backgroundReviewEnabled',
+      ),
+      creationNudgeInterval: selectPositiveIntegerSetting(
+        [
+          sessionSkills.creationNudgeInterval,
+          localSkills.creationNudgeInterval,
+          projectSkills.creationNudgeInterval,
+          userSkills.creationNudgeInterval,
+        ],
+        10,
+        'skills.creationNudgeInterval',
+      ),
+      writeApproval: selectBooleanSetting(
+        [
+          sessionSkills.writeApproval,
+          localSkills.writeApproval,
+          projectSkills.writeApproval,
+          userSkills.writeApproval,
+        ],
+        false,
+        'skills.writeApproval',
+      ),
+    };
+
+    // curator 段：session > local > project > user > 默认。
+    const userCurator = user.curator ?? {};
+    const projectCurator = project.curator ?? {};
+    const localCurator = local.curator ?? {};
+    const sessionCurator = session.curator ?? {};
+    const userBackup = userCurator.backup ?? {};
+    const projectBackup = projectCurator.backup ?? {};
+    const localBackup = localCurator.backup ?? {};
+    const sessionBackup = sessionCurator.backup ?? {};
+    result.curator = {
+      enabled: selectBooleanSetting(
+        [
+          sessionCurator.enabled,
+          localCurator.enabled,
+          projectCurator.enabled,
+          userCurator.enabled,
+        ],
+        true,
+        'curator.enabled',
+      ),
+      intervalHours: selectPositiveIntegerSetting(
+        [
+          sessionCurator.intervalHours,
+          localCurator.intervalHours,
+          projectCurator.intervalHours,
+          userCurator.intervalHours,
+        ],
+        168,
+        'curator.intervalHours',
+      ),
+      minIdleHours: selectPositiveIntegerSetting(
+        [
+          sessionCurator.minIdleHours,
+          localCurator.minIdleHours,
+          projectCurator.minIdleHours,
+          userCurator.minIdleHours,
+        ],
+        2,
+        'curator.minIdleHours',
+      ),
+      staleAfterDays: selectPositiveIntegerSetting(
+        [
+          sessionCurator.staleAfterDays,
+          localCurator.staleAfterDays,
+          projectCurator.staleAfterDays,
+          userCurator.staleAfterDays,
+        ],
+        30,
+        'curator.staleAfterDays',
+      ),
+      archiveAfterDays: selectPositiveIntegerSetting(
+        [
+          sessionCurator.archiveAfterDays,
+          localCurator.archiveAfterDays,
+          projectCurator.archiveAfterDays,
+          userCurator.archiveAfterDays,
+        ],
+        90,
+        'curator.archiveAfterDays',
+      ),
+      consolidate: selectBooleanSetting(
+        [
+          sessionCurator.consolidate,
+          localCurator.consolidate,
+          projectCurator.consolidate,
+          userCurator.consolidate,
+        ],
+        false,
+        'curator.consolidate',
+      ),
+      backup: {
+        enabled: selectBooleanSetting(
+          [
+            sessionBackup.enabled,
+            localBackup.enabled,
+            projectBackup.enabled,
+            userBackup.enabled,
+          ],
+          true,
+          'curator.backup.enabled',
+        ),
+        keep: selectPositiveIntegerSetting(
+          [
+            sessionBackup.keep,
+            localBackup.keep,
+            projectBackup.keep,
+            userBackup.keep,
+          ],
+          5,
+          'curator.backup.keep',
+        ),
+      },
+    };
+
+    // 校验 curator 阈值有效性：staleAfterDays 必须小于 archiveAfterDays。
+    const curatorOut = result.curator!;
+    if (curatorOut.staleAfterDays! >= curatorOut.archiveAfterDays!) {
+      logger.warn('[配置] curator.staleAfterDays 必须小于 archiveAfterDays，已回退到默认值。', {
+        component: 'settings_repository',
+        event: 'curator_threshold_invalid',
+      });
+      curatorOut.staleAfterDays = 30;
+      curatorOut.archiveAfterDays = 90;
+    }
+
     // Auto Memory 开关可由普通 settings 收紧或开启；自定义目录只能来自受信 session/user。
     result.autoMemoryEnabled = session.autoMemoryEnabled
       ?? local.autoMemoryEnabled
@@ -794,4 +969,55 @@ function digestSettingsContent(content: string): string {
 /** 判断未知 JSON 值是否为普通对象。 */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 按 settings 优先级选择首个合法布尔值。
+ * 非法高优先级值只产生去敏诊断，不得遮蔽较低层的合法配置。
+ */
+function selectBooleanSetting(
+  values: readonly unknown[],
+  defaultValue: boolean,
+  field: string,
+): boolean {
+  for (const value of values) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    warnInvalidSkillSetting(field);
+  }
+  return defaultValue;
+}
+
+/**
+ * 按 settings 优先级选择首个合法正整数。
+ * 非法高优先级值只产生去敏诊断，不得遮蔽较低层的合法配置。
+ */
+function selectPositiveIntegerSetting(
+  values: readonly unknown[],
+  defaultValue: number,
+  field: string,
+): number {
+  for (const value of values) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+      return value;
+    }
+    warnInvalidSkillSetting(field);
+  }
+  return defaultValue;
+}
+
+/** 记录不包含原始配置值的 Skill/Curator 配置告警。 */
+function warnInvalidSkillSetting(field: string): void {
+  logger.warn('[配置] Skill/Curator settings 字段类型或范围非法，已忽略。', {
+    component: 'settings_repository',
+    event: 'skill_setting_invalid',
+    field,
+  });
 }

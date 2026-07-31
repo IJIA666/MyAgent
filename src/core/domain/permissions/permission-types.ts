@@ -258,6 +258,7 @@ export type PermissionDecision = PermissionDecisionProvenance & PermissionDecisi
  * - `NetworkAccess`：网络请求（fetch、browser、plugin）
  * - `ExternalSideEffect`：外部副作用（邮件、消息、付款）
  * - `McpCall`：MCP 工具调用
+ * - `SkillManage`：Skill 管理操作（create/patch/edit/delete/write_file/remove_file）
  */
 export type PermissionIdentity =
   | 'FileRead'
@@ -272,7 +273,27 @@ export type PermissionIdentity =
   | 'NetworkAccess'
   | 'ExternalSideEffect'
   | 'McpCall'
+  | 'SkillManage'
   | 'UnknownEffect';
+
+/**
+ * skill_manage 在权限阶段绑定到受信 caller 的只读分析结果。
+ * origin 只能由宿主 caller 派生，不能从模型输入字段读取。
+ */
+export interface SkillPermissionAnalysis {
+  /** 分析类型判别字段。 */
+  readonly kind: 'skill-manage';
+  /** 已校验的 Skill 动作。 */
+  readonly action: 'create' | 'patch' | 'edit' | 'delete' | 'write_file' | 'remove_file';
+  /** 已校验的 Skill 名称。 */
+  readonly name: string;
+  /** 由受信 caller 派生的写入来源。 */
+  readonly origin: 'foreground' | 'background_review' | 'background_curator';
+  /** 生成 origin 的宿主验证 callerId，仅用于执行期绑定检查。 */
+  readonly callerId: string;
+  /** 用户通过 CLI 批准的一条 pending id；普通模型调用没有该字段。 */
+  readonly pendingReplayId?: string;
+}
 
 // ──  ResourceEvidence（正式资源证据判别联合）──
 
@@ -428,6 +449,8 @@ export interface PermissionRequest {
   readonly resourceEvidences: readonly ResourceEvidence[];
   /** 当前会话状态下可选的审批动作。 */
   readonly approvalOptions: readonly ApprovalAction[];
+  /** 适配器基于受信宿主上下文生成并绑定到本次请求的分析结果。 */
+  readonly analysis?: unknown;
   /** 适配器版本。 */
   readonly adapterVersion: string;
 }

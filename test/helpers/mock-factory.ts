@@ -71,6 +71,23 @@ export function createMockAppConfig(custom?: Partial<AppConfig>): AppConfig {
       auditRetentionDays: 7,
       auditRetentionSessions: 20,
     },
+    skills: {
+      backgroundReviewEnabled: true,
+      creationNudgeInterval: 10,
+      writeApproval: false,
+    },
+    curator: {
+      enabled: true,
+      intervalHours: 168,
+      minIdleHours: 2,
+      staleAfterDays: 30,
+      archiveAfterDays: 90,
+      consolidate: false,
+      backup: {
+        enabled: true,
+        keep: 5,
+      },
+    },
     ...custom,
     autoMemoryEnabled: custom?.autoMemoryEnabled ?? true,
     workspace,

@@ -24,6 +24,7 @@ export class HelpCommand implements ICommand {
     console.log(`  ${theme.highlight('/tool list')}       - 查看当前已挂载的可用工具清单`);
     console.log(`  ${theme.highlight('/permissions')}     - 查看和管理当前权限状态、规则与额外目录`);
     console.log(`  ${theme.highlight('/memory [action]')} - 查看 Auto Memory、显式诊断 topic 与管理候选`);
+    console.log(`  ${theme.highlight('/curator [action]')} - 查看、维护、归档和恢复 Agent Skill`);
     console.log(`  ${theme.highlight('/sandbox')}         - 查看真实隔离能力与 attestation 等级`);
     console.log(`  ${theme.highlight('/help')}             - 显示此帮助信息`);
     console.log(`  ${theme.highlight('exit / quit')}       - 退出程序`);

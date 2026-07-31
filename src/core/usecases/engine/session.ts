@@ -18,6 +18,14 @@ import type {
   CliMemoryStatus,
   CliSessionUseCase,
   CliSkillSummary,
+  CliSkillPendingActionResult,
+  CliSkillPendingDiff,
+  CliSkillPendingSummary,
+  CliCuratorStatus,
+  CliCuratorRunSummary,
+  CliCuratorSkillActionResult,
+  CliCuratorArchivedSkill,
+  CliCuratorBackup,
 } from '../../../ports/driving/CliSessionUseCase.js';
 import { TaskAborterPort } from '../../../ports/driven/tools/TaskAborterPort.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
@@ -26,12 +34,31 @@ import { runHookPipeline } from '../plugins/plugin-runner.js';
 import { JitRulesPlugin } from '../plugins/JitRulesPlugin.js';
 import { TracerLogPlugin } from '../plugins/TracerLogPlugin.js';
 import { LoopPreventionPlugin } from '../plugins/LoopPreventionPlugin.js';
+import {
+  SkillLearningPlugin,
+  type BackgroundSkillReviewScheduler,
+} from '../plugins/SkillLearningPlugin.js';
 import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 import { LifecycleManager } from './LifecycleManager.js';
 import { FileBackupManager } from '../security/FileBackupManager.js';
 
 // 导入领域服务
 import { RuleManager } from '../brain/RuleManager.js';
+import type {
+  SkillLibrary,
+  SkillLifecycleOperationResult,
+} from '../brain/skill-library.js';
+import {
+  SKILL_PENDING_APPROVAL_CALLER_PREFIX,
+} from '../brain/skill-types.js';
+import type {
+  SkillPendingRecord,
+  SkillPendingStore,
+  SkillWriteApprovalController,
+} from '../brain/skill-pending-store.js';
+import { BackgroundSkillReviewService } from '../brain/background-skill-review.js';
+import type { SkillCurator } from '../brain/skill-curator.js';
+import { createTrustedCallContext } from '../../domain/permissions/trusted-call-context.js';
 import { ContextRepository } from '../brain/ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import { CompactionService } from '../brain/CompactionService.js';
@@ -94,6 +121,14 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   private readonly memoryCandidateStore: MemoryCandidateStore;
   /** Auto Memory 开关使用的统一原子 settings 仓储。 */
   private readonly settingsRepository: AppConfig['settingsRepository'];
+  /** 共享 Skill pending 仓储。 */
+  private readonly skillPendingStore?: SkillPendingStore;
+  /** 共享 writeApproval 运行时开关。 */
+  private readonly skillWriteApprovalController?: SkillWriteApprovalController;
+  /** 当前会话拥有的隔离后台 Skill Review 服务。 */
+  private readonly backgroundSkillReviewService?: BackgroundSkillReviewService;
+  /** 共享 Skill Curator 生命周期维护器。 */
+  private readonly skillCurator?: SkillCurator;
   /** 大语言模型的核心驱动模块 */
   private driver: LlmPort;
   /** 上下文管理与组装适配器 */
@@ -126,6 +161,11 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    * @param contextAdapter - 上下文适配器契约
    * @param appConfig - 应用程序系统配置项
    * @param taskAborter - 任务中止服务端口
+   * @param skillLibrary - 共享 Skill 索引与写入入口
+   * @param skillPendingStore - 共享 Skill pending 仓储
+   * @param skillWriteApprovalController - 共享 Skill 写入审批开关
+   * @param backgroundSkillReviewScheduler - 可选的非阻塞后台复盘调度器
+   * @param skillCurator - 可选的共享 Skill Curator
    */
   constructor(
     llmConfig: LlmConfig,
@@ -135,6 +175,11 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     contextAdapter: ContextAdapter,
     appConfig: AppConfig,
     taskAborter?: TaskAborterPort,
+    skillLibrary?: SkillLibrary,
+    skillPendingStore?: SkillPendingStore,
+    skillWriteApprovalController?: SkillWriteApprovalController,
+    backgroundSkillReviewScheduler?: BackgroundSkillReviewScheduler,
+    skillCurator?: SkillCurator,
   ) {
     super();
     this.llmConfig = llmConfig;
@@ -167,6 +212,9 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.memoryDir = appConfig.autoMemoryDirectory ?? appConfig.applicationPaths.memoryDir;
     this.autoMemoryRootKind = appConfig.autoMemoryDirectory ? 'custom' : 'default';
     this.settingsRepository = appConfig.settingsRepository;
+    this.skillPendingStore = skillPendingStore;
+    this.skillWriteApprovalController = skillWriteApprovalController;
+    this.skillCurator = skillCurator;
     this.memorySnapshot = createEmptyMemorySnapshot(
       this.autoMemoryEnabled ? this.memoryDir : '',
     );
@@ -181,6 +229,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       paths.projectRulesDir,
       paths.userSkillsDir,
       paths.projectSkillsDir,
+      undefined,
+      skillLibrary,
     );
     this.contextRepo = new ContextRepository(this.context, paths.sessionsDir);
     this.toolDispatcher = new ToolDispatcher(this.context, this.toolRegistry, paths.toolOutputsDir);
@@ -210,6 +260,53 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.pluginRegistry.register(new JitRulesPlugin(this.toolDispatcher));
     this.pluginRegistry.register(new TracerLogPlugin(() => this.tracer));
     this.pluginRegistry.register(new LoopPreventionPlugin(appConfig));
+    if (!backgroundSkillReviewScheduler && skillLibrary) {
+      this.backgroundSkillReviewService = new BackgroundSkillReviewService({
+        toolRegistry: this.toolRegistry,
+        driver: this.driver,
+        llmConfigProvider: () => this.llmConfig,
+        estimator,
+        contextAdapter: this.contextAdapter,
+        appConfig,
+        skillLibrary,
+        parentPermissionStateProvider: () => this.context.getPermissionSessionState(),
+        parentCallerProvider: () => createTrustedCallContext(
+          this.context.getSessionId(),
+          'interactive',
+        ),
+        notify: mutation => {
+          const pendingLine = mutation.pendingId
+            ? `\n  <pending_id>${mutation.pendingId}</pending_id>`
+            : '';
+          this.context.addNotification({
+            role: 'user',
+            content: [
+              '<system_notification>',
+              '  <event_type>skill_review_update</event_type>',
+              `  <status>${mutation.status}</status>`,
+              `  <action>${mutation.action}</action>`,
+              `  <skill>${mutation.name}</skill>${pendingLine}`,
+              '</system_notification>',
+            ].join('\n'),
+          });
+          this.context.emit('async_event', {
+            type: 'skill_review_update',
+            ...mutation,
+          });
+        },
+      });
+    }
+    const effectiveSkillReviewScheduler = backgroundSkillReviewScheduler
+      ?? this.backgroundSkillReviewService;
+    if (this.backgroundSkillReviewService && this.skillCurator) {
+      this.skillCurator.setConsolidationRunner(this.backgroundSkillReviewService);
+    }
+    if (effectiveSkillReviewScheduler) {
+      this.pluginRegistry.register(new SkillLearningPlugin(
+        appConfig.skills,
+        effectiveSkillReviewScheduler,
+      ));
+    }
 
     LifecycleManager.register('file-backup-manager', async () => {
       FileBackupManager.cleanup(appConfig.workspace);
@@ -596,6 +693,25 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     if (result.control.action === 'abort') {
       throw new Error(`[SessionManager] 会话打开被拦截：${result.control.reason ?? '无原因'}`);
     }
+
+    // 自动维护只安排后台 due-check，不延长会话打开关键路径。
+    if (this.skillCurator) {
+      void this.skillCurator.run().then((curatorResult) => {
+        logger.info('[SessionManager] skill_curator_due_check_completed', {
+          component: 'session',
+          event: 'skill_curator_due_check_completed',
+          status: curatorResult.status,
+          appliedCount: curatorResult.applied.length,
+          skippedCount: curatorResult.skipped.length,
+        });
+      }).catch((error: unknown) => {
+        logger.warn('[SessionManager] skill_curator_due_check_failed', {
+          component: 'session',
+          event: 'skill_curator_due_check_failed',
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
   }
 
   /**
@@ -632,6 +748,11 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     if (this.taskAborter) {
       await this.taskAborter(this.context.getSessionId());
     }
+
+    // 先取消并有界等待后台 Review，确保共享工具运行时关闭后不再进入 Skill 写入。
+    await this.backgroundSkillReviewService?.close(
+      this.context.appConfig?.runtimeLimits.modelTimeoutMs ?? 30_000,
+    );
 
     // 代理给 ToolRegistryPort close，物理断开并清理所有物理连接（含 MCP）
     await this.toolRegistry.close();
@@ -710,6 +831,294 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     return this.ruleManager.getSkillContent(name);
   }
 
+  /** @returns 当前全部合法 Skill pending 摘要 */
+  public listSkillPending(): readonly CliSkillPendingSummary[] {
+    return this.skillPendingStore?.list().map(toCliPendingSummary) ?? [];
+  }
+
+  /**
+   * 获取 pending 的只读 diff，不应用动作。
+   *
+   * @param id - pending UUID
+   * @returns diff、stale 或错误
+   */
+  public async getSkillPendingDiff(id: string): Promise<CliSkillPendingDiff> {
+    if (!this.skillPendingStore) {
+      return { status: 'error', error: '当前会话未配置 Skill pending 仓储' };
+    }
+    const result = await this.skillPendingStore.diff(id);
+    if (result.status !== 'ready') {
+      return result;
+    }
+    return {
+      status: 'ready',
+      diff: result.diff,
+      pending: toCliPendingSummary(result.record),
+    };
+  }
+
+  /**
+   * 逐条批准并经当前 ToolGateway 重放 pending。
+   *
+   * @param target - pending UUID 或 all
+   * @returns 每条独立结果
+   */
+  public async approveSkillPending(
+    target: string,
+  ): Promise<readonly CliSkillPendingActionResult[]> {
+    if (!this.skillPendingStore) {
+      return [{ id: target, status: 'error', summary: '当前会话未配置 Skill pending 仓储' }];
+    }
+    const records = target === 'all'
+      ? [...this.skillPendingStore.list()]
+      : [this.skillPendingStore.get(target)].filter(
+        (record): record is NonNullable<typeof record> => record !== undefined,
+      );
+    if (records.length === 0) {
+      return [{ id: target, status: 'error', summary: `pending "${target}" 不存在` }];
+    }
+
+    const results: CliSkillPendingActionResult[] = [];
+    for (const record of records) {
+      try {
+        const caller = createTrustedCallContext(
+          `${SKILL_PENDING_APPROVAL_CALLER_PREFIX}:${record.id}`,
+          'interactive',
+        );
+        const outcome = await this.toolRegistry.callTool(
+          'skill_manage',
+          { ...record.request },
+          this.context,
+          undefined,
+          undefined,
+          `skill-pending-${record.id}`,
+          this.context.appConfig?.runtimeLimits.toolTimeoutMs ?? 30_000,
+          {
+            securityContext: {
+              caller,
+              permissionState: this.context.getPermissionSessionState(),
+              approvalAllowed: true,
+              auditSource: 'skill_pending_approval',
+            },
+          },
+        );
+        const payload = parseSkillManageOutcome(outcome.value);
+        results.push({
+          id: record.id,
+          status: payload.status === 'success' ? 'success' : 'error',
+          summary: payload.status === 'success'
+            ? String(payload.summary ?? record.summary)
+            : String(payload.error ?? 'pending 重放失败'),
+        });
+      } catch (error) {
+        results.push({
+          id: record.id,
+          status: 'error',
+          summary: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return results;
+  }
+
+  /**
+   * 拒绝一条或全部 pending，只删除记录。
+   *
+   * @param target - pending UUID 或 all
+   * @returns 每条独立结果
+   */
+  public rejectSkillPending(target: string): readonly CliSkillPendingActionResult[] {
+    if (!this.skillPendingStore) {
+      return [{ id: target, status: 'error', summary: '当前会话未配置 Skill pending 仓储' }];
+    }
+    const ids = target === 'all'
+      ? this.skillPendingStore.list().map(record => record.id)
+      : [target];
+    if (ids.length === 0) {
+      return [];
+    }
+    return ids.map(id => {
+      const discarded = this.skillPendingStore!.discard(id);
+      return {
+        id,
+        status: discarded ? 'success' : 'error',
+        summary: discarded ? '已拒绝并删除 pending' : `pending "${id}" 不存在或删除失败`,
+      };
+    });
+  }
+
+  /** @returns 当前 writeApproval 开关 */
+  public getSkillWriteApprovalEnabled(): boolean {
+    return this.skillWriteApprovalController?.isEnabled() ?? false;
+  }
+
+  /**
+   * 持久化用户级 writeApproval，并在成功后更新当前进程控制器。
+   *
+   * @param enabled - 是否开启暂存批准
+   */
+  public async setSkillWriteApprovalEnabled(enabled: boolean): Promise<void> {
+    if (!this.skillWriteApprovalController) {
+      throw new Error('当前会话未配置 writeApproval 控制器');
+    }
+    if (enabled === this.skillWriteApprovalController.isEnabled()) {
+      return;
+    }
+    const updated = await this.settingsRepository.updateField('user', {
+      field: 'skills.writeApproval',
+      value: enabled,
+    });
+    if (!updated) {
+      throw new Error('Skill writeApproval 开关持久化失败，当前会话未改变');
+    }
+    this.skillWriteApprovalController.setEnabled(enabled);
+  }
+
+  /**
+   * 获取 Curator 低敏状态 DTO。
+   *
+   * @returns 不含 Skill 正文和物理路径的状态
+   */
+  public getCuratorStatus(): CliCuratorStatus {
+    const config = this.context.appConfig!.curator;
+    if (!this.skillCurator) {
+      return {
+        available: false,
+        enabled: config.enabled,
+        stateStatus: 'missing',
+        lastRunAt: null,
+        lastActivityAt: null,
+        paused: false,
+        recentReportId: null,
+        usageHealthy: true,
+        activeSkillCount: 0,
+        archivedSkillCount: 0,
+        intervalHours: config.intervalHours,
+        minIdleHours: config.minIdleHours,
+        staleAfterDays: config.staleAfterDays,
+        archiveAfterDays: config.archiveAfterDays,
+        consolidate: config.consolidate,
+      };
+    }
+    const status = this.skillCurator.getStatus();
+    const state = status.state.status === 'healthy' ? status.state.state : null;
+    return {
+      available: true,
+      enabled: status.enabled,
+      stateStatus: status.state.status,
+      lastRunAt: state?.lastRunAt ?? null,
+      lastActivityAt: state?.lastActivityAt ?? null,
+      paused: state?.paused ?? false,
+      recentReportId: state?.recentReportId ?? null,
+      usageHealthy: status.usageHealthy,
+      usageDegradedReason: status.usageDegradedReason,
+      activeSkillCount: status.activeSkillCount,
+      archivedSkillCount: status.archivedSkillCount,
+      intervalHours: status.config.intervalHours,
+      minIdleHours: status.config.minIdleHours,
+      staleAfterDays: status.config.staleAfterDays,
+      archiveAfterDays: status.config.archiveAfterDays,
+      consolidate: status.config.consolidate,
+    };
+  }
+
+  /**
+   * 执行一次手动 Curator 运行。
+   *
+   * @param options - dry-run 与显式融合开关
+   * @returns CLI 运行摘要
+   */
+  public async runCurator(options: {
+    readonly dryRun: boolean;
+    readonly consolidate?: boolean;
+  }): Promise<CliCuratorRunSummary> {
+    const curator = this.requireSkillCurator();
+    const result = await curator.run({
+      manual: true,
+      dryRun: options.dryRun,
+      consolidate: options.consolidate,
+    });
+    return {
+      status: result.status,
+      checkedCount: result.plan?.checkedCount ?? 0,
+      candidateCount: result.plan?.candidateCount ?? 0,
+      plannedTransitionCount: result.plan?.transitions.length ?? 0,
+      appliedTransitionCount: result.applied.length,
+      skippedTransitionCount: result.skipped.length,
+      consolidationCount: result.consolidations.length,
+      backupId: result.backup?.id ?? null,
+      reportId: result.report?.id ?? null,
+      reason: result.reason,
+    };
+  }
+
+  /**
+   * 暂停或恢复 Curator。
+   *
+   * @param paused - 是否暂停
+   */
+  public setCuratorPaused(paused: boolean): void {
+    this.requireSkillCurator().setPaused(paused);
+  }
+
+  /** @inheritdoc */
+  public async adoptCuratorSkill(name: string): Promise<CliCuratorSkillActionResult> {
+    return mapCuratorSkillResult(await this.requireSkillCurator().adopt(name));
+  }
+
+  /** @inheritdoc */
+  public async pinCuratorSkill(name: string): Promise<CliCuratorSkillActionResult> {
+    return mapCuratorSkillResult(await this.requireSkillCurator().pin(name));
+  }
+
+  /** @inheritdoc */
+  public async unpinCuratorSkill(name: string): Promise<CliCuratorSkillActionResult> {
+    return mapCuratorSkillResult(await this.requireSkillCurator().unpin(name));
+  }
+
+  /** @inheritdoc */
+  public listCuratorArchived(): readonly CliCuratorArchivedSkill[] {
+    return this.requireSkillCurator().listArchived().map(item => ({
+      name: item.name,
+      archivedAt: item.archivedAt,
+      absorbedInto: item.absorbedInto,
+    }));
+  }
+
+  /** @inheritdoc */
+  public async restoreCuratorSkill(name: string): Promise<CliCuratorSkillActionResult> {
+    return mapCuratorSkillResult(await this.requireSkillCurator().restore(name));
+  }
+
+  /** @inheritdoc */
+  public createCuratorBackup(): CliCuratorBackup {
+    const backup = this.requireSkillCurator().createBackup();
+    return { id: backup.id, createdAt: backup.createdAt };
+  }
+
+  /** @inheritdoc */
+  public listCuratorBackups(): readonly CliCuratorBackup[] {
+    return this.requireSkillCurator().listBackups().map(backup => ({
+      id: backup.id,
+      createdAt: backup.createdAt,
+    }));
+  }
+
+  /** @inheritdoc */
+  public rollbackCuratorBackup(id?: string): CliCuratorBackup {
+    const backup = this.requireSkillCurator().rollback(id);
+    this.ruleManager.reloadSkills();
+    return { id: backup.id, createdAt: backup.createdAt };
+  }
+
+  /** 获取已装配 Curator，否则 fail closed。 */
+  private requireSkillCurator(): SkillCurator {
+    if (!this.skillCurator) {
+      throw new Error('当前会话未配置 Skill Curator');
+    }
+    return this.skillCurator;
+  }
+
   /**
    * 手动规划并执行当前活跃会话的上下文压缩。
    *
@@ -735,6 +1144,17 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     const previousWakeupCount = this.autoWakeupCount;
     this.isGenerating = true; // 同步原子加锁，防止同 Tick 重入
     this.autoWakeupCount = 0;  // 每次人类主动交互，重置自动唤醒计数器
+
+    // 用户输入是 Curator 的活动信号；状态写失败不应阻断主会话。
+    try {
+      this.skillCurator?.recordActivity();
+    } catch (error) {
+      logger.warn('[SessionManager] skill_curator_activity_record_failed', {
+        component: 'session',
+        event: 'skill_curator_activity_record_failed',
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     // 1. 同步将消息写入上下文历史
     logger.debug('[SessionManager] generation_requested', {
@@ -1126,6 +1546,50 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   ): void {
     this.approvalInteraction.registerApprovalHandler(handler);
   }
+}
+
+/** 将 pending 领域记录投影成不暴露重放正文的 CLI 摘要。 */
+function toCliPendingSummary(record: SkillPendingRecord): CliSkillPendingSummary {
+  return Object.freeze({
+    id: record.id,
+    action: record.action,
+    name: record.name,
+    origin: record.origin,
+    summary: record.summary,
+    createdAt: record.createdAt,
+  });
+}
+
+/** 把核心生命周期结果投影成不含内部状态的 CLI 摘要。 */
+function mapCuratorSkillResult(
+  result: SkillLifecycleOperationResult,
+): CliCuratorSkillActionResult {
+  return result.status === 'changed'
+    ? {
+        status: 'changed',
+        name: result.name,
+        summary: `Skill "${result.name}" 已更新为 ${result.state}`,
+      }
+    : {
+        status: 'skipped',
+        name: result.name,
+        summary: result.reason,
+      };
+}
+
+/** 从 ToolRegistry 统一结果中解析 skill_manage JSON 包络。 */
+function parseSkillManageOutcome(value: unknown): Record<string, unknown> {
+  if (typeof value === 'string') {
+    return JSON.parse(value) as Record<string, unknown>;
+  }
+  if (value && typeof value === 'object' && 'content' in value) {
+    const content = (value as { content?: Array<{ text?: string }> }).content;
+    const text = content?.[0]?.text;
+    if (text) {
+      return JSON.parse(text) as Record<string, unknown>;
+    }
+  }
+  throw new Error('skill_manage 返回了无法解析的结果');
 }
 
 /** 创建不含任何 topic 隐式读取结果的空记忆诊断。 */

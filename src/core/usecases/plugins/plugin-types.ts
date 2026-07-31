@@ -28,6 +28,10 @@ export interface LlmRequest {
  * 重新导出端口层定义的 Hook 生命周期事件。
  */
 export { HookEventName } from '../../../ports/shared/plugin-types.js';
+export type {
+  AgentRunSummary,
+  AgentRunTerminalStatus,
+} from '../../../ports/shared/plugin-types.js';
 
 /**
  * 控制插件管线完成后的 AgentLoop 行为。

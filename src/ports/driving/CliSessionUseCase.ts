@@ -35,6 +35,82 @@ export interface CliSkillSummary {
   description: string;
 }
 
+/** CLI 可展示的一条 Skill pending 摘要。 */
+export interface CliSkillPendingSummary {
+  readonly id: string;
+  readonly action: string;
+  readonly name: string;
+  readonly origin: string;
+  readonly summary: string;
+  readonly createdAt: string;
+}
+
+/** `/skill diff` 返回的只读结果。 */
+export type CliSkillPendingDiff =
+  | { readonly status: 'ready'; readonly diff: string; readonly pending: CliSkillPendingSummary }
+  | { readonly status: 'missing' | 'stale' | 'error'; readonly error: string };
+
+/** approve/reject 对单条 pending 的结果。 */
+export interface CliSkillPendingActionResult {
+  readonly id: string;
+  readonly status: 'success' | 'error';
+  readonly summary: string;
+}
+
+/** CLI 可见的 Curator 状态，不含 Skill 正文或内部物理路径。 */
+export interface CliCuratorStatus {
+  readonly available: boolean;
+  readonly enabled: boolean;
+  readonly stateStatus: 'missing' | 'healthy' | 'degraded';
+  readonly lastRunAt: string | null;
+  readonly lastActivityAt: string | null;
+  readonly paused: boolean;
+  readonly recentReportId: string | null;
+  readonly usageHealthy: boolean;
+  readonly usageDegradedReason?: string;
+  readonly activeSkillCount: number;
+  readonly archivedSkillCount: number;
+  readonly intervalHours: number;
+  readonly minIdleHours: number;
+  readonly staleAfterDays: number;
+  readonly archiveAfterDays: number;
+  readonly consolidate: boolean;
+}
+
+/** CLI 可见的 Curator 运行摘要。 */
+export interface CliCuratorRunSummary {
+  readonly status: string;
+  readonly checkedCount: number;
+  readonly candidateCount: number;
+  readonly plannedTransitionCount: number;
+  readonly appliedTransitionCount: number;
+  readonly skippedTransitionCount: number;
+  readonly consolidationCount: number;
+  readonly backupId: string | null;
+  readonly reportId: string | null;
+  readonly reason?: string;
+}
+
+/** adopt/pin/unpin/restore 的 CLI 结果。 */
+export interface CliCuratorSkillActionResult {
+  readonly status: 'changed' | 'skipped' | 'error';
+  readonly name: string;
+  readonly summary: string;
+}
+
+/** CLI 可见的归档 Skill，不含归档物理路径。 */
+export interface CliCuratorArchivedSkill {
+  readonly name: string;
+  readonly archivedAt: string | null;
+  readonly absorbedInto: string | null;
+}
+
+/** CLI 可见的 Curator 备份，不含备份物理路径。 */
+export interface CliCuratorBackup {
+  readonly id: string;
+  readonly createdAt: string;
+}
+
 /** `/memory` 命令可查看的低敏长期记忆状态。 */
 export interface CliMemoryStatus {
   /** 启动自动投影是否启用。 */
@@ -119,6 +195,79 @@ export interface CliSessionUseCase extends ChatUseCase {
    * @returns 技能正文，若不存在则返回 null
    */
   getSkillContent(name: string): string | null;
+
+  /** @returns 当前全部 Skill pending 摘要 */
+  listSkillPending?(): readonly CliSkillPendingSummary[];
+
+  /**
+   * 获取一条 pending 的只读 diff。
+   *
+   * @param id - pending id
+   */
+  getSkillPendingDiff?(id: string): Promise<CliSkillPendingDiff>;
+
+  /**
+   * 批准一条或全部 pending，每条独立重放。
+   *
+   * @param target - pending id 或 all
+   */
+  approveSkillPending?(target: string): Promise<readonly CliSkillPendingActionResult[]>;
+
+  /**
+   * 拒绝一条或全部 pending。
+   *
+   * @param target - pending id 或 all
+   */
+  rejectSkillPending?(target: string): readonly CliSkillPendingActionResult[];
+
+  /** @returns 当前 writeApproval 开关 */
+  getSkillWriteApprovalEnabled?(): boolean;
+
+  /**
+   * 持久化并切换 writeApproval。
+   *
+   * @param enabled - 是否开启暂存批准
+   */
+  setSkillWriteApprovalEnabled?(enabled: boolean): Promise<void>;
+
+  /** @returns 当前 Curator 低敏控制面状态 */
+  getCuratorStatus?(): CliCuratorStatus;
+
+  /**
+   * 执行手动 Curator 运行。
+   *
+   * @param options - dry-run 和可选融合开关
+   * @returns 运行摘要
+   */
+  runCurator?(options: {
+    readonly dryRun: boolean;
+    /** true 表示显式启用融合；省略时沿用 settings 默认值。 */
+    readonly consolidate?: boolean;
+  }): Promise<CliCuratorRunSummary>;
+
+  /**
+   * 暂停或恢复 Curator。
+   *
+   * @param paused - 是否暂停
+   */
+  setCuratorPaused?(paused: boolean): void;
+
+  /** @param name - Skill 名称 */
+  adoptCuratorSkill?(name: string): Promise<CliCuratorSkillActionResult>;
+  /** @param name - Skill 名称 */
+  pinCuratorSkill?(name: string): Promise<CliCuratorSkillActionResult>;
+  /** @param name - Skill 名称 */
+  unpinCuratorSkill?(name: string): Promise<CliCuratorSkillActionResult>;
+  /** @returns 已归档 Skill 摘要 */
+  listCuratorArchived?(): readonly CliCuratorArchivedSkill[];
+  /** @param name - Skill 名称 */
+  restoreCuratorSkill?(name: string): Promise<CliCuratorSkillActionResult>;
+  /** @returns 新建备份摘要 */
+  createCuratorBackup?(): CliCuratorBackup;
+  /** @returns 有效备份摘要 */
+  listCuratorBackups?(): readonly CliCuratorBackup[];
+  /** @param id - 可选备份标识，缺省恢复最新 */
+  rollbackCuratorBackup?(id?: string): CliCuratorBackup;
 
   /**
    * 动态切换当前会话的工作模式。

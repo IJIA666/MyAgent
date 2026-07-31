@@ -30,6 +30,17 @@ describe('Application data layout', () => {
       expect(paths.userSkillsDir).toBe(resolve(userHome, '.myagent/skills'));
     });
 
+    it('Skill 生命周期数据属于用户根而不是任一 workspace', () => {
+      expect(paths.skillUsagePath).toBe(resolve(paths.userSkillsDir, '.usage.json'));
+      expect(paths.skillArchiveDir).toBe(resolve(paths.userSkillsDir, '.archive'));
+      expect(paths.skillPendingDir).toBe(resolve(paths.userConfigDir, 'pending', 'skills'));
+      expect(paths.skillCuratorStatePath).toBe(resolve(paths.userSkillsDir, '.curator-state.json'));
+      expect(paths.skillCuratorBackupsDir).toBe(resolve(paths.userSkillsDir, '.curator-backups'));
+      expect(paths.skillCuratorLogsDir).toBe(resolve(paths.userConfigDir, 'logs', 'curator'));
+      expect(paths.skillUsagePath.startsWith(paths.projectDataDir)).toBe(false);
+      expect(paths.skillUsagePath.startsWith(paths.projectConfigDir)).toBe(false);
+    });
+
     it('运行数据深度嵌套且分层清晰', () => {
       expect(paths.projectDataDir).toBe(resolve('/home/user/.myagent/projects', paths.workspaceKey));
       expect(paths.memoryDir).toBe(resolve(paths.projectDataDir, 'memory'));
@@ -58,6 +69,16 @@ describe('Application data layout', () => {
       const a = createApplicationPaths('/home/user/proj');
       const b = createApplicationPaths('/tmp/proj');
       expect(a.projectDataDir).not.toBe(b.projectDataDir);
+    });
+
+    it('不同 workspace 仍共享用户 Skill 生命周期目录', () => {
+      const options = { appDataRoot: resolve('/shared/myagent') };
+      const a = createApplicationPaths('/home/user/proj', options);
+      const b = createApplicationPaths('/tmp/proj', options);
+
+      expect(a.skillUsagePath).toBe(b.skillUsagePath);
+      expect(a.skillArchiveDir).toBe(b.skillArchiveDir);
+      expect(a.skillCuratorStatePath).toBe(b.skillCuratorStatePath);
     });
   });
 

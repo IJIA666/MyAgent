@@ -23,7 +23,16 @@ enablePatches();
 /**
  * Hook 管线额外参数。
  */
-type HookExtraParams = Partial<Pick<HookContext, 'llmRequest' | 'llmResponse' | 'toolCall' | 'toolResult' | 'emitEvent' | 'toolRegistry'>>;
+type HookExtraParams = Partial<Pick<
+  HookContext,
+  'llmRequest'
+  | 'llmResponse'
+  | 'toolCall'
+  | 'toolResult'
+  | 'emitEvent'
+  | 'toolRegistry'
+  | 'runSummary'
+>>;
 
 /**
  * 按 SessionContext 维度串行化 Hook 管线，避免并发工具调用同时改写 busy 锁与会话沙箱。
@@ -208,6 +217,7 @@ async function runHookPipelineInternal(
     toolCall: draft.toolCall,
     toolResult: draft.toolResult,
     toolRegistry: context.toolRegistry,
+    runSummary: context.runSummary,
     control: context.control, // 共享同一个控制信号引用
     emitEvent: context.emitEvent,
   } as HookContext;

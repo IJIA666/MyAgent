@@ -30,6 +30,36 @@ export enum HookEventName {
   PostCompact = 'PostCompact'
 }
 
+/** 单次 Agent run 的终止状态。 */
+export type AgentRunTerminalStatus =
+  | 'completed'
+  | 'waiting_for_interaction'
+  | 'user_denied'
+  | 'aborted'
+  | 'error'
+  | 'max_iterations';
+
+/**
+ * AgentLoop 在 RunEnd 暴露的只读运行摘要。
+ * 工具迭代数按非空 tool_calls 模型响应计数，不等于工具调用数量。
+ */
+export interface AgentRunSummary {
+  /** 本次 run 的真实终止原因分类。 */
+  readonly terminalStatus: AgentRunTerminalStatus;
+  /** 包含非空 tool_calls 的模型响应数量。 */
+  readonly toolIterationCount: number;
+  /** 所有上述响应请求的工具调用总数。 */
+  readonly requestedToolCallCount: number;
+  /** RunStart 时的会话历史长度。 */
+  readonly historyStartIndex: number;
+  /** RunEnd 时的会话历史长度。 */
+  readonly historyEndIndex: number;
+  /** 是否已提交 complete 事件对应的最终 assistant message。 */
+  readonly hasFinalResponse: boolean;
+  /** 是否因等待人机交互而结束当前 run。 */
+  readonly waitingForInteraction: boolean;
+}
+
 /**
  * 端口层拥有的插件 Hook 执行上下文（不含 core 特有类型）。
  * core 中的 HookContext 应扩展此接口以添加 SessionContext 等字段。
@@ -43,6 +73,8 @@ export interface PortHookContext {
   llmRequest?: Record<string, unknown>;
   /** 大模型的响应回包 */
   llmResponse?: unknown;
+  /** 仅由 RunEnd 提供的只读运行摘要。 */
+  runSummary?: Readonly<AgentRunSummary>;
   /** 当前准备执行或刚执行完的工具项 */
   toolCall?: {
     /** 工具调用的唯一标识符 */

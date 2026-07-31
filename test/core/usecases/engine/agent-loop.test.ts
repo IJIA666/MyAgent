@@ -17,7 +17,11 @@ import type { ContextRepository } from '../../../../src/core/usecases/brain/Cont
 import type { ToolDispatcher } from '../../../../src/core/usecases/engine/ToolDispatcher.js';
 import type { ContextBudgetCoordinator } from '../../../../src/core/usecases/brain/ContextBudgetCoordinator.js';
 import { PluginRegistry } from '../../../../src/core/usecases/plugins/plugin-registry.js';
-import { HookEventName, type HookContext } from '../../../../src/core/usecases/plugins/plugin-types.js';
+import {
+  HookEventName,
+  type AgentRunSummary,
+  type HookContext,
+} from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { AgentTracer } from '../../../../src/core/domain/tracer.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 import { mkdtempSync } from 'fs';
@@ -187,6 +191,97 @@ describe('AgentLoop 动态安全特性测试', () => {
       pluginRegistry,
     });
   }
+
+  it('RunEnd 应区分工具模型迭代、并行调用数和最终回复', async () => {
+    let streamCallCount = 0;
+    mockLlmDriver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      streamChat: vi.fn().mockImplementation(async function* () {
+        streamCallCount++;
+        if (streamCallCount === 1) {
+          const toolCalls = [1, 2, 3].map(index => ({
+            id: `call-summary-${index}`,
+            type: 'function' as const,
+            function: { name: 'read_file', arguments: JSON.stringify({ path: `${index}.txt` }) },
+          }));
+          yield {
+            type: 'tool_calls',
+            toolCalls,
+            assistantMessage: {
+              role: 'assistant',
+              content: '我先并行读取三个文件。',
+              tool_calls: toolCalls,
+            },
+          } as LlmStreamEvent;
+          return;
+        }
+        yield {
+          type: 'complete',
+          content: '读取完成。',
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: '读取完成。' },
+        } as LlmStreamEvent;
+      }),
+    };
+    mockToolRegistry = {
+      getTools: vi.fn().mockResolvedValue([{ name: 'read_file', securityCategory: 'read' }]),
+      getTool: vi.fn().mockReturnValue({ name: 'read_file', securityCategory: 'read' }),
+      callTool: vi.fn().mockResolvedValue({
+        value: { content: [{ type: 'text', text: 'ok' }] },
+        effect: {
+          kind: 'read',
+          executionStarted: true,
+          completed: true,
+          resources: [],
+          reason: 'declared_read_tool',
+        },
+      }),
+    };
+
+    let runSummary: Readonly<AgentRunSummary> | undefined;
+    const nonRunEndSummaries: Array<Readonly<AgentRunSummary> | undefined> = [];
+    pluginRegistry.register({
+      name: 'RunSummaryProbe',
+      weight: 99,
+      hooks: {
+        [HookEventName.RunStart]: async (hookContext: HookContext, next) => {
+          nonRunEndSummaries.push(hookContext.runSummary);
+          await next();
+        },
+        [HookEventName.AfterModel]: async (hookContext: HookContext, next) => {
+          nonRunEndSummaries.push(hookContext.runSummary);
+          await next();
+        },
+        [HookEventName.RunEnd]: async (hookContext: HookContext, next) => {
+          runSummary = hookContext.runSummary;
+          await next();
+        },
+      },
+    });
+
+    context.addMessage({ role: 'user', content: '读取三个文件后总结' });
+    const expectedHistoryStart = context.getHistory().length;
+    const loop = createLoop();
+    for await (const event of loop.chat(
+      undefined,
+      createTestTracer('test-run-summary'),
+      { model: 'mock-model' } as LlmConfig,
+    )) {
+      void event;
+    }
+
+    expect(nonRunEndSummaries).toEqual([undefined, undefined, undefined]);
+    expect(runSummary).toMatchObject({
+      terminalStatus: 'completed',
+      toolIterationCount: 1,
+      requestedToolCallCount: 3,
+      hasFinalResponse: true,
+      waitingForInteraction: false,
+      historyStartIndex: expectedHistoryStart,
+      historyEndIndex: expectedHistoryStart + 5,
+    });
+  });
 
   it('Provider 首次溢出时应只强制一次 full 并在恢复后继续', async () => {
     const overflow = new LlmContextWindowExceededError('context exceeded');

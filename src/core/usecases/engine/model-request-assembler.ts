@@ -51,6 +51,8 @@ export class ModelRequestAssembler {
   private contextBudgetCoordinator: ContextBudgetCoordinator;
   /** 长期记忆快照提供器。 */
   private getMemorySnapshot: () => MemorySnapshot;
+  /** 是否注入日期与 CWD 运行时提醒。 */
+  private readonly includeRuntimeReminder: boolean;
 
   /**
    * @param toolRegistry - 工具注册端口，用于获取当前可用工具集
@@ -60,6 +62,7 @@ export class ModelRequestAssembler {
    * @param context - 当前会话上下文
    * @param contextBudgetCoordinator - 最终请求预算与压缩协调器
    * @param memorySnapshotProvider - 长期记忆快照提供器回调
+   * @param includeRuntimeReminder - 是否注入日期与 CWD；隔离后台任务应关闭
    */
   constructor(
     toolRegistry: ToolRegistryPort,
@@ -74,7 +77,8 @@ export class ModelRequestAssembler {
       topics: Object.freeze([]),
       isTruncated: false,
       isEmpty: true,
-    })
+    }),
+    includeRuntimeReminder = true,
   ) {
     this.toolRegistry = toolRegistry;
     this.contextAdapter = contextAdapter;
@@ -83,6 +87,7 @@ export class ModelRequestAssembler {
     this.context = context;
     this.contextBudgetCoordinator = contextBudgetCoordinator;
     this.getMemorySnapshot = memorySnapshotProvider;
+    this.includeRuntimeReminder = includeRuntimeReminder;
   }
 
   /**
@@ -207,7 +212,7 @@ export class ModelRequestAssembler {
       }
     }
 
-    if (latestUserMessageIdx !== -1) {
+    if (this.includeRuntimeReminder && latestUserMessageIdx !== -1) {
       const userMsg = finalRequestMessages[latestUserMessageIdx];
       const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
       const cwdStr = process.cwd();

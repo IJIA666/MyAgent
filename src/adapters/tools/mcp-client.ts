@@ -16,7 +16,8 @@ const BUILTIN_TOOL_NAMES = new Set([
   'readFile',
   'writeFile',
   'listFiles',
-  'load_skill'
+  'load_skill',
+  'skill_manage'
 ]);
 
 /**

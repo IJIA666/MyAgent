@@ -177,10 +177,53 @@ export interface AppConfig {
   runtimeLimits: RuntimeLimitsConfig;
   /** 运行日志、trace 与 audit 的诊断治理配置。 */
   diagnostics: DiagnosticDataConfig;
+  /** Skill 后台学习与写入配置。 */
+  skills: ResolvedSkillConfig;
+  /** Curator 生命周期管理配置。 */
+  curator: ResolvedCuratorConfig;
   /** 统一的应用路径解析集合（在 workspace 确认后创建）。 */
   applicationPaths: ApplicationPaths;
   /** 统一 settings 文件仓储。 */
   settingsRepository: SettingsRepository;
+}
+
+/**
+ * 已解析冻结的 Skill 学习与工具配置。
+ * 所有字段均经过类型校验，具备安全默认值。
+ */
+export interface ResolvedSkillConfig {
+  /** 是否启用后台 Skill Review（主回复后异步复盘）。 */
+  readonly backgroundReviewEnabled: boolean;
+  /** 累计多少次含工具调用的模型迭代后触发一次后台 Review。默认 10。 */
+  readonly creationNudgeInterval: number;
+  /** 是否开启写入暂存批准模式。false 时直接写入，true 时暂存为 pending。 */
+  readonly writeApproval: boolean;
+}
+
+/**
+ * 已解析冻结的 Curator 生命周期管理配置。
+ * 所有字段均经过类型校验与阈值交叉校验（staleAfterDays < archiveAfterDays）。
+ */
+export interface ResolvedCuratorConfig {
+  /** 是否启用 Curator 自动维护。 */
+  readonly enabled: boolean;
+  /** 两次自动运行之间的最小间隔（小时）。 */
+  readonly intervalHours: number;
+  /** 触发维护前距上次活动的最小空闲小时数。 */
+  readonly minIdleHours: number;
+  /** 无活动多少天后标记为 stale。 */
+  readonly staleAfterDays: number;
+  /** 无活动多少天后归档。 */
+  readonly archiveAfterDays: number;
+  /** 是否启用 LLM umbrella 融合。 */
+  readonly consolidate: boolean;
+  /** 备份配置。 */
+  readonly backup: {
+    /** 是否在变更前创建备份。 */
+    readonly enabled: boolean;
+    /** 保留的备份数量。 */
+    readonly keep: number;
+  };
 }
 
 /**

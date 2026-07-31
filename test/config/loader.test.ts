@@ -103,6 +103,36 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
     }).autoMemoryDirectory).toBeUndefined();
   });
 
+  it('Skill 与 Curator 配置使用默认值并被深冻结', () => {
+    const config = loadConfig({
+      AGENT_LLM_MODEL: 'deepseek-v4-flash',
+      AGENT_LLM_API_KEY: 'mock-api-key-123',
+      AGENT_SKILL_CREATION_NUDGE_INTERVAL: '999',
+      AGENT_CURATOR_ENABLED: 'false',
+    });
+
+    expect(config.skills).toEqual({
+      backgroundReviewEnabled: true,
+      creationNudgeInterval: 10,
+      writeApproval: false,
+    });
+    expect(config.curator).toEqual({
+      enabled: true,
+      intervalHours: 168,
+      minIdleHours: 2,
+      staleAfterDays: 30,
+      archiveAfterDays: 90,
+      consolidate: false,
+      backup: {
+        enabled: true,
+        keep: 5,
+      },
+    });
+    expect(Object.isFrozen(config.skills)).toBe(true);
+    expect(Object.isFrozen(config.curator)).toBe(true);
+    expect(Object.isFrozen(config.curator.backup)).toBe(true);
+  });
+
   describe('环境变量依赖注入绝对隔离性验证', () => {
     const originalEnv = { ...process.env };
 

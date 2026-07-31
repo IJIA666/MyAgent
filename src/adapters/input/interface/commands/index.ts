@@ -13,3 +13,4 @@ export { PermissionModeCommand } from './workmode.js';
 export { PermissionsCommand } from './permissions.js';
 export { SandboxCommand } from './sandbox.js';
 export { MemoryCommand } from './memory.js';
+export { CuratorCommand } from './curator.js';
