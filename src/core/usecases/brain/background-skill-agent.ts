@@ -8,6 +8,8 @@ import type {
   ToolRegistryPort,
 } from '../../../ports/driven/tools/ToolRegistryPort.js';
 import type { ToolExecutionOutcome } from '../../../adapters/tools/tool-types.js';
+import { isToolOutputWithinQuota } from '../engine/ToolDispatcher.js';
+import { logger } from '../../../utils/logger.js';
 import {
   PermissionSessionState,
   type PermissionSessionSnapshot,
@@ -20,6 +22,10 @@ import {
   SKILL_CURATOR_CALLER_ID_PREFIX,
   SKILL_REVIEW_CALLER_ID_PREFIX,
 } from './skill-types.js';
+import {
+  SkillReviewReadLedger,
+  skillReadLedgerRegistry,
+} from './skill-review-read-ledger.js';
 
 /** Skill Review Agent 的固定工具上限。 */
 const BACKGROUND_SKILL_TOOL_NAMES = new Set(['load_skill', 'skill_manage']);
@@ -57,6 +63,8 @@ export interface BackgroundSkillAgentOptions {
     | typeof SKILL_CURATOR_CALLER_ID_PREFIX;
   /** skill_manage 获得执行许可后的首个写入前钩子。 */
   readonly beforeSkillMutation?: () => void;
+  /** 可选注入的读取账本；缺省时按当前 caller 创建并注册。 */
+  readonly readLedger?: SkillReviewReadLedger;
 }
 
 /**
@@ -71,6 +79,7 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
   private readonly isActive: () => boolean;
   private readonly onSkillMutation?: (result: BackgroundSkillMutationResult) => void;
   private readonly beforeSkillMutation?: () => void;
+  private readonly readLedger: SkillReviewReadLedger;
 
   /**
    * @param parentRegistry - 已装配统一 ToolGateway 的父工具注册表
@@ -94,6 +103,10 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
     this.isActive = options.isActive ?? (() => true);
     this.onSkillMutation = options.onSkillMutation;
     this.beforeSkillMutation = options.beforeSkillMutation;
+    // 一次隔离任务一个账本：绑定宿主验证的后台 caller，注册到内存注册表供授权适配器签发前置条件。
+    this.readLedger = options.readLedger
+      ?? new SkillReviewReadLedger(this.caller.caller.callerId);
+    skillReadLedgerRegistry.register(this.readLedger);
   }
 
   /**
@@ -177,6 +190,9 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
       if (mutation) {
         this.onSkillMutation?.(mutation);
       }
+    } else if (functionName === 'load_skill' && !outcome.cause) {
+      // 只在真实成功后记账：失败结果、取消或其他 Skill 不得产生读取凭证。
+      this.recordSkillLoad(functionArgs, outcome.value);
     }
     return outcome;
   }
@@ -201,15 +217,60 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
 
   /**
    * 关闭受限视图。
-   * 共享父 ToolRegistry 的生命周期由 SessionManager 管理，此处不得关闭它。
+   * 共享父 ToolRegistry 的生命周期由 SessionManager 管理，此处不得关闭它；
+   * 同时注销本次任务的读取账本，关闭后凭证不可复用。
    */
   public async close(): Promise<void> {
-    // 受限视图不拥有共享 ToolRegistry。
+    skillReadLedgerRegistry.unregister(this.caller.caller.callerId);
   }
 
   /** 判断工具是否同时属于固定上限和父工具面。 */
   private isAllowedTool(name: string): boolean {
     return BACKGROUND_SKILL_TOOL_NAMES.has(name) && this.parentToolNames.has(name);
+  }
+
+  /**
+   * 记录一次真实成功的 load_skill 读取凭证。
+   * 摘要只来自本次工具返回包络中的正文，不允许再次读取磁盘替换模型实际看到的版本。
+   * 若统一输出层将折叠该包络，则 fail-closed 不记录凭证。
+   *
+   * @param functionArgs - load_skill 调用参数（name / 可选 file_path）
+   * @param outcomeValue - 工具网关返回的真实结果包络
+   */
+  private recordSkillLoad(
+    functionArgs: Readonly<Record<string, unknown>>,
+    outcomeValue: unknown,
+  ): void {
+    const name = typeof functionArgs.name === 'string' ? functionArgs.name : undefined;
+    if (!name) {
+      return;
+    }
+    const filePath = typeof functionArgs.file_path === 'string'
+      ? functionArgs.file_path
+      : undefined;
+    let serializedOutcome: string | undefined;
+    try {
+      serializedOutcome = JSON.stringify(outcomeValue);
+    } catch {
+      serializedOutcome = undefined;
+    }
+    if (
+      typeof serializedOutcome !== 'string'
+      || !isToolOutputWithinQuota(this.getTool('load_skill'), serializedOutcome)
+    ) {
+      logger.warn('[BackgroundSkillAgent] load_skill_credential_not_recorded', {
+        component: 'background_skill_agent',
+        event: 'load_skill_credential_not_recorded',
+        reason: 'model_visible_output_would_be_truncated',
+        skill: name,
+        filePath: filePath ?? null,
+      });
+      return;
+    }
+    const modelVisibleContent = unwrapTextContent(outcomeValue);
+    if (typeof modelVisibleContent === 'string') {
+      this.readLedger.recordLoad(name, filePath, modelVisibleContent);
+    }
   }
 
   /** 在进入共享 ToolGateway 前后置准备阶段检查关闭与取消。 */
@@ -258,6 +319,20 @@ function parseSkillMutation(
       ? { absorbedInto: functionArgs.absorbedInto }
       : {}),
   });
+}
+
+/** 解包 CallToolResult 第一段 text 文本；无法解包时返回 undefined。 */
+function unwrapTextContent(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (isRecord(value) && Array.isArray(value.content)) {
+    const first = value.content[0];
+    if (isRecord(first) && typeof first.text === 'string') {
+      return first.text;
+    }
+  }
+  return undefined;
 }
 
 /** 解包 CallToolResult 第一段 text，并兼容测试中的直接 JSON 字符串。 */

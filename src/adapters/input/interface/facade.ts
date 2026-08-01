@@ -9,6 +9,7 @@ import {
   renderCompletionBanner,
   renderSectionTitle,
   renderSessionHeader,
+  renderSkillReviewUpdate,
   renderTokenPanel,
   renderToolCallResult,
   renderToolCallStart
@@ -418,6 +419,17 @@ export class CliFacade {
         );
         this.isRendering = false;
         this.listener.resume(); // 本轮推理完全结束，恢复 Stdin 监听
+        break;
+
+      case 'skill_review_update':
+        // 后台复盘结果只作为状态行渲染：不改变渲染状态机，
+        // 不阻塞输入，complete 仍是本轮唯一终结点。
+        process.stdout.write(`${renderSkillReviewUpdate(
+          event.status,
+          event.action,
+          event.skill,
+          event.pendingId,
+        )}\n`);
         break;
     }
   }

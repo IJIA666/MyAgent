@@ -117,6 +117,11 @@ export class ConversationState {
    * 重新组装并更新消息历史中的首条系统提示词。
    * 保持消息历史中的第 0 个系统消息节点，直接覆写其 content。
    *
+   * 调用约束：该写入只允许发生在会话构造期（规则初始化、会话打开）以及
+   * 显式的手动规则重载；Skill 文件自动变更（SkillLibrary 订阅、项目 watcher）
+   * 不得调用本方法改写首条系统消息，活跃会话的 Skill 元数据快照保持冻结，
+   * 变更后的元数据从新会话开始生效。
+   *
    * @param systemPrompt - 由 buildSystemPrompt 生成的完整系统提示词
    */
   updateSystemPrompt(systemPrompt: string): void {

@@ -54,10 +54,11 @@
 
 - [x] 5.1 修改 `src/ports/shared/plugin-types.ts` 与 `src/core/usecases/plugins/plugin-types.ts`，新增只读 `AgentRunSummary`：terminalStatus、toolIterationCount、requestedToolCallCount、historyStartIndex、historyEndIndex、hasFinalResponse、waitingForInteraction；通过 `runSummary?: Readonly<AgentRunSummary>` 可选字段只在 RunEnd 暴露，其他 HookContext 构造点无需提供，且不改变公开 AgentEvent 联合。
 - [x] 5.2 修改 `src/core/usecases/engine/agent-loop.ts`，在每次 chat run 内按响应终态统计：非空 tool_calls 响应无论是否同时含 content 都使 toolIterationCount 增加 1，并使 requestedToolCallCount 增加数组长度；只有 complete 事件的最终 assistant message 成功加入上下文后才设 hasFinalResponse=true。在正常完成、用户拒绝、中断、错误、达到迭代上限等所有退出路径生成一致 RunEnd summary，RunEnd 仍在 finally 中只触发一次。
-- [x] 5.3 新增 `src/core/usecases/plugins/SkillLearningPlugin.ts`，在 RunStart 锁定轨迹起点，在 AfterModel/AfterTool 记录已加载 Skill 与结构化成功/失败证据，在 RunEnd 只对 `completed + hasFinalResponse + !waitingForInteraction` 的运行累计 toolIterationCount。
+- [x] 5.3 新增 `src/core/usecases/plugins/SkillLearningPlugin.ts`，在 RunStart 锁定轨迹起点，在 AfterModel/AfterTool 记录已加载 Skill 与结构化成功/失败证据；`waiting_for_interaction` 时不立即复盘，而是保存学习延续状态，恢复后只有 `completed + hasFinalResponse + !waitingForInteraction` 才把等待前后计数与证据作为同一个逻辑学习单元累计。
 - [x] 5.4 在 SkillLearningPlugin 中实现 `creationNudgeInterval`：低于阈值保留累计值，达到阈值后复制本次轨迹、归零并调用只负责排队的 `BackgroundSkillReviewService.schedule()`；`backgroundReviewEnabled=false` 时不累计、不调度，调度不得 await 后台模型任务。
 - [x] 5.5 修改 `src/core/usecases/engine/session.ts` 注册 SkillLearningPlugin，并保证普通主会话插件实例与后台临时 Agent 的 PluginRegistry 隔离；通过结构化日志记录 review_scheduled、review_skipped 和真实 exit reason，不记录完整用户轨迹。
 - [x] 5.6 更新 `test/core/usecases/engine/agent-loop.test.ts`、`test/core/usecases/plugins/plugins.test.ts`，新增 `test/core/usecases/plugins/SkillLearningPlugin.test.ts`；覆盖带 content 的三个并行 tool_calls 只增加一个 iteration/三个 requested calls 且不是 final、后续 complete 使同一 run 的 hasFinalResponse=true、非 RunEnd 无 summary、累计跨 run、多个简单 run 达阈值、阈值归零、error/abort/pending interaction 不触发，以及 schedule 立即返回。
+- [x] 5.7 新增会话级 `SkillLearningContinuation` 并随 ContextRepository 快照持久化；覆盖等待前证据延迟、交互回答纳入轨迹、恢复完成后合并复盘、恢复失败后丢弃，以及进程重启后继续同一学习单元。
 
 <!-- checkpoint: npx vitest run test/core/usecases/engine/agent-loop.test.ts test/core/usecases/plugins/plugins.test.ts test/core/usecases/plugins/SkillLearningPlugin.test.ts -->
 <!-- checkpoint: npm run test:typecheck -->

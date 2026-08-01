@@ -1,12 +1,12 @@
 /**
  * @fileoverview 会话持久化合约测试。
  * 使用真实 ContextRepository 验证 saveState() → JSON 快照 → loadState() 的完整性，
- * 覆盖 messages、历史中段摘要消息和合法 pendingInteraction 字段。
+ * 覆盖 messages、历史中段摘要、pendingInteraction 和 Skill 学习延续字段。
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
-import { join } from 'path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { ContextRepository } from '../../src/core/usecases/brain/ContextRepository.js';
 import { SessionContext } from '../../src/core/domain/context.js';
@@ -136,5 +136,144 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
 
     // 新会话应从头使用配置默认值，而不是恢复旧的 acceptEdits
     expect(loadedSession.getPermissionMode()).toBe('default');
+  });
+
+  it('waiting_for_interaction 的 Skill 学习证据可跨进程快照恢复', async () => {
+    const session = new SessionContext('contract-persistence-skill-learning');
+    session.setSkillLearningContinuation({
+      version: 2,
+      foregroundSkillMutationHandled: false,
+      trajectory: [
+        { role: 'user', content: '发布纯文字帖子' },
+        { role: 'tool', tool_call_id: 'publisher-check', content: '需要绑定手机号' },
+      ],
+      loadedSkills: ['social-posting'],
+      toolEvidence: [{
+        toolCallId: 'publisher-check',
+        toolName: 'browser_get_text',
+        status: 'success',
+        resultSummary: '创作中心返回手机号绑定前置条件',
+      }],
+      toolIterationCount: 17,
+      requestedToolCallCount: 20,
+      segmentCount: 1,
+      resumeHistoryIndex: session.getHistory().length,
+    });
+
+    const workspace = createTempWorkspace();
+    await new ContextRepository(session, workspace).saveState();
+
+    const loadedSession = new SessionContext('contract-persistence-skill-learning-loaded');
+    const found = await new ContextRepository(loadedSession, workspace)
+      .loadState(session.getSessionId());
+
+    expect(found).toBe(true);
+    expect(loadedSession.getSkillLearningContinuation()).toEqual(
+      session.getSkillLearningContinuation(),
+    );
+  });
+
+  it('未达阈值的 Skill 学习累计跨快照恢复，损坏字段 fail-closed 归零', async () => {
+    const workspace = createTempWorkspace();
+
+    // 保存已累计 7 次的快照。
+    const session = new SessionContext('contract-persistence-cadence');
+    session.setSkillLearningCadence({
+      version: 1,
+      accumulatedToolResponseIterations: 7,
+    });
+    await new ContextRepository(session, workspace).saveState();
+
+    // 恢复同一会话：累计值 7 继续使用，不重置为零。
+    const loadedSession = new SessionContext('contract-persistence-cadence-loaded');
+    await new ContextRepository(loadedSession, workspace)
+      .loadState(session.getSessionId());
+    expect(loadedSession.getSkillLearningCadence()).toMatchObject({
+      accumulatedToolResponseIterations: 7,
+    });
+
+    // 损坏字段（负数/未知版本）按零累计恢复，且不阻止其他状态恢复。
+    const damagedSession = new SessionContext('contract-persistence-cadence-damaged');
+    damagedSession.addMessage({ role: 'user', content: '合法消息' });
+    damagedSession.setSkillLearningCadence({
+      version: 1,
+      accumulatedToolResponseIterations: 7,
+    });
+    await new ContextRepository(damagedSession, workspace).saveState();
+    const raw = JSON.parse(
+      readFileSync(resolve(workspace, `session_${damagedSession.getSessionId()}.json`), 'utf8'),
+    ) as { skillLearningCadence: { version: number; accumulatedToolResponseIterations: number } };
+    raw.skillLearningCadence = { version: 99, accumulatedToolResponseIterations: -3 };
+    writeFileSync(
+      resolve(workspace, `session_${damagedSession.getSessionId()}.json`),
+      JSON.stringify(raw, null, 2),
+      'utf8',
+    );
+
+    const repairedSession = new SessionContext('contract-persistence-cadence-repaired');
+    await new ContextRepository(repairedSession, workspace)
+      .loadState(damagedSession.getSessionId());
+    // 损坏字段不得阻止合法消息历史恢复。
+    expect(repairedSession.getHistory().some(
+      message => message.role === 'user' && message.content === '合法消息',
+    )).toBe(true);
+    expect(repairedSession.getSkillLearningCadence()).toMatchObject({
+      accumulatedToolResponseIterations: 0,
+    });
+  });
+
+  it('加载旧版数组快照时清空当前上下文中的临时交互与学习状态', async () => {
+    const workspace = createTempWorkspace();
+    const legacySessionId = 'contract-persistence-legacy-array';
+    writeFileSync(
+      resolve(workspace, `session_${legacySessionId}.json`),
+      JSON.stringify([{ role: 'user', content: '旧版会话消息' }]),
+      'utf8',
+    );
+
+    // 模拟仓储复用：加载前的 Context 已残留另一会话的临时状态。
+    const loadedSession = new SessionContext('contract-persistence-legacy-target');
+    loadedSession.setPendingInteraction({
+      id: 'stale-pending',
+      toolName: 'ask_user_question',
+      toolCallId: 'stale-tool-call',
+      payload: {
+        questions: [{
+          id: 'choice',
+          header: 'Choice',
+          question: 'Continue?',
+          mode: 'single-select',
+          options: [{ label: 'Yes' }],
+        }],
+      },
+    });
+    loadedSession.setSkillLearningContinuation({
+      version: 2,
+      foregroundSkillMutationHandled: false,
+      trajectory: [{ role: 'user', content: '不应泄漏的轨迹' }],
+      loadedSkills: ['stale-skill'],
+      toolEvidence: [],
+      toolIterationCount: 3,
+      requestedToolCallCount: 3,
+      segmentCount: 1,
+      resumeHistoryIndex: 1,
+    });
+    loadedSession.setSkillLearningCadence({
+      version: 1,
+      accumulatedToolResponseIterations: 9,
+    });
+
+    const found = await new ContextRepository(loadedSession, workspace)
+      .loadState(legacySessionId);
+
+    expect(found).toBe(true);
+    expect(loadedSession.pendingInteraction).toBeNull();
+    expect(loadedSession.getSkillLearningContinuation()).toBeNull();
+    expect(loadedSession.getSkillLearningCadence()).toMatchObject({
+      accumulatedToolResponseIterations: 0,
+    });
+    expect(loadedSession.getHistory()).toEqual([
+      { role: 'user', content: '旧版会话消息' },
+    ]);
   });
 });

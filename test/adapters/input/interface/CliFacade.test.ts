@@ -320,6 +320,33 @@ describe('CliFacade', () => {
       expect(output).toContain('[异常] LLM connection timeout');
     });
 
+    it('should correctly render "skill_review_update" as a non-blocking status line', () => {
+      mockSession.emit('agent_event', {
+        type: 'skill_review_update',
+        status: 'success',
+        action: 'create',
+        skill: 'text-posting',
+      });
+
+      const successOutput = getCleanedOutput();
+      expect(successOutput).toContain('[后台技能] create「text-posting」已完成');
+      expect(successOutput).not.toContain('完毕。');
+    });
+
+    it('staged 复盘结果应渲染暂存状态与 pendingId', () => {
+      mockSession.emit('agent_event', {
+        type: 'skill_review_update',
+        status: 'staged',
+        action: 'patch',
+        skill: 'text-posting',
+        pendingId: 'pending-42',
+      });
+
+      const output = getCleanedOutput();
+      expect(output).toContain('[后台技能] patch「text-posting」已暂存，等待批准');
+      expect(output).toContain('暂存 pending-42');
+    });
+
     it('should correctly render "complete" events and render token panels', () => {
       mockSession.emit('agent_event', {
         type: 'complete'

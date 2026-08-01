@@ -76,12 +76,23 @@ function createReviewRequest(): BackgroundSkillReviewRequest {
       terminalStatus: 'completed',
       toolIterationCount: 1,
       requestedToolCallCount: 1,
-      historyStartIndex: 0,
+      physicalRunStartIndex: 0,
+      learningTrajectoryStartIndex: 0,
       historyEndIndex: 4,
       hasFinalResponse: true,
       waitingForInteraction: false,
     },
   };
+}
+
+/** 构造一次完整 complete 流事件。 */
+function completeEvent(content: string): LlmStreamEvent {
+  return {
+    type: 'complete',
+    content,
+    reasoning: '',
+    assistantMessage: { role: 'assistant', content },
+  } as LlmStreamEvent;
 }
 
 /** 创建隔离路径、SkillLibrary 与 AppConfig。 */
@@ -241,6 +252,7 @@ describe('BackgroundSkillReviewService', () => {
   it.each([
     ['success', '{"status":"success","action":"create","name":"text-posting","summary":"created"}'],
     ['staged', '{"status":"staged","action":"create","name":"text-posting","pendingId":"pending-1","summary":"staged"}'],
+    ['error', '{"status":"error","action":"create","name":"text-posting","summary":"failed"}'],
   ] as const)('只有真实 skill_manage %s 结果才产生通知', async (status, payload) => {
     let modelCallCount = 0;
     const driver = {
@@ -295,6 +307,12 @@ describe('BackgroundSkillReviewService', () => {
 
     const result = await service.runReview(createReviewRequest());
 
+    if (status === 'error') {
+      // 工具失败不产生变更摘要，也不得发送任何成功展示事件。
+      expect(result.mutations).toEqual([]);
+      expect(notify).not.toHaveBeenCalled();
+      return;
+    }
     expect(result.mutations).toMatchObject([{
       status,
       action: 'create',
@@ -388,5 +406,151 @@ describe('BackgroundSkillReviewService', () => {
     expect(registry.callTool).not.toHaveBeenCalled();
     service.schedule(createReviewRequest());
     expect(driver.streamChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('FIFO 串行执行，任一时刻最多一个活动复盘', async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
+    let markSecondStarted!: () => void;
+    const secondStarted = new Promise<void>(resolve => { markSecondStarted = resolve; });
+    let callCount = 0;
+    const driver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      streamChat: vi.fn().mockImplementation(async function* () {
+        callCount++;
+        if (callCount === 1) {
+          markFirstStarted();
+          await firstGate;
+          yield completeEvent('first done');
+        } else {
+          markSecondStarted();
+          yield completeEvent('second done');
+        }
+      }),
+    } as unknown as LlmPort;
+    const { service } = createService(driver, createParentRegistry());
+
+    service.schedule(createReviewRequest());
+    service.schedule(createReviewRequest());
+    await firstStarted;
+    await Promise.resolve();
+    // 第一个任务仍在运行，第二个必须留在队列中等待。
+    expect(callCount).toBe(1);
+
+    releaseFirst();
+    await secondStarted;
+    expect(callCount).toBe(2);
+    await service.close(2_000);
+  });
+
+  it('前一个复盘失败后继续处理队首请求', async () => {
+    let markRecovered!: () => void;
+    const recovered = new Promise<void>(resolve => { markRecovered = resolve; });
+    let callCount = 0;
+    const driver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      streamChat: vi.fn().mockImplementation(async function* () {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error('model failure');
+        }
+        markRecovered();
+        yield completeEvent('recovered');
+      }),
+    } as unknown as LlmPort;
+    const { service } = createService(driver, createParentRegistry());
+
+    service.schedule(createReviewRequest());
+    service.schedule(createReviewRequest());
+    await recovered;
+
+    expect(callCount).toBe(2);
+    await service.close(2_000);
+  });
+
+  it('关闭丢弃未启动请求并取消活动任务', async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    let callCount = 0;
+    const driver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      streamChat: vi.fn().mockImplementation(async function* (
+        _messages: ChatMessage[],
+        _tools: unknown[],
+        options?: { signal?: AbortSignal },
+      ) {
+        callCount++;
+        markStarted();
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            reject(error);
+          }, { once: true });
+        });
+        yield completeEvent('unreachable');
+      }),
+    } as unknown as LlmPort;
+    const { service } = createService(driver, createParentRegistry());
+
+    service.schedule(createReviewRequest());
+    service.schedule(createReviewRequest());
+    await started;
+    await service.close(2_000);
+
+    // 队列中的第二个请求被丢弃，活动任务被取消。
+    expect(callCount).toBe(1);
+  });
+
+  it('关闭后 schedule 同步返回未接受，不创建任务或队列条目', async () => {
+    const driver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      streamChat: vi.fn().mockImplementation(async function* () {
+        yield completeEvent('done');
+      }),
+    } as unknown as LlmPort;
+    const registry = createParentRegistry();
+    const { service } = createService(driver, registry);
+
+    await service.close(2_000);
+    const acceptance = service.schedule(createReviewRequest());
+
+    expect(acceptance).toEqual({ accepted: false, taskId: null });
+    expect(driver.streamChat).not.toHaveBeenCalled();
+    expect(registry.callTool).not.toHaveBeenCalled();
+  });
+
+  it('入队时复制不可变快照，调用方后续修改不影响队列', async () => {
+    const observed: ChatMessage[][] = [];
+    const driver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      streamChat: vi.fn().mockImplementation(async function* (
+        messages: ChatMessage[],
+      ) {
+        observed.push(structuredClone(messages));
+        yield completeEvent('done');
+      }),
+    } as unknown as LlmPort;
+    const { service } = createService(driver, createParentRegistry());
+
+    const request = createReviewRequest();
+    service.schedule(request);
+    // 调用方在入队后篡改原请求：队列快照必须不受影响。
+    (request.trajectory as ChatMessage[]).push({
+      role: 'user',
+      content: '入队后篡改',
+    });
+    await service.close(2_000);
+
+    const serialized = JSON.stringify(observed);
+    expect(serialized).not.toContain('入队后篡改');
+    expect(serialized).toContain('发布一条纯文字帖子');
   });
 });

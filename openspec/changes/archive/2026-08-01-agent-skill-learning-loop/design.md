@@ -110,12 +110,12 @@ Skill 包固定包含根 `SKILL.md`，并可包含 `references/`、`templates/`�
 
 新增 `SkillLearningPlugin` 订阅 RunStart、AfterModel、AfterTool、RunEnd：
 
-- RunStart 记录本次轨迹起点；
+- RunStart 记录本次轨迹起点；若会话保存了等待用户交互前的学习延续状态，则先恢复其轨迹、计数和工具证据；
 - AfterModel 对每个包含非空 `tool_calls` 的模型响应累计一次 tool iteration，无论该响应是否同时携带 content；并记录本轮加载过的 Skill；
 - AfterTool 保存结构化工具成功/失败摘要；
-- RunEnd 接收 AgentLoop 提供的 `AgentRunSummary`，只有正常处理 `complete` 模型事件并提交最终 assistant message、没有中断、错误或挂起交互时才累计 eligible iteration。
+- RunEnd 接收 AgentLoop 提供的 `AgentRunSummary`。`waiting_for_interaction` 不立即累计或触发 Review，而是把当前轨迹、已加载 Skill、工具证据和计数作为学习延续状态写入会话快照；恢复后的 run 正常提交最终 assistant message 时，前后各段才作为同一个逻辑学习单元累计。恢复后错误、中断、拒绝或达到迭代上限时丢弃该延续状态。
 
-累计值达到 `skills.creationNudgeInterval`（默认 10）且后台学习开启时，插件复制本次相关轨迹并通过 `BackgroundSkillReviewService.schedule()` 安排任务，随后立即返回。默认 10 取自 Hermes 基线，第一版用于较快建立初始 Skill 库并允许用户按模型成本调高或关闭；计数跨 run 累积，因此多个带少量工具调用的简单任务最终也可能触发 Review。主 Agent 的流式正文已经交付，后台任务不得延迟 `complete` 事件；调度失败只记诊断，不改变前台结果。
+累计值达到 `skills.creationNudgeInterval`（默认 10）且后台学习开启时，插件复制本次逻辑学习单元的相关轨迹并通过 `BackgroundSkillReviewService.schedule()` 安排任务，随后立即返回。默认 10 取自 Hermes 基线，第一版用于较快建立初始 Skill 库并允许用户按模型成本调高或关闭；计数跨正常 run 累积，因此多个带少量工具调用的简单任务最终也可能触发 Review。等待段的计数只在同一任务最终完成时一次性并入，不能单独触发。主 Agent 的流式正文已经交付，后台任务不得延迟 `complete` 事件；调度失败只记诊断，不改变前台结果。
 
 `AgentRunSummary` 通过可选只读字段 `runSummary?: Readonly<AgentRunSummary>` 加入端口与核心 HookContext，并且只在 RunEnd 存在，避免要求其他 Hook 构造该字段；它不改变现有 AgentEvent 公共联合。`toolIterationCount` 是本 run 收到非空 `tool_calls` 终态的模型响应数，并行 N 个 tool calls 仍只增加一次；`requestedToolCallCount` 是这些数组长度之和，不把工具成功执行数量混入同一指标；`hasFinalResponse` 只在 `complete` 事件的最终 assistant message 已提交时为 true，带 content 的 `tool_calls` 响应仍不是最终回复。summary 还包含 terminal status、轨迹起止位置和 waitingForInteraction。
 

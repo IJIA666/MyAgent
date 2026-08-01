@@ -31,4 +31,20 @@ export type AgentEvent =
       message?: string;
       choices?: ApprovalChoice[];
     }
-  | { type: 'complete' };
+  | { type: 'complete' }
+  | {
+      /**
+       * 后台 Skill 复盘的结果展示事件。
+       * 仅供宿主非阻塞渲染状态行，绝不作为消息写入模型历史或触发自动唤醒；
+       * 仅由真实成功的 skill_manage 工具结果派生，模型自述不会产生该事件。
+       */
+      type: 'skill_review_update';
+      /** 真实 Skill 写入结果状态（成功或暂存）。 */
+      status: 'success' | 'staged';
+      /** Skill 管理动作（create/patch/edit/delete/write_file/remove_file）。 */
+      action: string;
+      /** 被变更的 Skill 名称。 */
+      skill: string;
+      /** writeApproval 暂存标识；仅 staged 结果携带。 */
+      pendingId?: string;
+    };

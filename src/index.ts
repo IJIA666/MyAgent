@@ -109,6 +109,7 @@ async function main() {
       appConfig.applicationPaths.projectSkillsDir,
       appConfig.applicationPaths.skillArchiveDir,
       skillUsageStore,
+      { skillLocksDir: appConfig.applicationPaths.skillLocksDir },
     );
     const skillPendingStore = new SkillPendingStore(
       appConfig.applicationPaths.skillPendingDir,

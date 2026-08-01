@@ -79,6 +79,21 @@ export interface SkillManageRequest {
   absorbedInto?: string;
 }
 
+// ── 稳定错误代码 ──
+
+/** 后台修改前未通过 load_skill 读取准确目标。 */
+export const SKILL_ERR_READ_BEFORE_WRITE_REQUIRED = 'read_before_write_required';
+/** 读取后目标内容已变化，需要重新读取后重试。 */
+export const SKILL_ERR_STALE_SKILL_READ = 'stale_skill_read';
+/** 目标状态与读取时不一致（如新建目标已经出现）。 */
+export const SKILL_ERR_SKILL_TARGET_CHANGED = 'skill_target_changed';
+
+/** Skill 写入边界可供调用方稳定判断的冲突错误代码。 */
+export type SkillMutationErrorCode =
+  | typeof SKILL_ERR_READ_BEFORE_WRITE_REQUIRED
+  | typeof SKILL_ERR_STALE_SKILL_READ
+  | typeof SKILL_ERR_SKILL_TARGET_CHANGED;
+
 /**
  * 单次 Skill 管理操作的结果。
  * 区分成功、失败和暂存三种状态。
@@ -99,6 +114,8 @@ export type SkillManageResult =
       name: string;
       /** 错误描述。 */
       error: string;
+      /** 稳定错误代码；冲突类错误必须携带，便于调用方重试决策。 */
+      errorCode?: SkillMutationErrorCode;
     }
   | {
       status: 'staged';
@@ -130,7 +147,23 @@ export interface SkillManagePreview {
 /** Skill 管理预览结果。 */
 export type SkillManagePreviewResult =
   | { readonly status: 'ready'; readonly preview: SkillManagePreview }
-  | { readonly status: 'error'; readonly error: string };
+  | {
+      readonly status: 'error';
+      readonly error: string;
+      /** 读取凭证或目标版本冲突时携带的稳定错误代码。 */
+      readonly errorCode?: SkillMutationErrorCode;
+    };
+
+/**
+ * 用户批准 pending 时交给 SkillLibrary 的受信重放条件。
+ * id 只标识批准来源，baseFingerprint 才是锁内执行前必须重新验证的版本条件。
+ */
+export interface SkillPendingReplayGuard {
+  /** 已通过参数绑定校验的 pending UUID。 */
+  readonly id: string;
+  /** pending 暂存时保存的目标内容或包摘要。 */
+  readonly baseFingerprint: string;
+}
 
 // ── 元数据 ──
 

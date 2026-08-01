@@ -275,23 +275,25 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
           'interactive',
         ),
         notify: mutation => {
-          const pendingLine = mutation.pendingId
-            ? `\n  <pending_id>${mutation.pendingId}</pending_id>`
-            : '';
-          this.context.addNotification({
-            role: 'user',
-            content: [
-              '<system_notification>',
-              '  <event_type>skill_review_update</event_type>',
-              `  <status>${mutation.status}</status>`,
-              `  <action>${mutation.action}</action>`,
-              `  <skill>${mutation.name}</skill>${pendingLine}`,
-              '</system_notification>',
-            ].join('\n'),
-          });
-          this.context.emit('async_event', {
+          if (this.isClosed) {
+            // 会话关闭后抵达的复盘结果只记录诊断，不重新激活会话。
+            logger.warn('[SessionManager] skill_review_update_after_close', {
+              component: 'session',
+              event: 'skill_review_update_after_close',
+              status: mutation.status,
+              action: mutation.action,
+              skill: mutation.name,
+            });
+            return;
+          }
+          // 复盘结果只作为展示事件交付宿主：不写模型历史、不进入 async_event 通道，
+          // 因此不会设置自动唤醒标记，也不会触发 runInternalGeneration。
+          this.emit('agent_event', {
             type: 'skill_review_update',
-            ...mutation,
+            status: mutation.status,
+            action: mutation.action,
+            skill: mutation.name,
+            ...(mutation.pendingId !== undefined ? { pendingId: mutation.pendingId } : {}),
           });
         },
       });
@@ -1157,6 +1159,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     }
 
     // 1. 同步将消息写入上下文历史
+    // 学习轨迹起点指向即将追加的用户消息本身：必须在 addUserMessage 前记录当前历史长度。
+    const learningTrajectoryStartIndex = this.context.getHistory().length;
     logger.debug('[SessionManager] generation_requested', {
       component: 'session',
       event: 'generation_requested',
@@ -1170,7 +1174,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.addUserMessage(input);
 
     // 2. 异步调起内部推理并广播事件
-    this.runInternalGeneration(transientSkillContent).catch((err: unknown) => {
+    this.runInternalGeneration(transientSkillContent, learningTrajectoryStartIndex).catch((err: unknown) => {
       logger.error('[SessionManager] handleUserInput 推理执行失败:', err);
     });
   }
@@ -1208,6 +1212,11 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.context.clearPendingInteraction();
     await this.contextRepo.saveState();
 
+    // 恢复交互的学习轨迹起点取延续状态保存的恢复边界（等待段结束时的历史长度），
+    // 使复盘轨迹恰好从等待前轨迹的末尾接续；无延续状态时按 null fail-closed。
+    const continuation = this.context.getSkillLearningContinuation();
+    const learningTrajectoryStartIndex = continuation ? continuation.resumeHistoryIndex : null;
+
     const previousWakeupCount = this.autoWakeupCount;
     this.isGenerating = true;
     this.autoWakeupCount = 0;
@@ -1221,7 +1230,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       reason: 'human_interruption_answer'
     });
 
-    this.runInternalGeneration().catch((err: unknown) => {
+    this.runInternalGeneration(undefined, learningTrajectoryStartIndex).catch((err: unknown) => {
       logger.error('[SessionManager] resumePendingInteraction 推理执行失败:', err);
     });
   }
@@ -1230,8 +1239,13 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    * 内部推理循环调度，并进行事件的流式广播分发。
    *
    * @param transientSkillContent - 可选。当前请求专享的临时技能规范内容
+   * @param learningTrajectoryStartIndex - 可选。逻辑学习轨迹起点；
+   * 缺省或显式 null 表示内部生成，RunEnd 摘要按原样冻结该边界
    */
-  private async runInternalGeneration(transientSkillContent?: string): Promise<void> {
+  private async runInternalGeneration(
+    transientSkillContent?: string,
+    learningTrajectoryStartIndex?: number | null,
+  ): Promise<void> {
     let hasError = false;
     logger.debug('[SessionManager] generation_cycle_started', {
       component: 'session',
@@ -1242,7 +1256,10 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     });
     try {
       // 订阅并逐步消费大脑层抛出的推理事件，对外分发统一的 'agent_event'
-      for await (const event of this.agentLoop.chat(transientSkillContent, this.tracer, this.llmConfig)) {
+      // 学习轨迹起点随 chat 传给 RunEnd 摘要；内部生成不传，摘要中为 null。
+      for await (const event of this.agentLoop.chat(transientSkillContent, this.tracer, this.llmConfig, {
+        learningTrajectoryStartIndex,
+      })) {
         this.emit('agent_event', event);
       }
     } catch (error: unknown) {

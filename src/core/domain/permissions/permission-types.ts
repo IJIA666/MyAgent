@@ -277,6 +277,27 @@ export type PermissionIdentity =
   | 'UnknownEffect';
 
 /**
+ * skill_manage 的宿主签发写入前置条件。
+ * 该对象只存在宿主内存中，绑定后台读取账本与宿主验证 caller，
+ * 随权限分析冻结在 executionPlan 中，不加入模型 Function Calling schema；
+ * 模型提交的 fingerprint、origin 或 bypass 字段一律不得生效。
+ */
+export interface SkillMutationPrecondition {
+  /** 绑定的宿主验证后台 callerId。 */
+  readonly callerId: string;
+  /** 本次 Skill 管理动作。 */
+  readonly action: 'create' | 'patch' | 'edit' | 'delete' | 'write_file' | 'remove_file';
+  /** 规范化 Skill 名称。 */
+  readonly name: string;
+  /** 目标支持文件相对路径；主文件为 null。 */
+  readonly filePath: string | null;
+  /** 必须已在本任务中读取且摘要匹配的目标键 → 内容摘要。 */
+  readonly requiredReads: Readonly<Record<string, string>>;
+  /** 提交时仍必须不存在的目标键（新建例外）。 */
+  readonly requiredAbsent: readonly string[];
+}
+
+/**
  * skill_manage 在权限阶段绑定到受信 caller 的只读分析结果。
  * origin 只能由宿主 caller 派生，不能从模型输入字段读取。
  */
@@ -293,6 +314,8 @@ export interface SkillPermissionAnalysis {
   readonly callerId: string;
   /** 用户通过 CLI 批准的一条 pending id；普通模型调用没有该字段。 */
   readonly pendingReplayId?: string;
+  /** 后台先读后写前置条件；仅后台 caller 由读取账本签发，前台调用没有该字段。 */
+  readonly mutationPrecondition?: SkillMutationPrecondition;
 }
 
 // ──  ResourceEvidence（正式资源证据判别联合）──

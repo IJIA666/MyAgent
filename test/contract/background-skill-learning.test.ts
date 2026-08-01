@@ -1,11 +1,11 @@
 /**
  * @file 后台 Skill 学习触发与隔离契约。
- * 固定 Hermes 阈值基线、RunEnd 计数定义、非阻塞排队和受限工具面。
+ * 固定阈值基线、RunEnd 计数定义、非阻塞排队和受限工具面。
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LlmConfig } from '../../src/config/index.js';
 import type {
@@ -44,14 +44,9 @@ afterEach(() => {
 });
 
 describe('Background Skill learning contract', () => {
-  it('默认阈值 10 对齐 Hermes 基线，跨 run 累计且缺少 summary 不触发', async () => {
+  it('默认阈值 10 按工具型响应次数跨 run 累计，缺少 summary 不触发', async () => {
     const config = createMockAppConfig();
-    const documentation = readFileSync(
-      resolve(process.cwd(), 'docs', 'skill-learning-loop.md'),
-      'utf8',
-    );
     expect(config.skills.creationNudgeInterval).toBe(10);
-    expect(documentation).toContain('10 是对齐 Hermes 的学习基线');
 
     let finishBackground: (() => void) | undefined;
     const background = new Promise<void>(resolvePromise => {
@@ -59,6 +54,7 @@ describe('Background Skill learning contract', () => {
     });
     const schedule = vi.fn(() => {
       void background;
+      return { accepted: true, taskId: 'contract-task' };
     });
     const plugin = new SkillLearningPlugin(config.skills, {
       schedule,
@@ -277,7 +273,8 @@ function completedSummary(toolIterationCount: number): AgentRunSummary {
     terminalStatus: 'completed',
     toolIterationCount,
     requestedToolCallCount: toolIterationCount,
-    historyStartIndex: 0,
+    physicalRunStartIndex: 0,
+    learningTrajectoryStartIndex: 0,
     historyEndIndex: 0,
     hasFinalResponse: true,
     waitingForInteraction: false,

@@ -92,7 +92,9 @@ export class ToolCatalog {
       name: tool.name,
       securityCategory: tool.securityCategory,
       executionMode: tool.executionMode,
-      filePathParamKey: tool.filePathParamKey
+      filePathParamKey: tool.filePathParamKey,
+      maxLines: tool.maxLines,
+      maxBytes: tool.maxBytes,
     };
   }
 

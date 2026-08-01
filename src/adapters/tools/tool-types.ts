@@ -47,6 +47,16 @@ export interface NativeTool {
   readonly filePathParamKey?: string;
 
   /**
+   * 可选的模型可见输出最大行数；超限时由统一 ToolDispatcher 折叠。
+   */
+  readonly maxLines?: number;
+
+  /**
+   * 可选的模型可见输出最大字节数；超限时由统一 ToolDispatcher 折叠。
+   */
+  readonly maxBytes?: number;
+
+  /**
    * 工具的大模型调用声明定义，包含描述与参数模式。
    */
   readonly definition: Record<string, unknown>;

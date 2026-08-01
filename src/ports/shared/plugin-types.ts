@@ -50,10 +50,17 @@ export interface AgentRunSummary {
   readonly toolIterationCount: number;
   /** 所有上述响应请求的工具调用总数。 */
   readonly requestedToolCallCount: number;
-  /** RunStart 时的会话历史长度。 */
-  readonly historyStartIndex: number;
+  /** RunStart 时的会话历史长度，即本次物理运行在历史中的起点。 */
+  readonly physicalRunStartIndex: number;
   /** RunEnd 时的会话历史长度。 */
   readonly historyEndIndex: number;
+  /**
+   * 当前逻辑学习轨迹的起点索引，由用户任务或交互恢复入口显式提供。
+   * 该索引指向触发当前逻辑任务的第一条用户消息（或恢复段边界）；
+   * 为 null 表示本次 run 没有用户任务边界（普通内部生成、后台唤醒等），
+   * 插件不得通过减一、角色搜索等方式猜测该起点，也不得安排 Skill 复盘。
+   */
+  readonly learningTrajectoryStartIndex: number | null;
   /** 是否已提交 complete 事件对应的最终 assistant message。 */
   readonly hasFinalResponse: boolean;
   /** 是否因等待人机交互而结束当前 run。 */

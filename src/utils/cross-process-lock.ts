@@ -107,19 +107,25 @@ export class CrossProcessLockManager {
    * 尝试回收。获取锁后写入带有 token、pid 和 acquiredAt 的元数据。
    *
    * @param lockFilePath - 锁文件绝对路径
+   * @param signal - 可选的上游取消信号，用于终止锁轮询
    * @returns 成功时返回 CrossProcessLock；超时时抛出明确错误
    * @throws 超时、目标目录不可创建或锁文件不可写入时抛出 Error
    */
-  public async acquire(lockFilePath: string): Promise<CrossProcessLock> {
+  public async acquire(
+    lockFilePath: string,
+    signal?: AbortSignal,
+  ): Promise<CrossProcessLock> {
     const deadline = Date.now() + this.timeoutMs;
 
     while (true) {
+      throwIfAborted(signal, lockFilePath);
       // 尝试回收陈旧锁
       this.recoverStaleLock(lockFilePath);
 
       try {
         const handle = await open(lockFilePath, 'wx');
         try {
+          throwIfAborted(signal, lockFilePath);
           const token = randomUUID();
           const content: LockFileContent = {
             token,
@@ -129,6 +135,11 @@ export class CrossProcessLockManager {
           await handle.writeFile(JSON.stringify(content), 'utf-8');
           await handle.sync();
           await handle.close();
+
+          if (signal?.aborted) {
+            try { unlinkSync(lockFilePath); } catch { /* 由竞争方或清理路径处理。 */ }
+            throw createAbortError(signal, lockFilePath);
+          }
 
           return new CrossProcessLock(lockFilePath, token, this.staleWindowMs);
         } catch (writeError) {
@@ -146,7 +157,7 @@ export class CrossProcessLockManager {
           if (Date.now() >= deadline) {
             throw new Error(`获取锁超时: ${lockFilePath}`, { cause: error });
           }
-          await this.sleep(this.pollIntervalMs);
+          await this.sleep(this.pollIntervalMs, signal, lockFilePath);
           continue;
         }
 
@@ -207,10 +218,49 @@ export class CrossProcessLockManager {
     }
   }
 
-  /** Promise 化的 sleep。 */
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  /** 可由上游信号中止的锁轮询等待。 */
+  private sleep(ms: number, signal: AbortSignal | undefined, lockFilePath: string): Promise<void> {
+    if (signal?.aborted) {
+      return Promise.reject(createAbortError(signal, lockFilePath));
+    }
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const onAbort = (): void => {
+        if (settled) { return; }
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        reject(createAbortError(signal!, lockFilePath));
+      };
+      const timer = setTimeout(() => {
+        if (settled) { return; }
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      // 覆盖首次检查与监听器注册之间发生 abort 的窄窗口。
+      if (signal?.aborted) {
+        onAbort();
+      }
+    });
   }
+}
+
+/** 在跨进程竞争的每个边界检查取消信号。 */
+function throwIfAborted(signal: AbortSignal | undefined, lockFilePath: string): void {
+  if (signal?.aborted) {
+    throw createAbortError(signal, lockFilePath);
+  }
+}
+
+/** 创建带锁路径上下文的标准取消错误。 */
+function createAbortError(signal: AbortSignal, lockFilePath: string): Error {
+  const error = new Error(`等待跨进程锁时已被上游取消: ${lockFilePath}`, {
+    cause: signal.reason,
+  });
+  error.name = 'AbortError';
+  return error;
 }
 
 /** 默认的单例 LockManager。 */

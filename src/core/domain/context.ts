@@ -17,6 +17,15 @@ import type { PluginPatchGroup } from './plugin-mutation-log.js';
 import type { AskUserAnswer } from '../../ports/driven/session/InteractionPort.js';
 import type { ApprovalWaitOptions } from '../../ports/driven/session/ApprovalPort.js';
 import type { ApprovalChoiceId } from '../../ports/shared/approval-types.js';
+import {
+  cloneSkillLearningContinuation,
+  type SkillLearningContinuation,
+} from './skill-learning-continuation.js';
+import {
+  SKILL_LEARNING_CADENCE_VERSION,
+  cloneSkillLearningCadence,
+  type SkillLearningCadenceState,
+} from './skill-learning-cadence.js';
 
 // 从子状态文件重导出公开类型与函数（保持向后兼容）
 export type { StoredChatMessage };
@@ -45,6 +54,13 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   private readonly interactionState: InteractionState;
   private readonly approvalInteractionState: ApprovalInteractionState;
   private readonly pluginMutationLog: PluginMutationLog;
+  /** 等待用户交互期间需要跨 run 和进程恢复的 Skill 学习证据。 */
+  private skillLearningContinuation: Readonly<SkillLearningContinuation> | null = null;
+  /** 跨普通成功回合累计的 Skill 学习节奏（零累计起步）。 */
+  private skillLearningCadence: Readonly<SkillLearningCadenceState> = Object.freeze({
+    version: SKILL_LEARNING_CADENCE_VERSION,
+    accumulatedToolResponseIterations: 0,
+  });
 
   // ── 公开属性代理（保持向后兼容）──
 
@@ -107,9 +123,14 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   /**
    * 重新组装并更新会话消息历史中的首条系统提示词（System Prompt）。
    *
+   * 调用约束：该方法只允许在会话构造期（规则初始化、会话打开）以及显式手动
+   * 规则重载时调用；Skill 文件自动变更（SkillLibrary 订阅、项目 watcher 热更新）
+   * 不得调用本方法改写首条系统消息。会话初始化后，系统提示词中的 Skill 元数据
+   * 部分保持构造时快照冻结，变更后的元数据从新会话开始生效。
+   *
    * @param customGlobalRules - 可选的全局规则内容缓存
    * @param customLocalRules - 可选的局部规则内容缓存
-   * @param skills - 可选的技能元数据列表
+   * @param skills - 可选的技能元数据列表（活跃会话应传入构造时冻结的快照）
    */
   public updateSystemPrompt(
     customGlobalRules?: string,
@@ -382,6 +403,62 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   /** 清除当前活跃的人机中断交互记录（委托给 InteractionState） */
   public clearPendingInteraction(): void {
     this.interactionState.clearPendingInteraction();
+  }
+
+  /**
+   * 获取等待用户交互前保存的 Skill 学习延续状态。
+   *
+   * @returns 只读延续状态；当前没有中断学习单元时返回 null
+   */
+  public getSkillLearningContinuation(): Readonly<SkillLearningContinuation> | null {
+    return this.skillLearningContinuation;
+  }
+
+  /**
+   * 保存等待用户交互前已经产生的 Skill 学习证据。
+   * 该插件状态独立于消息沙箱提交，供 RunEnd 后的会话快照持久化。
+   *
+   * @param continuation - 已完成中断段的学习证据
+   */
+  public setSkillLearningContinuation(
+    continuation: Readonly<SkillLearningContinuation>,
+  ): void {
+    this.skillLearningContinuation = cloneSkillLearningContinuation(continuation);
+  }
+
+  /** 清除已经完成或失效的 Skill 学习延续状态。 */
+  public clearSkillLearningContinuation(): void {
+    this.skillLearningContinuation = null;
+  }
+
+  /**
+   * 获取跨普通成功回合累计的 Skill 学习节奏状态。
+   * 该状态与延续状态独立：前者累计未达阈值次数，后者表示一个尚未完成的逻辑任务。
+   *
+   * @returns 只读学习节奏状态；从未设置时返回零累计
+   */
+  public getSkillLearningCadence(): Readonly<SkillLearningCadenceState> {
+    return this.skillLearningCadence;
+  }
+
+  /**
+   * 保存 Skill 学习节奏状态（深复制冻结）。
+   * 只允许在 RunEnd 结算时写入；快照恢复与插件内存态由此保持一致。
+   *
+   * @param state - 最新累计状态
+   */
+  public setSkillLearningCadence(
+    state: Readonly<SkillLearningCadenceState>,
+  ): void {
+    this.skillLearningCadence = cloneSkillLearningCadence(state);
+  }
+
+  /** 将学习节奏复位为零累计（fail-closed 恢复与显式清零共用）。 */
+  public resetSkillLearningCadence(): void {
+    this.skillLearningCadence = Object.freeze({
+      version: SKILL_LEARNING_CADENCE_VERSION,
+      accumulatedToolResponseIterations: 0,
+    });
   }
 
   // ── 插件补丁（委托给 PluginMutationLog）──

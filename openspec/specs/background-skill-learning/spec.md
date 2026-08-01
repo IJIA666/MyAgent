@@ -1,8 +1,11 @@
-## ADDED Requirements
+# background-skill-learning Specification
 
+## Purpose
+TBD - created by archiving change agent-skill-learning-loop. Update Purpose after archive.
+## Requirements
 ### Requirement: 基于工具迭代的后台复盘触发
 
-系统 MUST 累计主 Agent 正常运行中的工具调用迭代，并在累计值达到 `skills.creationNudgeInterval` 时安排一次 Skill Review；默认阈值 MUST 为 10。错误、中断、挂起人机交互和没有最终回复的运行 MUST NOT 触发复盘。
+系统 MUST 累计主 Agent 正常完成的逻辑学习单元中的工具调用迭代，并在累计值达到 `skills.creationNudgeInterval` 时安排一次 Skill Review；默认阈值 MUST 为 10。错误、中断和没有最终回复的任务 MUST NOT 触发复盘。挂起人机交互的物理 run MUST NOT 立即触发复盘，但系统 MUST 保存其学习证据，并在同一任务恢复后正常完成时合并累计。
 
 #### Scenario: 复杂任务正常完成
 
@@ -22,8 +25,36 @@
 
 #### Scenario: 运行因错误或用户中断结束
 
-- **WHEN** Agent 运行以 error、abort 或 pending interaction 结束
+- **WHEN** Agent 运行以 error 或 abort 结束
 - **THEN** 系统不得把该运行作为成功学习触发器
+
+#### Scenario: 人机中断暂不触发 Review
+
+- **WHEN** 主 Agent 因交互工具暂停，尚未提交最终回复
+- **THEN** 本轮不得启动 Skill Review 或修改任何 Skill
+- **THEN** 系统把当前轨迹、工具证据和迭代计数保存为会话级学习延续状态
+
+#### Scenario: 人机中断恢复后正常完成
+
+- **GIVEN** 一个物理 run 因等待用户交互保存了学习延续状态
+- **WHEN** 用户回答后恢复运行，并提交不含工具调用的最终回复
+- **THEN** Review 阈值使用等待前后工具迭代数之和
+- **THEN** Review 输入同时包含等待前轨迹、交互工具回答和恢复后轨迹
+- **THEN** 学习延续状态在完成结算后被清除
+
+#### Scenario: 人机中断恢复后失败
+
+- **GIVEN** 一个物理 run 因等待用户交互保存了学习延续状态
+- **WHEN** 恢复后的运行发生错误、中断、拒绝或达到最大迭代数
+- **THEN** 系统丢弃该学习延续状态
+- **THEN** 等待前工具迭代不得污染后续无关任务的 Review 阈值
+
+#### Scenario: 重启进程后恢复人机中断
+
+- **GIVEN** 等待前学习延续状态已经写入正式会话快照
+- **WHEN** 新进程加载该会话并恢复挂起交互
+- **THEN** 系统恢复等待前轨迹、已加载 Skill、工具证据和迭代计数
+- **THEN** 后续正常完成时仍按同一个逻辑学习单元复盘
 
 ### Requirement: 无歧义的 RunEnd 学习摘要
 
@@ -170,3 +201,4 @@ SessionManager MUST 登记 Skill Review 的取消器和运行 Promise。会话�
 - **WHEN** Review 的隔离 AgentLoop 到达 RunEnd
 - **THEN** 其 PluginRegistry 不包含 SkillLearningPlugin
 - **THEN** 系统不得递归安排下一次 Review
+

@@ -14,9 +14,11 @@ import {
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { SkillLibrary } from './skill-library.js';
+import type { SkillMutationPrecondition } from '../../domain/permissions/permission-types.js';
 import type {
   SkillManagePreview,
   SkillManageRequest,
+  SkillMutationErrorCode,
   SkillWriteOrigin,
 } from './skill-types.js';
 import { logger } from '../../../utils/logger.js';
@@ -57,6 +59,21 @@ export type SkillPendingDiffResult =
 export type SkillPendingReplayResult =
   | { readonly status: 'ready'; readonly record: SkillPendingRecord }
   | { readonly status: 'missing' | 'stale' | 'error'; readonly error: string };
+
+/** pending 暂存前校验失败，保留可供工具结果透传的稳定冲突代码。 */
+export class SkillPendingStageError extends Error {
+  /**
+   * @param message - 用户可见错误
+   * @param errorCode - 可选的稳定读取/版本冲突代码
+   */
+  constructor(
+    message: string,
+    public readonly errorCode?: SkillMutationErrorCode,
+  ) {
+    super(message);
+    this.name = 'SkillPendingStageError';
+  }
+}
 
 /**
  * 当前进程共享的 writeApproval 开关。
@@ -101,15 +118,24 @@ export class SkillPendingStore {
    *
    * @param request - 完整领域请求
    * @param origin - 可信原始来源
+   * @param precondition - 后台读取账本签发的前置条件；前台可不传
+   * @param signal - 可选的上游取消信号
    * @returns 新 pending 记录或预览错误
    */
   public async stage(
     request: SkillManageRequest,
     origin: SkillWriteOrigin,
+    precondition?: SkillMutationPrecondition,
+    signal?: AbortSignal,
   ): Promise<SkillPendingRecord> {
-    const previewResult = await this.skillLibrary.previewManage(request, origin);
+    const previewResult = await this.skillLibrary.previewManageForPending(
+      request,
+      origin,
+      precondition,
+      signal,
+    );
     if (previewResult.status === 'error') {
-      throw new Error(previewResult.error);
+      throw new SkillPendingStageError(previewResult.error, previewResult.errorCode);
     }
     const record: SkillPendingRecord = {
       id: randomUUID(),

@@ -1,7 +1,35 @@
 import { join, dirname, resolve, relative } from 'path';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { SessionContext } from '../../domain/context.js';
-import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
+import type {
+  ToolMetadata,
+  ToolRegistryPort,
+} from '../../../ports/driven/tools/ToolRegistryPort.js';
+
+/** 统一工具输出默认最大行数。 */
+const DEFAULT_TOOL_OUTPUT_MAX_LINES = 2000;
+
+/** 统一工具输出默认最大字节数。 */
+const DEFAULT_TOOL_OUTPUT_MAX_BYTES = 50 * 1024;
+
+/**
+ * 判断原始工具结果是否会被统一输出层原样交给模型。
+ * 需要把工具结果转化为后续写入凭证的调用方必须先使用该判断，
+ * 禁止为模型只看到折叠预览的内容签发完整读取凭证。
+ *
+ * @param tool - 工具元数据；缺失时使用统一默认配额
+ * @param toolResult - 即将交给 ToolDispatcher 的序列化原始结果
+ * @returns 行数和 UTF-8 字节数都未超过配额时返回 true
+ */
+export function isToolOutputWithinQuota(
+  tool: Pick<ToolMetadata, 'maxLines' | 'maxBytes'> | undefined,
+  toolResult: string,
+): boolean {
+  const maxLines = tool?.maxLines ?? DEFAULT_TOOL_OUTPUT_MAX_LINES;
+  const maxBytes = tool?.maxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES;
+  return toolResult.split('\n').length <= maxLines
+    && Buffer.byteLength(toolResult, 'utf-8') <= maxBytes;
+}
 
 /**
  * 负责工具返回值的拦截与加工：
@@ -39,14 +67,13 @@ export class ToolDispatcher {
     isTruncated: boolean;
   } {
     const tool = this.toolRegistry?.getTool(functionName);
-    const maxLines = tool?.maxLines ?? 2000;
-    const maxBytes = tool?.maxBytes ?? 50 * 1024; // 50KB
+    const maxLines = tool?.maxLines ?? DEFAULT_TOOL_OUTPUT_MAX_LINES;
+    const maxBytes = tool?.maxBytes ?? DEFAULT_TOOL_OUTPUT_MAX_BYTES;
 
     const lines = toolResult.split('\n');
-    const totalBytes = Buffer.byteLength(toolResult, 'utf-8');
 
     // 若行数和字节数都在限额之内，则不执行任何裁剪
-    if (lines.length <= maxLines && totalBytes <= maxBytes) {
+    if (isToolOutputWithinQuota(tool, toolResult)) {
       return { content: toolResult, isTruncated: false };
     }
 

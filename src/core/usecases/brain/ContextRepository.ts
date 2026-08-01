@@ -4,6 +4,8 @@ import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
 import { SessionContext, type PendingInteraction } from '../../domain/context.js';
 import type { UserQuestion } from '../../../ports/driven/session/InteractionPort.js';
 import { logger } from '../../../utils/logger.js';
+import { normalizeSkillLearningContinuation } from '../../domain/skill-learning-continuation.js';
+import { normalizeSkillLearningCadence } from '../../domain/skill-learning-cadence.js';
 
 /**
  * 负责会话状态的持久化保存、兼容读取与回滚恢复。
@@ -120,10 +122,12 @@ export class ContextRepository {
     const file = path.join(dir, `session_${sessionId}.json`);
     const tempFile = path.join(dir, `.session_${sessionId}.${process.pid}.${Date.now()}.tmp`);
     const stateToSave = {
-      version: 3,
+      version: 5,
       sessionId: this.context.getSessionId(),
       messages: this.context.getHistory(),
-      pendingInteraction: this.context.pendingInteraction
+      pendingInteraction: this.context.pendingInteraction,
+      skillLearningContinuation: this.context.getSkillLearningContinuation(),
+      skillLearningCadence: this.context.getSkillLearningCadence(),
     };
 
     try {
@@ -206,6 +210,11 @@ export class ContextRepository {
     if (Array.isArray(parsed)) {
       this.context.updateHistory(parsed as ChatMessage[]);
       this.context.setSessionId(targetSessionId);
+      // 旧版数组快照没有临时交互与学习状态字段，加载时必须显式清空，
+      // 避免复用 ContextRepository 时把上一会话的状态泄漏到目标会话。
+      this.context.clearPendingInteraction();
+      this.context.clearSkillLearningContinuation();
+      this.context.resetSkillLearningCadence();
       return true;
     }
 
@@ -234,7 +243,56 @@ export class ContextRepository {
       this.context.clearPendingInteraction();
     }
 
+    const rawContinuation = (parsed as Record<string, unknown>).skillLearningContinuation;
+    const continuation = normalizeSkillLearningContinuation(rawContinuation);
+    if (continuation) {
+      this.context.setSkillLearningContinuation(continuation);
+    } else {
+      this.context.clearSkillLearningContinuation();
+      if (rawContinuation !== undefined && rawContinuation !== null) {
+        logger.warn('[ContextRepository] skill_learning_continuation_dropped', {
+          component: 'context_repository',
+          event: 'skill_learning_continuation_dropped',
+          sessionId,
+          reason: 'invalid_snapshot_field',
+        });
+      }
+    }
+
+    // 学习节奏 fail-closed 恢复：字段缺失按零累计静默恢复；
+    // 字段存在但非法（版本未知、类型错误、负数）归零并记录诊断，
+    // 不得阻止消息历史、挂起交互和合法延续状态的恢复。
+    const rawCadence = (parsed as Record<string, unknown>).skillLearningCadence;
+    const cadence = normalizeSkillLearningCadence(rawCadence);
+    if (rawCadence !== undefined && rawCadence !== null
+      && !this.isValidCadenceShape(rawCadence)) {
+      logger.warn('[ContextRepository] skill_learning_cadence_dropped', {
+        component: 'context_repository',
+        event: 'skill_learning_cadence_dropped',
+        sessionId,
+        reason: 'invalid_snapshot_field',
+      });
+    }
+    this.context.setSkillLearningCadence(cadence);
+
     return true;
+  }
+
+  /**
+   * 判断学习节奏快照字段是否为合法结构（版本 1 且非负整数累计）。
+   *
+   * @param value - 快照中的原始字段
+   * @returns 结构合法返回 true
+   */
+  private isValidCadenceShape(value: unknown): boolean {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    const raw = value as Record<string, unknown>;
+    return raw.version === 1
+      && typeof raw.accumulatedToolResponseIterations === 'number'
+      && Number.isInteger(raw.accumulatedToolResponseIterations)
+      && (raw.accumulatedToolResponseIterations as number) >= 0;
   }
 
   /**

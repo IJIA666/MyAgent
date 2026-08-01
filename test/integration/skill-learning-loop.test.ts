@@ -29,6 +29,7 @@ import {
   SKILL_PENDING_APPROVAL_CALLER_PREFIX,
 } from '../../src/core/usecases/brain/skill-types.js';
 import { SkillUsageStore } from '../../src/core/usecases/brain/skill-usage-store.js';
+import { ContextRepository } from '../../src/core/usecases/brain/ContextRepository.js';
 import {
   SkillLearningPlugin,
   type BackgroundSkillReviewRequest,
@@ -177,6 +178,80 @@ describe('Skill learning loop integration', () => {
     expect(harness.pendingStore.list()).toEqual([]);
     await harness.registry.close();
   });
+
+  it('等待交互前的学习证据在会话恢复后仍参与最终 Review', async () => {
+    const harness = createHarness({
+      writeApproval: false,
+      driver: createReviewDriver({ createSkill: true }),
+    });
+    const scheduled = createTrackedScheduler(harness.reviewService);
+    const waitingPlugin = new SkillLearningPlugin(harness.appConfig.skills, scheduled);
+    const waitingContext = new SessionContext('main-waiting-posting');
+    const next = vi.fn().mockResolvedValue(undefined);
+    const waitingStart = waitingContext.getHistory().length;
+
+    await waitingPlugin.hooks[HookEventName.RunStart](
+      hookContext(waitingContext, HookEventName.RunStart),
+      next,
+    );
+    waitingContext.addMessage({ role: 'user', content: '探索纯文字平台的真实发布流程' });
+    waitingContext.addMessage({
+      role: 'assistant',
+      content: '发布前需要用户完成账号验证',
+      tool_calls: [{
+        id: 'ask-account-verification',
+        type: 'function',
+        function: {
+          name: 'ask_user_question',
+          arguments: '{"questions":[]}',
+        },
+      }],
+    });
+    await waitingPlugin.hooks[HookEventName.RunEnd](
+      hookContext(waitingContext, HookEventName.RunEnd, {
+        runSummary: {
+          terminalStatus: 'waiting_for_interaction',
+          toolIterationCount: 9,
+          requestedToolCallCount: 9,
+          physicalRunStartIndex: waitingStart,
+          learningTrajectoryStartIndex: waitingStart,
+          historyEndIndex: waitingContext.getHistory().length,
+          hasFinalResponse: false,
+          waitingForInteraction: true,
+        },
+      }),
+      next,
+    );
+    expect(scheduled.reviewPromise).toBeUndefined();
+
+    const waitingRepo = new ContextRepository(
+      waitingContext,
+      harness.paths.sessionsDir,
+    );
+    await waitingRepo.saveState();
+
+    // 模拟进程重启：使用新的 SessionContext、ContextRepository 和插件实例恢复。
+    const resumedContext = new SessionContext('main-waiting-posting-reloaded');
+    await new ContextRepository(resumedContext, harness.paths.sessionsDir)
+      .loadState(waitingContext.getSessionId());
+    resumedContext.addMessage({
+      role: 'tool',
+      tool_call_id: 'ask-account-verification',
+      content: '{"continue":"验证完成"}',
+    });
+    const resumedPlugin = new SkillLearningPlugin(harness.appConfig.skills, scheduled);
+    // 恢复 run 的学习起点必须等于延续状态的恢复边界。
+    const resumeIndex = resumedContext.getSkillLearningContinuation()?.resumeHistoryIndex;
+    await completeMainRun(resumedPlugin, resumedContext, next, 1, true, resumeIndex);
+
+    const review = await scheduled.reviewPromise;
+    expect(review?.mutations).toMatchObject([{
+      status: 'success',
+      action: 'create',
+      name: 'plain-text-social-posting',
+    }]);
+    await harness.registry.close();
+  });
 });
 
 /** 创建真实 Skill 存储、工具网关与隔离 Review 服务。 */
@@ -258,22 +333,29 @@ function createTrackedScheduler(service: BackgroundSkillReviewService): {
     schedule: BackgroundSkillReviewScheduler['schedule'];
     reviewPromise?: ReturnType<BackgroundSkillReviewService['runReview']>;
   } = {
-    schedule(request: Readonly<BackgroundSkillReviewRequest>): void {
+    schedule(request: Readonly<BackgroundSkillReviewRequest>) {
       scheduler.reviewPromise = service.runReview(request);
+      return { accepted: true, taskId: 'test-tracked' };
     },
   };
   return scheduler;
 }
 
-/** 模拟一个已交付最终回复的成功主 run，并可附带结构化工具证据。 */
+/**
+ * 模拟一个已交付最终回复的成功主 run，并可附带结构化工具证据。
+ *
+ * @param learningTrajectoryStartIndex - 可选的学习轨迹起点；
+ * 恢复 run 必须显式传入延续状态的 resumeHistoryIndex，普通任务缺省取当前历史长度
+ */
 async function completeMainRun(
   plugin: SkillLearningPlugin,
   context: SessionContext,
   next: () => Promise<void>,
   toolIterationCount: number,
   withEvidence: boolean,
+  learningTrajectoryStartIndex?: number,
 ): Promise<void> {
-  const start = context.getHistory().length;
+  const start = learningTrajectoryStartIndex ?? context.getHistory().length;
   await plugin.hooks[HookEventName.RunStart](
     hookContext(context, HookEventName.RunStart),
     next,
@@ -306,7 +388,8 @@ async function completeMainRun(
     terminalStatus: 'completed',
     toolIterationCount,
     requestedToolCallCount: toolIterationCount,
-    historyStartIndex: start,
+    physicalRunStartIndex: context.getHistory().length,
+    learningTrajectoryStartIndex: start,
     historyEndIndex: context.getHistory().length,
     hasFinalResponse: true,
     waitingForInteraction: false,

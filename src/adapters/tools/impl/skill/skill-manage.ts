@@ -9,11 +9,16 @@ import type {
   SkillPermissionAnalysis,
 } from '../../../../core/domain/permissions/permission-types.js';
 import type { SkillLibrary } from '../../../../core/usecases/brain/skill-library.js';
-import type {
-  SkillPendingStore,
-  SkillWriteApprovalController,
+import {
+  SkillPendingStageError,
+  type SkillPendingStore,
+  type SkillWriteApprovalController,
 } from '../../../../core/usecases/brain/skill-pending-store.js';
-import type { SkillManageAction, SkillManageRequest } from '../../../../core/usecases/brain/skill-types.js';
+import {
+  SKILL_ERR_READ_BEFORE_WRITE_REQUIRED,
+  type SkillManageAction,
+  type SkillManageRequest,
+} from '../../../../core/usecases/brain/skill-types.js';
 import { SkillManageAuthorizationAdapter } from '../../permissions/skill-tool-authorization.js';
 
 /**
@@ -121,11 +126,14 @@ export class SkillManageTool implements NativeTool {
    * 执行一次 skill_manage 动作。
    *
    * @param args - 工具参数（action、name 等）
+   * @param context - 工具执行上下文；包含宿主签发的权限分析
+   * @param signal - 可选的上游取消信号
    * @returns JSON 字符串，包络 success/error/staged 状态
    */
   async execute(
     args: Record<string, unknown>,
     context?: ToolExecutionContext | SessionEventPort,
+    signal?: AbortSignal,
   ): Promise<string> {
     const action = args.action;
     if (typeof action !== 'string' || !['create', 'patch', 'edit', 'delete', 'write_file', 'remove_file'].includes(action)) {
@@ -180,6 +188,21 @@ export class SkillManageTool implements NativeTool {
       });
     }
 
+    // 后台调用（复盘/长期技能融合）必须携带读取账本签发的先读后写前置条件。
+    // 前置条件只来自宿主内存账本，模型提交的 fingerprint/origin/bypass 字段不在
+    // Function Calling schema 中，一律不得生效。
+    if (analysis.origin === 'background_review' || analysis.origin === 'background_curator') {
+      if (!isBoundMutationPrecondition(analysis, request)) {
+        return JSON.stringify({
+          status: 'error',
+          action: request.action,
+          name: request.name,
+          errorCode: SKILL_ERR_READ_BEFORE_WRITE_REQUIRED,
+          error: '后台修改前必须先通过 load_skill 读取准确目标，读取凭证不足',
+        });
+      }
+    }
+
     if (analysis.pendingReplayId) {
       if (!this.pendingStore) {
         return JSON.stringify({
@@ -201,7 +224,18 @@ export class SkillManageTool implements NativeTool {
           error: replay.error,
         });
       }
-      const result = await this.skillLibrary.manage(request, replay.record.origin);
+      // validateReplay 提供即时反馈；SkillLibrary 会在同一写锁临界区内再次比较该 fingerprint，
+      // 防止校验返回后、真正写入前目标被其他会话修改。
+      const result = await this.skillLibrary.manage(
+        request,
+        replay.record.origin,
+        undefined,
+        {
+          id: replay.record.id,
+          baseFingerprint: replay.record.preview.baseFingerprint,
+        },
+        signal,
+      );
       if (result.status === 'success') {
         this.pendingStore.discard(replay.record.id);
       }
@@ -218,7 +252,12 @@ export class SkillManageTool implements NativeTool {
         });
       }
       try {
-        const pending = await this.pendingStore.stage(request, analysis.origin);
+        const pending = await this.pendingStore.stage(
+          request,
+          analysis.origin,
+          analysis.mutationPrecondition,
+          signal,
+        );
         return JSON.stringify({
           status: 'staged',
           action: request.action,
@@ -231,12 +270,21 @@ export class SkillManageTool implements NativeTool {
           status: 'error',
           action: request.action,
           name: request.name,
+          ...(error instanceof SkillPendingStageError && error.errorCode
+            ? { errorCode: error.errorCode }
+            : {}),
           error: error instanceof Error ? error.message : String(error),
         });
       }
     }
 
-    const result = await this.skillLibrary.manage(request, analysis.origin);
+    const result = await this.skillLibrary.manage(
+      request,
+      analysis.origin,
+      analysis.mutationPrecondition,
+      undefined,
+      signal,
+    );
     return JSON.stringify(result);
   }
 
@@ -311,6 +359,7 @@ export class SkillManageTool implements NativeTool {
         break;
       case 'edit':
         if (!content) return 'edit 需要提供 content';
+        if (filePath !== undefined) return 'edit 只能完整替换 SKILL.md，不接受 filePath';
         break;
       case 'delete':
         // absorbedInto 可选（前台不需要）
@@ -350,6 +399,28 @@ function isBoundSkillAnalysis(
     && typeof analysis.callerId === 'string'
     && analysis.callerId.length > 0
   );
+}
+
+/**
+ * 验证后台调用携带的写入前置条件与本次分析、请求逐字段绑定。
+ * 前置条件必须由宿主账本按当前 caller 签发，模型无法构造该对象。
+ *
+ * @param analysis - 已绑定的权限分析
+ * @param request - 本次 Skill 管理请求
+ * @returns 前置条件存在且绑定一致时返回 true
+ */
+function isBoundMutationPrecondition(
+  analysis: SkillPermissionAnalysis,
+  request: SkillManageRequest,
+): boolean {
+  const precondition = analysis.mutationPrecondition;
+  if (!precondition) {
+    return false;
+  }
+  return precondition.callerId === analysis.callerId
+    && precondition.action === analysis.action
+    && precondition.name === analysis.name
+    && precondition.filePath === (request.filePath ?? null);
 }
 
 /**

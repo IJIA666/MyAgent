@@ -16,6 +16,12 @@ export class LoadSkillTool implements NativeTool {
   readonly name = 'load_skill';
 
   /**
+   * 保证 100,000 字符 SKILL.md 即使包含最坏情况 JSON 转义也不会被统一输出层截断。
+   * 更大的支持文件仍受输出层保护；后台读取账本会对截断结果 fail-closed，不签发写入凭证。
+   */
+  readonly maxBytes = 640 * 1024;
+
+  /**
    * 工具的 OpenAI Function Calling 声明定义。
    */
   readonly definition = {

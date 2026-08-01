@@ -244,7 +244,15 @@ export class AgentLoop {
     transientSkillContent: string | undefined,
     tracer: AgentTracer,
     llmConfig: LlmConfig,
-    options?: { signal?: AbortSignal }
+    options?: {
+      signal?: AbortSignal;
+      /**
+       * 逻辑学习轨迹起点，仅由用户任务或交互恢复入口显式提供。
+       * 缺省或显式 null 表示本次 run 没有用户任务边界（内部生成、后台唤醒等），
+       * RunEnd 摘要会原样冻结该值，插件不得通过减一或角色搜索猜测起点。
+       */
+      learningTrajectoryStartIndex?: number | null;
+    }
   ): AsyncGenerator<AgentEvent, void, unknown> {
     // 初始化迭代计数器
     let iteration = 0;
@@ -254,7 +262,10 @@ export class AgentLoop {
     let hasFinalResponse = false;
     let waitingForInteraction = false;
     let terminalStatus: AgentRunTerminalStatus = 'error';
-    const historyStartIndex = this.context.getHistory().length;
+    // 物理运行起点：chat() 进入时的会话历史长度，与学习轨迹起点相互独立。
+    const physicalRunStartIndex = this.context.getHistory().length;
+    // 逻辑学习轨迹起点：仅由用户任务或交互恢复入口显式提供，缺省按 null fail-closed。
+    const learningTrajectoryStartIndex = options?.learningTrajectoryStartIndex ?? null;
     // 连续预算恢复只覆盖真实模型调用前的请求重组，模型成功调用后清零。
     let consecutiveCompactionRestarts = 0;
     let overflowRecoveryUsed = false;
@@ -728,8 +739,10 @@ export class AgentLoop {
         terminalStatus,
         toolIterationCount,
         requestedToolCallCount,
-        historyStartIndex,
+        physicalRunStartIndex,
         historyEndIndex: this.context.getHistory().length,
+        // 原样冻结入口显式提供的学习轨迹起点；null 表示无用户任务边界。
+        learningTrajectoryStartIndex,
         hasFinalResponse,
         waitingForInteraction: waitingForInteraction || this.context.pendingInteraction !== null,
       });

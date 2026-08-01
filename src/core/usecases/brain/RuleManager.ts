@@ -81,6 +81,12 @@ export class RuleManager {
   private readonly skillLibrary?: SkillLibrary;
   /** SkillLibrary 变更订阅取消函数。 */
   private skillLibraryUnsubscribe?: () => void;
+  /**
+   * 构造时冻结的 Skill 元数据快照，仅用于构建本会话系统提示词。
+   * 后续 SkillLibrary/watcher 变更只刷新实时发现缓存，不得替换该快照，
+   * 也不得改写本会话的首条系统消息；新会话会读取最新元数据。
+   */
+  private promptSkillSnapshot: SkillMetadata[] = [];
 
   /**
    * @param context - 会话上下文管理实例
@@ -107,23 +113,27 @@ export class RuleManager {
     this.loadRulesToCache();
     this.refreshSkillsCache();
 
+    // 构造期写入首条系统消息：Skill 元数据在此刻深复制为快照并冻结，
+    // 之后任何自动变更都不得改写本会话系统提示词；新会话会读取最新列表。
+    this.promptSkillSnapshot = this.skillsCacheToPromptSnapshot();
     this.context.updateSystemPrompt(
       this.cachedUserRules || undefined,
       this.cachedProjectRules || undefined,
-      this.getSkills()
+      this.promptSkillSnapshot
     );
 
     // 订阅 SkillLibrary 的变更通知（当 SkillLibrary 提供时）
     if (skillLibrary) {
       this.skillLibraryUnsubscribe = skillLibrary.subscribe(() => {
         if (this.closed) return;
-        // 收到变更通知后刷新缓存并更新上下文
+        // 只刷新实时发现缓存并记录诊断；系统提示词保持构造时快照冻结。
         this.refreshSkillsCache();
-        this.context.updateSystemPrompt(
-          this.cachedUserRules || undefined,
-          this.cachedProjectRules || undefined,
-          this.getSkills()
-        );
+        logger.debug('[RuleManager] skill_library_changed', {
+          component: 'rule_manager',
+          event: 'skill_library_changed',
+          skillCount: this.skillsCache.size,
+          promptFrozen: true,
+        });
       });
     }
   }
@@ -178,17 +188,19 @@ export class RuleManager {
    * 手动重载缓存（包括 skills）。
    * 当注入 SkillLibrary 时调用其 reloadSkills() 刷新扫描视图，
    * 否则自行重新扫描。
+   * 只刷新实时发现缓存；本会话系统提示词使用构造时冻结的快照，
+   * 变更后的元数据从新会话开始生效。
    */
   public reloadSkills(): void {
     if (this.skillLibrary) {
       this.skillLibrary.reloadSkills();
     }
     this.refreshSkillsCache();
-    this.context.updateSystemPrompt(
-      this.cachedUserRules || undefined,
-      this.cachedProjectRules || undefined,
-      this.getSkills()
-    );
+    logger.debug('[RuleManager] skill_reload_prompt_frozen', {
+      component: 'rule_manager',
+      event: 'skill_reload_prompt_frozen',
+      skillCount: this.skillsCache.size,
+    });
   }
 
   /**
@@ -304,16 +316,30 @@ export class RuleManager {
       return;
     }
 
-    // 有真实变化：原子替换缓存
-    logger.info('[RuleManager] 检测到技能文件真实变化，正在刷新缓存...');
+    // 有真实变化：原子替换实时缓存
+    logger.info('[RuleManager] 检测到技能文件真实变化，正在刷新实时缓存...');
     this.refreshSkillsCache();
     this.skillContentHashes = newHashes;
+    // 系统提示词使用构造时冻结的快照，自动热更新不改写本会话首条系统消息。
+    logger.debug('[RuleManager] skill_watch_prompt_frozen', {
+      component: 'rule_manager',
+      event: 'skill_watch_prompt_frozen',
+      skillCount: this.skillsCache.size,
+    });
+  }
 
-    this.context.updateSystemPrompt(
-      this.cachedUserRules || undefined,
-      this.cachedProjectRules || undefined,
-      this.getSkills()
-    );
+  /**
+   * 从当前技能缓存复制一份深拷贝快照，用于系统提示词构建。
+   * 快照一旦生成便与实时缓存解耦，后续自动变更不影响本会话提示词。
+   *
+   * @returns 字段级复制后的 Skill 元数据数组
+   */
+  private skillsCacheToPromptSnapshot(): SkillMetadata[] {
+    return Array.from(this.skillsCache.values()).map(skill => ({
+      name: skill.name,
+      description: skill.description,
+      filePath: skill.filePath,
+    }));
   }
 
   /**
@@ -369,6 +395,7 @@ export class RuleManager {
   /**
    * 手动重载规则和技能（完整读盘）。
    * 与 watcher 增量刷新分开实现，避免一次事件触发两次刷新。
+   * 规则内容热更新会重写系统提示词，但技能元数据部分仍使用构造时冻结的快照。
    */
   public reloadRules(): void {
     logger.info('[RuleManager] 正在重载规则与技能文件...');
@@ -378,7 +405,7 @@ export class RuleManager {
     this.context.updateSystemPrompt(
       this.cachedUserRules || undefined,
       this.cachedProjectRules || undefined,
-      this.getSkills()
+      this.promptSkillSnapshot
     );
   }
 

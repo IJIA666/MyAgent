@@ -9,6 +9,7 @@ import type {
   DirectoryScopeEvidence,
   ApprovalAction,
   SkillPermissionAnalysis,
+  SkillMutationPrecondition,
 } from '../../../core/domain/permissions/permission-types.js';
 import type { PermissionSessionState } from '../../../core/domain/permissions/permission-session-state.js';
 import type { SkillLibrary } from '../../../core/usecases/brain/skill-library.js';
@@ -19,6 +20,7 @@ import {
   type SkillManageAction,
   type SkillWriteOrigin,
 } from '../../../core/usecases/brain/skill-types.js';
+import { skillReadLedgerRegistry } from '../../../core/usecases/brain/skill-review-read-ledger.js';
 
 /** 可用于 Plan 模式判断的操作分类。 */
 type SkillOperationClass = 'read' | 'edit' | 'delete';
@@ -54,7 +56,7 @@ export class SkillManageAuthorizationAdapter implements ToolAuthorizationAdapter
 
     const resources = this.buildResourceEvidence(action, name, input, context);
     const operationClass = this.classifyOperation(action);
-    const analysis = this.buildAnalysis(action, name, context);
+    const analysis = this.buildAnalysis(action, name, input, context);
 
     const isEditOperation = operationClass === 'edit';
     const isDelete = operationClass === 'delete';
@@ -135,6 +137,7 @@ export class SkillManageAuthorizationAdapter implements ToolAuthorizationAdapter
   private buildAnalysis(
     action: SkillManageAction | undefined,
     name: string | undefined,
+    input: Record<string, unknown>,
     context?: ToolAuthorizationBuildContext,
   ): SkillPermissionAnalysis | undefined {
     if (!action || !name || !context?.caller.hostVerified) {
@@ -144,14 +147,40 @@ export class SkillManageAuthorizationAdapter implements ToolAuthorizationAdapter
     if (!origin) {
       return undefined;
     }
+    const callerId = context.caller.caller.callerId;
+    // 后台 caller 从本次任务的读取账本签发先读后写前置条件；
+    // 凭证不足或账本不存在时返回 undefined，由执行期对后台调用 fail-closed。
+    const mutationPrecondition = origin === 'foreground'
+      ? undefined
+      : this.buildMutationPrecondition(callerId, action, input);
     return Object.freeze({
       kind: 'skill-manage',
       action,
       name,
       origin,
-      callerId: context.caller.caller.callerId,
-      ...extractPendingReplayId(context.caller.caller.callerId),
+      callerId,
+      ...extractPendingReplayId(callerId),
+      ...(mutationPrecondition ? { mutationPrecondition } : {}),
     });
+  }
+
+  /** 从账本按当前动作签发前置条件；未读取准确目标时返回 undefined。 */
+  private buildMutationPrecondition(
+    callerId: string,
+    action: SkillManageAction,
+    input: Record<string, unknown>,
+  ): SkillMutationPrecondition | undefined {
+    const ledger = skillReadLedgerRegistry.get(callerId);
+    if (!ledger) {
+      return undefined;
+    }
+    const name = typeof input.name === 'string' ? input.name : '';
+    const filePath = typeof input.filePath === 'string' ? input.filePath : undefined;
+    const absorbedInto = typeof input.absorbedInto === 'string'
+      ? input.absorbedInto
+      : undefined;
+    return ledger.buildPrecondition(callerId, action, name, filePath, absorbedInto)
+      ?? undefined;
   }
 
   /** 构建资源证据。 */

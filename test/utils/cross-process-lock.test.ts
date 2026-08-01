@@ -57,6 +57,23 @@ describe('CrossProcessLockManager', () => {
     owner.release();
   });
 
+  it('跨进程锁轮询可由上游信号立即取消', async () => {
+    const owner = await new CrossProcessLockManager().acquire(lockPath);
+    const waiter = new CrossProcessLockManager({
+      pollIntervalMs: 1_000,
+      timeoutMs: 10_000,
+    });
+    const controller = new AbortController();
+    const waiting = waiter.acquire(lockPath, controller.signal);
+
+    controller.abort('service closed');
+    try {
+      await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      owner.release();
+    }
+  });
+
   it('非所有者 token 不能释放锁', async () => {
     const owner = await new CrossProcessLockManager().acquire(lockPath);
     const impostor = new CrossProcessLock(lockPath, 'not-the-owner');

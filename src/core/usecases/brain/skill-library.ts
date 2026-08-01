@@ -6,18 +6,27 @@ import {
 import { resolve, dirname, join, isAbsolute, normalize, relative, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import matter from 'gray-matter';
+import {
+  SKILL_ERR_READ_BEFORE_WRITE_REQUIRED,
+  SKILL_ERR_STALE_SKILL_READ,
+  SKILL_ERR_SKILL_TARGET_CHANGED,
+} from './skill-types.js';
 import type {
   SkillSource,
   SkillPackageMetadata,
   SkillManageRequest,
   SkillManageResult,
   SkillManagePreviewResult,
+  SkillPendingReplayGuard,
   SkillWriteOrigin,
   SkillLifecycleState,
   SkillUsageRecord,
 } from './skill-types.js';
+import type { SkillMutationPrecondition } from '../../domain/permissions/permission-types.js';
 import { SkillUsageStore } from './skill-usage-store.js';
+import { SkillMutationLockManager } from './skill-mutation-lock.js';
 import { logger } from '../../../utils/logger.js';
+import { MAIN_SKILL_FILE_MARKER } from './skill-review-read-ledger.js';
 
 /** SKILL.md 最大字符数。 */
 const SKILL_FILE_MAX_CHARS = 100_000;
@@ -29,12 +38,19 @@ const ALLOWED_SUBDIRS = new Set(['references', 'templates', 'scripts', 'assets']
 /** 变更监听器。 */
 export type SkillChangeListener = (event: 'created' | 'updated' | 'deleted', name: string) => void;
 
+/** Skill 管理流程内部使用的失败结果窄化类型。 */
+type SkillManageErrorResult = Extract<SkillManageResult, { status: 'error' }>;
+
 /**
  * Skill 库构造选项。
  */
 export interface SkillLibraryOptions {
   /** 是否启用 watcher（后台/Curator 实例为 false）。 */
   enableWatcher?: boolean;
+  /** Skill 写入协作锁目录（应用数据目录下独立目录）。 */
+  skillLocksDir?: string;
+  /** 可注入的协作锁管理器（测试替身）；缺省按 skillLocksDir 懒创建。 */
+  mutationLock?: SkillMutationLockManager;
 }
 
 /** Curator 生命周期复核函数。 */
@@ -77,6 +93,8 @@ export class SkillLibrary {
   private cache = new Map<string, SkillPackageMetadata>();
   /** 是否已关闭。 */
   private closed = false;
+  /** 每 Skill 协作写锁管理器；未注入时并发校验退化为纯摘要校验。 */
+  private readonly mutationLock?: SkillMutationLockManager;
 
   /**
    * @param userSkillsDir - 用户 skills 目录（~/.myagent/skills）
@@ -90,9 +108,13 @@ export class SkillLibrary {
     private readonly projectSkillsDir: string,
     private readonly skillArchiveDir: string,
     usageStore: SkillUsageStore,
-    _options: SkillLibraryOptions = {},
+    options: SkillLibraryOptions = {},
   ) {
     this.usageStore = usageStore;
+    this.mutationLock = options.mutationLock
+      ?? (options.skillLocksDir
+        ? new SkillMutationLockManager(options.skillLocksDir)
+        : undefined);
     this.refreshCache();
   }
 
@@ -533,34 +555,97 @@ export class SkillLibrary {
    *
    * @param request - 管理请求参数
    * @param origin - 写入来源（foreground/background_review/background_curator）
+   * @param precondition - 后台读取账本签发的先读后写前置条件；前台调用不传
+   * @param replayGuard - 用户批准重放时的受信 pending 标识与暂存版本条件
+   * @param signal - 可选的上游取消信号；等待协作锁时可立即终止
    * @returns 操作结果
    */
   public async manage(
     request: SkillManageRequest,
     origin: SkillWriteOrigin,
+    precondition?: SkillMutationPrecondition,
+    replayGuard?: SkillPendingReplayGuard,
+    signal?: AbortSignal,
   ): Promise<SkillManageResult> {
     const { action, name } = request;
 
-    switch (action) {
-      case 'create':
-        return this.doCreate(request, origin);
-      case 'patch':
-        return this.doPatch(request, origin);
-      case 'edit':
-        return this.doEdit(request, origin);
-      case 'delete':
-        return this.doDelete(request, origin);
-      case 'write_file':
-        return this.doWriteFile(request, origin);
-      case 'remove_file':
-        return this.doRemoveFile(request, origin);
-      default:
+    // 锁域固定为规范化 Skill 名：主文件与支持文件都归属所属 Skill；
+    // delete 合并归档对来源与吸收目标去重后按字典序获取全部锁。
+    const lockNames = action === 'delete' && request.absorbedInto
+      ? [name, request.absorbedInto]
+      : [name];
+    let releaseLocks: (() => Promise<void>) | null = null;
+    if (this.mutationLock) {
+      try {
+        releaseLocks = await this.mutationLock.acquire(lockNames, signal);
+      } catch (error) {
+        logger.warn('[SkillLibrary] mutation_lock_acquire_failed', {
+          component: 'skill_library',
+          event: 'mutation_lock_acquire_failed',
+          skills: lockNames,
+          reason: error instanceof Error ? error.message : String(error),
+        });
         return {
           status: 'error',
           action,
           name,
-          error: `未知动作: ${action}`,
+          error: `Skill 写入锁获取失败: ${error instanceof Error ? error.message : String(error)}`,
         };
+      }
+    }
+
+    try {
+      // 锁内以最新磁盘状态解析目标：跨实例竞争时避免本地缓存过期导致误判。
+      this.refreshCache();
+      if (replayGuard) {
+        // validateReplay 只提供即时反馈；真正写入前必须在同一 Skill 锁域内再次比较版本。
+        const replayPreview = await this.previewManage(request, origin);
+        if (replayPreview.status === 'error') {
+          return {
+            status: 'error',
+            action,
+            name,
+            error: `pending 已失效: ${replayPreview.error}`,
+            ...(replayPreview.errorCode ? { errorCode: replayPreview.errorCode } : {}),
+          };
+        }
+        if (replayPreview.preview.baseFingerprint !== replayGuard.baseFingerprint) {
+          return {
+            status: 'error',
+            action,
+            name,
+            errorCode: SKILL_ERR_SKILL_TARGET_CHANGED,
+            error: 'pending 已失效: 目标内容在暂存后发生变化',
+          };
+        }
+      }
+      const replayPendingId = replayGuard?.id;
+      switch (action) {
+        case 'create':
+          return await this.doCreate(request, origin, precondition, replayPendingId);
+        case 'patch':
+          return await this.doPatch(request, origin, precondition, replayPendingId);
+        case 'edit':
+          return await this.doEdit(request, origin, precondition, replayPendingId);
+        case 'delete':
+          return await this.doDelete(request, origin, precondition, replayPendingId);
+        case 'write_file':
+          return await this.doWriteFile(request, origin, precondition, replayPendingId);
+        case 'remove_file':
+          return await this.doRemoveFile(request, origin, precondition, replayPendingId);
+        default:
+          return {
+            status: 'error',
+            action,
+            name,
+            error: `未知动作: ${action}`,
+          };
+      }
+    } finally {
+      // 锁的释放必须覆盖成功、失败与异常路径；同一锁域内校验与写入共享临界区。
+      if (releaseLocks) {
+        await releaseLocks();
+      }
     }
   }
 
@@ -579,6 +664,9 @@ export class SkillLibrary {
     const nameError = this.validateName(request.name);
     if (nameError) {
       return { status: 'error', error: nameError };
+    }
+    if (request.action === 'edit' && request.filePath !== undefined) {
+      return { status: 'error', error: 'edit 只能完整替换 SKILL.md，不接受 filePath' };
     }
 
     if (request.action === 'create') {
@@ -760,6 +848,60 @@ export class SkillLibrary {
       }
       default:
         return { status: 'error', error: `未知动作: ${request.action}` };
+    }
+  }
+
+  /**
+   * 在 Skill 写锁内校验后台读取凭证并生成 pending 预览。
+   * 该入口保证暂存使用的 fingerprint 与凭证校验观察到同一份协作写入状态；
+   * 批准执行仍会在新的锁内通过 replay guard 再次比较 fingerprint。
+   *
+   * @param request - 待暂存的管理请求
+   * @param origin - 可信写入来源
+   * @param precondition - 后台读取账本签发的前置条件；前台可不传
+   * @param signal - 可选的上游取消信号
+   * @returns 可持久化预览或明确错误
+   */
+  public async previewManageForPending(
+    request: SkillManageRequest,
+    origin: SkillWriteOrigin,
+    precondition?: SkillMutationPrecondition,
+    signal?: AbortSignal,
+  ): Promise<SkillManagePreviewResult> {
+    const lockNames = request.action === 'delete' && request.absorbedInto
+      ? [request.name, request.absorbedInto]
+      : [request.name];
+    let releaseLocks: (() => Promise<void>) | null = null;
+    if (this.mutationLock) {
+      try {
+        releaseLocks = await this.mutationLock.acquire(lockNames, signal);
+      } catch (error) {
+        return {
+          status: 'error',
+          error: `Skill 写入锁获取失败: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+
+    try {
+      this.refreshCache();
+      const preconditionError = this.verifyMutationPrecondition(
+        precondition,
+        request,
+        origin,
+      );
+      if (preconditionError) {
+        return {
+          status: 'error',
+          error: preconditionError.error,
+          ...(preconditionError.errorCode ? { errorCode: preconditionError.errorCode } : {}),
+        };
+      }
+      return await this.previewManage(request, origin);
+    } finally {
+      if (releaseLocks) {
+        await releaseLocks();
+      }
     }
   }
 
@@ -1146,10 +1288,18 @@ export class SkillLibrary {
   private async doCreate(
     request: SkillManageRequest,
     origin: SkillWriteOrigin,
+    precondition?: SkillMutationPrecondition,
+    replayPendingId?: string,
   ): Promise<SkillManageResult> {
     const nameError = this.validateName(request.name);
     if (nameError) {
       return { status: 'error', action: 'create', name: request.name, error: nameError };
+    }
+
+    // 后台 create 要求目标在提交时仍不存在（读取账本前置条件）。
+    const preconditionError = this.verifyMutationPrecondition(precondition, request, origin, replayPendingId);
+    if (preconditionError) {
+      return preconditionError;
     }
 
     // 检查重名（全局范围和磁盘范围，避免缓存外目录被覆盖）
@@ -1182,7 +1332,24 @@ export class SkillLibrary {
       // 首次使用时应用数据根目录可能尚未建立，创建完整受信父路径。
       mkdirSync(skillDir, { recursive: true });
       createdDir = true;
-      this.atomicWrite(skillFilePath, request.content);
+      const writeError = this.atomicWriteWithCheck(
+        skillFilePath, request.content, precondition, request, origin, replayPendingId,
+      );
+      if (writeError) {
+        // 边界检查失败：回滚刚创建的目录，避免残留空包。
+        if (createdDir && existsSync(skillDir)) {
+          try {
+            this.removeDir(skillDir);
+          } catch {
+            logger.warn('[SkillLibrary] create 边界检查回滚失败', {
+              component: 'skill_library',
+              event: 'create_boundary_rollback_failed',
+              skill: request.name,
+            });
+          }
+        }
+        return writeError;
+      }
 
       // 后台创建自动标记 agent-created
       if (origin === 'background_review' || origin === 'background_curator') {
@@ -1227,10 +1394,18 @@ export class SkillLibrary {
   private async doPatch(
     request: SkillManageRequest,
     origin: SkillWriteOrigin,
+    precondition?: SkillMutationPrecondition,
+    replayPendingId?: string,
   ): Promise<SkillManageResult> {
     const meta = this.cache.get(request.name);
     if (!meta) {
       return { status: 'error', action: 'patch', name: request.name, error: `Skill "${request.name}" 不存在` };
+    }
+
+    // 后台 patch 必须基于读取账本中准确目标的当前摘要。
+    const preconditionError = this.verifyMutationPrecondition(precondition, request, origin, replayPendingId);
+    if (preconditionError) {
+      return preconditionError;
     }
 
     if (origin !== 'foreground') {
@@ -1305,8 +1480,13 @@ export class SkillLibrary {
         }
       }
 
-      // 临时文件替换
-      this.atomicWrite(targetPath, newContent);
+      // 临时文件替换：最接近替换位置完成最后一次摘要检查。
+      const writeError = this.atomicWriteWithCheck(
+        targetPath, newContent, precondition, request, origin, replayPendingId,
+      );
+      if (writeError) {
+        return writeError;
+      }
 
       await this.usageStore.recordPatch(request.name);
       this.refreshCache();
@@ -1334,10 +1514,26 @@ export class SkillLibrary {
   private async doEdit(
     request: SkillManageRequest,
     origin: SkillWriteOrigin,
+    precondition?: SkillMutationPrecondition,
+    replayPendingId?: string,
   ): Promise<SkillManageResult> {
+    if (request.filePath !== undefined) {
+      return {
+        status: 'error',
+        action: 'edit',
+        name: request.name,
+        error: 'edit 只能完整替换 SKILL.md，不接受 filePath',
+      };
+    }
     const meta = this.cache.get(request.name);
     if (!meta) {
       return { status: 'error', action: 'edit', name: request.name, error: `Skill "${request.name}" 不存在` };
+    }
+
+    // 后台 edit 必须基于读取账本中主文件的当前摘要。
+    const preconditionError = this.verifyMutationPrecondition(precondition, request, origin, replayPendingId);
+    if (preconditionError) {
+      return preconditionError;
     }
 
     if (origin !== 'foreground') {
@@ -1362,7 +1558,12 @@ export class SkillLibrary {
     }
 
     try {
-      this.atomicWrite(meta.filePath, request.content);
+      const writeError = this.atomicWriteWithCheck(
+        meta.filePath, request.content, precondition, request, origin, replayPendingId,
+      );
+      if (writeError) {
+        return writeError;
+      }
       await this.usageStore.recordPatch(request.name);
       this.refreshCache();
       this.notify('updated', request.name);
@@ -1387,10 +1588,18 @@ export class SkillLibrary {
   private async doDelete(
     request: SkillManageRequest,
     origin: SkillWriteOrigin,
+    precondition?: SkillMutationPrecondition,
+    replayPendingId?: string,
   ): Promise<SkillManageResult> {
     const meta = this.cache.get(request.name);
     if (!meta) {
       return { status: 'error', action: 'delete', name: request.name, error: `Skill "${request.name}" 不存在` };
+    }
+
+    // 后台 delete 必须已读取来源与吸收目标的主文件（合并双凭证）。
+    const preconditionError = this.verifyMutationPrecondition(precondition, request, origin, replayPendingId);
+    if (preconditionError) {
+      return preconditionError;
     }
 
     if (origin !== 'foreground') {
@@ -1476,10 +1685,18 @@ export class SkillLibrary {
   private async doWriteFile(
     request: SkillManageRequest,
     origin: SkillWriteOrigin,
+    precondition?: SkillMutationPrecondition,
+    replayPendingId?: string,
   ): Promise<SkillManageResult> {
     const meta = this.cache.get(request.name);
     if (!meta) {
       return { status: 'error', action: 'write_file', name: request.name, error: `Skill "${request.name}" 不存在` };
+    }
+
+    // 后台 write_file：覆盖已有支持文件须读取该文件；新建支持文件须读取所属主文件。
+    const preconditionError = this.verifyMutationPrecondition(precondition, request, origin, replayPendingId);
+    if (preconditionError) {
+      return preconditionError;
     }
 
     if (origin !== 'foreground') {
@@ -1515,8 +1732,13 @@ export class SkillLibrary {
 
     try {
       const targetPath = resolve(meta.skillDir, request.filePath);
-      mkdirSync(dirname(targetPath), { recursive: true });
-      this.atomicWrite(targetPath, request.fileContent);
+      // 目录创建由 atomicWrite 内部完成，边界检查失败时不残留空目录。
+      const writeError = this.atomicWriteWithCheck(
+        targetPath, request.fileContent, precondition, request, origin, replayPendingId,
+      );
+      if (writeError) {
+        return writeError;
+      }
 
       await this.usageStore.recordPatch(request.name);
       this.notify('updated', request.name);
@@ -1541,10 +1763,18 @@ export class SkillLibrary {
   private async doRemoveFile(
     request: SkillManageRequest,
     origin: SkillWriteOrigin,
+    precondition?: SkillMutationPrecondition,
+    replayPendingId?: string,
   ): Promise<SkillManageResult> {
     const meta = this.cache.get(request.name);
     if (!meta) {
       return { status: 'error', action: 'remove_file', name: request.name, error: `Skill "${request.name}" 不存在` };
+    }
+
+    // 后台 remove_file 必须读取将删除的准确支持文件。
+    const preconditionError = this.verifyMutationPrecondition(precondition, request, origin, replayPendingId);
+    if (preconditionError) {
+      return preconditionError;
     }
 
     if (origin !== 'foreground') {
@@ -1589,7 +1819,138 @@ export class SkillLibrary {
     }
   }
 
+  // ── 先读后写前置条件校验 ──
+
+  /**
+   * 校验后台读取账本签发的写入前置条件。
+   * requiredAbsent 目标必须仍不存在；requiredReads 目标必须存在且内容摘要与读取时一致。
+   * 前台调用没有读取账本，直接放行；用户批准重放由 pending 自身的 base fingerprint
+   * 校验（stage 时已做过凭证检查），不再重复后台凭证检查。
+   *
+   * @param precondition - 读取账本签发的只读前置条件；后台调用缺失时 fail-closed
+   * @param request - 本次管理请求
+   * @param origin - 写入来源（前台/后台复盘/后台技能融合）
+   * @param replayPendingId - 用户批准重放的 pending id；非空时跳过后台凭证校验
+   * @returns 校验失败结果（带稳定错误码）；校验通过返回 null
+   */
+  private verifyMutationPrecondition(
+    precondition: SkillMutationPrecondition | undefined,
+    request: SkillManageRequest,
+    origin: SkillWriteOrigin,
+    replayPendingId?: string,
+  ): SkillManageErrorResult | null {
+    if (origin === 'foreground' || replayPendingId !== undefined) {
+      return null;
+    }
+    if (request.action === 'delete' && request.absorbedInto === undefined) {
+      // 后台 delete 缺少 absorbedInto 属于参数错误，由 doDelete 的既有校验处理。
+      return null;
+    }
+    // 锁内重新解析目标前刷新缓存：跨实例竞争时以最新磁盘状态为准，
+    // 避免另一实例刚写入的目标因本地缓存过期而被误判为缺失或未变化。
+    this.refreshCache();
+    if (!precondition) {
+      return {
+        status: 'error',
+        action: request.action,
+        name: request.name,
+        errorCode: SKILL_ERR_READ_BEFORE_WRITE_REQUIRED,
+        error: '后台修改前必须先通过 load_skill 读取准确目标，读取凭证不足',
+      };
+    }
+    for (const key of precondition.requiredAbsent) {
+      const targetPath = this.resolveTargetPathFromKey(key);
+      if (targetPath !== null && existsSync(targetPath)) {
+        return {
+          status: 'error',
+          action: request.action,
+          name: request.name,
+          errorCode: SKILL_ERR_SKILL_TARGET_CHANGED,
+          error: '目标已经存在，与读取时的缺失状态不一致，请重新读取后重试',
+        };
+      }
+    }
+    for (const [key, expectedHash] of Object.entries(precondition.requiredReads)) {
+      const targetPath = this.resolveTargetPathFromKey(key);
+      if (targetPath === null || !existsSync(targetPath)) {
+        return {
+          status: 'error',
+          action: request.action,
+          name: request.name,
+          errorCode: SKILL_ERR_STALE_SKILL_READ,
+          error: '目标已不存在，请重新读取后重试',
+        };
+      }
+      const currentHash = fingerprintText(readFileSync(targetPath, 'utf-8'));
+      if (currentHash !== expectedHash) {
+        return {
+          status: 'error',
+          action: request.action,
+          name: request.name,
+          errorCode: SKILL_ERR_STALE_SKILL_READ,
+          error: '目标内容在读取后已变化，请重新 load_skill 后再修改',
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 从规范化目标键解析物理路径。
+   * 键格式为「规范化名称::相对路径或主文件占位符」，支持文件归属所属 Skill 目录。
+   *
+   * @param key - 读取账本中的规范化目标键
+   * @returns 物理绝对路径；Skill 不存在或键非法时返回 null
+   */
+  private resolveTargetPathFromKey(key: string): string | null {
+    const sepIndex = key.indexOf('::');
+    if (sepIndex <= 0) {
+      return null;
+    }
+    const name = key.slice(0, sepIndex);
+    const filePath = key.slice(sepIndex + 2);
+    const meta = this.cache.get(name);
+    if (!meta) {
+      return null;
+    }
+    if (filePath === MAIN_SKILL_FILE_MARKER) {
+      return meta.filePath;
+    }
+    return resolve(meta.skillDir, filePath);
+  }
+
   // ── 文件操作实用工具 ──
+
+  /**
+   * 在原子替换边界完成最后一次前置摘要检查后写入。
+   * 该检查与锁内开头校验语义一致，用于防御不遵守协作锁的外部编辑器
+   * 在极短校验窗口内的竞争；代码与文档不得把非协作写入描述为绝对线性一致。
+   *
+   * @param targetPath - 目标物理路径
+   * @param content - 待写入内容
+   * @param precondition - 后台读取账本前置条件
+   * @param request - 本次管理请求
+   * @param origin - 写入来源
+   * @param replayPendingId - 批准重放标识
+   * @returns 校验失败结果；写入成功返回 null
+   */
+  private atomicWriteWithCheck(
+    targetPath: string,
+    content: string,
+    precondition: SkillMutationPrecondition | undefined,
+    request: SkillManageRequest,
+    origin: SkillWriteOrigin,
+    replayPendingId: string | undefined,
+  ): SkillManageResult | null {
+    const finalCheck = this.verifyMutationPrecondition(
+      precondition, request, origin, replayPendingId,
+    );
+    if (finalCheck) {
+      return finalCheck;
+    }
+    this.atomicWrite(targetPath, content);
+    return null;
+  }
 
   /** 原子写入：临时文件 + rename。 */
   private atomicWrite(targetPath: string, content: string): void {

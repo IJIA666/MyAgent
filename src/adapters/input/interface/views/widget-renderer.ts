@@ -148,6 +148,28 @@ export function renderCompletionBanner(): string {
 }
 
 /**
+ * 渲染后台 Skill 复盘结果的非阻塞状态行。
+ * 该事件只告知用户后台已完成 Skill 变更，不参与渲染状态机
+ * （complete 仍是本轮唯一终结点），也不会写回模型历史。
+ *
+ * @param status - 真实写入结果状态（success/staged）
+ * @param action - Skill 管理动作
+ * @param skill - 被变更的 Skill 名称
+ * @param pendingId - 可选暂存标识
+ * @returns 弱化样式的一行状态文本
+ */
+export function renderSkillReviewUpdate(
+  status: 'success' | 'staged',
+  action: string,
+  skill: string,
+  pendingId?: string,
+): string {
+  const outcome = status === 'staged' ? '已暂存，等待批准' : '已完成';
+  const pending = pendingId ? `（暂存 ${pendingId}）` : '';
+  return theme.dim(`[后台技能] ${action}「${skill}」${outcome}${pending}`);
+}
+
+/**
  * 将消息内容中内含的 XML 标签和定界符，解析并折叠转换为具有终端视觉效果的精美标签卡片微件。
  * @param content 原始的文本消息内容
  * @returns 过滤并折叠渲染后的文本

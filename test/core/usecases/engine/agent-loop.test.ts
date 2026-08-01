@@ -278,8 +278,89 @@ describe('AgentLoop 动态安全特性测试', () => {
       requestedToolCallCount: 3,
       hasFinalResponse: true,
       waitingForInteraction: false,
-      historyStartIndex: expectedHistoryStart,
+      physicalRunStartIndex: expectedHistoryStart,
+      // 直接调用 chat() 未提供学习轨迹起点，摘要必须原样暴露 null。
+      learningTrajectoryStartIndex: null,
       historyEndIndex: expectedHistoryStart + 5,
+    });
+  });
+
+  it('九次工具型响应加最终纯文本响应只计 9 次迭代', async () => {
+    let streamCallCount = 0;
+    mockLlmDriver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      streamChat: vi.fn().mockImplementation(async function* () {
+        streamCallCount++;
+        if (streamCallCount <= 9) {
+          const toolCalls = [{
+            id: `call-nine-${streamCallCount}`,
+            type: 'function' as const,
+            function: { name: 'read_file', arguments: '{}' },
+          }];
+          yield {
+            type: 'tool_calls',
+            toolCalls,
+            assistantMessage: {
+              role: 'assistant',
+              content: null,
+              tool_calls: toolCalls,
+            },
+          } as LlmStreamEvent;
+          return;
+        }
+        // 最终纯文本响应：不计入工具迭代。
+        yield {
+          type: 'complete',
+          content: '最终纯文本回复。',
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: '最终纯文本回复。' },
+        } as LlmStreamEvent;
+      }),
+    };
+    mockToolRegistry = {
+      getTools: vi.fn().mockResolvedValue([{ name: 'read_file', securityCategory: 'read' }]),
+      getTool: vi.fn().mockReturnValue({ name: 'read_file', securityCategory: 'read' }),
+      callTool: vi.fn().mockResolvedValue({
+        value: { content: [{ type: 'text', text: 'ok' }] },
+        effect: {
+          kind: 'read',
+          executionStarted: true,
+          completed: true,
+          resources: [],
+          reason: 'declared_read_tool',
+        },
+      }),
+    };
+
+    let runSummary: Readonly<AgentRunSummary> | undefined;
+    pluginRegistry.register({
+      name: 'RunSummaryNineProbe',
+      weight: 99,
+      hooks: {
+        [HookEventName.RunEnd]: async (hookContext: HookContext, next) => {
+          runSummary = hookContext.runSummary;
+          await next();
+        },
+      },
+    });
+
+    context.addMessage({ role: 'user', content: '九轮工具任务' });
+    const loop = createLoop();
+    for await (const event of loop.chat(
+      undefined,
+      createTestTracer('test-nine-summary'),
+      { model: 'mock-model' } as LlmConfig,
+    )) {
+      void event;
+    }
+
+    expect(runSummary).toMatchObject({
+      terminalStatus: 'completed',
+      // 九个含非空 tool_calls 的模型响应计 9；最终纯文本响应不计入。
+      toolIterationCount: 9,
+      requestedToolCallCount: 9,
+      hasFinalResponse: true,
     });
   });
 

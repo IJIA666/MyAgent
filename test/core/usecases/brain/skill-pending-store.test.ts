@@ -13,6 +13,7 @@ import {
   SkillWriteApprovalController,
 } from '../../../../src/core/usecases/brain/skill-pending-store.js';
 import { SkillUsageStore } from '../../../../src/core/usecases/brain/skill-usage-store.js';
+import { SkillReviewReadLedger } from '../../../../src/core/usecases/brain/skill-review-read-ledger.js';
 
 describe('SkillPendingStore', () => {
   let tempDir: string;
@@ -34,7 +35,7 @@ describe('SkillPendingStore', () => {
       projectSkills,
       resolve(userSkills, '.archive'),
       new SkillUsageStore(resolve(userSkills, '.usage.json')),
-      { enableWatcher: false },
+      { enableWatcher: false, skillLocksDir: resolve(tempDir, 'locks') },
     );
   });
 
@@ -44,11 +45,18 @@ describe('SkillPendingStore', () => {
 
   it('create 暂存为独立 JSON，重启仓储后仍可列举且不会修改 Skill', async () => {
     const store = new SkillPendingStore(pendingDir, library);
+    const ledger = new SkillReviewReadLedger('pending-create-caller');
+    const precondition = ledger.buildPrecondition(
+      'pending-create-caller',
+      'create',
+      'pending-create',
+    );
+    expect(precondition).not.toBeNull();
     const record = await store.stage({
       action: 'create',
       name: 'pending-create',
       content: skillContent('pending-create', '待批准'),
-    }, 'background_review');
+    }, 'background_review', precondition ?? undefined);
 
     expect(record.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(library.get('pending-create')).toBeUndefined();
@@ -137,6 +145,81 @@ describe('SkillPendingStore', () => {
     await expect(store.validateReplay(record.id, record.request))
       .resolves.toMatchObject({ status: 'stale' });
     expect(store.get(record.id)).toBeDefined();
+  });
+
+  it('批准前即时校验通过后目标再变化，锁内重放仍 fail-closed', async () => {
+    await library.manage({
+      action: 'create',
+      name: 'replay-race',
+      content: skillContent('replay-race', '暂存基线'),
+    }, 'foreground');
+    const store = new SkillPendingStore(pendingDir, library);
+    const record = await store.stage({
+      action: 'edit',
+      name: 'replay-race',
+      content: skillContent('replay-race', '待批准版本'),
+    }, 'foreground');
+
+    await expect(store.validateReplay(record.id, record.request))
+      .resolves.toMatchObject({ status: 'ready' });
+    // 模拟 validateReplay 返回后、批准调用真正取得写锁前发生的并发提交。
+    await library.manage({
+      action: 'edit',
+      name: 'replay-race',
+      content: skillContent('replay-race', '并发提交版本'),
+    }, 'foreground');
+    const replayResult = await library.manage(
+      record.request,
+      record.origin,
+      undefined,
+      {
+        id: record.id,
+        baseFingerprint: record.preview.baseFingerprint,
+      },
+    );
+
+    expect(replayResult).toMatchObject({
+      status: 'error',
+      errorCode: 'skill_target_changed',
+    });
+    expect(library.read('replay-race')).toContain('并发提交版本');
+    expect(library.read('replay-race')).not.toContain('待批准版本');
+    expect(store.get(record.id)).toBeDefined();
+  });
+
+  it('后台先读后写凭证与批准重放指纹构成双层 stale 校验', async () => {
+    const store = new SkillPendingStore(pendingDir, library);
+
+    // 第一层：后台未读取准确目标时，在写入边界即被拒绝（不产生 pending）。
+    await expect(library.manage({
+      action: 'create',
+      name: 'two-layer',
+      content: skillContent('two-layer', 'v1'),
+    }, 'background_review')).resolves.toMatchObject({
+      status: 'error',
+      errorCode: 'read_before_write_required',
+    });
+    expect(store.list()).toHaveLength(0);
+
+    // 第二层：合法暂存后目标被外部更新，批准重放仍校验 pending 自身指纹。
+    await library.manage({
+      action: 'create',
+      name: 'two-layer',
+      content: skillContent('two-layer', 'v1'),
+    }, 'foreground');
+    const record = await store.stage({
+      action: 'edit',
+      name: 'two-layer',
+      content: skillContent('two-layer', 'v2'),
+    }, 'foreground');
+    await library.manage({
+      action: 'edit',
+      name: 'two-layer',
+      content: skillContent('two-layer', '外部新正文'),
+    }, 'foreground');
+
+    await expect(store.validateReplay(record.id, record.request))
+      .resolves.toMatchObject({ status: 'stale' });
   });
 
   it('重放参数不一致时拒绝，discard 只删除目标记录', async () => {

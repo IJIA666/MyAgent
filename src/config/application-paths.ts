@@ -120,6 +120,8 @@ export interface ApplicationPaths {
   readonly tmpDir: string;
   /** 回滚备份目录：`<tmpDir>/backups/`。 */
   readonly backupsDir: string;
+  /** Skill 写入协作锁目录：`<userConfigDir>/.locks/skills/`。 */
+  readonly skillLocksDir: string;
 }
 
 /** {@link createApplicationPaths} 的选项。 */
@@ -196,6 +198,8 @@ export function createApplicationPaths(
     screenshotsDir: resolve(projectDataDir, 'artifacts', 'screenshots'),
     tmpDir: resolve(projectDataDir, 'tmp'),
     backupsDir: resolve(projectDataDir, 'tmp', 'backups'),
+    // 独立锁目录：与 Skill 包目录隔离，避免锁文件被 Skill 扫描误识别。
+    skillLocksDir: resolve(userConfigDir, '.locks', 'skills'),
   };
 
   return Object.freeze(paths);

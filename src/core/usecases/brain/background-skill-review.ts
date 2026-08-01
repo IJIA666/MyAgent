@@ -13,6 +13,7 @@ import { AgentLoop } from '../engine/agent-loop.js';
 import { ToolDispatcher } from '../engine/ToolDispatcher.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
 import type {
+  BackgroundSkillReviewAcceptance,
   BackgroundSkillReviewRequest,
   BackgroundSkillReviewScheduler,
 } from '../plugins/SkillLearningPlugin.js';
@@ -127,11 +128,20 @@ export interface IsolatedSkillTaskRunner {
 
 /**
  * 隔离的后台 Skill Review 服务。
- * schedule 只排队；每个任务创建独立上下文、仓储、RuleManager、PluginRegistry 和 AgentLoop。
+ * schedule 只排队；单执行者 drain 循环保证任一时刻最多运行一个隔离复盘 Agent，
+ * 每个任务创建独立上下文、仓储、RuleManager、PluginRegistry 和 AgentLoop。
  */
 export class BackgroundSkillReviewService implements BackgroundSkillReviewScheduler, IsolatedSkillTaskRunner {
-  private readonly activeTasks = new Map<Promise<void>, AbortController>();
+  /** 待处理请求 FIFO（入队时已复制不可变快照）。 */
+  private readonly queue: Array<{ id: string; request: Readonly<BackgroundSkillReviewRequest> }> = [];
+  /** 当前活动任务 promise；null 表示空闲。 */
+  private activeTask: Promise<void> | null = null;
+  /** 当前活动任务的取消控制器。 */
+  private activeController: AbortController | null = null;
+  /** 是否已关闭：关闭后不再接收、不再启动新任务。 */
   private closed = false;
+  /** drain 循环是否正在运行（防重入）。 */
+  private draining = false;
 
   /**
    * @param options - 后台 Agent 所需的共享只读依赖和受控写入口
@@ -139,42 +149,89 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
   constructor(private readonly options: BackgroundSkillReviewServiceOptions) {}
 
   /**
-   * 非阻塞排队一次 Review。
+   * 同步排队一次 Review。
+   * 服务开放时复制不可变请求并入 FIFO，随后由私有 drain 循环串行执行；
+   * 关闭后同步返回未接受，不创建任务、控制器或队列条目。
    *
    * @param request - 已复制的成功 run 轨迹
+   * @returns 只读接受结果；accepted=true 时调用方才可消费学习阈值
    */
-  public schedule(request: Readonly<BackgroundSkillReviewRequest>): void {
+  public schedule(
+    request: Readonly<BackgroundSkillReviewRequest>,
+  ): BackgroundSkillReviewAcceptance {
     if (this.closed) {
-      logger.debug('[BackgroundSkillReview] review_skipped', {
+      logger.debug('[BackgroundSkillReview] review_rejected', {
         component: 'background_skill_review',
-        event: 'review_skipped',
+        event: 'review_rejected',
         reason: 'service_closed',
       });
+      return Object.freeze({ accepted: false, taskId: null });
+    }
+    const taskId = randomUUID();
+    const snapshot = cloneReviewRequest(request);
+    this.queue.push({ id: taskId, request: snapshot });
+    logger.debug('[BackgroundSkillReview] review_queued', {
+      component: 'background_skill_review',
+      event: 'review_queued',
+      taskId,
+      queueDepth: this.queue.length,
+    });
+    void this.drain();
+    return Object.freeze({ accepted: true, taskId });
+  }
+
+  /**
+   * 私有 drain 循环：按 FIFO 串行消费队列。
+   * 前一任务无论成功、失败、no-op 或取消，都在完成清理后再启动下一个；
+   * 关闭后循环退出，不再启动任何任务。
+   */
+  private async drain(): Promise<void> {
+    if (this.draining || this.closed) {
       return;
     }
-    const controller = new AbortController();
-    const snapshot = cloneReviewRequest(request);
-    const task = this.runReview(snapshot, controller.signal)
-      .then(result => {
-        logger.info('[BackgroundSkillReview] review_completed', {
+    this.draining = true;
+    try {
+      while (this.queue.length > 0 && !this.closed) {
+        const entry = this.queue.shift()!;
+        const controller = new AbortController();
+        this.activeController = controller;
+        logger.debug('[BackgroundSkillReview] review_started', {
           component: 'background_skill_review',
-          event: 'review_completed',
-          cancelled: result.cancelled,
-          mutationCount: result.mutations.length,
-          eventCount: result.eventCount,
+          event: 'review_started',
+          taskId: entry.id,
+          queueDepth: this.queue.length,
         });
-      })
-      .catch(error => {
-        logger.warn('[BackgroundSkillReview] review_failed', {
-          component: 'background_skill_review',
-          event: 'review_failed',
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      });
-    this.activeTasks.set(task, controller);
-    void task.finally(() => {
-      this.activeTasks.delete(task);
-    });
+        const task = this.runReview(entry.request, controller.signal)
+          .then(result => {
+            logger.info('[BackgroundSkillReview] review_completed', {
+              component: 'background_skill_review',
+              event: 'review_completed',
+              taskId: entry.id,
+              cancelled: result.cancelled,
+              mutationCount: result.mutations.length,
+              eventCount: result.eventCount,
+            });
+          })
+          .catch(error => {
+            logger.warn('[BackgroundSkillReview] review_failed', {
+              component: 'background_skill_review',
+              event: 'review_failed',
+              taskId: entry.id,
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          });
+        this.activeTask = task;
+        try {
+          await task;
+        } finally {
+          // 前一任务清理完成后才继续下一个。
+          this.activeTask = null;
+          this.activeController = null;
+        }
+      }
+    } finally {
+      this.draining = false;
+    }
   }
 
   /**
@@ -321,7 +378,8 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
   }
 
   /**
-   * 取消全部后台任务，并在有界时间内等待清理。
+   * 关闭状态机：先停止接收并让 schedule 返回未接受，再丢弃未启动请求、
+   * 取消活动任务并有界等待；关闭完成后不得再启动队列中的任何复盘。
    *
    * @param modelTimeoutMs - 主模型超时，用于计算更短的关闭等待窗口
    */
@@ -330,17 +388,24 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
       return;
     }
     this.closed = true;
-    const tasks = [...this.activeTasks.keys()];
-    for (const controller of this.activeTasks.values()) {
-      controller.abort(new Error('Session is closing'));
+    const droppedCount = this.queue.length;
+    this.queue.length = 0;
+    this.activeController?.abort(new Error('Session is closing'));
+    const active = this.activeTask;
+    if (droppedCount > 0) {
+      logger.debug('[BackgroundSkillReview] close_dropped_queued', {
+        component: 'background_skill_review',
+        event: 'close_dropped_queued',
+        droppedCount,
+      });
     }
-    if (tasks.length === 0) {
+    if (!active) {
       return;
     }
 
     const timeoutMs = Math.min(5_000, Math.max(100, Math.floor(modelTimeoutMs / 4)));
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const settled = Promise.allSettled(tasks).then(() => true);
+    const settled = active.then(() => true).catch(() => true);
     const timedOut = new Promise<boolean>(resolve => {
       timer = setTimeout(() => resolve(false), timeoutMs);
     });
@@ -352,7 +417,6 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
       logger.warn('[BackgroundSkillReview] close_timeout', {
         component: 'background_skill_review',
         event: 'close_timeout',
-        activeTaskCount: this.activeTasks.size,
         timeoutMs,
       });
     }

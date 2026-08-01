@@ -2,10 +2,12 @@
  * @file BackgroundSkillAgent 的固定工具面、权限快照和 ToolGateway 调用测试。
  */
 
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { BackgroundSkillAgent } from '../../../../src/core/usecases/brain/background-skill-agent.js';
 import { PermissionSessionState } from '../../../../src/core/domain/permissions/permission-session-state.js';
 import { createTrustedCallContext } from '../../../../src/core/domain/permissions/trusted-call-context.js';
+import { SkillReviewReadLedger } from '../../../../src/core/usecases/brain/skill-review-read-ledger.js';
 import type { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
 
 /** 创建包含本地、交互和 MCP 风格定义的父工具注册表。 */
@@ -131,6 +133,87 @@ describe('BackgroundSkillAgent', () => {
       action: 'patch',
       name: 'demo',
     });
+  });
+
+  it('load_skill 真实成功后记录读取凭证，失败或取消不记账', async () => {
+    const ledger = new SkillReviewReadLedger('background-skill-review:test');
+    const parent = createParentRegistry();
+    // 第一次调用：load_skill 成功，返回主文件正文。
+    parent.callTool.mockResolvedValueOnce({
+      value: { content: [{ type: 'text', text: '支持文件正文' }] },
+      effect: {
+        kind: 'read',
+        executionStarted: true,
+        completed: true,
+        resources: [],
+        reason: 'declared_read_tool',
+      },
+    });
+    const agent = new BackgroundSkillAgent(parent as unknown as ToolRegistryPort, {
+      parentPermissionState: new PermissionSessionState(),
+      parentCaller: createTrustedCallContext('parent-session'),
+      parentToolNames: ['load_skill', 'skill_manage'],
+      callerId: 'background-skill-review:test',
+      readLedger: ledger,
+    });
+
+    await agent.callTool('load_skill', { name: 'demo', file_path: 'references/a.md' });
+    expect(ledger.getRecord('demo', 'references/a.md')).toBeDefined();
+    const precondition = ledger.buildPrecondition(
+      'background-skill-review:test',
+      'patch',
+      'demo',
+      'references/a.md',
+    );
+    expect(Object.values(precondition?.requiredReads ?? {})).toEqual([
+      createHash('sha256').update('支持文件正文').digest('hex'),
+    ]);
+
+    // 第二次调用：load_skill 失败（携带 cause），不得产生读取凭证。
+    parent.callTool.mockResolvedValueOnce({
+      value: { content: [{ type: 'text', text: '错误' }] },
+      effect: {
+        kind: 'read',
+        executionStarted: true,
+        completed: true,
+        resources: [],
+        reason: 'declared_read_tool',
+      },
+      cause: new Error('load failed'),
+    });
+    await agent.callTool('load_skill', { name: 'other' });
+    expect(ledger.getRecord('other', null)).toBeUndefined();
+  });
+
+  it('模型输出会被折叠时不为完整正文签发读取凭证', async () => {
+    const ledger = new SkillReviewReadLedger('background-skill-review:test');
+    const parent = createParentRegistry();
+    parent.callTool.mockResolvedValueOnce({
+      value: { content: [{ type: 'text', text: 'x'.repeat(60 * 1024) }] },
+      effect: {
+        kind: 'read',
+        executionStarted: true,
+        completed: true,
+        resources: [],
+        reason: 'declared_read_tool',
+      },
+    });
+    const agent = new BackgroundSkillAgent(parent as unknown as ToolRegistryPort, {
+      parentPermissionState: new PermissionSessionState(),
+      parentCaller: createTrustedCallContext('parent-session'),
+      parentToolNames: ['load_skill', 'skill_manage'],
+      callerId: 'background-skill-review:test',
+      readLedger: ledger,
+    });
+
+    await agent.callTool('load_skill', { name: 'oversized' });
+
+    expect(ledger.getRecord('oversized', null)).toBeUndefined();
+    expect(ledger.buildPrecondition(
+      'background-skill-review:test',
+      'edit',
+      'oversized',
+    )).toBeNull();
   });
 
   it('关闭检查失败时不得进入父 ToolGateway', async () => {

@@ -17,10 +17,15 @@ import {
   createTrustedCallContext,
 } from '../../../src/core/domain/permissions/trusted-call-context.js';
 import { SkillLibrary } from '../../../src/core/usecases/brain/skill-library.js';
+import type { SkillPermissionAnalysis } from '../../../src/core/domain/permissions/permission-types.js';
 import { SkillUsageStore } from '../../../src/core/usecases/brain/skill-usage-store.js';
 import {
   SKILL_REVIEW_CALLER_ID_PREFIX,
 } from '../../../src/core/usecases/brain/skill-types.js';
+import {
+  SkillReviewReadLedger,
+  skillReadLedgerRegistry,
+} from '../../../src/core/usecases/brain/skill-review-read-ledger.js';
 
 describe('SkillManageAuthorizationAdapter', () => {
   let tempDir: string;
@@ -107,6 +112,54 @@ describe('SkillManageAuthorizationAdapter', () => {
       caller: unknownCaller,
       toolResult: { kind: 'allow' },
     }).analysis).toBeUndefined();
+  });
+
+  it('后台 caller 从读取账本签发前置条件，前台与未知账本不签发', () => {
+    const ledger = new SkillReviewReadLedger(`${SKILL_REVIEW_CALLER_ID_PREFIX}:run-1`);
+    ledger.recordLoad('text-posting', undefined, '最新正文');
+    skillReadLedgerRegistry.register(ledger);
+    try {
+      const adapter = new SkillManageAuthorizationAdapter(library);
+      const parent = createTrustedCallContext('parent', 'interactive');
+      const reviewCaller = createChildTrustedCallContext(
+        parent,
+        `${SKILL_REVIEW_CALLER_ID_PREFIX}:run-1`,
+      );
+
+      // 后台 caller 且账本存在：签发与 caller 绑定的前置条件。
+      const request = adapter.buildPermissionRequest({
+        action: 'edit',
+        name: 'text-posting',
+        content: '新版正文',
+      }, {
+        caller: reviewCaller,
+        toolResult: { kind: 'allow' },
+      });
+      const analysis = request.analysis as SkillPermissionAnalysis | undefined;
+      expect(analysis?.mutationPrecondition).toMatchObject({
+        callerId: `${SKILL_REVIEW_CALLER_ID_PREFIX}:run-1`,
+        action: 'edit',
+        name: 'text-posting',
+      });
+      expect(analysis?.mutationPrecondition?.requiredReads)
+        .toHaveProperty('text-posting::<SKILL.md>');
+
+      // 前台 caller：不签发前置条件，保持原权限与批准契约。
+      const foregroundRequest = adapter.buildPermissionRequest({
+        action: 'edit',
+        name: 'text-posting',
+        content: '新版正文',
+      }, {
+        caller: createTrustedCallContext('local-user', 'interactive'),
+        toolResult: { kind: 'allow' },
+      });
+      expect(
+        (foregroundRequest.analysis as SkillPermissionAnalysis | undefined)
+          ?.mutationPrecondition,
+      ).toBeUndefined();
+    } finally {
+      skillReadLedgerRegistry.unregister(`${SKILL_REVIEW_CALLER_ID_PREFIX}:run-1`);
+    }
   });
 
   it('delete 始终是 ask 候选且不属于 ordinary edit', () => {
@@ -196,33 +249,40 @@ describe('SkillManageAuthorizationAdapter', () => {
         parent,
         `${SKILL_REVIEW_CALLER_ID_PREFIX}:run-2`,
       );
+      // 后台调用必须关联本次任务的读取账本，授权阶段才会签发前置条件。
+      const ledger = new SkillReviewReadLedger(`${SKILL_REVIEW_CALLER_ID_PREFIX}:run-2`);
+      skillReadLedgerRegistry.register(ledger);
       const permissionState = new PermissionSessionState();
       const backgroundSession = new SessionContext('skill-background');
-      const outcome = await registry.callTool(
-        'skill_manage',
-        {
-          action: 'create',
-          name: 'background-created',
-          content: skillContent('background-created'),
-        },
-        backgroundSession,
-        undefined,
-        undefined,
-        'background-create',
-        30_000,
-        {
-          securityContext: {
-            caller,
-            permissionState,
-            approvalAllowed: false,
-            auditSource: 'skill_review_test',
+      try {
+        const outcome = await registry.callTool(
+          'skill_manage',
+          {
+            action: 'create',
+            name: 'background-created',
+            content: skillContent('background-created'),
           },
-        },
-      );
-      expect(parseToolJson(outcome.value)).toMatchObject({
-        status: 'success',
-        agentCreated: true,
-      });
+          backgroundSession,
+          undefined,
+          undefined,
+          'background-create',
+          30_000,
+          {
+            securityContext: {
+              caller,
+              permissionState,
+              approvalAllowed: false,
+              auditSource: 'skill_review_test',
+            },
+          },
+        );
+        expect(parseToolJson(outcome.value)).toMatchObject({
+          status: 'success',
+          agentCreated: true,
+        });
+      } finally {
+        skillReadLedgerRegistry.unregister(`${SKILL_REVIEW_CALLER_ID_PREFIX}:run-2`);
+      }
     } finally {
       await registry.close();
     }
