@@ -141,7 +141,7 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
   it('waiting_for_interaction 的 Skill 学习证据可跨进程快照恢复', async () => {
     const session = new SessionContext('contract-persistence-skill-learning');
     session.setSkillLearningContinuation({
-      version: 2,
+      version: 3,
       foregroundSkillMutationHandled: false,
       trajectory: [
         { role: 'user', content: '发布纯文字帖子' },
@@ -154,6 +154,7 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
         status: 'success',
         resultSummary: '创作中心返回手机号绑定前置条件',
       }],
+      modelLoopCount: 18,
       toolIterationCount: 17,
       requestedToolCallCount: 20,
       segmentCount: 1,
@@ -173,14 +174,14 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
     );
   });
 
-  it('未达阈值的 Skill 学习累计跨快照恢复，损坏字段 fail-closed 归零', async () => {
+  it('未达阈值的 Skill 模型循环累计跨快照恢复，损坏字段 fail-closed 归零', async () => {
     const workspace = createTempWorkspace();
 
     // 保存已累计 7 次的快照。
     const session = new SessionContext('contract-persistence-cadence');
     session.setSkillLearningCadence({
-      version: 1,
-      accumulatedToolResponseIterations: 7,
+      version: 2,
+      accumulatedModelLoops: 7,
     });
     await new ContextRepository(session, workspace).saveState();
 
@@ -189,21 +190,21 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
     await new ContextRepository(loadedSession, workspace)
       .loadState(session.getSessionId());
     expect(loadedSession.getSkillLearningCadence()).toMatchObject({
-      accumulatedToolResponseIterations: 7,
+      accumulatedModelLoops: 7,
     });
 
     // 损坏字段（负数/未知版本）按零累计恢复，且不阻止其他状态恢复。
     const damagedSession = new SessionContext('contract-persistence-cadence-damaged');
     damagedSession.addMessage({ role: 'user', content: '合法消息' });
     damagedSession.setSkillLearningCadence({
-      version: 1,
-      accumulatedToolResponseIterations: 7,
+      version: 2,
+      accumulatedModelLoops: 7,
     });
     await new ContextRepository(damagedSession, workspace).saveState();
     const raw = JSON.parse(
       readFileSync(resolve(workspace, `session_${damagedSession.getSessionId()}.json`), 'utf8'),
-    ) as { skillLearningCadence: { version: number; accumulatedToolResponseIterations: number } };
-    raw.skillLearningCadence = { version: 99, accumulatedToolResponseIterations: -3 };
+    ) as { skillLearningCadence: { version: number; accumulatedModelLoops: number } };
+    raw.skillLearningCadence = { version: 99, accumulatedModelLoops: -3 };
     writeFileSync(
       resolve(workspace, `session_${damagedSession.getSessionId()}.json`),
       JSON.stringify(raw, null, 2),
@@ -218,7 +219,31 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
       message => message.role === 'user' && message.content === '合法消息',
     )).toBe(true);
     expect(repairedSession.getSkillLearningCadence()).toMatchObject({
-      accumulatedToolResponseIterations: 0,
+      accumulatedModelLoops: 0,
+    });
+  });
+
+  it('旧版工具响应累计不得被误迁移为模型循环累计', async () => {
+    const workspace = createTempWorkspace();
+    const session = new SessionContext('contract-persistence-legacy-cadence');
+    await new ContextRepository(session, workspace).saveState();
+    const snapshotPath = resolve(workspace, `session_${session.getSessionId()}.json`);
+    const raw = JSON.parse(readFileSync(snapshotPath, 'utf8')) as {
+      skillLearningCadence: Record<string, unknown>;
+    };
+    // 版本 1 的值表示工具型响应次数，语义不兼容，恢复时必须归零。
+    raw.skillLearningCadence = {
+      version: 1,
+      accumulatedToolResponseIterations: 7,
+    };
+    writeFileSync(snapshotPath, JSON.stringify(raw, null, 2), 'utf8');
+
+    const loadedSession = new SessionContext('contract-persistence-legacy-cadence-loaded');
+    await new ContextRepository(loadedSession, workspace).loadState(session.getSessionId());
+
+    expect(loadedSession.getSkillLearningCadence()).toMatchObject({
+      version: 2,
+      accumulatedModelLoops: 0,
     });
   });
 
@@ -248,19 +273,20 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
       },
     });
     loadedSession.setSkillLearningContinuation({
-      version: 2,
+      version: 3,
       foregroundSkillMutationHandled: false,
       trajectory: [{ role: 'user', content: '不应泄漏的轨迹' }],
       loadedSkills: ['stale-skill'],
       toolEvidence: [],
+      modelLoopCount: 4,
       toolIterationCount: 3,
       requestedToolCallCount: 3,
       segmentCount: 1,
       resumeHistoryIndex: 1,
     });
     loadedSession.setSkillLearningCadence({
-      version: 1,
-      accumulatedToolResponseIterations: 9,
+      version: 2,
+      accumulatedModelLoops: 9,
     });
 
     const found = await new ContextRepository(loadedSession, workspace)
@@ -270,7 +296,7 @@ describe('Session 持久化合约测试 — saveState / loadState', () => {
     expect(loadedSession.pendingInteraction).toBeNull();
     expect(loadedSession.getSkillLearningContinuation()).toBeNull();
     expect(loadedSession.getSkillLearningCadence()).toMatchObject({
-      accumulatedToolResponseIterations: 0,
+      accumulatedModelLoops: 0,
     });
     expect(loadedSession.getHistory()).toEqual([
       { role: 'user', content: '旧版会话消息' },

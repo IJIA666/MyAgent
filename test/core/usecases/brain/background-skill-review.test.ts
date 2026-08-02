@@ -74,6 +74,7 @@ function createReviewRequest(): BackgroundSkillReviewRequest {
     }],
     runSummary: {
       terminalStatus: 'completed',
+      modelLoopCount: 2,
       toolIterationCount: 1,
       requestedToolCallCount: 1,
       physicalRunStartIndex: 0,

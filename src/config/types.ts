@@ -194,7 +194,7 @@ export interface AppConfig {
 export interface ResolvedSkillConfig {
   /** 是否启用后台 Skill Review（主回复后异步复盘）。 */
   readonly backgroundReviewEnabled: boolean;
-  /** 累计多少次含工具调用的模型迭代后触发一次后台 Review。默认 10。 */
+  /** 累计多少次模型循环后触发一次后台 Review。默认 10。 */
   readonly creationNudgeInterval: number;
   /** 是否开启写入暂存批准模式。false 时直接写入，true 时暂存为 pending。 */
   readonly writeApproval: boolean;

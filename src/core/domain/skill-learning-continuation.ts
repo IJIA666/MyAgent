@@ -23,13 +23,15 @@ export interface SkillReviewToolEvidence {
  */
 export interface SkillLearningContinuation {
   /** 延续状态结构版本。 */
-  readonly version: 2;
+  readonly version: 3;
   /** 等待前已经复制的有界会话轨迹。 */
   readonly trajectory: readonly ChatMessage[];
   /** 等待前真实成功加载的 Skill 名称。 */
   readonly loadedSkills: readonly string[];
   /** 等待前收集的结构化工具证据。 */
   readonly toolEvidence: readonly SkillReviewToolEvidence[];
+  /** 等待前已经进入模型流的逻辑请求次数。 */
+  readonly modelLoopCount: number;
   /** 等待前包含非空 tool_calls 的模型响应数量。 */
   readonly toolIterationCount: number;
   /** 等待前模型请求的工具调用总数。 */
@@ -60,12 +62,13 @@ export function cloneSkillLearningContinuation(
   continuation: Readonly<SkillLearningContinuation>,
 ): Readonly<SkillLearningContinuation> {
   return Object.freeze({
-    version: 2,
+    version: 3,
     trajectory: Object.freeze(structuredClone([...continuation.trajectory])),
     loadedSkills: Object.freeze([...continuation.loadedSkills]),
     toolEvidence: Object.freeze(
       continuation.toolEvidence.map(evidence => Object.freeze({ ...evidence })),
     ),
+    modelLoopCount: continuation.modelLoopCount,
     toolIterationCount: continuation.toolIterationCount,
     requestedToolCallCount: continuation.requestedToolCallCount,
     segmentCount: continuation.segmentCount,
@@ -77,7 +80,7 @@ export function cloneSkillLearningContinuation(
 /**
  * 校验会话快照中的未知值并恢复 Skill 学习延续状态。
  * 非法数据按 fail-closed 返回 null，不影响主会话消息恢复。
- * 旧版（version 1）快照按前台未沉淀（false）迁移。
+ * 旧版（version 1/2）快照无法还原模型循环数，按零循环迁移并保留其余证据。
  *
  * @param value - 会话快照中的原始字段
  * @returns 合法的只读延续状态；字段缺失或损坏时返回 null
@@ -86,13 +89,14 @@ export function normalizeSkillLearningContinuation(
   value: unknown,
 ): Readonly<SkillLearningContinuation> | null {
   if (!isRecord(value)
-    || (value.version !== 1 && value.version !== 2)
+    || (value.version !== 1 && value.version !== 2 && value.version !== 3)
     || !Array.isArray(value.trajectory)
     || !value.trajectory.every(isChatMessage)
     || !Array.isArray(value.loadedSkills)
     || !value.loadedSkills.every(isNonEmptyString)
     || !Array.isArray(value.toolEvidence)
     || !value.toolEvidence.every(isToolEvidence)
+    || (value.version === 3 && !isNonNegativeInteger(value.modelLoopCount))
     || !isNonNegativeInteger(value.toolIterationCount)
     || !isNonNegativeInteger(value.requestedToolCallCount)
     || !Number.isInteger(value.segmentCount)
@@ -103,15 +107,17 @@ export function normalizeSkillLearningContinuation(
   }
 
   // version 1 旧快照缺少前台沉淀标志：按 false 迁移。
-  const foregroundHandled = value.version === 2
+  const foregroundHandled = value.version === 2 || value.version === 3
     ? value.foregroundSkillMutationHandled === true
     : false;
 
   return cloneSkillLearningContinuation({
-    version: 2,
+    version: 3,
     trajectory: value.trajectory as ChatMessage[],
     loadedSkills: value.loadedSkills as string[],
     toolEvidence: value.toolEvidence as SkillReviewToolEvidence[],
+    // 旧版只记录工具响应次数，不能把它误当成模型循环次数。
+    modelLoopCount: value.version === 3 ? value.modelLoopCount as number : 0,
     toolIterationCount: value.toolIterationCount as number,
     requestedToolCallCount: value.requestedToolCallCount as number,
     segmentCount: value.segmentCount as number,

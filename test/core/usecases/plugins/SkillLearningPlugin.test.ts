@@ -4,6 +4,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionContext } from '../../../../src/core/domain/context.js';
+import { normalizeSkillLearningContinuation } from '../../../../src/core/domain/skill-learning-continuation.js';
 import {
   SkillLearningPlugin,
   type BackgroundSkillReviewRequest,
@@ -16,16 +17,17 @@ import {
 } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { runHookPipeline } from '../../../../src/core/usecases/plugins/plugin-runner.js';
 
-/** 构造指定工具迭代数的成功 RunEnd 摘要。 */
+/** 构造指定模型循环数的成功 RunEnd 摘要。 */
 function completedSummary(
-  toolIterationCount: number,
+  modelLoopCount: number,
   learningTrajectoryStartIndex = 0,
   historyEndIndex = 0,
 ): AgentRunSummary {
   return {
     terminalStatus: 'completed',
-    toolIterationCount,
-    requestedToolCallCount: toolIterationCount,
+    modelLoopCount,
+    toolIterationCount: modelLoopCount,
+    requestedToolCallCount: modelLoopCount,
     physicalRunStartIndex: 0,
     learningTrajectoryStartIndex,
     historyEndIndex,
@@ -64,7 +66,7 @@ describe('SkillLearningPlugin', () => {
     };
   });
 
-  it('应跨 run 累计工具迭代，达到阈值后排队并归零', async () => {
+  it('应跨 run 累计模型循环，达到阈值后排队并归零', async () => {
     const plugin = new SkillLearningPlugin({
       backgroundReviewEnabled: true,
       creationNudgeInterval: 3,
@@ -112,6 +114,33 @@ describe('SkillLearningPlugin', () => {
       }),
       next,
     );
+    expect(scheduler.schedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('最终纯文本模型循环应推进阈值，即使没有任何工具型响应', async () => {
+    const plugin = new SkillLearningPlugin({
+      backgroundReviewEnabled: true,
+      creationNudgeInterval: 2,
+    }, scheduler);
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    for (let index = 0; index < 2; index++) {
+      await plugin.hooks[HookEventName.RunStart](
+        hookContext(sessionContext, HookEventName.RunStart),
+        next,
+      );
+      await plugin.hooks[HookEventName.RunEnd](
+        hookContext(sessionContext, HookEventName.RunEnd, {
+          runSummary: {
+            ...completedSummary(1),
+            toolIterationCount: 0,
+            requestedToolCallCount: 0,
+          },
+        }),
+        next,
+      );
+    }
+
     expect(scheduler.schedule).toHaveBeenCalledTimes(1);
   });
 
@@ -264,6 +293,7 @@ describe('SkillLearningPlugin', () => {
 
     expect(scheduler.schedule).not.toHaveBeenCalled();
     expect(sessionContext.getSkillLearningContinuation()).toMatchObject({
+      modelLoopCount: 9,
       toolIterationCount: 9,
       requestedToolCallCount: 9,
       segmentCount: 1,
@@ -704,7 +734,7 @@ describe('SkillLearningPlugin', () => {
       next,
     );
     expect(sessionContext.getSkillLearningCadence()).toMatchObject({
-      accumulatedToolResponseIterations: 3,
+      accumulatedModelLoops: 3,
     });
 
     // 第二次达阈值且接受：减一个阈值，保留余数。
@@ -719,15 +749,15 @@ describe('SkillLearningPlugin', () => {
       next,
     );
     expect(sessionContext.getSkillLearningCadence()).toMatchObject({
-      accumulatedToolResponseIterations: 5,
+      accumulatedModelLoops: 5,
     });
   });
 
   it('跨重启从会话快照恢复累计值继续累计', async () => {
-    // 模拟旧进程快照中已累计 7 次。
+    // 模拟旧进程快照中已累计 7 次模型循环。
     sessionContext.setSkillLearningCadence({
-      version: 1,
-      accumulatedToolResponseIterations: 7,
+      version: 2,
+      accumulatedModelLoops: 7,
     });
     const plugin = new SkillLearningPlugin({
       backgroundReviewEnabled: true,
@@ -749,7 +779,7 @@ describe('SkillLearningPlugin', () => {
     // 7 + 3 = 10 达到阈值：调度并归零（余数 0）。
     expect(scheduler.schedule).toHaveBeenCalledTimes(1);
     expect(sessionContext.getSkillLearningCadence()).toMatchObject({
-      accumulatedToolResponseIterations: 0,
+      accumulatedModelLoops: 0,
     });
   });
 
@@ -816,17 +846,17 @@ describe('SkillLearningPlugin', () => {
       next,
     );
 
-    // 累计为 0：不调度、不推进（前后两段合计 4 次工具响应均被豁免）。
+    // 累计为 0：不调度、不推进（前后两段合计 4 次模型循环均被豁免）。
     expect(scheduler.schedule).not.toHaveBeenCalled();
     expect(sessionContext.getSkillLearningCadence()).toMatchObject({
-      accumulatedToolResponseIterations: 0,
+      accumulatedModelLoops: 0,
     });
   });
 
   it('真实 CallToolResult 包络中的前台沉淀会跳过复盘且不消费历史阈值', async () => {
     sessionContext.setSkillLearningCadence({
-      version: 1,
-      accumulatedToolResponseIterations: 10,
+      version: 2,
+      accumulatedModelLoops: 10,
     });
     const plugin = new SkillLearningPlugin({
       backgroundReviewEnabled: true,
@@ -863,14 +893,13 @@ describe('SkillLearningPlugin', () => {
 
     expect(scheduler.schedule).not.toHaveBeenCalled();
     expect(sessionContext.getSkillLearningCadence()).toMatchObject({
-      accumulatedToolResponseIterations: 10,
+      accumulatedModelLoops: 10,
     });
   });
 
-  it('等待前的延续状态缺少前台沉淀标志时按 false 迁移', async () => {
-    // 手工构造 version 1 旧延续状态（无 foregroundSkillMutationHandled 字段）。
-    sessionContext.setSkillLearningContinuation({
-      version: 1 as unknown as 2,
+  it('旧延续状态按零模型循环迁移且缺少前台沉淀标志时按 false 处理', async () => {
+    const legacy = normalizeSkillLearningContinuation({
+      version: 1,
       trajectory: [{ role: 'user', content: '旧任务' }],
       loadedSkills: [],
       toolEvidence: [],
@@ -879,7 +908,9 @@ describe('SkillLearningPlugin', () => {
       segmentCount: 1,
       // 恢复边界为 0，与恢复 run 的学习起点一致。
       resumeHistoryIndex: 0,
-    } as unknown as import('../../../../src/core/domain/skill-learning-continuation.js').SkillLearningContinuation);
+    });
+    expect(legacy).toMatchObject({ modelLoopCount: 0, foregroundSkillMutationHandled: false });
+    sessionContext.setSkillLearningContinuation(legacy!);
 
     const plugin = new SkillLearningPlugin({
       backgroundReviewEnabled: true,

@@ -256,7 +256,8 @@ export class AgentLoop {
   ): AsyncGenerator<AgentEvent, void, unknown> {
     // 初始化迭代计数器
     let iteration = 0;
-    // RunEnd 摘要只统计真实模型终态，不把并行工具数量混入迭代数。
+    // 模型循环、工具型响应和并行工具数量分别统计，供学习节奏与诊断独立使用。
+    let modelLoopCount = 0;
     let toolIterationCount = 0;
     let requestedToolCallCount = 0;
     let hasFinalResponse = false;
@@ -379,6 +380,9 @@ export class AgentLoop {
         let cleanupCascade: (() => void) | undefined = undefined;
         let hasToolCalls = false;
         try {
+          // 只有请求组装完成并真正进入模型流才计数；压缩导致的组装重启不计入。
+          // Mock 响应代表一次确定性的逻辑模型循环，与真实 driver 请求保持同一契约。
+          modelLoopCount++;
           // 获取底层的 Stream 响应
           let stream: AsyncGenerator<LlmStreamEvent, void, unknown>;
           if (assembly.mockResponse) {
@@ -737,6 +741,7 @@ export class AgentLoop {
     } finally {
       const runSummary: Readonly<AgentRunSummary> = Object.freeze({
         terminalStatus,
+        modelLoopCount,
         toolIterationCount,
         requestedToolCallCount,
         physicalRunStartIndex,

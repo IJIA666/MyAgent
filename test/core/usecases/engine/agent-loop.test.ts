@@ -192,7 +192,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     });
   }
 
-  it('RunEnd 应区分工具模型迭代、并行调用数和最终回复', async () => {
+  it('RunEnd 应区分模型循环、工具型响应、并行调用数和最终回复', async () => {
     let streamCallCount = 0;
     mockLlmDriver = {
       getModelName: () => 'mock-model',
@@ -274,6 +274,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     expect(nonRunEndSummaries).toEqual([undefined, undefined, undefined]);
     expect(runSummary).toMatchObject({
       terminalStatus: 'completed',
+      modelLoopCount: 2,
       toolIterationCount: 1,
       requestedToolCallCount: 3,
       hasFinalResponse: true,
@@ -285,7 +286,7 @@ describe('AgentLoop 动态安全特性测试', () => {
     });
   });
 
-  it('九次工具型响应加最终纯文本响应只计 9 次迭代', async () => {
+  it('九次工具型响应加最终纯文本响应应计十次模型循环', async () => {
     let streamCallCount = 0;
     mockLlmDriver = {
       getModelName: () => 'mock-model',
@@ -309,7 +310,7 @@ describe('AgentLoop 动态安全特性测试', () => {
           } as LlmStreamEvent;
           return;
         }
-        // 最终纯文本响应：不计入工具迭代。
+        // 最终纯文本响应：计入模型循环，但不计入工具型响应。
         yield {
           type: 'complete',
           content: '最终纯文本回复。',
@@ -357,7 +358,8 @@ describe('AgentLoop 动态安全特性测试', () => {
 
     expect(runSummary).toMatchObject({
       terminalStatus: 'completed',
-      // 九个含非空 tool_calls 的模型响应计 9；最终纯文本响应不计入。
+      // 九个工具型响应加一次最终纯文本响应，共十次模型循环。
+      modelLoopCount: 10,
       toolIterationCount: 9,
       requestedToolCallCount: 9,
       hasFinalResponse: true,
@@ -365,6 +367,17 @@ describe('AgentLoop 动态安全特性测试', () => {
   });
 
   it('Provider 首次溢出时应只强制一次 full 并在恢复后继续', async () => {
+    let runSummary: Readonly<AgentRunSummary> | undefined;
+    pluginRegistry.register({
+      name: 'OverflowRunSummaryProbe',
+      weight: 99,
+      hooks: {
+        [HookEventName.RunEnd]: async (hookContext: HookContext, next) => {
+          runSummary = hookContext.runSummary;
+          await next();
+        },
+      },
+    });
     const overflow = new LlmContextWindowExceededError('context exceeded');
     const streamChat = vi.fn()
       .mockImplementationOnce(async function* () {
@@ -420,6 +433,8 @@ describe('AgentLoop 动态安全特性测试', () => {
 
     expect(streamChat).toHaveBeenCalledTimes(2);
     expect(coordinate.mock.calls.map((call) => call[1])).toEqual(['auto', 'full', 'auto']);
+    // 三次请求组装中有一次只执行压缩重启，模型循环只统计两次真实 streamChat。
+    expect(runSummary).toMatchObject({ modelLoopCount: 2 });
     expect(events.some((event) => event.type === 'content' && event.content === 'recovered')).toBe(true);
     expect(events.some((event) => event.type === 'error')).toBe(false);
   });

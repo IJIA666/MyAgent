@@ -59,7 +59,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   /** 跨普通成功回合累计的 Skill 学习节奏（零累计起步）。 */
   private skillLearningCadence: Readonly<SkillLearningCadenceState> = Object.freeze({
     version: SKILL_LEARNING_CADENCE_VERSION,
-    accumulatedToolResponseIterations: 0,
+    accumulatedModelLoops: 0,
   });
 
   // ── 公开属性代理（保持向后兼容）──
@@ -457,7 +457,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   public resetSkillLearningCadence(): void {
     this.skillLearningCadence = Object.freeze({
       version: SKILL_LEARNING_CADENCE_VERSION,
-      accumulatedToolResponseIterations: 0,
+      accumulatedModelLoops: 0,
     });
   }
 

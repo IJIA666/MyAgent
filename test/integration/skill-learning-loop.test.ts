@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 describe('Skill learning loop integration', () => {
-  it('累计 10 次工具迭代后先交付主回复，再后台创建 class-level Skill 并供下一会话加载', async () => {
+  it('累计 10 次模型循环后先交付主回复，再后台创建 class-level Skill 并供下一会话加载', async () => {
     let releaseModel!: () => void;
     const modelGate = new Promise<void>(resolve => {
       releaseModel = resolve;
@@ -211,8 +211,9 @@ describe('Skill learning loop integration', () => {
       hookContext(waitingContext, HookEventName.RunEnd, {
         runSummary: {
           terminalStatus: 'waiting_for_interaction',
-          toolIterationCount: 9,
-          requestedToolCallCount: 9,
+          modelLoopCount: 9,
+          toolIterationCount: 1,
+          requestedToolCallCount: 1,
           physicalRunStartIndex: waitingStart,
           learningTrajectoryStartIndex: waitingStart,
           historyEndIndex: waitingContext.getHistory().length,
@@ -344,6 +345,7 @@ function createTrackedScheduler(service: BackgroundSkillReviewService): {
 /**
  * 模拟一个已交付最终回复的成功主 run，并可附带结构化工具证据。
  *
+ * @param modelLoopCount - 当前成功主 run 的模型循环数
  * @param learningTrajectoryStartIndex - 可选的学习轨迹起点；
  * 恢复 run 必须显式传入延续状态的 resumeHistoryIndex，普通任务缺省取当前历史长度
  */
@@ -351,7 +353,7 @@ async function completeMainRun(
   plugin: SkillLearningPlugin,
   context: SessionContext,
   next: () => Promise<void>,
-  toolIterationCount: number,
+  modelLoopCount: number,
   withEvidence: boolean,
   learningTrajectoryStartIndex?: number,
 ): Promise<void> {
@@ -368,7 +370,7 @@ async function completeMainRun(
     await plugin.hooks[HookEventName.AfterTool](
       hookContext(context, HookEventName.AfterTool, {
         toolCall: {
-          id: `validation-${toolIterationCount}`,
+          id: `validation-${modelLoopCount}`,
           name: 'validate_post',
           arguments: { format: 'plain-text' },
         },
@@ -386,8 +388,10 @@ async function completeMainRun(
   });
   const summary: AgentRunSummary = {
     terminalStatus: 'completed',
-    toolIterationCount,
-    requestedToolCallCount: toolIterationCount,
+    modelLoopCount,
+    // 该辅助链路每个有证据的 run 只模拟一次工具型响应，阈值只由模型循环驱动。
+    toolIterationCount: withEvidence ? 1 : 0,
+    requestedToolCallCount: withEvidence ? 1 : 0,
     physicalRunStartIndex: context.getHistory().length,
     learningTrajectoryStartIndex: start,
     historyEndIndex: context.getHistory().length,

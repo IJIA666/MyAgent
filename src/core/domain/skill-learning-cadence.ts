@@ -1,12 +1,11 @@
 /**
  * @file Skill 学习节奏的持久化领域状态。
- * 该状态跨普通成功回合累计“包含非空 tool_calls 的模型响应次数”，
- * 与等待交互使用的 SkillLearningContinuation 分开保存；
- * 命名与文档统一使用 toolResponseIteration，不再暗示所有模型循环计数。
+ * 该状态跨普通成功回合累计实际模型循环次数，
+ * 与等待交互使用的 SkillLearningContinuation 分开保存。
  */
 
 /** Skill 学习节奏状态的版本号；结构变更时应递增并迁移。 */
-export const SKILL_LEARNING_CADENCE_VERSION = 1 as const;
+export const SKILL_LEARNING_CADENCE_VERSION = 2 as const;
 
 /**
  * 版本化 Skill 学习节奏状态。
@@ -15,8 +14,8 @@ export const SKILL_LEARNING_CADENCE_VERSION = 1 as const;
 export interface SkillLearningCadenceState {
   /** 状态结构版本。 */
   readonly version: typeof SKILL_LEARNING_CADENCE_VERSION;
-  /** 已累计的“包含非空 tool_calls 的模型响应次数”。 */
-  readonly accumulatedToolResponseIterations: number;
+  /** 已累计且尚未被后台 Review 消费的模型循环次数。 */
+  readonly accumulatedModelLoops: number;
 }
 
 /**
@@ -30,7 +29,7 @@ export function cloneSkillLearningCadence(
 ): Readonly<SkillLearningCadenceState> {
   return Object.freeze({
     version: SKILL_LEARNING_CADENCE_VERSION,
-    accumulatedToolResponseIterations: state.accumulatedToolResponseIterations,
+    accumulatedModelLoops: state.accumulatedModelLoops,
   });
 }
 
@@ -46,17 +45,17 @@ export function normalizeSkillLearningCadence(
 ): Readonly<SkillLearningCadenceState> {
   if (!isRecord(value)
     || value.version !== SKILL_LEARNING_CADENCE_VERSION
-    || !Number.isInteger(value.accumulatedToolResponseIterations)
-    || (value.accumulatedToolResponseIterations as number) < 0
+    || !Number.isInteger(value.accumulatedModelLoops)
+    || (value.accumulatedModelLoops as number) < 0
   ) {
     return Object.freeze({
       version: SKILL_LEARNING_CADENCE_VERSION,
-      accumulatedToolResponseIterations: 0,
+      accumulatedModelLoops: 0,
     });
   }
   return cloneSkillLearningCadence({
     version: SKILL_LEARNING_CADENCE_VERSION,
-    accumulatedToolResponseIterations: value.accumulatedToolResponseIterations as number,
+    accumulatedModelLoops: value.accumulatedModelLoops as number,
   });
 }
 

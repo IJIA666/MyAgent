@@ -160,6 +160,7 @@ describe('后台 Skill Review 隔离', () => {
       toolEvidence: [],
       runSummary: {
         terminalStatus: 'completed',
+        modelLoopCount: 1,
         toolIterationCount: 1,
         requestedToolCallCount: 1,
         physicalRunStartIndex: 0,
@@ -285,6 +286,7 @@ describe('后台 Skill Review 隔离', () => {
       toolEvidence: [],
       runSummary: {
         terminalStatus: 'completed',
+        modelLoopCount: 1,
         toolIterationCount: 1,
         requestedToolCallCount: 1,
         physicalRunStartIndex: 0,
@@ -425,6 +427,7 @@ describe('后台 Skill Review 隔离', () => {
         toolEvidence: [],
         runSummary: {
           terminalStatus: 'completed',
+          modelLoopCount: 1,
           toolIterationCount: 1,
           requestedToolCallCount: 1,
           physicalRunStartIndex: 0,

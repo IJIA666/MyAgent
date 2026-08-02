@@ -53,7 +53,7 @@ export interface BackgroundSkillReviewScheduler {
 export interface SkillLearningPluginOptions {
   /** 是否允许后台复盘。 */
   readonly backgroundReviewEnabled: boolean;
-  /** 累计多少次工具模型迭代后安排一次复盘。 */
+  /** 累计多少次模型循环后安排一次复盘。 */
   readonly creationNudgeInterval: number;
 }
 
@@ -65,11 +65,13 @@ export class SkillLearningPlugin implements Plugin {
   public readonly name = 'SkillLearningPlugin';
   public readonly weight = 30;
 
-  private accumulatedToolIterations = 0;
+  /** 跨成功任务累计且尚未被后台 Review 消费的模型循环数。 */
+  private accumulatedModelLoops = 0;
   private readonly loadedSkills = new Set<string>();
   private readonly pendingLoadSkills = new Map<string, string>();
   private toolEvidence: SkillReviewToolEvidence[] = [];
   private continuationTrajectory: ChatMessage[] = [];
+  private continuationModelLoopCount = 0;
   private continuationToolIterationCount = 0;
   private continuationRequestedToolCallCount = 0;
   private continuationSegmentCount = 0;
@@ -93,8 +95,8 @@ export class SkillLearningPlugin implements Plugin {
   public readonly hooks = {
     [HookEventName.RunStart]: async (context: HookContext, next: () => Promise<void>) => {
       // 跨普通成功回合的累计值从会话快照恢复，进程重启后继续累计。
-      this.accumulatedToolIterations = context.sessionContext
-        .getSkillLearningCadence().accumulatedToolResponseIterations;
+      this.accumulatedModelLoops = context.sessionContext
+        .getSkillLearningCadence().accumulatedModelLoops;
       this.pendingLoadSkills.clear();
       this.restoreContinuation(context);
       await next();
@@ -200,6 +202,8 @@ export class SkillLearningPlugin implements Plugin {
       return;
     }
 
+    const learningModelLoopCount = this.continuationModelLoopCount
+      + summary.modelLoopCount;
     const learningToolIterationCount = this.continuationToolIterationCount
       + summary.toolIterationCount;
     const learningRequestedToolCallCount = this.continuationRequestedToolCallCount
@@ -208,7 +212,7 @@ export class SkillLearningPlugin implements Plugin {
     // 但不得清除此前其他逻辑任务留下的累计值。
     const cadenceIncrement = this.foregroundSkillMutationHandled
       ? 0
-      : learningToolIterationCount;
+      : learningModelLoopCount;
     const trajectory = this.buildLearningTrajectory(context, summary);
     const continuationSegmentCount = this.continuationSegmentCount;
     context.sessionContext.clearSkillLearningContinuation();
@@ -225,23 +229,25 @@ export class SkillLearningPlugin implements Plugin {
         component: 'skill_learning',
         event: 'review_skipped',
         reason: 'foreground_skill_mutation_handled',
-        accumulatedToolIterations: this.accumulatedToolIterations,
+        accumulatedModelLoops: this.accumulatedModelLoops,
+        learningModelLoopCount,
         learningToolIterationCount,
         continuationSegmentCount,
       });
       this.resetRunEvidence();
       return;
     }
-    this.accumulatedToolIterations += cadenceIncrement;
-    if (this.accumulatedToolIterations < this.options.creationNudgeInterval) {
+    this.accumulatedModelLoops += cadenceIncrement;
+    if (this.accumulatedModelLoops < this.options.creationNudgeInterval) {
       // 未达阈值：把累计值写回会话状态，供快照持久化与跨重启继续累计。
       context.sessionContext.setSkillLearningCadence(this.cadenceState());
       logger.debug('[SkillLearningPlugin] review_skipped', {
         component: 'skill_learning',
         event: 'review_skipped',
         reason: 'below_creation_nudge_interval',
-        accumulatedToolIterations: this.accumulatedToolIterations,
+        accumulatedModelLoops: this.accumulatedModelLoops,
         creationNudgeInterval: this.options.creationNudgeInterval,
+        learningModelLoopCount,
         learningToolIterationCount,
         continuationSegmentCount,
       });
@@ -260,12 +266,13 @@ export class SkillLearningPlugin implements Plugin {
       const acceptance = this.scheduler.schedule(request);
       if (acceptance.accepted) {
         // 只有调度器同步接受才消费一个阈值；超过阈值的余数继续保留。
-        this.accumulatedToolIterations -= this.options.creationNudgeInterval;
+        this.accumulatedModelLoops -= this.options.creationNudgeInterval;
         logger.info('[SkillLearningPlugin] review_scheduled', {
           component: 'skill_learning',
           event: 'review_scheduled',
           taskId: acceptance.taskId,
           terminalStatus: summary.terminalStatus,
+          modelLoopCount: learningModelLoopCount,
           toolIterationCount: learningToolIterationCount,
           requestedToolCallCount: learningRequestedToolCallCount,
           continuationSegmentCount,
@@ -279,7 +286,7 @@ export class SkillLearningPlugin implements Plugin {
           reason: 'schedule_rejected',
           taskId: acceptance.taskId,
           terminalStatus: summary.terminalStatus,
-          accumulatedToolIterations: this.accumulatedToolIterations,
+          accumulatedModelLoops: this.accumulatedModelLoops,
         });
       }
     } catch (error) {
@@ -289,7 +296,7 @@ export class SkillLearningPlugin implements Plugin {
         event: 'review_skipped',
         reason: 'schedule_failed',
         terminalStatus: summary.terminalStatus,
-        accumulatedToolIterations: this.accumulatedToolIterations,
+        accumulatedModelLoops: this.accumulatedModelLoops,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -302,7 +309,7 @@ export class SkillLearningPlugin implements Plugin {
   private cadenceState(): Readonly<SkillLearningCadenceState> {
     return Object.freeze({
       version: SKILL_LEARNING_CADENCE_VERSION,
-      accumulatedToolResponseIterations: this.accumulatedToolIterations,
+      accumulatedModelLoops: this.accumulatedModelLoops,
     });
   }
 
@@ -312,6 +319,7 @@ export class SkillLearningPlugin implements Plugin {
     this.loadedSkills.clear();
     this.toolEvidence = [];
     this.continuationTrajectory = [];
+    this.continuationModelLoopCount = 0;
     this.continuationToolIterationCount = 0;
     this.continuationRequestedToolCallCount = 0;
     this.continuationSegmentCount = 0;
@@ -328,6 +336,7 @@ export class SkillLearningPlugin implements Plugin {
     // 而是由 buildLearningTrajectory 从学习起点（resumeHistoryIndex）统一截取，
     // 避免与 continuation.trajectory 末尾重叠导致消息重复。
     this.continuationTrajectory = structuredClone([...continuation.trajectory]);
+    this.continuationModelLoopCount = continuation.modelLoopCount;
     this.continuationToolIterationCount = continuation.toolIterationCount;
     this.continuationRequestedToolCallCount = continuation.requestedToolCallCount;
     this.continuationSegmentCount = continuation.segmentCount;
@@ -348,10 +357,11 @@ export class SkillLearningPlugin implements Plugin {
       return;
     }
     const continuation: SkillLearningContinuation = {
-      version: 2,
+      version: 3,
       trajectory,
       loadedSkills: [...this.loadedSkills],
       toolEvidence: this.toolEvidence.map(evidence => ({ ...evidence })),
+      modelLoopCount: this.continuationModelLoopCount + summary.modelLoopCount,
       toolIterationCount: this.continuationToolIterationCount + summary.toolIterationCount,
       requestedToolCallCount: this.continuationRequestedToolCallCount
         + summary.requestedToolCallCount,
@@ -365,6 +375,7 @@ export class SkillLearningPlugin implements Plugin {
       component: 'skill_learning',
       event: 'review_deferred',
       reason: 'waiting_for_interaction',
+      modelLoopCount: continuation.modelLoopCount,
       toolIterationCount: continuation.toolIterationCount,
       requestedToolCallCount: continuation.requestedToolCallCount,
       continuationSegmentCount: continuation.segmentCount,
@@ -442,6 +453,7 @@ export class SkillLearningPlugin implements Plugin {
     this.pendingLoadSkills.clear();
     this.toolEvidence = [];
     this.continuationTrajectory = [];
+    this.continuationModelLoopCount = 0;
     this.continuationToolIterationCount = 0;
     this.continuationRequestedToolCallCount = 0;
     this.continuationSegmentCount = 0;

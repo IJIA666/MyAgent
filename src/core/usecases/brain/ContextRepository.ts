@@ -122,7 +122,7 @@ export class ContextRepository {
     const file = path.join(dir, `session_${sessionId}.json`);
     const tempFile = path.join(dir, `.session_${sessionId}.${process.pid}.${Date.now()}.tmp`);
     const stateToSave = {
-      version: 5,
+      version: 6,
       sessionId: this.context.getSessionId(),
       messages: this.context.getHistory(),
       pendingInteraction: this.context.pendingInteraction,
@@ -279,7 +279,7 @@ export class ContextRepository {
   }
 
   /**
-   * 判断学习节奏快照字段是否为合法结构（版本 1 且非负整数累计）。
+   * 判断学习节奏快照字段是否为合法结构（版本 2 且模型循环累计为非负整数）。
    *
    * @param value - 快照中的原始字段
    * @returns 结构合法返回 true
@@ -289,10 +289,10 @@ export class ContextRepository {
       return false;
     }
     const raw = value as Record<string, unknown>;
-    return raw.version === 1
-      && typeof raw.accumulatedToolResponseIterations === 'number'
-      && Number.isInteger(raw.accumulatedToolResponseIterations)
-      && (raw.accumulatedToolResponseIterations as number) >= 0;
+    return raw.version === 2
+      && typeof raw.accumulatedModelLoops === 'number'
+      && Number.isInteger(raw.accumulatedModelLoops)
+      && (raw.accumulatedModelLoops as number) >= 0;
   }
 
   /**

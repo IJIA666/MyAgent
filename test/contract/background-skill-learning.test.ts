@@ -1,6 +1,6 @@
 /**
  * @file 后台 Skill 学习触发与隔离契约。
- * 固定阈值基线、RunEnd 计数定义、非阻塞排队和受限工具面。
+ * 固定阈值基线、模型循环计数定义、非阻塞排队和受限工具面。
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe('Background Skill learning contract', () => {
-  it('默认阈值 10 按工具型响应次数跨 run 累计，缺少 summary 不触发', async () => {
+  it('默认阈值 10 按模型循环跨 run 累计，缺少 summary 不触发', async () => {
     const config = createMockAppConfig();
     expect(config.skills.creationNudgeInterval).toBe(10);
 
@@ -80,7 +80,7 @@ describe('Background Skill learning contract', () => {
     finishBackground?.();
   });
 
-  it('RunEnd 把 content+tool_calls 计为工具迭代，并独立统计并行请求和最终回复', async () => {
+  it('RunEnd 独立统计模型循环、工具型响应、并行请求和最终回复', async () => {
     const context = new SessionContext('contract-run-summary');
     context.appConfig = createMockAppConfig();
     let modelCalls = 0;
@@ -190,6 +190,7 @@ describe('Background Skill learning contract', () => {
 
     expect(summary).toMatchObject({
       terminalStatus: 'completed',
+      modelLoopCount: 2,
       toolIterationCount: 1,
       requestedToolCallCount: 2,
       hasFinalResponse: true,
@@ -267,12 +268,13 @@ describe('Background Skill learning contract', () => {
   });
 });
 
-/** 构造成功 RunEnd 摘要。 */
-function completedSummary(toolIterationCount: number): AgentRunSummary {
+/** 构造只有纯文本模型循环的成功 RunEnd 摘要。 */
+function completedSummary(modelLoopCount: number): AgentRunSummary {
   return {
     terminalStatus: 'completed',
-    toolIterationCount,
-    requestedToolCallCount: toolIterationCount,
+    modelLoopCount,
+    toolIterationCount: 0,
+    requestedToolCallCount: 0,
     physicalRunStartIndex: 0,
     learningTrajectoryStartIndex: 0,
     historyEndIndex: 0,

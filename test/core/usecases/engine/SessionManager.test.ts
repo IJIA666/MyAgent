@@ -1274,6 +1274,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
         toolEvidence: [],
         runSummary: {
           terminalStatus: 'completed',
+          modelLoopCount: 1,
           toolIterationCount: 1,
           requestedToolCallCount: 1,
           physicalRunStartIndex: 0,
@@ -1441,6 +1442,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
         toolEvidence: [],
         runSummary: {
           terminalStatus: 'completed',
+          modelLoopCount: 1,
           toolIterationCount: 1,
           requestedToolCallCount: 1,
           physicalRunStartIndex: 0,

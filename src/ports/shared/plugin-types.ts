@@ -41,11 +41,13 @@ export type AgentRunTerminalStatus =
 
 /**
  * AgentLoop 在 RunEnd 暴露的只读运行摘要。
- * 工具迭代数按非空 tool_calls 模型响应计数，不等于工具调用数量。
+ * 模型循环数与工具响应、工具调用数量分别统计，避免混淆学习节奏与工具诊断。
  */
 export interface AgentRunSummary {
   /** 本次 run 的真实终止原因分类。 */
   readonly terminalStatus: AgentRunTerminalStatus;
+  /** 本次 run 实际进入模型流的逻辑请求次数，包含最终纯文本响应。 */
+  readonly modelLoopCount: number;
   /** 包含非空 tool_calls 的模型响应数量。 */
   readonly toolIterationCount: number;
   /** 所有上述响应请求的工具调用总数。 */
