@@ -1,10 +1,19 @@
+/**
+ * @fileoverview Vitest 全仓测试配置，统一测试发现、并发边界与覆盖率门槛。
+ */
+
+import { availableParallelism } from 'node:os';
 import { defineConfig } from 'vitest/config';
+
+// PowerShell AST 与 Playwright 测试会创建真实系统进程；限制文件工作进程，避免全量回归争抢系统资源。
+const MAX_TEST_WORKERS = Math.min(4, availableParallelism());
 
 export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     environment: 'node',
     setupFiles: ['./test/setup.ts'],
+    maxWorkers: MAX_TEST_WORKERS,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],

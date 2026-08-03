@@ -101,6 +101,10 @@ describe('CliFacade', () => {
   });
 
   afterEach(() => {
+    // 部分用例会重建真实 readline；必须在恢复 mock 前关闭，避免 process.stdin 监听器跨用例累积。
+    facade['listener'].close();
+    BrowserSession.userInterventionHandler = null;
+    mockSession.removeAllListeners();
     vi.restoreAllMocks();
   });
 
