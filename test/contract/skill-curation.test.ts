@@ -184,6 +184,16 @@ describe('Skill Curator contract', () => {
     expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).not.toContain('多数运行必须修改');
   });
 
+  it('融合 prompt 固化三工具上限，目录发现不扩大候选修改范围', () => {
+    // Curator 只看到与 Review 相同的三工具固定白名单。
+    expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).toContain('skills_list、load_skill 与 skill_manage');
+    // 目录只用于发现 landscape，不解除候选输入的边界约束。
+    expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).toContain('不得扩大本轮候选范围');
+    expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).toContain('ownership、pinned、项目来源');
+    // 候选输入正文不能替代修改前的准确预读。
+    expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).toContain('load_skill 准确预读目标内容');
+  });
+
   /** 创建共享真实 Curator 依赖。 */
   function createHarness(): {
     curator: SkillCurator;

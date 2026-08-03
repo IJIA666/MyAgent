@@ -8,6 +8,9 @@ import * as path from 'path';
 import * as os from 'os';
 import { RuleManager } from '../../../../src/core/usecases/brain/RuleManager.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
+import { SkillsListTool } from '../../../../src/adapters/tools/impl/skill/skills-list.js';
+import { SkillLibrary } from '../../../../src/core/usecases/brain/skill-library.js';
+import { SkillUsageStore } from '../../../../src/core/usecases/brain/skill-usage-store.js';
 
 // Mock fs.watch 以绕过 ESM 只读 Module Namespace 的拦截限制，同时透传其他文件 IO API
 vi.mock('fs', async () => {
@@ -236,5 +239,80 @@ describe('RuleManager', () => {
 
     expect(manager.getSkillContent('reload-skill')).toContain('Updated body');
     expect(context.getHistory()[0].content).toBe(promptBefore);
+  });
+
+  it('同一 SkillLibrary 下 skills_list 见实时目录，冻结提示词与哈希不改变', async () => {
+    // RuleManager 与 SkillsListTool 共享同一个实时 SkillLibrary：
+    // 目录反映当前事实，系统提示词保持构造时冻结的快照。
+    const usageStore = new SkillUsageStore(path.join(userSkillsDir, '.usage.json'));
+    const skillLibrary = new SkillLibrary(
+      userSkillsDir,
+      projectSkillsDir,
+      path.join(userSkillsDir, '.archive'),
+      usageStore,
+      { enableWatcher: false },
+    );
+    // 构造副作用建立冻结快照：构造期 Skill 列表深复制进首条系统提示词。
+    new RuleManager(
+      context,
+      userRulesDir,
+      projectRulesDir,
+      userSkillsDir,
+      projectSkillsDir,
+      { enableWatcher: false },
+      skillLibrary,
+    );
+    const promptBefore = context.getHistory()[0].content;
+    const hashBefore = context.getSystemPromptHash();
+    const listTool = new SkillsListTool(skillLibrary);
+
+    // 快照建立后新增 Skill：目录可见，提示词内容与哈希不变；
+    // 快照（构造时）不含该条目，证明提示词快照不是实时目录的数据源。
+    expect(promptBefore).not.toContain('new-skill');
+    fs.mkdirSync(path.join(projectSkillsDir, 'new-skill'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectSkillsDir, 'new-skill', 'SKILL.md'),
+      '---\nname: new-skill\ndescription: 新技能\n---\nbody',
+    );
+    skillLibrary.reloadSkills();
+    const listed = JSON.parse(await listTool.execute({})) as {
+      skills: Array<{ name: string }>;
+    };
+    expect(listed.skills.map(skill => skill.name)).toContain('new-skill');
+    expect(context.getHistory()[0].content).toBe(promptBefore);
+    expect(context.getSystemPromptHash()).toBe(hashBefore);
+
+    // 项目 Skill 覆盖同名用户 Skill：目录返回项目版本，提示词仍冻结。
+    fs.mkdirSync(path.join(userSkillsDir, 'dup-skill'), { recursive: true });
+    fs.writeFileSync(
+      path.join(userSkillsDir, 'dup-skill', 'SKILL.md'),
+      '---\nname: dup-skill\ndescription: 用户版本\n---\nuser body',
+    );
+    skillLibrary.reloadSkills();
+    fs.mkdirSync(path.join(projectSkillsDir, 'dup-skill'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectSkillsDir, 'dup-skill', 'SKILL.md'),
+      '---\nname: dup-skill\ndescription: 项目版本\n---\nproject body',
+    );
+    skillLibrary.reloadSkills();
+    const dup = JSON.parse(await listTool.execute({})) as {
+      skills: Array<{ name: string; description: string; source: string }>;
+    };
+    expect(dup.skills.find(skill => skill.name === 'dup-skill')).toMatchObject({
+      description: '项目版本',
+      source: 'project',
+    });
+    expect(context.getHistory()[0].content).toBe(promptBefore);
+    expect(context.getSystemPromptHash()).toBe(hashBefore);
+
+    // 删除 Skill：目录移除该条目，提示词与哈希仍不变。
+    fs.rmSync(path.join(projectSkillsDir, 'new-skill'), { recursive: true, force: true });
+    skillLibrary.reloadSkills();
+    const afterDelete = JSON.parse(await listTool.execute({})) as {
+      skills: Array<{ name: string }>;
+    };
+    expect(afterDelete.skills.map(skill => skill.name)).not.toContain('new-skill');
+    expect(context.getHistory()[0].content).toBe(promptBefore);
+    expect(context.getSystemPromptHash()).toBe(hashBefore);
   });
 });

@@ -1,16 +1,19 @@
 /**
- * @file load_skill 与 skill_manage 工具测试。
- * 覆盖模型 schema、执行期 origin 绑定、六种动作路由和查看遥测。
+ * @file load_skill、skills_list 与 skill_manage 工具测试。
+ * 覆盖模型 schema、执行期 origin 绑定、六种动作路由、结构化读取结果、
+ * 实时目录语义和查看遥测。
  */
 
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LoadSkillTool } from '../../../src/adapters/tools/impl/skill/skill.js';
+import { SkillsListTool } from '../../../src/adapters/tools/impl/skill/skills-list.js';
 import { SkillManageTool } from '../../../src/adapters/tools/impl/skill/skill-manage.js';
 import { SkillLibrary } from '../../../src/core/usecases/brain/skill-library.js';
 import { SkillUsageStore } from '../../../src/core/usecases/brain/skill-usage-store.js';
+import { serializeNativeToolTextResultForModel } from '../../../src/core/usecases/engine/ToolDispatcher.js';
 import type { SkillManageAction } from '../../../src/core/usecases/brain/skill-types.js';
 import { SkillReviewReadLedger } from '../../../src/core/usecases/brain/skill-review-read-ledger.js';
 import { SkillMutationLockManager } from '../../../src/core/usecases/brain/skill-mutation-lock.js';
@@ -134,14 +137,33 @@ describe('Skill tools', () => {
       },
       backgroundAnalysis('write_file', 'loadable', writePrecondition),
     )).resolves.toContain('"status":"success"');
-    const loadTool = new LoadSkillTool(undefined, library);
+    const loadTool = new LoadSkillTool(library);
     expect(loadTool.maxBytes).toBeGreaterThan(600_000);
 
-    await expect(loadTool.execute({ name: 'loadable' })).resolves.toContain('主正文');
-    await expect(loadTool.execute({
+    // 主文件读取返回结构化包络：元数据、SKILL.md 路径、完整正文与支持文件列表。
+    const mainResult = JSON.parse(await loadTool.execute({ name: 'loadable' })) as {
+      name: string;
+      file: string;
+      content: string;
+      supportFiles: string[];
+    };
+    expect(mainResult).toMatchObject({
+      name: 'loadable',
+      file: 'SKILL.md',
+    });
+    expect(mainResult.content).toContain('主正文');
+    expect(mainResult.supportFiles).toEqual(['references/detail.md']);
+    // 结构化结果不暴露物理路径与所有权字段。
+    expect(mainResult).not.toHaveProperty('filePath');
+    expect(mainResult).not.toHaveProperty('skillDir');
+
+    // 支持文件读取返回同一包络结构，file 为规范化相对路径。
+    const supportResult = JSON.parse(await loadTool.execute({
       name: 'loadable',
       file_path: 'references/detail.md',
-    })).resolves.toBe('支持正文');
+    })) as { file: string; content: string };
+    expect(supportResult.file).toBe('references/detail.md');
+    expect(supportResult.content).toBe('支持正文');
     expect(usageStore.read('loadable')?.viewCount).toBe(2);
     await expect(loadTool.execute({
       name: 'loadable',
@@ -464,9 +486,273 @@ describe('Skill tools', () => {
     )) as Record<string, unknown>;
     expect(result).toMatchObject({ status: 'success', action: 'create' });
   }
+
+  /** 直接向项目 Skill 目录写入包并刷新合并视图（用于同名覆盖场景）。 */
+  function writeProjectSkill(name: string, description: string): void {
+    const dir = resolve(tempDir, 'project', name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      resolve(dir, 'SKILL.md'),
+      `---\nname: ${name}\ndescription: ${description}\n---\n\n项目正文\n`,
+      'utf8',
+    );
+    library.reloadSkills();
+  }
+
+  /** 批量向用户 Skill 目录写入包，全部写入后一次性刷新合并视图。 */
+  function writeUserSkills(entries: Array<[string, string]>): void {
+    for (const [name, description] of entries) {
+      const dir = resolve(tempDir, 'user', name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        resolve(dir, 'SKILL.md'),
+        skillContentWithDescription(name, description),
+        'utf8',
+      );
+    }
+    library.reloadSkills();
+  }
+
+  describe('SkillsListTool 实时目录', () => {
+    it('返回项目同名覆盖用户后的合并视图并按名称稳定排序', async () => {
+      await library.manage({
+        action: 'create',
+        name: 'gamma',
+        content: skillContent('gamma', '用户版'),
+      }, 'foreground');
+      await library.manage({
+        action: 'create',
+        name: 'alpha',
+        content: skillContent('alpha', '用户版'),
+      }, 'foreground');
+      writeProjectSkill('alpha', '项目版');
+      await library.manage({
+        action: 'create',
+        name: 'beta',
+        content: skillContent('beta', '用户版'),
+      }, 'foreground');
+
+      const tool = new SkillsListTool(library);
+      const result = JSON.parse(await tool.execute({})) as {
+        skills: Array<{ name: string; description: string; source: string }>;
+        totalCount: number;
+        matchedCount: number;
+        returnedCount: number;
+        complete: boolean;
+      };
+
+      expect(result).toMatchObject({
+        totalCount: 3,
+        matchedCount: 3,
+        returnedCount: 3,
+        complete: true,
+      });
+      expect(result.skills.map(skill => skill.name)).toEqual(['alpha', 'beta', 'gamma']);
+      expect(result.skills[0]).toMatchObject({
+        name: 'alpha',
+        description: '项目版',
+        source: 'project',
+      });
+      // 条目只暴露白名单字段，不包含物理路径与所有权内部字段。
+      expect(result.skills[0]).not.toHaveProperty('filePath');
+      expect(result.skills[0]).not.toHaveProperty('skillDir');
+    });
+
+    it('分类精确匹配与大小写不敏感关键词取交集筛选', async () => {
+      await library.manage({
+        action: 'create',
+        name: 'web-deploy',
+        content: skillContent('web-deploy', '部署自动化', 'development'),
+      }, 'foreground');
+      await library.manage({
+        action: 'create',
+        name: 'data-clean',
+        content: skillContent('data-clean', '数据清洗', 'data'),
+      }, 'foreground');
+
+      const tool = new SkillsListTool(library);
+      // 分类去除首尾空白后精确匹配。
+      const hit = JSON.parse(await tool.execute({ category: ' development ' })) as {
+        skills: Array<{ name: string; category?: string }>;
+        matchedCount: number;
+        filters?: { category?: string; query?: string };
+      };
+      expect(hit.filters).toEqual({ category: 'development' });
+      expect(hit.matchedCount).toBe(1);
+      expect(hit.skills[0]).toMatchObject({
+        name: 'web-deploy',
+        category: 'development',
+      });
+
+      // query 对名称、描述与分类做大小写不敏感子串匹配。
+      const queryHit = JSON.parse(await tool.execute({ query: 'DEPLOY' })) as {
+        skills: Array<{ name: string }>;
+        matchedCount: number;
+        filters?: { query?: string };
+      };
+      expect(queryHit.filters).toEqual({ query: 'DEPLOY' });
+      expect(queryHit.matchedCount).toBe(1);
+      expect(queryHit.skills[0].name).toBe('web-deploy');
+
+      // category 与 query 同时命中才返回（交集语义）。
+      const intersection = JSON.parse(await tool.execute({
+        category: 'data',
+        query: 'clean',
+      })) as { skills: Array<{ name: string }>; matchedCount: number };
+      expect(intersection.matchedCount).toBe(1);
+      expect(intersection.skills[0].name).toBe('data-clean');
+
+      // 交集为空时返回合法空结果，不作为错误。
+      const empty = JSON.parse(await tool.execute({
+        category: 'development',
+        query: 'clean',
+      })) as { skills: unknown[]; totalCount: number; matchedCount: number; returnedCount: number; complete: boolean };
+      expect(empty).toMatchObject({
+        skills: [],
+        totalCount: 2,
+        matchedCount: 0,
+        returnedCount: 0,
+        complete: true,
+      });
+    });
+
+    it('空值、超长与未知参数明确失败', async () => {
+      const tool = new SkillsListTool(library);
+      await expect(tool.execute({ category: '   ' })).rejects.toThrow('不能为空字符串');
+      await expect(tool.execute({ query: '' })).rejects.toThrow('query 不能为空字符串');
+      await expect(tool.execute({ category: 42 })).rejects.toThrow('category 必须是字符串');
+      await expect(tool.execute({ category: 'x'.repeat(257) })).rejects.toThrow('不能超过 256 字符');
+      await expect(tool.execute({ query: 'y'.repeat(257) })).rejects.toThrow('不能超过 256 字符');
+      await expect(tool.execute({ limit: 10 })).rejects.toThrow('不支持参数');
+    });
+
+    it('长描述按 1024 字符摘要并标记 descriptionTruncated', async () => {
+      writeUserSkills([['long-desc', '长'.repeat(2000)]]);
+
+      const tool = new SkillsListTool(library);
+      const result = JSON.parse(await tool.execute({})) as {
+        skills: Array<{ name: string; description: string; descriptionTruncated?: boolean }>;
+      };
+      const item = result.skills.find(skill => skill.name === 'long-desc');
+      expect(item?.description).toHaveLength(1024);
+      expect(item?.descriptionTruncated).toBe(true);
+    });
+
+    it('超大目录仍返回配额内合法 JSON 与 complete=false/refineHint', async () => {
+      // 300 个 1024 字符描述的 Skill：完整包络必然超过 240KB 预算。
+      const entries: Array<[string, string]> = [];
+      for (let i = 0; i < 300; i++) {
+        entries.push([`bulk-${String(i).padStart(3, '0')}`, '字'.repeat(1024)]);
+      }
+      writeUserSkills(entries);
+
+      const tool = new SkillsListTool(library);
+      const raw = await tool.execute({});
+      const modelOutput = serializeNativeToolTextResultForModel(raw);
+      const result = JSON.parse(raw) as {
+        skills: Array<{ name: string }>;
+        totalCount: number;
+        matchedCount: number;
+        returnedCount: number;
+        complete: boolean;
+        refineHint?: string;
+      };
+
+      // 按真实 CallToolResult 包装和二次序列化后的模型回执仍在内部预算内。
+      expect(Buffer.byteLength(modelOutput, 'utf8')).toBeLessThanOrEqual(240 * 1024);
+      expect(result.totalCount).toBe(300);
+      expect(result.matchedCount).toBe(300);
+      expect(result.returnedCount).toBeLessThan(300);
+      expect(result.complete).toBe(false);
+      expect(result.refineHint).toContain('缩小范围');
+      // 部分返回的条目仍按名称稳定排序。
+      const names = result.skills.map(skill => skill.name);
+      expect([...names].sort()).toEqual(names);
+    });
+
+    it('大量需 JSON 二次转义的描述仍不会突破最终模型回执预算', async () => {
+      const quoteHeavySkills = Array.from({ length: 400 }, (_, index) => ({
+        name: `quoted-${String(index).padStart(3, '0')}`,
+        description: '"'.repeat(1024),
+        source: 'user' as const,
+      }));
+      const quoteHeavyLibrary = {
+        list: () => quoteHeavySkills,
+      } as unknown as SkillLibrary;
+      const tool = new SkillsListTool(quoteHeavyLibrary);
+
+      const raw = await tool.execute({});
+      const modelOutput = serializeNativeToolTextResultForModel(raw);
+      const result = JSON.parse(raw) as {
+        matchedCount: number;
+        returnedCount: number;
+        complete: boolean;
+      };
+
+      // 引号在内层和 CallToolResult 外层都会转义，必须按最终表示限制大小。
+      expect(Buffer.byteLength(modelOutput, 'utf8')).toBeLessThanOrEqual(240 * 1024);
+      expect(result.matchedCount).toBe(400);
+      expect(result.returnedCount).toBeLessThan(400);
+      expect(result.complete).toBe(false);
+    });
+
+    it('目录列举不产生查看遥测', async () => {
+      await library.manage({
+        action: 'create',
+        name: 'no-view',
+        content: skillContent('no-view', '正文'),
+      }, 'foreground');
+
+      const tool = new SkillsListTool(library);
+      await tool.execute({});
+      await tool.execute({ category: 'nonexistent' });
+
+      expect(usageStore.read('no-view')?.viewCount ?? 0).toBe(0);
+      expect(usageStore.read('no-view')?.lastViewedAt ?? null).toBeNull();
+    });
+
+    it('缺少 SkillLibrary 时明确失败，不返回伪造目录', async () => {
+      await expect(new SkillsListTool().execute({})).rejects.toThrow('未注入 SkillLibrary');
+    });
+
+    it('schema 只接受可选 category/query 且不提供分页', () => {
+      const definition = new SkillsListTool(library).definition as {
+        function: {
+          parameters: {
+            properties: Record<string, { maxLength?: number }>;
+            additionalProperties: boolean;
+          };
+        };
+      };
+      expect(definition.function.parameters.additionalProperties).toBe(false);
+      expect(Object.keys(definition.function.parameters.properties)).toEqual(['category', 'query']);
+      expect(definition.function.parameters.properties.category?.maxLength).toBe(256);
+      expect(definition.function.parameters.properties.query?.maxLength).toBe(256);
+    });
+
+    it('load_skill 不提供 offset/limit 分页语义', () => {
+      const definition = new LoadSkillTool(library).definition as {
+        function: {
+          parameters: {
+            properties: Record<string, unknown>;
+            additionalProperties: boolean;
+          };
+        };
+      };
+      expect(definition.function.parameters.additionalProperties).toBe(false);
+      expect(definition.function.parameters.properties).not.toHaveProperty('offset');
+      expect(definition.function.parameters.properties).not.toHaveProperty('limit');
+    });
+  });
 });
 
-/** 生成合法 Skill 正文。 */
-function skillContent(name: string, body: string): string {
-  return `---\nname: ${name}\ndescription: ${name} 描述\n---\n\n${body}\n`;
+/** 生成合法 Skill 正文，可附可选分类。 */
+function skillContent(name: string, body: string, category?: string): string {
+  const categoryLine = category ? `category: ${category}\n` : '';
+  return `---\nname: ${name}\ndescription: ${name} 描述\n${categoryLine}---\n\n${body}\n`;
+}
+
+/** 生成描述可自定义的合法 Skill 正文。 */
+function skillContentWithDescription(name: string, description: string): string {
+  return `---\nname: ${name}\ndescription: ${description}\n---\n\n正文\n`;
 }

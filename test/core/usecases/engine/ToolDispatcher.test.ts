@@ -1,14 +1,21 @@
 /**
- * @fileoverview ToolDispatcher 的单元测试，验证大输出截断和 JIT 伴生规范注入。
+ * @fileoverview ToolDispatcher 的单元测试，验证大输出截断、声明配额保留和 JIT 伴生规范注入。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ToolDispatcher } from '../../../../src/core/usecases/engine/ToolDispatcher.js';
+import {
+  serializeNativeToolTextResultForModel,
+  ToolDispatcher,
+} from '../../../../src/core/usecases/engine/ToolDispatcher.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 import { AppConfig } from '../../../../src/config/index.js';
+import { ToolCatalog } from '../../../../src/adapters/tools/ToolCatalog.js';
+import { SkillsListTool } from '../../../../src/adapters/tools/impl/skill/skills-list.js';
+import { SkillLibrary } from '../../../../src/core/usecases/brain/skill-library.js';
+import { SkillUsageStore } from '../../../../src/core/usecases/brain/skill-usage-store.js';
 import type { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
 
 describe('ToolDispatcher', () => {
@@ -113,6 +120,69 @@ describe('ToolDispatcher', () => {
       const previewParts = previewText.split('\n\n[... output truncated ...]\n\n');
       expect(Buffer.byteLength(previewParts[0], 'utf-8')).toBeLessThanOrEqual(50);
       expect(Buffer.byteLength(previewParts[1], 'utf-8')).toBeLessThanOrEqual(50);
+    });
+
+    it('保留 skills_list 声明配额：超过默认 50KB 的目录结果原样透传且不产生恢复文件', async () => {
+      // 真实 SkillLibrary：120 个 500 字符描述的 Skill → 目录包络超过统一默认 50KB，
+      // 但低于 SkillsListTool 声明的 256KB 配额，且在其自限的 240KB 预算内。
+      const userSkills = path.join(tempDir, 'user-skills');
+      fs.mkdirSync(userSkills, { recursive: true });
+      const usageStore = new SkillUsageStore(path.join(userSkills, '.usage.json'));
+      const library = new SkillLibrary(
+        userSkills,
+        path.join(tempDir, 'project-skills'),
+        path.join(userSkills, '.archive'),
+        usageStore,
+        { enableWatcher: false },
+      );
+      for (let i = 0; i < 120; i++) {
+        const dir = path.join(userSkills, `bulk-${String(i).padStart(3, '0')}`);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'SKILL.md'),
+          `---\nname: bulk-${String(i).padStart(3, '0')}\ndescription: ${'描'.repeat(500)}\n---\n\n正文\n`,
+          'utf8',
+        );
+      }
+      // 构造后再写入磁盘：显式刷新合并视图，否则目录工具看不到新包。
+      library.reloadSkills();
+
+      const listTool = new SkillsListTool(library);
+      const raw = await listTool.execute({});
+      const modelOutput = serializeNativeToolTextResultForModel(raw);
+
+      // 按生产路径的 CallToolResult 包装与二次序列化后仍超过默认 50KB，
+      // 但低于目录工具的内部目标预算和声明配额。
+      expect(Buffer.byteLength(modelOutput, 'utf8')).toBeGreaterThan(50 * 1024);
+      expect(Buffer.byteLength(modelOutput, 'utf8')).toBeLessThanOrEqual(240 * 1024);
+
+      const catalog = new ToolCatalog([listTool]);
+      // ToolCatalog 保留工具声明的配额元数据，供输出层按工具级配额判断。
+      expect(catalog.getTool('skills_list')?.maxBytes).toBe(256 * 1024);
+
+      // ToolCatalog 只实现只读查询部分，用包装补齐 ToolRegistryPort 的其余方法。
+      const quotaRegistry = {
+        getTool: (name: string) => catalog.getTool(name) ?? undefined,
+        callTool: vi.fn(),
+        close: vi.fn(),
+      } as unknown as ToolRegistryPort;
+      const quotaDispatcher = new ToolDispatcher(context, quotaRegistry, tempDir, tempDir);
+      const result = quotaDispatcher.handleLargeToolOutput('skills_list', modelOutput);
+      // 未触发通用折叠：原样透传、无恢复文件、无折叠提示。
+      expect(result.isTruncated).toBe(false);
+      expect(result.content).toBe(modelOutput);
+      expect(result.originalPath).toBeUndefined();
+      // 最终模型回执与内层目录均可解析。
+      const envelope = JSON.parse(result.content) as { content: Array<{ text: string }> };
+      const parsed = JSON.parse(envelope.content[0].text) as {
+        complete: boolean;
+        totalCount: number;
+      };
+      expect(parsed.totalCount).toBe(120);
+      expect(parsed.complete).toBe(true);
+      const logFiles = fs.readdirSync(tempDir)
+        .filter(f => f.startsWith('tool_') && f.endsWith('.log'));
+      expect(logFiles).toHaveLength(0);
     });
   });
 

@@ -129,10 +129,15 @@ function createEnvironment() {
   return { root, paths, appConfig, skillLibrary };
 }
 
-/** 创建具备两个 Skill 工具定义的父 ToolRegistry mock。 */
+/** 创建具备三个 Skill 工具定义的父 ToolRegistry mock。 */
 function createParentRegistry() {
   return {
     getTools: vi.fn().mockResolvedValue([
+      {
+        type: 'function',
+        function: { name: 'skills_list', parameters: { type: 'object' } },
+        securityCategory: 'read',
+      },
       {
         type: 'function',
         function: { name: 'load_skill', parameters: { type: 'object' } },
@@ -202,6 +207,20 @@ describe('BackgroundSkillReviewService', () => {
     expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('未经验证的断言');
   });
 
+  it('Review 提示词固化三工具上限与「目录—完整性收敛—读取—写入」决策顺序', () => {
+    // 三工具固定上限，不扩大到文件/Shell/MCP/交互。
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('skills_list、load_skill 与 skill_manage');
+    // 先用 skills_list 查看实时目录，遇到 complete=false 用 category/query 收敛。
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('先用 skills_list');
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('complete=false');
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('category 或 query 收敛');
+    // 完整目录结果之前禁止断言无候选或创建新 Skill。
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('不得断言');
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('直接创建新 Skill');
+    // 目录查看不能替代准确预读。
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('目录不能替代读取');
+  });
+
   it('有界输入只携带本次轨迹、已加载 Skill 和结构化证据', () => {
     const baseRequest = createReviewRequest();
     const request: BackgroundSkillReviewRequest = {
@@ -247,7 +266,7 @@ describe('BackgroundSkillReviewService', () => {
     expect(result).toMatchObject({ cancelled: false, mutations: [] });
     expect(notify).not.toHaveBeenCalled();
     expect(registry.callTool).not.toHaveBeenCalled();
-    expect(receivedTools[0]).toHaveLength(2);
+    expect(receivedTools[0]).toHaveLength(3);
   });
 
   it.each([

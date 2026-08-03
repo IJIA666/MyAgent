@@ -198,11 +198,12 @@ describe('Background Skill learning contract', () => {
     });
   });
 
-  it('受限工具面只有 load_skill/skill_manage，且只有真实 success/staged 产生通知', async () => {
+  it('受限工具面只有 skills_list/load_skill/skill_manage，且只有真实 success/staged 产生通知', async () => {
     const onSkillMutation = vi.fn();
     let responsePayload = '模型叙事：已保存';
     const parent = {
       getTools: vi.fn().mockResolvedValue([
+        { name: 'skills_list' },
         { name: 'load_skill' },
         { name: 'skill_manage' },
         { name: 'readFile' },
@@ -234,13 +235,13 @@ describe('Background Skill learning contract', () => {
     const agent = new BackgroundSkillAgent(parent as unknown as ToolRegistryPort, {
       parentPermissionState: new PermissionSessionState(),
       parentCaller: createTrustedCallContext('parent', 'interactive'),
-      parentToolNames: ['load_skill', 'skill_manage', 'readFile'],
+      parentToolNames: ['skills_list', 'load_skill', 'skill_manage', 'readFile'],
       callerId: 'contract',
       onSkillMutation,
     });
 
     expect((await agent.getTools()).map(tool => (tool as { name: string }).name))
-      .toEqual(['load_skill', 'skill_manage']);
+      .toEqual(['skills_list', 'load_skill', 'skill_manage']);
     await agent.callTool('skill_manage', { action: 'create', name: 'narrative' });
     expect(onSkillMutation).not.toHaveBeenCalled();
 
@@ -265,6 +266,14 @@ describe('Background Skill learning contract', () => {
     expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('Nothing to save');
     expect(BACKGROUND_SKILL_REVIEW_PROMPT).not.toMatch(/至少(更新|创建|归档)\s*\d+/);
     expect(BACKGROUND_SKILL_REVIEW_PROMPT).not.toContain('多数运行必须修改');
+  });
+
+  it('Review prompt 固化三工具上限与「目录—完整性收敛—读取—写入」顺序', () => {
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('skills_list、load_skill 与 skill_manage');
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('先用 skills_list');
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('complete=false');
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('category 或 query 收敛');
+    expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('目录不能替代读取');
   });
 });
 

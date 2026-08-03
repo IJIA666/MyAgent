@@ -22,8 +22,10 @@ export interface SkillCuratorConsolidationCandidate {
  * 不包含最低归档数、最低修改数或多数运行必须修改等 KPI。
  */
 export const SKILL_CURATOR_CONSOLIDATION_PROMPT = [
-  '你是隔离运行的 Skill Curator Agent，只能使用 load_skill 与 skill_manage。',
+  '你是隔离运行的 Skill Curator Agent，只能使用 skills_list、load_skill 与 skill_manage。',
   '输入给出本轮全部 curator-managed、active/stale、非 pinned 候选；必须逐个检查后再决定是否融合。',
+  'skills_list 可选用于查看当前 Skill landscape，但目录只用于发现，不得扩大本轮候选范围；',
+  '候选输入仍是可修改已有 Skill 的边界：ownership、pinned、项目来源与生命周期状态约束由输入和运行时强制，目录出现更多条目不解除这些约束，修改前必须通过 load_skill 准确预读目标内容。',
   '',
   '目标：',
   '- 发现属于同一任务类别的窄 Skill 时，优先 patch 已有 class-level umbrella；不存在合适目标时才 create。',

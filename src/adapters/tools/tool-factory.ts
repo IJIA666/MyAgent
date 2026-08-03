@@ -21,9 +21,7 @@ import type {
 
 /** buildNativeTools 的选项参数 */
 export interface BuildNativeToolsOptions {
-  /** 技能加载函数，按名称解析技能内容（向后兼容） */
-  loadSkill?: (name: string) => string | null;
-  /** 可选注入的共享 SkillLibrary（优先使用） */
+  /** 可选注入的共享 SkillLibrary（Skill 三工具统一数据源） */
   skillLibrary?: SkillLibrary;
   /** Skill 写入 pending 仓储。 */
   skillPendingStore?: SkillPendingStore;
@@ -38,7 +36,7 @@ export interface BuildNativeToolsOptions {
  * 按照固定顺序（git → filesystem → system → skill → interaction → browser）聚合各领域模块的工具，
  * 返回统一的扁平 NativeTool[] 数组。
  *
- * @param options - 可选配置，如技能加载函数
+ * @param options - 可选配置，如共享 SkillLibrary 与写入审批开关
  * @returns 所有领域工具实例的扁平数组
  */
 export function buildNativeTools(options?: BuildNativeToolsOptions): NativeTool[] {
@@ -47,7 +45,6 @@ export function buildNativeTools(options?: BuildNativeToolsOptions): NativeTool[
     ...fileSystemTools,
     ...buildSystemTools(options?.shellCompoundFeatures),
     ...getSkillTools(
-      options?.loadSkill,
       options?.skillLibrary,
       options?.skillPendingStore,
       options?.skillWriteApprovalController,

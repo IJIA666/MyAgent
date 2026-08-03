@@ -186,6 +186,82 @@ export interface SkillPackageMetadata {
   category?: string;
 }
 
+// ── 工具返回契约 ──
+
+/**
+ * `skills_list` 的筛选条件。
+ * category 与 query 可同时使用，交集生效。
+ */
+export interface SkillListFilters {
+  /** 精确分类匹配（与元数据分类逐字节比较）。 */
+  readonly category?: string;
+  /** 对名称、描述与分类做大小写不敏感子串匹配的关键词。 */
+  readonly query?: string;
+}
+
+/**
+ * `skills_list` 目录中的单个条目。
+ * 只暴露模型决策所需的元数据，不得包含物理路径、usage 或所有权内部字段。
+ */
+export interface SkillListItem {
+  /** Skill 名称（文件系统安全小写 slug）。 */
+  readonly name: string;
+  /** YAML frontmatter 中的描述，最多保留 1024 字符。 */
+  readonly description: string;
+  /** 描述是否因超出 1024 字符而被截断。 */
+  readonly descriptionTruncated?: boolean;
+  /** Skill 来源（user/project）。 */
+  readonly source: SkillSource;
+  /** 可选分类（仅当 Skill 声明时出现）。 */
+  readonly category?: string;
+}
+
+/**
+ * `skills_list` 的完整目录结果。
+ * 最终模型可见 CallToolResult 回执自限在 240 × 1024 UTF-8 字节内，
+ * 不依赖统一输出层的折叠恢复；
+ * 未超出预算时 `complete=true`，超出时返回部分条目、正确计数与 `refineHint` 提示收敛。
+ * 合法空结果返回空数组与 `returnedCount: 0`，不作为错误。
+ */
+export interface SkillListResult {
+  /** 实际返回的条目（按名称稳定排序）。 */
+  readonly skills: readonly SkillListItem[];
+  /** 当前合并视图的全部 Skill 数量（不区分筛选）。 */
+  readonly totalCount: number;
+  /** 满足筛选条件的条目数量。 */
+  readonly matchedCount: number;
+  /** 实际返回的条目数量（受输出预算限制，可能小于 matchedCount）。 */
+  readonly returnedCount: number;
+  /** 是否完整返回全部匹配条目。 */
+  readonly complete: boolean;
+  /** 本次实际应用的筛选条件（参数去除首尾空白后的值）。 */
+  readonly filters?: SkillListFilters;
+  /** `complete=false` 时提示模型用分类或关键词收敛范围的说明。 */
+  readonly refineHint?: string;
+}
+
+/**
+ * `load_skill` 的结构化读取结果。
+ * 包含元数据、实际读取的相对 `file`、完整 `content` 与稳定排序的 `supportFiles`。
+ * `file` 只使用 `SKILL.md` 或通过安全校验的规范化支持文件相对路径，不暴露磁盘绝对路径。
+ */
+export interface SkillReadResult {
+  /** Skill 名称。 */
+  readonly name: string;
+  /** YAML frontmatter 中的描述。 */
+  readonly description: string;
+  /** Skill 来源（user/project）。 */
+  readonly source: SkillSource;
+  /** 可选分类（仅当 Skill 声明时出现）。 */
+  readonly category?: string;
+  /** 实际读取的文件相对路径（主文件为 `SKILL.md`）。 */
+  readonly file: string;
+  /** 读取到的完整文件内容。 */
+  readonly content: string;
+  /** 该 Skill 的全部合法支持文件相对路径（稳定排序）。 */
+  readonly supportFiles: readonly string[];
+}
+
 // ── 使用统计与所有权 ──
 
 /**

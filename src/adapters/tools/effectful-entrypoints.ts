@@ -74,6 +74,7 @@ const INTERACTION_TOOLS: readonly EffectfulEntrypoint[] = [
 // ── 技能工具 ──
 
 const SKILL_TOOLS: readonly EffectfulEntrypoint[] = [
+  { name: 'skills_list', kind: 'native-tool', sideEffect: 'read', sourcePath: 'src/adapters/tools/impl/skill/skills-list.ts' },
   { name: 'load_skill', kind: 'native-tool', sideEffect: 'read', sourcePath: 'src/adapters/tools/impl/skill/skill.ts' },
   { name: 'skill_manage', kind: 'native-tool', sideEffect: 'write', sourcePath: 'src/adapters/tools/impl/skill/skill-manage.ts', adapterName: 'skillManageAuthorizationAdapter' },
 ];

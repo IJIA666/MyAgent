@@ -356,6 +356,7 @@ export class SkillCurator {
             input: buildSkillCuratorConsolidationInput(consolidationCandidates),
             maxIterations: 8,
             callerIdPrefix: SKILL_CURATOR_CALLER_ID_PREFIX,
+            allowedExistingSkillNames: consolidationCandidates.map(candidate => candidate.name),
             beforeSkillMutation: () => {
               try {
                 ensureBackup();

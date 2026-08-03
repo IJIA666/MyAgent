@@ -111,6 +111,7 @@ describe('SkillCurator consolidation', () => {
     const task = runIsolatedSkillTask.mock.calls[0][0];
     expect(task.maxIterations).toBe(8);
     expect(task.callerIdPrefix).toBe(SKILL_CURATOR_CALLER_ID_PREFIX);
+    expect(task.allowedExistingSkillNames).toEqual(['managed-a', 'managed-b']);
     expect(task.input).toContain('managed-a');
     expect(task.input).toContain('managed-b');
     expect(task.input).toContain('正文 A');
@@ -156,6 +157,13 @@ describe('SkillCurator consolidation', () => {
     expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).toContain('Nothing to consolidate');
     expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).not.toMatch(/至少归档\s*\d+/);
     expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).not.toContain('多数运行必须修改');
+  });
+
+  it('融合 prompt 固化三工具上限，目录发现不扩大候选修改范围', () => {
+    expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).toContain('skills_list、load_skill 与 skill_manage');
+    expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).toContain('不得扩大本轮候选范围');
+    expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).toContain('ownership、pinned、项目来源');
+    expect(SKILL_CURATOR_CONSOLIDATION_PROMPT).toContain('load_skill 准确预读目标内容');
   });
 
   it('Curator 模型路径 delete 缺少 absorbedInto 时 fail closed', async () => {

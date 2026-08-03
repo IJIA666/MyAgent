@@ -124,6 +124,7 @@ describe('后台 Skill Review 隔离', () => {
     } as unknown as LlmPort;
     const parentRegistry = {
       getTools: vi.fn().mockResolvedValue([
+        { type: 'function', function: { name: 'skills_list' }, securityCategory: 'read' },
         { type: 'function', function: { name: 'load_skill' }, securityCategory: 'read' },
         { type: 'function', function: { name: 'skill_manage' }, securityCategory: 'write' },
         { type: 'function', function: { name: 'readFile' }, securityCategory: 'read' },
@@ -175,7 +176,8 @@ describe('后台 Skill Review 隔离', () => {
     const serializedRequest = JSON.stringify(observedRequests[0].messages);
     expect(serializedRequest).not.toContain('parent-secret-history');
     expect(serializedRequest).toContain('本轮公开任务');
-    expect(observedRequests[0].toolNames).toEqual(['load_skill', 'skill_manage']);
+    // 后台只看到三个 Skill 工具：目录、读取、受控写入；普通文件/Browser 被排除。
+    expect(observedRequests[0].toolNames).toEqual(['skills_list', 'load_skill', 'skill_manage']);
     expect(parentRegistry.callTool).not.toHaveBeenCalled();
     expect(existsSync(paths.sessionsDir) ? readdirSync(paths.sessionsDir) : []).toEqual([]);
   });

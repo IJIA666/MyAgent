@@ -72,6 +72,18 @@ describe('全局副作用入口清单', () => {
     }
   });
 
+  it('skills_list 登记为只读原生入口且不配置写权限适配器', () => {
+    const listEntry = EFFECTFUL_ENTRYPOINTS.find(entry => entry.name === 'skills_list');
+    expect(listEntry).toBeDefined();
+    expect(listEntry?.kind).toBe('native-tool');
+    expect(listEntry?.sideEffect).toBe('read');
+    expect(listEntry?.adapterName).toBeUndefined();
+    // 目录工具本身必须是只读安全类别，绝不进入写工具授权检查。
+    const tool = buildNativeTools().find(tool => tool.name === 'skills_list');
+    expect(tool?.securityCategory).toBe('read');
+    expect(tool?.authorizationAdapter).toBeUndefined();
+  });
+
   it('ToolCatalog 对缺失、错绑和重复 adapter 均 fail closed', () => {
     expect(() => new ToolCatalog([createProbeTool('missing')])).toThrow(
       '缺少 authorizationAdapter',

@@ -12,7 +12,10 @@ import type { AgentEvent } from './agent-loop.js';
 import type { ToolExecutionEffect } from '../../../adapters/tools/tool-types.js';
 import { deriveDefaultToolExecutionEffect } from '../../../adapters/tools/tool-types.js';
 import { logger, LOG_COMPONENT, LOG_EVENT } from '../../../utils/logger.js';
-import { ToolDispatcher } from './ToolDispatcher.js';
+import {
+  serializeToolOutcomeForModel,
+  ToolDispatcher,
+} from './ToolDispatcher.js';
 import { ToolLifecycleError, isToolLifecycleError } from '../../domain/tool-lifecycle-error.js';
 
 /**
@@ -291,7 +294,7 @@ export class ToolCallOrchestrator {
         if (outcome.effect) {
           resolvedEffect = outcome.effect;
         }
-        const rawResult = JSON.stringify(outcome.value);
+        const rawResult = serializeToolOutcomeForModel(outcome.value);
         outputResult = this.toolDispatcher.handleLargeToolOutput(functionName, rawResult);
         toolResult = outputResult.content;
       } catch (toolError: unknown) {

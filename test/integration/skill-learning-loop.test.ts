@@ -94,9 +94,11 @@ describe('Skill learning loop integration', () => {
     );
     expect(nextSessionLibrary.list().map(skill => skill.name))
       .toContain('plain-text-social-posting');
-    await expect(new LoadSkillTool(undefined, nextSessionLibrary).execute({
+    // load_skill 返回结构化 JSON，正文在 content 字段中。
+    const loaded = JSON.parse(await new LoadSkillTool(nextSessionLibrary).execute({
       name: 'plain-text-social-posting',
-    })).resolves.toContain('发布前校验');
+    })) as { content: string };
+    expect(loaded.content).toContain('发布前校验');
     await harness.registry.close();
   });
 
@@ -154,9 +156,10 @@ describe('Skill learning loop integration', () => {
       new SkillUsageStore(harness.paths.skillUsagePath),
       { enableWatcher: false },
     );
-    await expect(new LoadSkillTool(undefined, nextSessionLibrary).execute({
+    const loaded = JSON.parse(await new LoadSkillTool(nextSessionLibrary).execute({
       name: 'plain-text-social-posting',
-    })).resolves.toContain('纯文字平台');
+    })) as { content: string };
+    expect(loaded.content).toContain('纯文字平台');
     await harness.registry.close();
   });
 

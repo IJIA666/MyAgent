@@ -11,11 +11,12 @@ import {
   type McpCallAuthorization,
 } from '../../ports/driven/tools/McpManagerPort.js';
 
-// 系统本地内置文件操作及技能载入工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
+// 系统本地内置文件操作及技能工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
 const BUILTIN_TOOL_NAMES = new Set([
   'readFile',
   'writeFile',
   'listFiles',
+  'skills_list',
   'load_skill',
   'skill_manage'
 ]);

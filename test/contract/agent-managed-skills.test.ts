@@ -9,11 +9,18 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { EFFECTFUL_ENTRYPOINTS } from '../../src/adapters/tools/effectful-entrypoints.js';
 import { getSkillTools } from '../../src/adapters/tools/impl/skill/index.js';
+import { LoadSkillTool } from '../../src/adapters/tools/impl/skill/skill.js';
 import { SkillManageTool } from '../../src/adapters/tools/impl/skill/skill-manage.js';
+import { SkillsListTool } from '../../src/adapters/tools/impl/skill/skills-list.js';
 import { SkillManageAuthorizationAdapter } from '../../src/adapters/tools/permissions/skill-tool-authorization.js';
 import { createTrustedCallContext } from '../../src/core/domain/permissions/trusted-call-context.js';
 import type { SkillMutationPrecondition } from '../../src/core/domain/permissions/permission-types.js';
+import type { ToolExecutionContext } from '../../src/core/usecases/plugins/plugin-types.js';
 import { SkillLibrary } from '../../src/core/usecases/brain/skill-library.js';
+import {
+  SkillPendingStore,
+  SkillWriteApprovalController,
+} from '../../src/core/usecases/brain/skill-pending-store.js';
 import { SkillReviewReadLedger } from '../../src/core/usecases/brain/skill-review-read-ledger.js';
 import type { SkillManageAction } from '../../src/core/usecases/brain/skill-types.js';
 import { SkillUsageStore } from '../../src/core/usecases/brain/skill-usage-store.js';
@@ -50,9 +57,15 @@ describe('Agent-managed Skill contract', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('注册 load_skill/skill_manage，schema 穷举六种 action 且不暴露 origin', () => {
-    const tools = getSkillTools(undefined, library);
-    expect(tools.map(tool => tool.name)).toEqual(['load_skill', 'skill_manage']);
+  it('注册 skills_list/load_skill/skill_manage，schema 穷举六种 action 且不暴露 origin', () => {
+    const tools = getSkillTools(library);
+    // 三工具按「目录 → 读取 → 写入」的稳定顺序注册，同一 SkillLibrary 数据源。
+    expect(tools.map(tool => tool.name)).toEqual(['skills_list', 'load_skill', 'skill_manage']);
+    // 安全类别：目录与读取为 read，写入为 write。
+    expect(tools.map(tool => tool.securityCategory)).toEqual(['read', 'read', 'write']);
+    // 目录工具声明自限包络的 maxBytes，避免统一输出层截断。
+    const listTool = tools.find(tool => tool.name === 'skills_list') as { maxBytes: number };
+    expect(listTool.maxBytes).toBe(256 * 1024);
     const manage = tools.find(tool => tool.name === 'skill_manage') as SkillManageTool;
     const schema = manage.definition.function.parameters as {
       additionalProperties: boolean;
@@ -263,7 +276,74 @@ describe('Agent-managed Skill contract', () => {
     expect(config.skills.writeApproval).toBe(false);
     expect(config.skills.creationNudgeInterval).toBe(10);
   });
+
+  it('前台 create 成功后同一会话的 skills_list/load_skill 立即可见，pending/失败写入不提前出现', async () => {
+    const tools = getSkillTools(library);
+    const listTool = tools.find(tool => tool.name === 'skills_list') as SkillsListTool;
+    const loadTool = tools.find(tool => tool.name === 'load_skill') as LoadSkillTool;
+    const manageTool = tools.find(tool => tool.name === 'skill_manage') as SkillManageTool;
+
+    // 前台成功创建：实时目录与结构化读取立即可见（不依赖任何提示词快照）。
+    const created = JSON.parse(await manageTool.execute(
+      { action: 'create', name: 'live-skill', content: skillContent('live-skill', '实时正文') },
+      foregroundContext('create', 'live-skill'),
+    )) as { status: string };
+    expect(created).toMatchObject({ status: 'success' });
+
+    const listed = JSON.parse(await listTool.execute({})) as {
+      skills: Array<{ name: string }>;
+    };
+    expect(listed.skills.map(skill => skill.name)).toContain('live-skill');
+    const loaded = JSON.parse(await loadTool.execute({ name: 'live-skill' })) as {
+      content: string;
+    };
+    expect(loaded.content).toContain('实时正文');
+
+    // writeApproval 开启时：pending 只暂存不写盘，目录不得提前出现该名称。
+    const pendingStore = new SkillPendingStore(resolve(tempDir, 'pending'), library);
+    const approvalTool = new SkillManageTool(
+      library,
+      pendingStore,
+      new SkillWriteApprovalController(true),
+    );
+    const staged = JSON.parse(await approvalTool.execute(
+      { action: 'create', name: 'pending-skill', content: skillContent('pending-skill', '待审批') },
+      foregroundContext('create', 'pending-skill'),
+    )) as { status: string; pendingId?: string };
+    expect(staged.status).toBe('staged');
+    const afterStage = JSON.parse(await listTool.execute({})) as {
+      skills: Array<{ name: string }>;
+    };
+    expect(afterStage.skills.map(skill => skill.name)).not.toContain('pending-skill');
+
+    // 失败写入（非法 frontmatter）不进入目录。
+    const failed = JSON.parse(await manageTool.execute(
+      { action: 'create', name: 'bad-skill', content: '没有 frontmatter' },
+      foregroundContext('create', 'bad-skill'),
+    )) as { status: string };
+    expect(failed.status).toBe('error');
+    const afterFailure = JSON.parse(await listTool.execute({})) as {
+      skills: Array<{ name: string }>;
+    };
+    expect(afterFailure.skills.map(skill => skill.name)).not.toContain('bad-skill');
+  });
 });
+
+/** 构造与参数绑定的前台权限分析上下文。 */
+function foregroundContext(
+  action: SkillManageAction,
+  name: string,
+): ToolExecutionContext {
+  return {
+    permissionAnalysis: {
+      kind: 'skill-manage',
+      action,
+      name,
+      origin: 'foreground',
+      callerId: 'contract-user',
+    },
+  } as ToolExecutionContext;
+}
 
 /** 从读取账本签发后台动作的前置条件，签发失败时直接抛错。 */
 function preconditionFor(

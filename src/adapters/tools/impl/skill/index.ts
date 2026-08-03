@@ -1,11 +1,13 @@
 /**
  * @file index.ts
  * @description 智能体 Skill 专用原生工具包入口模块。
- * 负责根据可选的加载器配置和 SkillLibrary 实例化并暴露 Skill 原生工具。
+ * 负责依据共享 SkillLibrary 实例化并暴露 Skill 原生工具，
+ * 按「目录 → 读取 → 写入」的稳定顺序装配三个工具。
  */
 
 import { LoadSkillTool } from './skill.js';
 import { SkillManageTool } from './skill-manage.js';
+import { SkillsListTool } from './skills-list.js';
 import type { SkillLibrary } from '../../../../core/usecases/brain/skill-library.js';
 import type {
   SkillPendingStore,
@@ -14,24 +16,22 @@ import type {
 import type { NativeTool } from '../../tool-types.js';
 
 /**
- * 根据加载器配置和 SkillLibrary 生成 Skill 原生工具实例列表。
+ * 依据共享 SkillLibrary 生成 Skill 原生工具实例列表。
+ * 三个工具使用同一 SkillLibrary，保证目录、读取与写入观察到同一合并活动视图。
  *
- * @param loadSkill - 自定义的技能载入内容加载器（向后兼容，优先级低于 skillLibrary）
- * @param skillLibrary - 可选注入的共享 SkillLibrary
+ * @param skillLibrary - 必选的共享 SkillLibrary（未注入时工具执行会明确失败）
  * @param pendingStore - 可选的 Skill pending 仓储
  * @param approvalController - writeApproval 运行时开关
- * @returns 实例化的 Skill 原生工具列表
+ * @returns 实例化的 Skill 原生工具列表，顺序为 skills_list → load_skill → skill_manage
  */
 export function getSkillTools(
-  loadSkill?: (name: string) => string | null,
   skillLibrary?: SkillLibrary,
   pendingStore?: SkillPendingStore,
   approvalController?: SkillWriteApprovalController,
 ): NativeTool[] {
-  const tools: NativeTool[] = [
-    new LoadSkillTool(loadSkill, skillLibrary),
+  return [
+    new SkillsListTool(skillLibrary),
+    new LoadSkillTool(skillLibrary),
     new SkillManageTool(skillLibrary, pendingStore, approvalController),
   ];
-
-  return tools;
 }

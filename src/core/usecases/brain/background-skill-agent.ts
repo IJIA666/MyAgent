@@ -1,3 +1,4 @@
+import { normalize } from 'node:path';
 import type { SessionEventPort } from '../../../ports/driven/session/SessionEventPort.js';
 import type { ApprovalPort } from '../../../ports/driven/session/ApprovalPort.js';
 import type { EventNotificationPort } from '../../../ports/driven/session/EventNotificationPort.js';
@@ -8,7 +9,7 @@ import type {
   ToolRegistryPort,
 } from '../../../ports/driven/tools/ToolRegistryPort.js';
 import type { ToolExecutionOutcome } from '../../../adapters/tools/tool-types.js';
-import { isToolOutputWithinQuota } from '../engine/ToolDispatcher.js';
+import { isToolOutcomeWithinQuota } from '../engine/ToolDispatcher.js';
 import { logger } from '../../../utils/logger.js';
 import {
   PermissionSessionState,
@@ -21,14 +22,24 @@ import {
 import {
   SKILL_CURATOR_CALLER_ID_PREFIX,
   SKILL_REVIEW_CALLER_ID_PREFIX,
+  type SkillManageAction,
 } from './skill-types.js';
 import {
   SkillReviewReadLedger,
   skillReadLedgerRegistry,
 } from './skill-review-read-ledger.js';
 
-/** Skill Review Agent 的固定工具上限。 */
-const BACKGROUND_SKILL_TOOL_NAMES = new Set(['load_skill', 'skill_manage']);
+/** Skill Review Agent 的固定工具上限：目录 → 读取 → 写入。 */
+const BACKGROUND_SKILL_TOOL_NAMES = new Set(['skills_list', 'load_skill', 'skill_manage']);
+
+/** 会修改既有 Skill 的动作；create 由运行时在成功后加入本任务范围。 */
+const EXISTING_SKILL_MUTATION_ACTIONS: ReadonlySet<SkillManageAction> = new Set([
+  'patch',
+  'edit',
+  'delete',
+  'write_file',
+  'remove_file',
+]);
 
 /** 后台真实 Skill 变更或暂存结果。 */
 export interface BackgroundSkillMutationResult {
@@ -65,11 +76,13 @@ export interface BackgroundSkillAgentOptions {
   readonly beforeSkillMutation?: () => void;
   /** 可选注入的读取账本；缺省时按当前 caller 创建并注册。 */
   readonly readLedger?: SkillReviewReadLedger;
+  /** Curator 本轮允许修改的既有 Skill 名称；Review 不设置此范围。 */
+  readonly allowedExistingSkillNames?: readonly string[];
 }
 
 /**
  * Skill Review Agent 的受限 ToolRegistry 视图。
- * 工具面固定为父工具集合与 load_skill/skill_manage 的交集，
+ * 工具面固定为父工具集合与 skills_list/load_skill/skill_manage 的交集，
  * 所有调用继续经过共享 ToolGateway，但使用独立权限快照和 background/subagent caller。
  */
 export class BackgroundSkillAgent implements ToolRegistryPort {
@@ -80,6 +93,7 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
   private readonly onSkillMutation?: (result: BackgroundSkillMutationResult) => void;
   private readonly beforeSkillMutation?: () => void;
   private readonly readLedger: SkillReviewReadLedger;
+  private readonly allowedExistingSkillNames?: Set<string>;
 
   /**
    * @param parentRegistry - 已装配统一 ToolGateway 的父工具注册表
@@ -103,6 +117,10 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
     this.isActive = options.isActive ?? (() => true);
     this.onSkillMutation = options.onSkillMutation;
     this.beforeSkillMutation = options.beforeSkillMutation;
+    // Curator 必须显式携带候选范围；缺失时使用空集合 fail-closed。
+    this.allowedExistingSkillNames = callerIdPrefix === SKILL_CURATOR_CALLER_ID_PREFIX
+      ? new Set(options.allowedExistingSkillNames ?? [])
+      : undefined;
     // 一次隔离任务一个账本：绑定宿主验证的后台 caller，注册到内存注册表供授权适配器签发前置条件。
     this.readLedger = options.readLedger
       ?? new SkillReviewReadLedger(this.caller.caller.callerId);
@@ -110,9 +128,9 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
   }
 
   /**
-   * 返回父工具面内允许暴露给 Review 模型的两个工具定义。
+   * 返回父工具面内允许暴露给 Review 模型的三个工具定义。
    *
-   * @returns load_skill/skill_manage 与父工具面的交集
+   * @returns skills_list/load_skill/skill_manage 与父工具面的交集
    */
   public async getTools(): Promise<unknown[]> {
     const tools = await this.parentRegistry.getTools();
@@ -137,7 +155,7 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
   /**
    * 使用受限安全上下文执行工具。
    *
-   * @param functionName - 只能是 load_skill 或 skill_manage
+   * @param functionName - 只能是 skills_list/load_skill/skill_manage
    * @param functionArgs - JSON 风格工具参数
    * @param _sessionContext - 被忽略，禁止把临时上下文作为审批入口传给父注册表
    * @param _interactionPort - 被忽略，后台任务不允许交互
@@ -161,6 +179,9 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
       throw new Error(`Skill Review Agent 不允许调用工具: ${functionName}`);
     }
     this.assertActive(signal);
+    if (functionName === 'skill_manage') {
+      this.assertSkillMutationInScope(functionArgs);
+    }
 
     const outcome = await this.parentRegistry.callTool(
       functionName,
@@ -188,10 +209,22 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
     if (functionName === 'skill_manage') {
       const mutation = parseSkillMutation(outcome.value, functionArgs);
       if (mutation) {
+        // Curator 成功创建的 umbrella 可在同一任务后续调用中继续维护；暂存尚未落盘，不扩展范围。
+        if (
+          this.allowedExistingSkillNames
+          && !outcome.cause
+          && mutation.status === 'success'
+          && mutation.action === 'create'
+          && functionArgs.action === 'create'
+          && mutation.name === functionArgs.name
+        ) {
+          this.allowedExistingSkillNames.add(mutation.name);
+        }
         this.onSkillMutation?.(mutation);
       }
     } else if (functionName === 'load_skill' && !outcome.cause) {
       // 只在真实成功后记账：失败结果、取消或其他 Skill 不得产生读取凭证。
+      // skills_list 只证明模型看过目录，不得满足先读后写要求，因此不进入记账分支。
       this.recordSkillLoad(functionArgs, outcome.value);
     }
     return outcome;
@@ -230,9 +263,34 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
   }
 
   /**
+   * 强制 Curator 只能修改本轮候选或本轮已成功创建的 Skill。
+   * Review 不设置候选集合，继续由既有 ownership 与读取凭证约束。
+   *
+   * @param input - skill_manage 原始参数
+   */
+  private assertSkillMutationInScope(input: Readonly<Record<string, unknown>>): void {
+    if (!this.allowedExistingSkillNames) {
+      return;
+    }
+    const action = input.action;
+    const name = input.name;
+    if (
+      typeof action !== 'string'
+      || typeof name !== 'string'
+      || action === 'create'
+      || !EXISTING_SKILL_MUTATION_ACTIONS.has(action as SkillManageAction)
+    ) {
+      return;
+    }
+    if (!this.allowedExistingSkillNames.has(name)) {
+      throw new Error(`Curator 本轮候选范围不允许修改 Skill: ${name}`);
+    }
+  }
+
+  /**
    * 记录一次真实成功的 load_skill 读取凭证。
-   * 摘要只来自本次工具返回包络中的正文，不允许再次读取磁盘替换模型实际看到的版本。
-   * 若统一输出层将折叠该包络，则 fail-closed 不记录凭证。
+   * 摘要只来自本次工具返回包络中的结构化 `content` 字段，不允许再次读取磁盘
+   * 替换模型实际看到的版本；若统一输出层将折叠模型可见文本，则 fail-closed 不记录。
    *
    * @param functionArgs - load_skill 调用参数（name / 可选 file_path）
    * @param outcomeValue - 工具网关返回的真实结果包络
@@ -248,16 +306,20 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
     const filePath = typeof functionArgs.file_path === 'string'
       ? functionArgs.file_path
       : undefined;
-    let serializedOutcome: string | undefined;
-    try {
-      serializedOutcome = JSON.stringify(outcomeValue);
-    } catch {
-      serializedOutcome = undefined;
+
+    // 模型可见正文 = 工具返回包络的第一段 text（load_skill 的结构化 JSON 字符串）。
+    const modelVisibleText = unwrapTextContent(outcomeValue);
+    if (typeof modelVisibleText !== 'string') {
+      logger.warn('[BackgroundSkillAgent] load_skill_credential_not_recorded', {
+        component: 'background_skill_agent',
+        event: 'load_skill_credential_not_recorded',
+        reason: 'invalid_envelope',
+        skill: name,
+        filePath: filePath ?? null,
+      });
+      return;
     }
-    if (
-      typeof serializedOutcome !== 'string'
-      || !isToolOutputWithinQuota(this.getTool('load_skill'), serializedOutcome)
-    ) {
+    if (!isToolOutcomeWithinQuota(this.getTool('load_skill'), outcomeValue)) {
       logger.warn('[BackgroundSkillAgent] load_skill_credential_not_recorded', {
         component: 'background_skill_agent',
         event: 'load_skill_credential_not_recorded',
@@ -267,10 +329,66 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
       });
       return;
     }
-    const modelVisibleContent = unwrapTextContent(outcomeValue);
-    if (typeof modelVisibleContent === 'string') {
-      this.readLedger.recordLoad(name, filePath, modelVisibleContent);
+
+    // 解析结构化包络并校验 name/file 与调用参数一致，防止模型基于错配目标提交。
+    let payload: unknown;
+    try {
+      payload = JSON.parse(modelVisibleText);
+    } catch {
+      logger.warn('[BackgroundSkillAgent] load_skill_credential_not_recorded', {
+        component: 'background_skill_agent',
+        event: 'load_skill_credential_not_recorded',
+        reason: 'invalid_json_payload',
+        skill: name,
+        filePath: filePath ?? null,
+      });
+      return;
     }
+    const record = this.verifySkillReadPayload(payload, name, filePath);
+    if (!record) {
+      logger.warn('[BackgroundSkillAgent] load_skill_credential_not_recorded', {
+        component: 'background_skill_agent',
+        event: 'load_skill_credential_not_recorded',
+        reason: 'payload_field_mismatch',
+        skill: name,
+        filePath: filePath ?? null,
+      });
+      return;
+    }
+    // 只记录模型实际看到的 content 原文；解析失败、字段错配均不签发读取凭证。
+    this.readLedger.recordLoad(record.name, record.filePath, record.content);
+  }
+
+  /**
+   * 校验结构化 load_skill 包络与调用参数一致。
+   * `file` 必须等于「SKILL.md 或规范化后的支持文件相对路径」，`content` 必须是字符串；
+   * 任一不匹配返回 null，调用方 fail-closed。
+   *
+   * @param payload - 解析后的结果对象
+   * @param name - 调用参数中的 Skill 名称
+   * @param filePath - 调用参数中的可选支持文件路径
+   * @returns 校验通过时返回记账所需的窄化字段；否则返回 null
+   */
+  private verifySkillReadPayload(
+    payload: unknown,
+    name: string,
+    filePath: string | undefined,
+  ): { name: string; filePath: string | undefined; content: string } | null {
+    if (!isRecord(payload) || payload.name !== name) {
+      return null;
+    }
+    // 未传 file_path 时工具返回 SKILL.md；传入时返回规范化相对路径。
+    const expectedFile = filePath
+      ? normalize(filePath).replace(/\\/g, '/')
+      : 'SKILL.md';
+    if (payload.file !== expectedFile) {
+      return null;
+    }
+    const content = payload.content;
+    if (typeof content !== 'string') {
+      return null;
+    }
+    return { name, filePath, content };
   }
 
   /** 在进入共享 ToolGateway 前后置准备阶段检查关闭与取消。 */

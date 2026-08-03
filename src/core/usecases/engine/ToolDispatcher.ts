@@ -32,6 +32,55 @@ export function isToolOutputWithinQuota(
 }
 
 /**
+ * 按工具编排器的真实模型回执格式序列化执行结果。
+ * 所有提前估算输出配额的调用方必须复用该函数，避免只计算内层文本而漏掉
+ * CallToolResult 包络和二次 JSON 转义开销。
+ *
+ * @param outcomeValue - ToolRegistry 返回的 outcome.value
+ * @returns 与工具编排器写入模型消息完全一致的 JSON 字符串
+ */
+export function serializeToolOutcomeForModel(outcomeValue: unknown): string {
+  const serialized = JSON.stringify(outcomeValue);
+  if (typeof serialized !== 'string') {
+    throw new TypeError('工具执行结果无法序列化为模型可见文本');
+  }
+  return serialized;
+}
+
+/**
+ * 按本地原生工具经过 ToolGateway 后的真实包络序列化文本结果。
+ *
+ * @param text - NativeTool.execute 返回的文本
+ * @returns 包含 CallToolResult 包络的最终模型可见字符串
+ */
+export function serializeNativeToolTextResultForModel(text: string): string {
+  return serializeToolOutcomeForModel({
+    content: [{ type: 'text', text }],
+  });
+}
+
+/**
+ * 判断 ToolRegistry 执行结果经过最终序列化后是否会被统一输出层原样交给模型。
+ *
+ * @param tool - 工具元数据；缺失时使用统一默认配额
+ * @param outcomeValue - ToolRegistry 返回的 outcome.value
+ * @returns 最终模型可见字符串在配额内时返回 true；无法序列化时返回 false
+ */
+export function isToolOutcomeWithinQuota(
+  tool: Pick<ToolMetadata, 'maxLines' | 'maxBytes'> | undefined,
+  outcomeValue: unknown,
+): boolean {
+  try {
+    return isToolOutputWithinQuota(
+      tool,
+      serializeToolOutcomeForModel(outcomeValue),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 负责工具返回值的拦截与加工：
  * 1. 过滤拦截巨型返回负载（大文本防爆处理）。
  * 2. 对需要上下文陪伴响应的代码文件进行 JIT（Just-In-Time）规则注入。

@@ -1,10 +1,12 @@
+import { normalize } from 'node:path';
 import type { NativeTool } from '../../tool-types.js';
 import type { SkillLibrary } from '../../../../core/usecases/brain/skill-library.js';
+import type { SkillReadResult } from '../../../../core/usecases/brain/skill-types.js';
 
 /**
  * 扩展技能拉取工具类。
  * 实现了 NativeTool 契约，支持动态按需加载系统提供的 Markdown 格式技能文档
- * 及其白名单支持文件。
+ * 及其白名单支持文件，并以结构化 JSON 返回元数据、实际读取文件与包内支持文件列表。
  */
 export class LoadSkillTool implements NativeTool {
   /** 工具的安全类别。 */
@@ -16,8 +18,9 @@ export class LoadSkillTool implements NativeTool {
   readonly name = 'load_skill';
 
   /**
-   * 保证 100,000 字符 SKILL.md 即使包含最坏情况 JSON 转义也不会被统一输出层截断。
-   * 更大的支持文件仍受输出层保护；后台读取账本会对截断结果 fail-closed，不签发写入凭证。
+   * 为完整 Skill 内容提供高于默认值的输出配额。
+   * 仍然超限的主文件或支持文件由统一输出层折叠；后台读取账本按最终模型回执
+   * fail-closed，不为模型未完整看到的内容签发写入凭证。
    */
   readonly maxBytes = 640 * 1024;
 
@@ -28,7 +31,7 @@ export class LoadSkillTool implements NativeTool {
     type: "function" as const,
     function: {
       name: 'load_skill',
-      description: "当需要使用特定扩展技能时调用此工具拉取技能全文。技能名称需从 <available_skills> 中选取。可选提供 file_path 读取支持文件（references/templates/scripts/assets 下的文件）。",
+      description: "读取一个 Skill 的完整内容，返回结构化 JSON（name/description/source/category/file/content/supportFiles）。技能名称可从 <available_skills> 快照或 skills_list 实时目录中选取。可选提供 file_path 读取支持文件（references/templates/scripts/assets 下的文件）。",
       parameters: {
         type: "object",
         properties: {
@@ -47,27 +50,18 @@ export class LoadSkillTool implements NativeTool {
     }
   };
 
-  /** 技能加载回调（向后兼容）。 */
-  private loadSkillCallback?: (name: string) => string | null;
-  /** 可选注入的共享 SkillLibrary。 */
-  private skillLibrary?: SkillLibrary;
-
   /**
    * 初始化技能加载工具。
    *
-   * @param loadSkillCallback - 外部技能加载解析器回调（向后兼容）
-   * @param skillLibrary - 可选注入的 SkillLibrary（优先使用）
+   * @param skillLibrary - 必选的共享 SkillLibrary（未注入时执行返回明确错误）
    */
-  constructor(loadSkillCallback?: (name: string) => string | null, skillLibrary?: SkillLibrary) {
-    this.loadSkillCallback = loadSkillCallback;
-    this.skillLibrary = skillLibrary;
-  }
+  constructor(private readonly skillLibrary?: SkillLibrary) {}
 
   /**
    * 执行技能加载逻辑。
    *
    * @param args - 工具调用参数字典，支持 name 和可选的 file_path
-   * @returns 拉取到的技能或支持文件内容
+   * @returns 结构化 SkillReadResult JSON 字符串
    */
   async execute(args: Record<string, unknown>): Promise<string> {
     const name = args.name;
@@ -80,42 +74,46 @@ export class LoadSkillTool implements NativeTool {
       throw new Error("file_path 必须是字符串");
     }
 
-    // 优先使用 SkillLibrary
-    if (this.skillLibrary) {
-      const meta = this.skillLibrary.get(name);
-      if (!meta) {
-        throw new Error(`未找到名为 "${name}" 的技能，请检查名称是否在 <available_skills> 中。`);
-      }
-      if (filePath) {
-        const pathError = this.skillLibrary.validateSupportPath(name, filePath);
-        if (pathError) {
-          throw new Error(`无法读取技能 "${name}" 的支持文件: ${pathError}`);
-        }
-      }
-
-      const content = filePath
-        ? this.skillLibrary.read(name, filePath)
-        : this.skillLibrary.read(name);
-
-      if (!content) {
-        throw new Error(`技能 "${name}" 中未找到文件: ${filePath || 'SKILL.md'}`);
-      }
-
-      await this.skillLibrary.recordView(name);
-      return content;
+    if (!this.skillLibrary) {
+      throw new Error('当前系统未配置 SkillLibrary，无法执行 load_skill。');
     }
 
-    // 向后兼容：使用回调
-    if (!this.loadSkillCallback) {
-      throw new Error('当前系统未配置 loadSkill 解析器，无法执行 load_skill。');
+    const meta = this.skillLibrary.get(name);
+    if (!meta) {
+      throw new Error(`未找到名为 "${name}" 的技能，请检查名称是否在 <available_skills> 或 skills_list 目录中。`);
+    }
+    if (filePath) {
+      const pathError = this.skillLibrary.validateSupportPath(name, filePath);
+      if (pathError) {
+        throw new Error(`无法读取技能 "${name}" 的支持文件: ${pathError}`);
+      }
     }
 
-    const body = this.loadSkillCallback(name);
-    if (!body) {
-      throw new Error(`未找到名为 "${name}" 的技能，请检查名称是否在 <available_skills> 中。`);
+    const content = filePath
+      ? this.skillLibrary.read(name, filePath)
+      : this.skillLibrary.read(name);
+
+    if (!content) {
+      throw new Error(`技能 "${name}" 中未找到文件: ${filePath || 'SKILL.md'}`);
     }
 
-    return body;
+    // 只在成功读取后记录一次查看遥测，失败路径不计数。
+    await this.skillLibrary.recordView(name);
+
+    // file 使用与路径校验一致的规范化相对路径，不暴露磁盘绝对路径。
+    const normalizedFilePath = filePath
+      ? normalize(filePath).replace(/\\/g, '/')
+      : undefined;
+    const result: SkillReadResult = {
+      name: meta.name,
+      description: meta.description,
+      source: meta.source,
+      ...(meta.category !== undefined ? { category: meta.category } : {}),
+      file: normalizedFilePath ?? 'SKILL.md',
+      content,
+      supportFiles: this.skillLibrary.listSupportFiles(name),
+    };
+    return JSON.stringify(result);
   }
 
   /**

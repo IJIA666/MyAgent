@@ -47,11 +47,13 @@ const MAX_TRAJECTORY_MESSAGES = 80;
  */
 export const BACKGROUND_SKILL_REVIEW_PROMPT = [
   '你是隔离运行的 Skill Review Agent，只能复盘给定轨迹中的程序性知识。',
-  '工具上限只有 load_skill 与 skill_manage；不得请求 Memory、文件、Shell、Browser、MCP 或用户交互工具。',
+  '工具上限只有 skills_list、load_skill 与 skill_manage；不得请求 Memory、文件、Shell、Browser、MCP 或用户交互工具。',
+  '开始复盘时先用 skills_list 查看当前实时目录；若结果 complete=false，请用 category 或 query 收敛后再判断，',
+  '在取得相关的完整目录结果之前，不得断言“没有候选 Skill”或直接创建新 Skill。',
   '',
   '保存优先级：',
   '1. 若轨迹已成功加载某个 Skill，优先 patch 该 Skill。',
-  '2. 否则优先查找能覆盖同类任务的现有 class-level umbrella Skill。',
+  '2. 否则优先查找能覆盖同类任务的现有 class-level umbrella Skill；目录查看可以发现候选，但修改前必须通过 load_skill 准确预读目标内容，目录不能替代读取。',
   '3. 细节较长时写入 umbrella 的 references/templates/scripts/assets 支持文件，再用相对链接引用。',
   '4. 只有不存在合适 umbrella 时才 create 新的 class-level Skill。',
   '',
@@ -109,6 +111,8 @@ export interface IsolatedSkillTaskRequest {
     | typeof SKILL_CURATOR_CALLER_ID_PREFIX;
   /** skill_manage 获准执行后的首个写入前钩子。 */
   readonly beforeSkillMutation?: () => void;
+  /** Curator 本轮允许修改的既有 Skill 名称；Review 省略。 */
+  readonly allowedExistingSkillNames?: readonly string[];
 }
 
 /** Curator 可复用的隔离 Skill Agent 执行端口。 */
@@ -286,6 +290,9 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
       parentToolNames,
       callerId: `${task.callerIdPrefix}:${backgroundContext.getSessionId()}`,
       callerIdPrefix: task.callerIdPrefix,
+      ...(task.allowedExistingSkillNames
+        ? { allowedExistingSkillNames: task.allowedExistingSkillNames }
+        : {}),
       beforeSkillMutation: task.beforeSkillMutation,
       isActive: () => !this.closed && !signal.aborted,
       onSkillMutation: mutation => {
