@@ -100,7 +100,9 @@ describe('SkillLearningPlugin', () => {
     );
 
     expect(scheduler.schedule).toHaveBeenCalledTimes(1);
-    expect(scheduled[0].trajectory).toEqual([
+    // 快照从会话起点（剥离父 system）复制到 historyEndIndex，包含触发任务的用户消息与最终回复。
+    expect(scheduled[0].conversationHistory).toEqual([
+      { role: 'user', content: '第二个任务' },
       { role: 'assistant', content: '完成' },
     ]);
 
@@ -115,6 +117,55 @@ describe('SkillLearningPlugin', () => {
       next,
     );
     expect(scheduler.schedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('多个任务共同贡献计数时，复盘快照包含更早任务与触发任务的最终回复', async () => {
+    const plugin = new SkillLearningPlugin({
+      backgroundReviewEnabled: true,
+      creationNudgeInterval: 3,
+    }, scheduler);
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    // 第一个任务贡献 1 次模型循环，未达阈值。
+    sessionContext.addMessage({ role: 'user', content: '第一个任务' });
+    const firstStart = sessionContext.getHistory().length;
+    await plugin.hooks[HookEventName.RunStart](
+      hookContext(sessionContext, HookEventName.RunStart),
+      next,
+    );
+    sessionContext.addMessage({ role: 'assistant', content: '第一个完成' });
+    await plugin.hooks[HookEventName.RunEnd](
+      hookContext(sessionContext, HookEventName.RunEnd, {
+        runSummary: completedSummary(1, firstStart, sessionContext.getHistory().length),
+      }),
+      next,
+    );
+    expect(scheduler.schedule).not.toHaveBeenCalled();
+
+    // 第二个任务贡献 2 次模型循环：跨任务累计达到阈值。
+    sessionContext.addMessage({ role: 'user', content: '第二个任务' });
+    const secondStart = sessionContext.getHistory().length;
+    await plugin.hooks[HookEventName.RunStart](
+      hookContext(sessionContext, HookEventName.RunStart),
+      next,
+    );
+    sessionContext.addMessage({ role: 'assistant', content: '第二个完成' });
+    await plugin.hooks[HookEventName.RunEnd](
+      hookContext(sessionContext, HookEventName.RunEnd, {
+        runSummary: completedSummary(2, secondStart, sessionContext.getHistory().length),
+      }),
+      next,
+    );
+
+    expect(scheduler.schedule).toHaveBeenCalledTimes(1);
+    // 快照从会话起点（剥离父 system）复制到 historyEndIndex：
+    // 更早任务与触发任务的消息按原顺序全部保留，而不是只截取触发任务。
+    expect(scheduled[0].conversationHistory).toEqual([
+      { role: 'user', content: '第一个任务' },
+      { role: 'assistant', content: '第一个完成' },
+      { role: 'user', content: '第二个任务' },
+      { role: 'assistant', content: '第二个完成' },
+    ]);
   });
 
   it('最终纯文本模型循环应推进阈值，即使没有任何工具型响应', async () => {
@@ -298,6 +349,20 @@ describe('SkillLearningPlugin', () => {
       requestedToolCallCount: 9,
       segmentCount: 1,
     });
+    // 等待段只持久化本段局部轨迹（学习起点到 RunEnd），不复制完整会话历史；
+    // 完整快照只在真正达到阈值时构造，避免长会话等待时在会话快照中重复持久化。
+    expect(sessionContext.getSkillLearningContinuation()?.trajectory).toEqual([
+      { role: 'user', content: '探索纯文字发帖入口' },
+      {
+        role: 'assistant',
+        content: '需要用户确认后继续',
+        tool_calls: [{
+          id: 'ask-binding',
+          type: 'function',
+          function: { name: 'ask_user_question', arguments: '{"questions":[]}' },
+        }],
+      },
+    ]);
 
     // 真实恢复链路会在下一个 RunStart 前补入 ask_user_question 的工具回答；
     // 恢复 run 的学习起点 = 延续状态的恢复边界（等待 run 结束时的历史长度）。
@@ -325,7 +390,7 @@ describe('SkillLearningPlugin', () => {
 
     expect(scheduler.schedule).toHaveBeenCalledTimes(1);
     expect(sessionContext.getSkillLearningContinuation()).toBeNull();
-    expect(scheduled[0].trajectory).toEqual(expect.arrayContaining([
+    expect(scheduled[0].conversationHistory).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: 'user', content: '探索纯文字发帖入口' }),
       expect.objectContaining({
         role: 'tool',
@@ -619,9 +684,10 @@ describe('SkillLearningPlugin', () => {
     );
 
     expect(scheduler.schedule).toHaveBeenCalledTimes(1);
-    const trajectory = scheduled[0].trajectory;
-    // 三段消息按顺序各出现一次：用户任务、两轮交互问答与最终回答。
-    expect(trajectory).toEqual([
+    const conversationHistory = scheduled[0].conversationHistory;
+    // 三段消息按顺序各出现一次：用户任务、两轮交互问答与最终回答；
+    // 快照从会话起点复制并剥离父 system，等待前消息与恢复段不再拼接重复。
+    expect(conversationHistory).toEqual([
       { role: 'user', content: '第一段用户任务' },
       { role: 'assistant', content: '需要确认', tool_calls: [{
         id: 'ask-1',

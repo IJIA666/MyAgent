@@ -59,7 +59,7 @@ function createEstimator(): TokenEstimatorPort {
 /** 创建测试 Review 输入。 */
 function createReviewRequest(): BackgroundSkillReviewRequest {
   return {
-    trajectory: [
+    conversationHistory: [
       { role: 'user', content: '发布一条纯文字帖子' },
       { role: 'assistant', content: '先检查登录状态' },
       { role: 'tool', tool_call_id: 'check-1', content: 'logged-in' },
@@ -221,23 +221,26 @@ describe('BackgroundSkillReviewService', () => {
     expect(BACKGROUND_SKILL_REVIEW_PROMPT).toContain('目录不能替代读取');
   });
 
-  it('有界输入只携带本次轨迹、已加载 Skill 和结构化证据', () => {
+  it('复盘指令只携带当前任务辅助证据，不序列化对话历史', () => {
     const baseRequest = createReviewRequest();
     const request: BackgroundSkillReviewRequest = {
       ...baseRequest,
-      trajectory: [
+      conversationHistory: [
         { role: 'system', content: '父会话私密系统配置' },
-        ...baseRequest.trajectory,
+        ...baseRequest.conversationHistory,
         { role: 'tool', tool_call_id: 'large', content: 'x'.repeat(7_000) },
       ],
     };
     const input = buildBackgroundReviewInput(request);
 
+    // 对话历史（含父 system 与超长工具输出）不进入复盘指令文本：
+    // 隔离 Agent 已通过 conversationHistory 原生回放，不再 JSON 嵌套或二次裁剪。
     expect(input).not.toContain('父会话私密系统配置');
+    expect(input).not.toContain('发布一条纯文字帖子');
+    expect(input).not.toContain('[truncated');
     expect(input).toContain('"loadedSkills"');
     expect(input).toContain('text-posting');
     expect(input).toContain('"toolEvidence"');
-    expect(input).toContain('[truncated');
   });
 
   it('Nothing to save 是正常 no-op，模型文本声称保存也不得通知', async () => {
@@ -273,6 +276,8 @@ describe('BackgroundSkillReviewService', () => {
     ['success', '{"status":"success","action":"create","name":"text-posting","summary":"created"}'],
     ['staged', '{"status":"staged","action":"create","name":"text-posting","pendingId":"pending-1","summary":"staged"}'],
     ['error', '{"status":"error","action":"create","name":"text-posting","summary":"failed"}'],
+    // 重复复盘上下文下相同内容 patch 的 no-change 结果同样不得进入 mutations 或通知。
+    ['no_change', '{"status":"error","action":"patch","name":"text-posting","error":"替换后内容未变化"}'],
   ] as const)('只有真实 skill_manage %s 结果才产生通知', async (status, payload) => {
     let modelCallCount = 0;
     const driver = {
@@ -327,8 +332,8 @@ describe('BackgroundSkillReviewService', () => {
 
     const result = await service.runReview(createReviewRequest());
 
-    if (status === 'error') {
-      // 工具失败不产生变更摘要，也不得发送任何成功展示事件。
+    if (status === 'error' || status === 'no_change') {
+      // 工具失败或无变化不产生变更摘要，也不得发送任何成功展示事件。
       expect(result.mutations).toEqual([]);
       expect(notify).not.toHaveBeenCalled();
       return;
@@ -563,7 +568,7 @@ describe('BackgroundSkillReviewService', () => {
     const request = createReviewRequest();
     service.schedule(request);
     // 调用方在入队后篡改原请求：队列快照必须不受影响。
-    (request.trajectory as ChatMessage[]).push({
+    (request.conversationHistory as ChatMessage[]).push({
       role: 'user',
       content: '入队后篡改',
     });
@@ -572,5 +577,92 @@ describe('BackgroundSkillReviewService', () => {
     const serialized = JSON.stringify(observed);
     expect(serialized).not.toContain('入队后篡改');
     expect(serialized).toContain('发布一条纯文字帖子');
+  });
+
+  it('隔离 Review 原样回放父会话消息，只保留自身 system 并追加复盘指令', async () => {
+    const observed: ChatMessage[][] = [];
+    const driver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      streamChat: vi.fn().mockImplementation(async function* (
+        messages: ChatMessage[],
+      ) {
+        observed.push(structuredClone(messages));
+        yield completeEvent('done');
+      }),
+    } as unknown as LlmPort;
+    const { service } = createService(driver, createParentRegistry());
+
+    await service.runReview({
+      ...createReviewRequest(),
+      conversationHistory: [
+        { role: 'system', content: '父会话私密系统配置' },
+        { role: 'user', content: '发布一条纯文字帖子' },
+        { role: 'assistant', content: '先检查登录状态' },
+        { role: 'tool', tool_call_id: 'check-1', content: 'logged-in' },
+        { role: 'assistant', content: '发布成功' },
+      ],
+    });
+
+    const first = observed[0];
+    // 父 system 被剥离：模型请求只保留隔离上下文自身的首条 system。
+    expect(first.filter(message => message.role === 'system')).toHaveLength(1);
+    expect(first.some(message => message.content === '父会话私密系统配置')).toBe(false);
+    // 父会话 user/assistant/tool 消息按原角色与工具关联字段回放。
+    expect(first.some(message => (
+      message.role === 'user' && message.content === '发布一条纯文字帖子'
+    ))).toBe(true);
+    expect(first.some(message => (
+      message.role === 'assistant' && message.content === '发布成功'
+    ))).toBe(true);
+    expect(first.some(message => (
+      message.role === 'tool' && message.tool_call_id === 'check-1'
+    ))).toBe(true);
+    // 复盘指令作为末尾 user 消息追加，而不是嵌套进单条 JSON 轨迹。
+    const tail = first[first.length - 1];
+    expect(tail.role).toBe('user');
+    expect(tail.content).toContain('Skill Review Agent');
+  });
+
+  it('超过 80 条且单条超过 6000 字符的快照原样回放，Review 自身不再裁剪或 JSON 嵌套', async () => {
+    const observed: ChatMessage[][] = [];
+    const driver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      streamChat: vi.fn().mockImplementation(async function* (
+        messages: ChatMessage[],
+      ) {
+        observed.push(structuredClone(messages));
+        yield completeEvent('done');
+      }),
+    } as unknown as LlmPort;
+    const { service } = createService(driver, createParentRegistry());
+
+    const largeToolResult = 'A'.repeat(7_000);
+    const history: ChatMessage[] = [
+      { role: 'user', content: '起点任务' },
+      ...Array.from({ length: 90 }, (_, index) => ({
+        role: 'user' as const,
+        content: `后续消息 ${index}`,
+      })),
+      { role: 'tool', tool_call_id: 'large-1', content: largeToolResult },
+      { role: 'assistant', content: '最终回复' },
+    ];
+    await service.runReview({
+      ...createReviewRequest(),
+      conversationHistory: history,
+    });
+
+    const first = observed[0];
+    // 90 条后续消息全部保留（超过旧上限 80 条），不被裁剪。
+    expect(first.filter(message => message.content === '起点任务')).toHaveLength(1);
+    expect(first.filter(message => (
+      typeof message.content === 'string' && message.content.startsWith('后续消息')
+    ))).toHaveLength(90);
+    // 超长工具结果保持原长度，不再被逐消息字符截断。
+    const large = first.find(message => message.tool_call_id === 'large-1');
+    expect(large?.content).toBe(largeToolResult);
+    // 消息以原生数组回放，复盘指令仍作为末尾 user 消息追加。
+    expect(first[first.length - 1].role).toBe('user');
   });
 });

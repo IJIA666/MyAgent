@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AppConfig, LlmConfig } from '../../../config/index.js';
-import type { LlmPort } from '../../../ports/driven/llm/LlmPort.js';
+import type { ChatMessage, LlmPort } from '../../../ports/driven/llm/LlmPort.js';
 import type { TokenEstimatorPort } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import type { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
@@ -36,10 +36,6 @@ import {
 
 /** Review Agent 固定最大模型迭代数。 */
 const BACKGROUND_SKILL_REVIEW_MAX_ITERATIONS = 16;
-/** 单条轨迹消息最大字符数。 */
-const MAX_TRAJECTORY_MESSAGE_CHARS = 6_000;
-/** 最多保留的轨迹消息数。 */
-const MAX_TRAJECTORY_MESSAGES = 80;
 
 /**
  * Skill Review 的固定系统任务说明。
@@ -109,6 +105,12 @@ export interface IsolatedSkillTaskRequest {
   /** 用于派生 background origin 的受信 caller 前缀。 */
   readonly callerIdPrefix: typeof SKILL_REVIEW_CALLER_ID_PREFIX
     | typeof SKILL_CURATOR_CALLER_ID_PREFIX;
+  /**
+   * 可选的主会话对话快照，供隔离 Agent 以原生消息序列回放。
+   * 仅 Review 传入；Curator 等其他隔离 Skill 任务不传，继续只有单条任务输入。
+   * 装载时保留隔离上下文自身的 system，并防御性过滤传入历史中的 system。
+   */
+  readonly conversationHistory?: readonly ChatMessage[];
   /** skill_manage 获准执行后的首个写入前钩子。 */
   readonly beforeSkillMutation?: () => void;
   /** Curator 本轮允许修改的既有 Skill 名称；Review 省略。 */
@@ -253,6 +255,7 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
       input: buildBackgroundReviewInput(request),
       maxIterations: BACKGROUND_SKILL_REVIEW_MAX_ITERATIONS,
       callerIdPrefix: SKILL_REVIEW_CALLER_ID_PREFIX,
+      conversationHistory: request.conversationHistory,
     }, signal);
   }
 
@@ -340,6 +343,20 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
     );
     // 后台 Registry 必须为空，特别是不注册 SkillLearningPlugin，避免递归复盘。
     const pluginRegistry = new PluginRegistry();
+    // Review 任务携带主会话对话快照：保留隔离上下文自身的首条 system（RuleManager
+    // 构造时已覆写为后台规则版本），防御性过滤传入历史中的 system，逐字段深复制
+    // user/assistant/tool 消息后一次装入，再追加本次隔离任务的 user 指令。
+    if (task.conversationHistory !== undefined) {
+      const ownSystem = backgroundContext.getHistory()[0] ?? null;
+      const replayedHistory = ownSystem === null
+        ? []
+        : [ownSystem].concat(
+          task.conversationHistory
+            .filter(message => message.role !== 'system')
+            .map(cloneChatMessage),
+        );
+      backgroundContext.updateHistory(replayedHistory);
+    }
     backgroundContext.addMessage({ role: 'user', content: task.input });
     const tracer = new AgentTracer(
       paths.tracesDir,
@@ -430,28 +447,17 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
   }
 }
 
-/** 构造只包含固定 prompt、当前轨迹和结构化证据的有界输入。 */
+/**
+ * 构造后台复盘指令与当前逻辑任务的结构化辅助证据。
+ * 主会话对话快照不在此序列化：隔离 Agent 已通过 `conversationHistory`
+ * 原生回放消息，本函数只携带复盘 prompt、loadedSkills 与 toolEvidence。
+ * 历史 JSON 嵌套、固定条数与单条字符裁剪已删除；全局模型预算仍由
+ * `ContextBudgetCoordinator` 统一保护，Review 自身不再二次裁剪。
+ */
 export function buildBackgroundReviewInput(
   request: Readonly<BackgroundSkillReviewRequest>,
 ): string {
-  const trajectory = request.trajectory
-    .filter(message => message.role !== 'system')
-    .slice(-MAX_TRAJECTORY_MESSAGES)
-    .map(message => ({
-      role: message.role,
-      content: truncateText(message.content ?? '', MAX_TRAJECTORY_MESSAGE_CHARS),
-      ...(message.tool_call_id ? { toolCallId: message.tool_call_id } : {}),
-      ...(message.isError === true ? { isError: true } : {}),
-      ...(message.tool_calls ? {
-        toolCalls: message.tool_calls.map(call => ({
-          id: call.id,
-          name: call.function.name,
-          arguments: truncateText(call.function.arguments, 2_000),
-        })),
-      } : {}),
-    }));
   const payload = {
-    trajectory,
     loadedSkills: [...request.loadedSkills],
     toolEvidence: request.toolEvidence.map(evidence => ({ ...evidence })),
   };
@@ -463,7 +469,7 @@ function cloneReviewRequest(
   request: Readonly<BackgroundSkillReviewRequest>,
 ): Readonly<BackgroundSkillReviewRequest> {
   return Object.freeze({
-    trajectory: Object.freeze(structuredClone([...request.trajectory])),
+    conversationHistory: Object.freeze(structuredClone([...request.conversationHistory])),
     loadedSkills: Object.freeze([...request.loadedSkills]),
     toolEvidence: Object.freeze(request.toolEvidence.map(evidence => Object.freeze({ ...evidence }))),
     runSummary: Object.freeze({ ...request.runSummary }),
@@ -483,11 +489,34 @@ function getToolDefinitionName(value: unknown): string | undefined {
     : undefined;
 }
 
-/** 按字符数截断轨迹字段。 */
-function truncateText(value: string, limit: number): string {
-  return value.length <= limit
-    ? value
-    : `${value.slice(0, limit)}\n...[truncated ${value.length - limit} chars]`;
+/**
+ * 按 ChatMessage 的公开字段逐字段复制消息，解除与主会话的引用耦合。
+ * 快照消息由插件侧已逐字段克隆，此处再次防御性复制，
+ * 保持 system 剥离后的 user/assistant/tool 消息及其工具关联字段完整。
+ */
+function cloneChatMessage(message: Readonly<ChatMessage>): ChatMessage {
+  return Object.freeze({
+    role: message.role,
+    content: message.content,
+    ...(message.name !== undefined ? { name: message.name } : {}),
+    ...(message.tool_call_id !== undefined ? { tool_call_id: message.tool_call_id } : {}),
+    ...(message.originalPath !== undefined ? { originalPath: message.originalPath } : {}),
+    ...(message.isTruncated !== undefined ? { isTruncated: message.isTruncated } : {}),
+    ...(message.isError !== undefined ? { isError: message.isError } : {}),
+    ...(message.reasoning_content !== undefined
+      ? { reasoning_content: message.reasoning_content }
+      : {}),
+    ...(message.tool_calls !== undefined ? {
+      tool_calls: message.tool_calls.map(call => Object.freeze({
+        id: call.id,
+        type: call.type,
+        function: Object.freeze({
+          name: call.function.name,
+          arguments: call.function.arguments,
+        }),
+      })),
+    } : {}),
+  });
 }
 
 /** 判断未知值是否为普通对象。 */

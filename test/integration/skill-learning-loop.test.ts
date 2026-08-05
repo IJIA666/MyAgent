@@ -77,6 +77,15 @@ describe('Skill learning loop integration', () => {
     expect(scheduled.reviewPromise).toBeDefined();
     expect(harness.library.get('plain-text-social-posting')).toBeUndefined();
 
+    // 多任务累计达到阈值时，隔离 Review 快照包含完整当前会话：
+    // 两次任务贡献计数的用户消息与最终回复都保留，且父 system 不进入快照。
+    const snapshot = scheduled.request?.conversationHistory ?? [];
+    expect(snapshot.filter(message => (
+      message.content === '为纯文字平台帖子整理标题、正文和发布前检查'
+    ))).toHaveLength(2);
+    expect(snapshot.filter(message => message.content === '纯文字帖子已准备完成')).toHaveLength(2);
+    expect(snapshot.some(message => message.role === 'system')).toBe(false);
+
     releaseModel();
     const review = await scheduled.reviewPromise;
     expect(review?.mutations).toMatchObject([{
@@ -248,6 +257,18 @@ describe('Skill learning loop integration', () => {
     const resumeIndex = resumedContext.getSkillLearningContinuation()?.resumeHistoryIndex;
     await completeMainRun(resumedPlugin, resumedContext, next, 1, true, resumeIndex);
 
+    // 等待恢复契约：快照从恢复后的主会话当前历史一次性取得，
+    // 最初任务、交互工具回答与恢复后回复按发生顺序各出现一次，不重复拼接。
+    const snapshot = scheduled.request?.conversationHistory ?? [];
+    expect(snapshot.filter(message => message.content === '探索纯文字平台的真实发布流程'))
+      .toHaveLength(1);
+    expect(snapshot.filter(message => message.tool_call_id === 'ask-account-verification'))
+      .toHaveLength(1);
+    expect(snapshot.filter(message => message.content === '纯文字帖子已准备完成'))
+      .toHaveLength(1);
+    expect(new Set(snapshot.map(message => JSON.stringify(message))).size)
+      .toBe(snapshot.length);
+
     const review = await scheduled.reviewPromise;
     expect(review?.mutations).toMatchObject([{
       status: 'success',
@@ -332,12 +353,16 @@ function createHarness(options: {
 function createTrackedScheduler(service: BackgroundSkillReviewService): {
   readonly schedule: BackgroundSkillReviewScheduler['schedule'];
   reviewPromise?: ReturnType<BackgroundSkillReviewService['runReview']>;
+  request?: Readonly<BackgroundSkillReviewRequest>;
 } {
   const scheduler: {
     schedule: BackgroundSkillReviewScheduler['schedule'];
     reviewPromise?: ReturnType<BackgroundSkillReviewService['runReview']>;
+    request?: Readonly<BackgroundSkillReviewRequest>;
   } = {
     schedule(request: Readonly<BackgroundSkillReviewRequest>) {
+      // 记录原请求供快照内容断言；后台任务仍按真实链路异步执行。
+      scheduler.request = request;
       scheduler.reviewPromise = service.runReview(request);
       return { accepted: true, taskId: 'test-tracked' };
     },

@@ -57,10 +57,11 @@ export interface AgentRunSummary {
   /** RunEnd 时的会话历史长度。 */
   readonly historyEndIndex: number;
   /**
-   * 当前逻辑学习轨迹的起点索引，由用户任务或交互恢复入口显式提供。
+   * 当前用户逻辑任务的资格/恢复边界索引，由用户任务或交互恢复入口显式提供。
    * 该索引指向触发当前逻辑任务的第一条用户消息（或恢复段边界）；
    * 为 null 表示本次 run 没有用户任务边界（普通内部生成、后台唤醒等），
    * 插件不得通过减一、角色搜索等方式猜测该起点，也不得安排 Skill 复盘。
+   * 该边界只判断 run 能否推进 Skill 学习计数，不再定义后台复盘消息起点。
    */
   readonly learningTrajectoryStartIndex: number | null;
   /** 是否已提交 complete 事件对应的最终 assistant message。 */

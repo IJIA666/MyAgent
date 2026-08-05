@@ -40,9 +40,9 @@ export interface SkillLearningContinuation {
   readonly segmentCount: number;
   /**
    * 等待段结束时的会话历史长度。
-   * 恢复 run 时该值同时作为逻辑学习轨迹起点（learningTrajectoryStartIndex）：
-   * 等待前轨迹由本状态的 trajectory 提供，恢复段（交互工具回答及其后消息）
-   * 由插件从该索引截取到 RunEnd，两者按顺序合并且不重叠。
+   * 恢复 run 时该值作为逻辑学习资格/恢复边界（learningTrajectoryStartIndex）：
+   * 恢复 run 的学习起点必须与它一致；后台复盘快照统一从恢复后的主会话
+   * 当前历史一次性构造，不再从该索引截取轨迹与本状态 trajectory 拼接。
    */
   readonly resumeHistoryIndex: number;
   /**

@@ -8,6 +8,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -484,6 +485,73 @@ describe('SkillLibrary 写入锁域与读取凭证', () => {
     await releaseAB();
     const releaseBA = await releaseBAPromise;
     await releaseBA();
+  });
+
+  it('相同内容 patch 两阶段幂等：预览允许 ready，直接提交与批准重放均返回 error 且不写盘、不通知、不计 telemetry', async () => {
+    writeSkill(userSkillsDir, 'text-posting', '第一版流程');
+    const usageStore = new SkillUsageStore(usagePath);
+    // 后台 origin 只能修改 agent-created Skill：为测试包登记 agent 所有权。
+    await usageStore.markAgentCreated('text-posting');
+    const library = new SkillLibrary(
+      userSkillsDir,
+      projectSkillsDir,
+      archiveDir,
+      usageStore,
+      { enableWatcher: false, skillLocksDir: resolve(tempDir, 'locks') },
+    );
+    const listener = vi.fn();
+    library.subscribe(listener);
+
+    // 重复复盘上下文可能对同一 Skill 发出相同内容 patch：
+    // 替换后内容未变化时必须返回 error，不得产生文件、通知或 telemetry churn。
+    const noChangePatch: SkillManageRequest = {
+      action: 'patch',
+      name: 'text-posting',
+      oldString: '第一版流程',
+      newString: '第一版流程', // 替换后内容未变化
+    };
+
+    // 阶段一：预览阶段只做匹配与唯一性校验，允许 ready。
+    const preview = await library.previewManage(noChangePatch, 'background_review');
+    if (preview.status !== 'ready') {
+      throw new Error(`预览应允许 ready，实际为 error: ${preview.error}`);
+    }
+
+    // 后台修改必须先读后写：登记本次读取凭证，再签发 patch 前置条件。
+    const ledger = new SkillReviewReadLedger('bg-no-change');
+    ledger.recordLoad('text-posting', undefined, skillContent('text-posting', '第一版流程'));
+    const precondition = preconditionFor(ledger, 'patch', 'text-posting');
+
+    // 阶段二：关闭审批后的直接 manage() 提交必须在 doPatch 返回现有的 error 结果。
+    const beforeStat = statSync(library.get('text-posting')!.filePath);
+    const direct = await library.manage(noChangePatch, 'background_review', precondition);
+    expect(direct).toMatchObject({ status: 'error', error: '替换后内容未变化' });
+    // 不写盘（文件时间与内容不变）、不发 updated 通知、不增加 patch telemetry。
+    expect(statSync(library.get('text-posting')!.filePath).mtimeMs).toBe(beforeStat.mtimeMs);
+    expect(library.read('text-posting')).toBe(skillContent('text-posting', '第一版流程'));
+    expect(listener).not.toHaveBeenCalled();
+    expect(usageStore.read('text-posting')?.patchCount ?? 0).toBe(0);
+
+    // 阶段三：批准重放路径（replayGuard）同样在 doPatch 返回 error，不产生任何变更。
+    const replayPreview = await library.previewManage(noChangePatch, 'background_review');
+    if (replayPreview.status !== 'ready') {
+      throw new Error(`重放预览应允许 ready，实际为 error: ${replayPreview.error}`);
+    }
+    const replayGuard = {
+      id: 'pending-1',
+      baseFingerprint: replayPreview.preview.baseFingerprint,
+    };
+    const replayed = await library.manage(
+      noChangePatch,
+      'background_review',
+      precondition,
+      replayGuard,
+    );
+    expect(replayed).toMatchObject({ status: 'error', error: '替换后内容未变化' });
+    expect(statSync(library.get('text-posting')!.filePath).mtimeMs).toBe(beforeStat.mtimeMs);
+    expect(library.read('text-posting')).toBe(skillContent('text-posting', '第一版流程'));
+    expect(listener).not.toHaveBeenCalled();
+    expect(usageStore.read('text-posting')?.patchCount ?? 0).toBe(0);
   });
 });
 

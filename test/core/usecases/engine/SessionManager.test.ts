@@ -493,7 +493,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     expect(mockToolRegistry.callTool).toHaveBeenCalled();
   });
 
-  it('真实入口生成的复盘轨迹应包含触发任务的用户消息并排除更早历史', async () => {
+  it('真实入口生成的复盘快照应包含更早任务与触发任务的用户消息', async () => {
     const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
     const mockEstimator = createMockEstimator(10);
     const scheduled: BackgroundSkillReviewRequest[] = [];
@@ -525,20 +525,63 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
 
     await runToComplete(session, '第一个任务');
     expect(scheduled).toHaveLength(1);
-    expect(scheduled[0].trajectory[0]).toMatchObject({
+    // 快照从会话起点（剥离父 system）开始，首条为触发任务的用户消息。
+    expect(scheduled[0].conversationHistory[0]).toMatchObject({
       role: 'user',
       content: '第一个任务',
     });
 
     await runToComplete(session, '第二个任务');
     expect(scheduled).toHaveLength(2);
-    const secondTrajectory = scheduled[1].trajectory;
-    // 复盘轨迹必须从触发任务的用户消息开始，更早任务不得进入本次输入。
-    expect(secondTrajectory[0]).toMatchObject({
+    const secondSnapshot = scheduled[1].conversationHistory;
+    // 完整当前上下文契约：第二次复盘按原顺序同时包含第一个任务与第二个任务，
+    // 而不是从触发任务的用户消息开始排除更早历史。
+    expect(secondSnapshot[0]).toMatchObject({
       role: 'user',
-      content: '第二个任务',
+      content: '第一个任务',
     });
-    expect(secondTrajectory.some(message => message.content === '第一个任务')).toBe(false);
+    expect(secondSnapshot.some(message => message.content === '第二个任务')).toBe(true);
+  });
+
+  it('任务 A 已触发过复盘后，任务 C 再次触发时快照仍包含 A（重复上下文契约）', async () => {
+    const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+    const mockEstimator = createMockEstimator(10);
+    const scheduled: BackgroundSkillReviewRequest[] = [];
+    const scheduler: BackgroundSkillReviewScheduler = {
+      schedule: (request: Readonly<BackgroundSkillReviewRequest>) => {
+        scheduled.push(request as BackgroundSkillReviewRequest);
+        return { accepted: true, taskId: 'test-task' };
+      },
+    };
+    const mockDriver = createToolReactiveDriver();
+    const mockToolRegistry = createDummyToolRegistry();
+    const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+
+    const session = new SessionManager(
+      mockLlmConfig,
+      mockDriver,
+      mockEstimator,
+      mockToolRegistry,
+      mockContextAdapter,
+      createMockAppConfig({
+        skills: { backgroundReviewEnabled: true, creationNudgeInterval: 1, writeApproval: false },
+      }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scheduler,
+    );
+
+    await runToComplete(session, '任务A');
+    await runToComplete(session, '任务B');
+    await runToComplete(session, '任务C');
+    expect(scheduled).toHaveLength(3);
+    const thirdSnapshot = scheduled[2].conversationHistory;
+    // 不维护“已复盘消息”游标：任务 C 的复盘快照仍包含任务 A 及二者之间的当前会话历史。
+    expect(thirdSnapshot.some(message => message.content === '任务A')).toBe(true);
+    expect(thirdSnapshot.some(message => message.content === '任务B')).toBe(true);
+    expect(thirdSnapshot.some(message => message.content === '任务C')).toBe(true);
   });
 
   it('内部生成的自动唤醒 run 缺少学习边界时不得推进学习或安排复盘', async () => {
@@ -663,13 +706,14 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       await waitForSessionIdle(session);
 
       expect(scheduled).toHaveLength(1);
-      const trajectory = scheduled[0].trajectory;
-      expect(trajectory.filter(message => message.content === '需要连续确认的任务')).toHaveLength(1);
-      expect(trajectory.filter(message => message.tool_call_id === 'ask-1')).toHaveLength(1);
-      expect(trajectory.filter(message => message.tool_call_id === 'ask-2')).toHaveLength(1);
-      expect(trajectory.filter(message => message.content === '两次回答后完成')).toHaveLength(1);
+      const conversationHistory = scheduled[0].conversationHistory;
+      expect(conversationHistory.filter(message => message.content === '需要连续确认的任务')).toHaveLength(1);
+      expect(conversationHistory.filter(message => message.tool_call_id === 'ask-1')).toHaveLength(1);
+      expect(conversationHistory.filter(message => message.tool_call_id === 'ask-2')).toHaveLength(1);
+      expect(conversationHistory.filter(message => message.content === '两次回答后完成')).toHaveLength(1);
       // 该确定性链路中的每条消息都唯一，能直接发现等待段拼接重叠。
-      expect(new Set(trajectory.map(message => JSON.stringify(message))).size).toBe(trajectory.length);
+      expect(new Set(conversationHistory.map(message => JSON.stringify(message))).size)
+        .toBe(conversationHistory.length);
     } finally {
       await session.close();
     }
@@ -1266,7 +1310,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       };
       expect(service).toBeDefined();
       await service.runReview({
-        trajectory: [
+        conversationHistory: [
           { role: 'user', content: '本轮任务' },
           { role: 'assistant', content: '结果' },
         ],
@@ -1434,7 +1478,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
         runReview: (request: BackgroundSkillReviewRequest) => Promise<unknown>;
       };
       await service.runReview({
-        trajectory: [
+        conversationHistory: [
           { role: 'user', content: '后台任务' },
           { role: 'assistant', content: '后台结果' },
         ],

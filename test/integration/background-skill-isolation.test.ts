@@ -153,7 +153,7 @@ describe('后台 Skill Review 隔离', () => {
     });
 
     await service.runReview({
-      trajectory: [
+      conversationHistory: [
         { role: 'user', content: '本轮公开任务' },
         { role: 'assistant', content: '本轮公开结果' },
       ],
@@ -280,7 +280,7 @@ describe('后台 Skill Review 隔离', () => {
     });
 
     await service.runReview({
-      trajectory: [
+      conversationHistory: [
         { role: 'user', content: '本轮后台任务' },
         { role: 'assistant', content: '本轮后台结果' },
       ],
@@ -414,14 +414,14 @@ describe('后台 Skill Review 隔离', () => {
       // 后台复盘创建新 Skill。
       const service = parentSession['backgroundSkillReviewService'] as unknown as {
         runReview: (request: {
-          trajectory: ChatMessage[];
+          conversationHistory: ChatMessage[];
           loadedSkills: string[];
           toolEvidence: unknown[];
           runSummary: unknown;
         }) => Promise<unknown>;
       };
       await service.runReview({
-        trajectory: [
+        conversationHistory: [
           { role: 'user', content: '后台任务' },
           { role: 'assistant', content: '后台结果' },
         ],

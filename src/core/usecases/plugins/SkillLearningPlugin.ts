@@ -14,8 +14,12 @@ export type { SkillReviewToolEvidence } from '../../domain/skill-learning-contin
 
 /** 交给后台 Skill Review 的不可变输入。 */
 export interface BackgroundSkillReviewRequest {
-  /** 本次成功 run 的相关消息快照。 */
-  readonly trajectory: readonly ChatMessage[];
+  /**
+   * 达到阈值时主会话当前对话历史的不可变快照：
+   * 从会话起点复制到 `runSummary.historyEndIndex`，并剥离父 system 消息，
+   * 后台隔离上下文使用自身 system；该快照包含更早任务与触发任务的最终回复。
+   */
+  readonly conversationHistory: readonly ChatMessage[];
   /** 本次真实成功加载的 Skill 名称。 */
   readonly loadedSkills: readonly string[];
   /** AfterTool 收集的结构化成功/失败证据。 */
@@ -70,7 +74,6 @@ export class SkillLearningPlugin implements Plugin {
   private readonly loadedSkills = new Set<string>();
   private readonly pendingLoadSkills = new Map<string, string>();
   private toolEvidence: SkillReviewToolEvidence[] = [];
-  private continuationTrajectory: ChatMessage[] = [];
   private continuationModelLoopCount = 0;
   private continuationToolIterationCount = 0;
   private continuationRequestedToolCallCount = 0;
@@ -213,14 +216,13 @@ export class SkillLearningPlugin implements Plugin {
     const cadenceIncrement = this.foregroundSkillMutationHandled
       ? 0
       : learningModelLoopCount;
-    const trajectory = this.buildLearningTrajectory(context, summary);
-    const continuationSegmentCount = this.continuationSegmentCount;
-    context.sessionContext.clearSkillLearningContinuation();
-    if (trajectory === null) {
+    if (!this.validateLearningBoundary(context, summary)) {
       // 学习边界缺失或非法：fail-closed 丢弃本次证据，不推进累计、不安排复盘。
       this.discardContinuation(context);
       return;
     }
+    const continuationSegmentCount = this.continuationSegmentCount;
+    context.sessionContext.clearSkillLearningContinuation();
     if (this.foregroundSkillMutationHandled) {
       // 当前逻辑任务已经真实写入或暂存 Skill：不论历史余数是否已达到阈值，
       // 都不能借本任务的 RunEnd 再触发一次后台复盘；历史余数原样留给后续任务。
@@ -255,8 +257,13 @@ export class SkillLearningPlugin implements Plugin {
       return;
     }
 
+    // 只有真正达到阈值才构造完整对话快照：从会话起点复制到 historyEndIndex 并剥离
+    // 父 system，不再以逻辑学习边界作为复盘输入起点；更早任务与触发任务的最终回复
+    // 都保留。前台已沉淀豁免与未达阈值的 run 不构造快照，避免每个成功任务都执行
+    // O(会话长度) 的深复制。
+    const conversationHistory = this.buildReviewSnapshot(context, summary);
     const request: Readonly<BackgroundSkillReviewRequest> = Object.freeze({
-      trajectory,
+      conversationHistory,
       loadedSkills: Object.freeze([...this.loadedSkills]),
       toolEvidence: Object.freeze(this.toolEvidence.map(item => Object.freeze({ ...item }))),
       runSummary: Object.freeze({ ...summary }),
@@ -276,7 +283,7 @@ export class SkillLearningPlugin implements Plugin {
           toolIterationCount: learningToolIterationCount,
           requestedToolCallCount: learningRequestedToolCallCount,
           continuationSegmentCount,
-          trajectoryMessageCount: trajectory.length,
+          snapshotMessageCount: conversationHistory.length,
         });
       } else {
         // 同步拒绝（如服务已关闭）：保持累计值，供后续成功任务重试。
@@ -318,7 +325,6 @@ export class SkillLearningPlugin implements Plugin {
     const continuation = context.sessionContext.getSkillLearningContinuation();
     this.loadedSkills.clear();
     this.toolEvidence = [];
-    this.continuationTrajectory = [];
     this.continuationModelLoopCount = 0;
     this.continuationToolIterationCount = 0;
     this.continuationRequestedToolCallCount = 0;
@@ -332,10 +338,8 @@ export class SkillLearningPlugin implements Plugin {
       this.loadedSkills.add(name);
     }
     this.toolEvidence = continuation.toolEvidence.map(evidence => ({ ...evidence }));
-    // 等待前轨迹按延续状态原样恢复；恢复段的交互工具回答不在此合并，
-    // 而是由 buildLearningTrajectory 从学习起点（resumeHistoryIndex）统一截取，
-    // 避免与 continuation.trajectory 末尾重叠导致消息重复。
-    this.continuationTrajectory = structuredClone([...continuation.trajectory]);
+    // 等待前的对话快照不装入内存：恢复后的 Review 消息统一从恢复后的主会话
+    // 当前历史一次性构造，continuation.trajectory 仅作旧快照兼容与诊断保留。
     this.continuationModelLoopCount = continuation.modelLoopCount;
     this.continuationToolIterationCount = continuation.toolIterationCount;
     this.continuationRequestedToolCallCount = continuation.requestedToolCallCount;
@@ -350,15 +354,17 @@ export class SkillLearningPlugin implements Plugin {
     context: HookContext,
     summary: Readonly<AgentRunSummary>,
   ): void {
-    const trajectory = this.buildLearningTrajectory(context, summary);
-    if (trajectory === null) {
+    if (!this.validateLearningBoundary(context, summary)) {
       // 等待段若没有合法学习边界（内部生成等），不保存延续状态，防止证据混入后续任务。
       this.discardContinuation(context);
       return;
     }
     const continuation: SkillLearningContinuation = {
       version: 3,
-      trajectory,
+      // 仅保存本等待段的局部轨迹作旧快照兼容与诊断：不复制完整会话，避免长会话
+      // 等待用户回答时在会话快照中再持久化一份完整历史；恢复后的 Review 消息
+      // 由恢复后的主会话当前历史一次性构造，不读取本字段。
+      trajectory: this.buildWaitingSegment(context, summary),
       loadedSkills: [...this.loadedSkills],
       toolEvidence: this.toolEvidence.map(evidence => ({ ...evidence })),
       modelLoopCount: this.continuationModelLoopCount + summary.modelLoopCount,
@@ -379,24 +385,42 @@ export class SkillLearningPlugin implements Plugin {
       toolIterationCount: continuation.toolIterationCount,
       requestedToolCallCount: continuation.requestedToolCallCount,
       continuationSegmentCount: continuation.segmentCount,
-      trajectoryMessageCount: continuation.trajectory.length,
+      segmentMessageCount: continuation.trajectory.length,
     });
   }
 
   /**
-   * 合并等待前轨迹和当前 run 轨迹。
-   * 只允许使用 RunSummary 显式暴露的学习轨迹起点截取当前段：
-   * 起点缺失（内部生成）、越界或与延续恢复边界不一致时返回 null，
-   * 由调用方 fail-closed 丢弃本次证据，不做减一或角色搜索兜底。
+   * 构造本等待段的局部轨迹（学习起点到 historyEndIndex），仅用于延续状态兼容与诊断。
+   * 完整会话快照只在真正达到阈值时由 buildReviewSnapshot 构造，等待段不复制完整历史。
+   *
+   * @param context - Hook 执行上下文
+   * @param summary - RunEnd 摘要，学习边界已通过校验且非 null
+   * @returns 冻结的等待段局部轨迹
+   */
+  private buildWaitingSegment(
+    context: HookContext,
+    summary: Readonly<AgentRunSummary>,
+  ): readonly ChatMessage[] {
+    const history = context.sessionContext.getHistory();
+    // 校验通过后学习起点必然非 null；?? 0 仅为类型收窄，不会作为真实起点使用。
+    const learningStart = summary.learningTrajectoryStartIndex ?? 0;
+    return cloneTrajectory(history, learningStart, summary.historyEndIndex);
+  }
+
+  /**
+   * 校验 RunEnd 摘要显式提供的逻辑学习边界。
+   * 只允许使用入口显式提供的起点：起点缺失（内部生成）、越界或与延续恢复边界
+   * 不一致时返回 false，由调用方 fail-closed 丢弃本次证据，不做减一或角色搜索兜底。
+   * 该边界只决定 run 是否有资格推进学习计数，不再定义后台复盘消息的起点。
    *
    * @param context - Hook 执行上下文
    * @param summary - RunEnd 摘要，含原样冻结的学习轨迹起点
-   * @returns 合法合并轨迹；学习边界缺失或非法时返回 null
+   * @returns 边界合法时可继续累计与复盘；否则 false
    */
-  private buildLearningTrajectory(
+  private validateLearningBoundary(
     context: HookContext,
     summary: Readonly<AgentRunSummary>,
-  ): readonly ChatMessage[] | null {
+  ): boolean {
     const learningStart = summary.learningTrajectoryStartIndex;
     if (learningStart === null) {
       logger.warn('[SkillLearningPlugin] review_skipped', {
@@ -405,7 +429,7 @@ export class SkillLearningPlugin implements Plugin {
         reason: 'missing_learning_boundary',
         terminalStatus: summary.terminalStatus,
       });
-      return null;
+      return false;
     }
     const history = context.sessionContext.getHistory();
     const endIndex = summary.historyEndIndex;
@@ -419,10 +443,10 @@ export class SkillLearningPlugin implements Plugin {
         historyLength: history.length,
         historyEndIndex: endIndex,
       });
-      return null;
+      return false;
     }
     // 恢复 run 的学习起点必须与延续状态记录的恢复边界一致，
-    // 防止新用户消息或陈旧延续状态混入本任务的轨迹。
+    // 防止新用户消息或陈旧延续状态混入本任务的资格判断。
     if (this.continuationResumeHistoryIndex !== null
       && learningStart !== this.continuationResumeHistoryIndex) {
       logger.warn('[SkillLearningPlugin] review_skipped', {
@@ -432,13 +456,26 @@ export class SkillLearningPlugin implements Plugin {
         learningTrajectoryStartIndex: learningStart,
         continuationResumeHistoryIndex: this.continuationResumeHistoryIndex,
       });
-      return null;
+      return false;
     }
-    const currentTrajectory = cloneTrajectory(history, learningStart, endIndex);
-    return Object.freeze(structuredClone([
-      ...this.continuationTrajectory,
-      ...currentTrajectory,
-    ]));
+    return true;
+  }
+
+  /**
+   * 构造截至 historyEndIndex 的完整对话快照：从会话起点复制并剥离父 system 消息。
+   * 触发任务的用户消息、助手消息、工具调用、工具结果和最终回复按当前历史顺序保留，
+   * 更早任务的历史同样包含；后台隔离上下文使用自身 system，父身份不进入回放。
+   *
+   * @param context - Hook 执行上下文
+   * @param summary - RunEnd 摘要，含 RunEnd 时的历史长度
+   * @returns 冻结的完整对话快照
+   */
+  private buildReviewSnapshot(
+    context: HookContext,
+    summary: Readonly<AgentRunSummary>,
+  ): readonly ChatMessage[] {
+    const history = context.sessionContext.getHistory();
+    return cloneTrajectory(history, 0, summary.historyEndIndex);
   }
 
   /** 丢弃失败、取消或配置关闭后的中断学习证据。 */
@@ -452,7 +489,6 @@ export class SkillLearningPlugin implements Plugin {
     this.loadedSkills.clear();
     this.pendingLoadSkills.clear();
     this.toolEvidence = [];
-    this.continuationTrajectory = [];
     this.continuationModelLoopCount = 0;
     this.continuationToolIterationCount = 0;
     this.continuationRequestedToolCallCount = 0;
@@ -475,7 +511,10 @@ function isWaitingRun(summary: Readonly<AgentRunSummary>): boolean {
     && summary.waitingForInteraction;
 }
 
-/** 复制本次 run 的轨迹，避免后台任务持有主会话可变引用。 */
+/**
+ * 复制指定区间的主会话消息，避免后台任务持有主会话可变引用。
+ * 剥离父 system 消息：后台隔离上下文使用自身 system，父身份不得进入复盘回放。
+ */
 function cloneTrajectory(
   history: readonly ChatMessage[],
   startIndex: number,
@@ -485,7 +524,10 @@ function cloneTrajectory(
   const safeEnd = Math.max(safeStart, Math.min(endIndex, history.length));
   // Hook 管线中的 history 可能是 Immer Draft Proxy，不能直接 structuredClone。
   return Object.freeze(
-    history.slice(safeStart, safeEnd).map(cloneChatMessage),
+    history
+      .slice(safeStart, safeEnd)
+      .filter(message => message.role !== 'system')
+      .map(cloneChatMessage),
   );
 }
 

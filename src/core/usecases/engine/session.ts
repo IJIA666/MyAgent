@@ -1212,8 +1212,9 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.context.clearPendingInteraction();
     await this.contextRepo.saveState();
 
-    // 恢复交互的学习轨迹起点取延续状态保存的恢复边界（等待段结束时的历史长度），
-    // 使复盘轨迹恰好从等待前轨迹的末尾接续；无延续状态时按 null fail-closed。
+    // 恢复交互的学习资格边界取延续状态保存的恢复边界（等待段结束时的历史长度）；
+    // 复盘快照统一从恢复后的主会话当前历史构造，不再从该边界截取轨迹拼接。
+    // 无延续状态时按 null fail-closed。
     const continuation = this.context.getSkillLearningContinuation();
     const learningTrajectoryStartIndex = continuation ? continuation.resumeHistoryIndex : null;
 
@@ -1239,8 +1240,9 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    * 内部推理循环调度，并进行事件的流式广播分发。
    *
    * @param transientSkillContent - 可选。当前请求专享的临时技能规范内容
-   * @param learningTrajectoryStartIndex - 可选。逻辑学习轨迹起点；
-   * 缺省或显式 null 表示内部生成，RunEnd 摘要按原样冻结该边界
+   * @param learningTrajectoryStartIndex - 可选。用户逻辑任务资格/恢复边界；
+   * 缺省或显式 null 表示内部生成，RunEnd 摘要按原样冻结该边界；
+   * 该边界不定义后台复盘消息起点
    */
   private async runInternalGeneration(
     transientSkillContent?: string,
