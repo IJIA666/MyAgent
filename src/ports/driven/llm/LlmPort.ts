@@ -45,6 +45,19 @@ export interface LlmPortOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * 已完成组装的一次模型请求快照。
+ * 快照是 fork 的输入边界，调用方必须将其视为不可变值并在跨异步边界前复制。
+ */
+export interface ModelRequestSnapshot {
+  /** 父请求使用的模型名称。 */
+  readonly model: string;
+  /** 最终发送给模型的消息数组。 */
+  readonly messages: readonly ChatMessage[];
+  /** 最终发送给模型的工具定义数组。 */
+  readonly tools: readonly Record<string, unknown>[];
+}
+
 /** 上下文预算规划可选择的请求处理策略。 */
 export type CompactionStrategy = 'none' | 'middle' | 'full';
 

@@ -11,6 +11,17 @@ import type { ToolExecutionOutcome } from '../../../adapters/tools/tool-types.js
 import type { PermissionSessionSnapshot, PermissionSessionState } from '../../domain/permissions/permission-session-state.js';
 import type { PermissionUpdate, ToolPermissionCheckResult } from '../../domain/permissions/permission-types.js';
 import type { TrustedCallContext } from '../../domain/permissions/trusted-call-context.js';
+import type { SubagentToolPolicyKey } from '../../../ports/driving/SubagentExecutionPort.js';
+
+/** exact-fork 可枚举但不得直接调用的交互与编排工具。 */
+const FORK_CALL_BLOCKED_TOOLS = new Set<string>([
+  'Agent',
+  'ask_user_question',
+  'human_interruption',
+  'Task',
+  'TaskOutput',
+  'TaskStop',
+]);
 
 /** 作用域注册表运行时配置。 */
 export interface ScopedToolRegistryOptions {
@@ -28,6 +39,10 @@ export interface ScopedToolRegistryOptions {
   readonly auditSource: string;
   /** 可选的业务专用可见性收窄器；默认消费 freshForeground 策略。 */
   readonly toolVisibility?: (name: string, metadata: ToolMetadata | undefined) => boolean;
+  /** 由协调器显式选择的工具作用域策略。 */
+  readonly toolPolicyKey?: SubagentToolPolicyKey;
+  /** fork 提交时冻结快照中的工具名集合；fork 模式只允许执行快照成员。 */
+  readonly fixedToolNames?: ReadonlySet<string>;
   /** 工具完成后的业务观察钩子；不改变统一网关返回值和权限边界。 */
   readonly afterToolCall?: (
     name: string,
@@ -43,6 +58,8 @@ export interface ScopedToolRegistryOptions {
 export class ScopedToolRegistry implements ToolRegistryPort {
   /** 作用域是否已关闭。 */
   private closed = false;
+  /** exact-fork 最近一次父工具池中的名称，允许无策略元数据的父 schema 原样回放。 */
+  private forkToolNames = new Set<string>();
 
   /**
    * @param options - 父注册表、子状态和调用身份
@@ -54,13 +71,20 @@ export class ScopedToolRegistry implements ToolRegistryPort {
     return this.options.parent.mcpManager;
   }
 
-  /** 只返回 freshForeground 明确开放的工具定义。 */
+  /** 只返回当前策略明确允许的工具定义；fork 保留父请求的完整工具池。 */
   public async getTools(): Promise<unknown[]> {
     this.assertOpen();
     const definitions = await this.options.parent.getTools();
+    if (this.options.toolPolicyKey === 'fork') {
+      this.forkToolNames = new Set(
+        definitions
+          .map(readToolDefinitionName)
+          .filter((name): name is string => name !== undefined),
+      );
+    }
     return definitions.filter(definition => {
       const name = readToolDefinitionName(definition);
-      return name !== undefined && this.isAllowed(name);
+      return name !== undefined && this.isVisible(name);
     });
   }
 
@@ -117,7 +141,7 @@ export class ScopedToolRegistry implements ToolRegistryPort {
 
   /** 返回作用域内工具的标准化元数据。 */
   public getTool(name: string): ToolMetadata | undefined {
-    return this.isAllowed(name) ? this.options.parent.getTool(name) : undefined;
+    return this.isVisible(name) ? this.options.parent.getTool(name) : undefined;
   }
 
   /** 在子权限状态上执行候选分析，不允许越过作用域过滤。 */
@@ -169,12 +193,38 @@ export class ScopedToolRegistry implements ToolRegistryPort {
     this.closed = true;
   }
 
-  /** 判断工具是否有显式 fresh 前台开放策略。 */
+  /** 判断工具是否有显式策略开放且不属于 fork 的调用禁区。 */
   private isAllowed(name: string): boolean {
+    if (this.options.toolPolicyKey === 'fork') {
+      // 快照成员校验优先：fork 只允许执行提交时冻结工具集合内的工具；
+      // 未提供快照（Skill 兼容路径）时才回退到可见性判定。
+      if (this.options.fixedToolNames && !this.options.fixedToolNames.has(name)) {
+        return false;
+      }
+      if (FORK_CALL_BLOCKED_TOOLS.has(name)) {
+        return false;
+      }
+    }
+    return this.isVisible(name);
+  }
+
+  /** 判断工具是否应出现在当前子代理的工具目录中。 */
+  private isVisible(name: string): boolean {
+    if (this.options.toolPolicyKey === 'fork') {
+      // fork 语义为父精确工具池：枚举阶段与父 schema 字节一致（含 MCP），
+      // 调用阶段才由 isAllowed 拦截快照外、递归、交互与会话控制工具。
+      if (this.options.fixedToolNames) {
+        return this.options.fixedToolNames.has(name);
+      }
+      return this.forkToolNames.size > 0
+        ? this.forkToolNames.has(name)
+        : this.options.parent.getTool(name) !== undefined
+          || this.options.parent.mcpManager?.getToolDescriptor(name) !== undefined;
+    }
     const metadata = this.options.parent.getTool(name);
     return this.options.toolVisibility
       ? this.options.toolVisibility(name, metadata)
-      : metadata?.subagentToolPolicy.freshForeground === true;
+      : metadata?.subagentToolPolicy[this.options.toolPolicyKey ?? 'freshForeground'] === true;
   }
 
   /** 拒绝关闭后的所有调用。 */

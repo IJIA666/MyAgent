@@ -16,7 +16,7 @@ describe('subagent execution contract', () => {
     for (const tool of tools) {
       expect(tool.subagentToolPolicy).toEqual({
         freshForeground: expect.any(Boolean),
-        freshBackground: false,
+        freshBackground: expect.any(Boolean),
         fork: false,
       });
       expect(tool.executionTimeoutPolicy).toMatch(/^(standard|parent-signal)$/u);
@@ -28,7 +28,9 @@ describe('subagent execution contract', () => {
     expect(agent?.subagentToolPolicy?.freshForeground).toBe(false);
     expect(agent?.executionTimeoutPolicy).toBe('parent-signal');
     expect(Object.keys((agent?.definition as { function: { parameters: { properties: Record<string, unknown> } } }).function.parameters.properties))
-      .toEqual(['prompt', 'subagent_type']);
+      .toEqual(['description', 'prompt', 'subagent_type', 'run_in_background']);
+    expect((agent?.definition as { function: { parameters: { required: string[] } } }).function.parameters.required)
+      .toEqual(['description', 'prompt']);
     expect(names.has('ask_user_question') ? tools.find(tool => tool.name === 'ask_user_question')?.subagentToolPolicy?.freshForeground : false)
       .toBe(false);
     expect(tools

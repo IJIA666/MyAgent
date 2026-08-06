@@ -10,6 +10,7 @@ import type { SubagentExecutionRequest } from '../../../../src/ports/driving/Sub
 /** 创建控制器测试的最小执行请求。 */
 function createRequest(session: SessionContext): SubagentExecutionRequest {
   return {
+    description: 'test subagent task',
     prompt: 'test',
     subagentType: 'general-purpose',
     parentSession: session,

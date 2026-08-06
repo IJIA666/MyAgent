@@ -358,6 +358,11 @@ export class CliFacade {
    * @param event - 大脑层广播的智能体事件
    */
   private handleAgentEvent(event: AgentEvent): void {
+    // task_update 是非终结状态行，必须在渲染状态机之前处理，不能暂停 stdin 或影响 complete 配对。
+    if (event.type === 'task_update') {
+      process.stdout.write(`${theme.dim(`[任务] ${event.status} ${event.agentId}：${event.description}`)}\n`);
+      return;
+    }
     // 检测到一轮新的交互推理开始（CliFacade 处于空闲状态）
     if (!this.isRendering) {
       this.isRendering = true;

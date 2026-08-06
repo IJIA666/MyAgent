@@ -5,6 +5,8 @@
 
 import type { ConfigPermissionMode } from '../../../config/index.js';
 import type { PermissionSessionState } from '../../../core/domain/permissions/permission-session-state.js';
+import type { ModelRequestSnapshot } from '../llm/LlmPort.js';
+import type { ChatMessage } from '../llm/LlmPort.js';
 
 /**
  * 会话属性与只读策略输出端口接口。
@@ -44,5 +46,23 @@ export interface SessionEventPort {
    * @returns 当前 PermissionSessionState
    */
   getPermissionSessionState?(): PermissionSessionState;
+
+  /**
+   * 获取父会话最近一次最终组装的模型请求快照。
+   * 未完成过模型请求时返回 undefined。
+   */
+  getLatestModelRequestSnapshot?(): ModelRequestSnapshot | undefined;
+
+  /** 返回当前消息协议是否没有悬空 tool call。 */
+  isMessageProtocolClosed?(): boolean;
+
+  /** 返回父会话是否正在生成主模型响应。 */
+  isGenerating?(): boolean;
+
+  /** 返回当前是否存在待回答的人机交互。 */
+  hasPendingInteraction?(): boolean;
+
+  /** 返回当前会话消息历史的只读副本，供 fork 捕获当前 assistant 调用。 */
+  getHistory?(): readonly ChatMessage[];
 
 }

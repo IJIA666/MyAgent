@@ -46,6 +46,14 @@ class MockChatUseCase extends EventEmitter {
   getPendingInteraction = vi.fn().mockReturnValue(null);
   getAvailableSkills = vi.fn().mockReturnValue([]);
   getSkillContent = vi.fn().mockReturnValue(null);
+  startSubtask = vi.fn().mockResolvedValue({
+    status: 'async_launched',
+    agentId: 'agent-1',
+    description: 'test subtask',
+  });
+  listAgentTasks = vi.fn().mockResolvedValue([]);
+  getAgentTask = vi.fn().mockResolvedValue({ status: 'not_found' });
+  cancelAgentTask = vi.fn().mockResolvedValue({ status: 'not_found' });
   setInteractionPort = vi.fn();
   registerApprovalHandler = vi.fn();
   toolRegistryInstance = {

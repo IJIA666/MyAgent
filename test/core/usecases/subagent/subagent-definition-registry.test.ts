@@ -3,7 +3,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { SubagentDefinitionRegistry } from '../../../../src/core/usecases/subagent/SubagentDefinitionRegistry.js';
+import {
+  SubagentDefinitionRegistry,
+  type SubagentDefinition,
+} from '../../../../src/core/usecases/subagent/SubagentDefinitionRegistry.js';
 
 describe('SubagentDefinitionRegistry', () => {
   it('只提供内置 general-purpose，并拒绝未知类型', () => {
@@ -12,7 +15,7 @@ describe('SubagentDefinitionRegistry', () => {
     expect(registry.resolve('general-purpose')).toMatchObject({
       type: 'general-purpose',
       contextPolicy: 'fresh',
-      toolPolicyKey: 'general-purpose',
+      toolPolicyKey: 'freshForeground',
     });
     expect(registry.resolve('Explore')).toBeUndefined();
     expect(registry.resolve('custom-agent')).toBeUndefined();
@@ -21,11 +24,11 @@ describe('SubagentDefinitionRegistry', () => {
 
   it('拒绝空类型和重复注册，不扫描 Markdown Agent', () => {
     const registry = new SubagentDefinitionRegistry();
-    const definition = {
+    const definition: SubagentDefinition = {
       type: 'reviewer',
       description: '测试定义',
       contextPolicy: 'history-replay' as const,
-      toolPolicyKey: 'reviewer',
+      toolPolicyKey: 'freshForeground',
       buildSystemPrompt: () => 'test',
     };
 

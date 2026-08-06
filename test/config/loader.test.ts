@@ -287,6 +287,50 @@ describe('Global Config Loader Workspace Relocation Tests', () => {
       expect(config.runtimeLimits).not.toHaveProperty('ragRefinementThreshold');
       expect(config.runtimeLimits).not.toHaveProperty('subAgentTimeoutMs');
     });
+
+    it('子代理任务限制使用严格安全解析，并保留 fork 开关', () => {
+      const config = loadConfig({
+        AGENT_LLM_API_KEY: 'mock-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash',
+        AGENT_SUBAGENT_MAX_CONCURRENT: '3',
+        AGENT_SUBAGENT_MAX_IN_FLIGHT: '9',
+        AGENT_SUBAGENT_AUTO_BACKGROUND_MS: '1500',
+        AGENT_SUBAGENT_FORK_ENABLED: 'true',
+      });
+
+      expect(config.runtimeLimits).toMatchObject({
+        subagentMaxConcurrent: 3,
+        subagentMaxInFlight: 9,
+        subagentAutoBackgroundMs: 1500,
+        subagentForkEnabled: true,
+      });
+    });
+
+    it('子代理限制拒绝前缀数字、负数和非法交叉关系并回退整组', () => {
+      const malformed = loadConfig({
+        AGENT_LLM_API_KEY: 'mock-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash',
+        AGENT_SUBAGENT_MAX_CONCURRENT: '3x',
+        AGENT_SUBAGENT_MAX_IN_FLIGHT: '-1',
+        AGENT_SUBAGENT_AUTO_BACKGROUND_MS: '12ms',
+      });
+      expect(malformed.runtimeLimits).toMatchObject({
+        subagentMaxConcurrent: 4,
+        subagentMaxInFlight: 16,
+        subagentAutoBackgroundMs: 0,
+        subagentForkEnabled: false,
+      });
+
+      const invalidRelation = loadConfig({
+        AGENT_LLM_API_KEY: 'mock-key',
+        AGENT_LLM_MODEL: 'deepseek-v4-flash',
+        AGENT_SUBAGENT_MAX_CONCURRENT: '8',
+        AGENT_SUBAGENT_MAX_IN_FLIGHT: '4',
+      });
+      expect(invalidRelation.runtimeLimits.subagentMaxConcurrent).toBe(4);
+      expect(invalidRelation.runtimeLimits.subagentMaxInFlight).toBe(16);
+      expect(invalidRelation.runtimeLimits).not.toHaveProperty('subAgentTimeoutMs');
+    });
   });
 
   describe('诊断数据治理配置测试', () => {

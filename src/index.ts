@@ -152,6 +152,7 @@ async function main() {
       skillPendingStore,
       skillWriteApprovalController,
       subagentExecutionPort: subagentExecutionController,
+      subagentForkEnabled: appConfig.runtimeLimits.subagentForkEnabled,
     }, permissionSettingsStore);
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();

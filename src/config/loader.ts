@@ -213,6 +213,24 @@ function parseEnvPositiveInt(val: string | undefined, defaultValue: number): num
   return parsed > 0 ? parsed : defaultValue;
 }
 
+/** 解析子代理专用的严格正整数，拒绝带尾随文本或超出安全整数范围的输入。 */
+function parseEnvStrictPositiveInt(val: string | undefined, defaultValue: number): number {
+  if (val === undefined || !/^\d+$/u.test(val.trim())) {
+    return defaultValue;
+  }
+  const parsed = Number(val.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+/** 解析子代理自动后台化专用的严格非负毫秒值。 */
+function parseEnvStrictNonNegativeTimeoutMs(val: string | undefined, defaultValue: number): number {
+  if (val === undefined || !/^\d+$/u.test(val.trim())) {
+    return defaultValue;
+  }
+  const parsed = Number(val.trim());
+  return Number.isSafeInteger(parsed) && parsed <= MAX_TIMER_DELAY_MS ? parsed : defaultValue;
+}
+
 /** Auto Memory 运行配置。 */
 interface AutoMemoryConfig {
   /** 是否加载并投影记忆索引。 */
@@ -349,6 +367,32 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   const compactionSummaryMaxTokens = parseEnvPositiveInt(env.AGENT_COMPACTION_SUMMARY_MAX_TOKENS, 4096);
   const toolTimeoutMs = parseEnvInt(env.AGENT_TOOL_TIMEOUT_MS, 30000);
   const modelTimeoutMs = parseEnvTimeoutMs(env.AGENT_MODEL_TIMEOUT_MS, 60000);
+  const defaultSubagentMaxConcurrent = 4;
+  const defaultSubagentMaxInFlight = 16;
+  const subagentMaxConcurrent = parseEnvStrictPositiveInt(
+    env.AGENT_SUBAGENT_MAX_CONCURRENT,
+    defaultSubagentMaxConcurrent,
+  );
+  const subagentMaxInFlight = parseEnvStrictPositiveInt(
+    env.AGENT_SUBAGENT_MAX_IN_FLIGHT,
+    defaultSubagentMaxInFlight,
+  );
+  const subagentAutoBackgroundMs = parseEnvStrictNonNegativeTimeoutMs(
+    env.AGENT_SUBAGENT_AUTO_BACKGROUND_MS,
+    0,
+  );
+  const subagentForkEnabled = parseEnvBoolean(env.AGENT_SUBAGENT_FORK_ENABLED, false);
+  const hasValidSubagentCapacity = subagentMaxInFlight >= subagentMaxConcurrent;
+  if (!hasValidSubagentCapacity) {
+    logger.warn('[配置] 子代理并发与在途上限交叉校验失败，已采用安全默认值。', {
+      component: 'config',
+      event: 'subagent_capacity_fallback',
+    });
+  }
+  const resolvedSubagentMaxConcurrent = hasValidSubagentCapacity
+    ? subagentMaxConcurrent : defaultSubagentMaxConcurrent;
+  const resolvedSubagentMaxInFlight = hasValidSubagentCapacity
+    ? subagentMaxInFlight : defaultSubagentMaxInFlight;
   const excludeDirsStr = env.AGENT_SEARCH_EXCLUDE || '.git,node_modules,.venv,.myagent';
   const excludeDirs = excludeDirsStr.split(',').map((d: string) => d.trim()).filter(Boolean);
   const diagnostics = loadDiagnosticConfig(env);
@@ -441,6 +485,10 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
       compactionSummaryMaxTokens,
       toolTimeoutMs,
       modelTimeoutMs,
+      subagentMaxConcurrent: resolvedSubagentMaxConcurrent,
+      subagentMaxInFlight: resolvedSubagentMaxInFlight,
+      subagentAutoBackgroundMs,
+      subagentForkEnabled,
       excludeDirs,
     },
     diagnostics

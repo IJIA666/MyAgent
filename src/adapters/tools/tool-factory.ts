@@ -56,6 +56,27 @@ const FRESH_FOREGROUND_SUBAGENT_TOOLS = new Set<string>([
   'writeFile',
 ]);
 
+/** fresh 后台子代理的显式安全白名单；集合外工具默认保持关闭。 */
+const FRESH_BACKGROUND_SUBAGENT_TOOLS = new Set<string>([
+  'Bash',
+  'PowerShell',
+  'applyPatch',
+  'editFile',
+  'get_current_time',
+  'gitShowDiff',
+  'gitShowLog',
+  'gitShowStatus',
+  'globSearch',
+  'grepSearch',
+  'listFiles',
+  'load_skill',
+  'readFile',
+  'readManyFiles',
+  'skill_manage',
+  'skills_list',
+  'writeFile',
+]);
+
 /** buildNativeTools 的选项参数 */
 export interface BuildNativeToolsOptions {
   /** 可选注入的共享 SkillLibrary（Skill 三工具统一数据源） */
@@ -68,6 +89,8 @@ export interface BuildNativeToolsOptions {
   shellCompoundFeatures?: Readonly<ShellCompoundFeatureConfig>;
   /** 主 Agent 使用的会话绑定子代理执行端口；未注入时 Agent 工具安全返回未绑定错误。 */
   subagentExecutionPort?: SubagentExecutionPort;
+  /** 是否启用省略子代理类型即 exact-fork 的模型语义。 */
+  subagentForkEnabled?: boolean;
 }
 
 /**
@@ -90,7 +113,7 @@ export function buildNativeTools(options?: BuildNativeToolsOptions): NativeTool[
     ),
     ...getInteractionTools(),
     ...getBrowserTools(),
-    new AgentTool(options?.subagentExecutionPort),
+    new AgentTool(options?.subagentExecutionPort, options?.subagentForkEnabled ?? false),
   ];
   return tools.map(tool => withSubagentMetadata(tool, options?.subagentExecutionPort));
 }
@@ -109,7 +132,8 @@ function withSubagentMetadata(
     subagentToolPolicy: Object.freeze({
       freshForeground: existingPolicy?.freshForeground === true
         || (existingPolicy === undefined && FRESH_FOREGROUND_SUBAGENT_TOOLS.has(tool.name)),
-      freshBackground: existingPolicy?.freshBackground === true,
+      freshBackground: existingPolicy?.freshBackground === true
+        || (existingPolicy === undefined && FRESH_BACKGROUND_SUBAGENT_TOOLS.has(tool.name)),
       fork: existingPolicy?.fork === true,
     }),
     executionTimeoutPolicy: tool.executionTimeoutPolicy ?? 'standard',

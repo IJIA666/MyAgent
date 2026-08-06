@@ -33,6 +33,14 @@ export interface AssemblyResult {
   compactionResult?: CompactionResult;
 }
 
+/** 模型请求组装的不可变输入选项。 */
+export interface ModelRequestAssemblerOptions {
+  /** exact-fork 时保留父快照消息与工具，不运行会改变请求字节的前置投影。 */
+  readonly preserveRequestContext?: boolean;
+  /** exact-fork 提交时冻结的父工具集合。 */
+  readonly fixedTools?: readonly Record<string, unknown>[];
+}
+
 /**
  * 模型请求组装协作者。
  *
@@ -53,6 +61,10 @@ export class ModelRequestAssembler {
   private getMemorySnapshot: () => MemorySnapshot;
   /** 是否注入日期与 CWD 运行时提醒。 */
   private readonly includeRuntimeReminder: boolean;
+  /** 是否处于 exact-fork 的请求保留模式。 */
+  private readonly preserveRequestContext: boolean;
+  /** exact-fork 提交时冻结的工具定义。 */
+  private readonly fixedTools?: readonly Record<string, unknown>[];
 
   /**
    * @param toolRegistry - 工具注册端口，用于获取当前可用工具集
@@ -79,6 +91,7 @@ export class ModelRequestAssembler {
       isEmpty: true,
     }),
     includeRuntimeReminder = true,
+    requestOptions?: ModelRequestAssemblerOptions,
   ) {
     this.toolRegistry = toolRegistry;
     this.contextAdapter = contextAdapter;
@@ -88,6 +101,8 @@ export class ModelRequestAssembler {
     this.contextBudgetCoordinator = contextBudgetCoordinator;
     this.getMemorySnapshot = memorySnapshotProvider;
     this.includeRuntimeReminder = includeRuntimeReminder;
+    this.preserveRequestContext = requestOptions?.preserveRequestContext === true;
+    this.fixedTools = requestOptions?.fixedTools?.map(tool => structuredClone(tool));
   }
 
   /**
@@ -118,16 +133,20 @@ export class ModelRequestAssembler {
   ): Promise<AssemblyResult> {
     const events: AgentEvent[] = [];
 
-    // Step 1: 获取所有激活状态的工具集合
-    const allTools = await this.toolRegistry.getTools();
+    // Step 1: 获取所有激活状态的工具集合；exact-fork 使用提交时冻结的父工具池。
+    const allTools = this.preserveRequestContext
+      ? (this.fixedTools?.map(tool => structuredClone(tool)) ?? [])
+      : await this.toolRegistry.getTools();
 
-    // Step 2: 触发 BeforeToolSelection 过滤并挑选工具
-    const selectionResult = await runHookPipeline(
-      HookEventName.BeforeToolSelection,
-      this.context,
-      this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeToolSelection),
-      { llmRequest: { tools: allTools } as LlmRequest, emitEvent }
-    );
+    // Step 2: 普通路径运行工具选择管线；exact-fork 不允许子插件改写父工具字节。
+    const selectionResult = this.preserveRequestContext
+      ? { control: { action: 'continue' as const }, llmRequest: { tools: allTools } as LlmRequest }
+      : await runHookPipeline(
+        HookEventName.BeforeToolSelection,
+        this.context,
+        this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeToolSelection),
+        { llmRequest: { tools: allTools } as LlmRequest, emitEvent }
+      );
 
     if (selectionResult.control.action === 'abort') {
       return {
@@ -146,18 +165,18 @@ export class ModelRequestAssembler {
 
     const filteredTools = selectionResult.llmRequest?.tools ?? allTools;
 
-    // Step 3: 委托上下文适配器进行历史记录的组装和临时技能的挂载
-    const assembledContext = this.contextAdapter.assemble(
-      this.context.getHistory(),
-      transientSkillContent,
-      this.ruleManager.getProjectRules() || undefined
-    );
-    // 请求期投影不得原地修改适配器返回值；适配器可能复用持久历史数组引用。
-    const snapshotContext = [...assembledContext];
+    // Step 3: 普通路径装配历史、Skill 与局部规则；exact-fork 直接复制子上下文历史。
+    const snapshotContext = this.preserveRequestContext
+      ? this.context.getHistory().map(cloneChatMessage)
+      : [...this.contextAdapter.assemble(
+        this.context.getHistory(),
+        transientSkillContent,
+        this.ruleManager.getProjectRules() || undefined
+      )];
 
     // Step 3.5: 注入非持久化长期记忆投影（在 contextAdapter.assemble() 之后、BeforeModel 之前）
     const memorySnapshot = this.getMemorySnapshot();
-    if (memorySnapshot.memoryDir.length > 0) {
+    if (!this.preserveRequestContext && memorySnapshot.memoryDir.length > 0) {
       const memoryContextContent = buildMemoryProjection(memorySnapshot);
       // 找到连续 system 消息的结束位置，在之后插入记忆投影
       let systemEndIdx = 0;
@@ -171,13 +190,18 @@ export class ModelRequestAssembler {
       snapshotContext.splice(systemEndIdx, 0, projectionMessage);
     }
 
-    // Step 4: 触发 BeforeModel 拦截并重写大模型入参
-    const beforeModelResult = await runHookPipeline(
-      HookEventName.BeforeModel,
-      this.context,
-      this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeModel),
-      { llmRequest: { model: llmModel, messages: snapshotContext, tools: filteredTools } as LlmRequest, emitEvent }
-    );
+    // Step 4: 普通路径允许 BeforeModel；exact-fork 保持父快照中的消息和工具不变。
+    const beforeModelResult = (this.preserveRequestContext
+      ? {
+        control: { action: 'continue' as const },
+        llmRequest: { model: llmModel, messages: snapshotContext, tools: filteredTools } as LlmRequest,
+      }
+      : await runHookPipeline(
+        HookEventName.BeforeModel,
+        this.context,
+        this.pluginRegistry.getPluginsForEvent(HookEventName.BeforeModel),
+        { llmRequest: { model: llmModel, messages: snapshotContext, tools: filteredTools } as LlmRequest, emitEvent }
+      )) as Awaited<ReturnType<typeof runHookPipeline>>;
 
     if (beforeModelResult.control.action === 'abort') {
       return {
@@ -200,7 +224,7 @@ export class ModelRequestAssembler {
       tools: filteredTools as Record<string, unknown>[]
     };
 
-    // Step 5: system-reminder 注入
+    // Step 5: system-reminder 注入；exact-fork 继承父请求，不追加本地运行提醒。
     const finalRequestMessages = [...(actualRequest.messages || [])];
     const currentMode = this.context.getPermissionMode();
 
@@ -212,7 +236,7 @@ export class ModelRequestAssembler {
       }
     }
 
-    if (this.includeRuntimeReminder && latestUserMessageIdx !== -1) {
+    if (!this.preserveRequestContext && this.includeRuntimeReminder && latestUserMessageIdx !== -1) {
       const userMsg = finalRequestMessages[latestUserMessageIdx];
       const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
       const cwdStr = process.cwd();
@@ -247,7 +271,8 @@ export class ModelRequestAssembler {
     }
 
     // Step 6: Plan 模式工具裁剪
-    const enablePlanToolStripping = this.context.appConfig?.enablePlanToolStripping ?? false;
+    const enablePlanToolStripping = !this.preserveRequestContext
+      && (this.context.appConfig?.enablePlanToolStripping ?? false);
     let finalRequestTools = actualRequest.tools || [];
     if (enablePlanToolStripping && currentMode === 'plan') {
       finalRequestTools = finalRequestTools.filter((t: unknown) => {
@@ -316,6 +341,19 @@ export class ModelRequestAssembler {
       reason: result.control.reason ?? '最终请求在压缩规划前被其他生命周期中断',
     };
   }
+}
+
+/** 复制模型消息，避免快照组装阶段修改 SessionContext 历史。 */
+function cloneChatMessage(message: ChatMessage): ChatMessage {
+  return {
+    ...message,
+    ...(message.tool_calls ? {
+      tool_calls: message.tool_calls.map(call => ({
+        ...call,
+        function: { ...call.function },
+      })),
+    } : {}),
+  };
 }
 
 // ── 记忆投影构建 ──

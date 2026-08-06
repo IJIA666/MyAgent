@@ -5,7 +5,13 @@ import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
 import { sanitizeDiagnosticData } from '../../../utils/diagnostic-sanitizer.js';
 
 /** 子代理 transcript 的可观察终态。 */
-export type SubagentTranscriptStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+export type SubagentTranscriptStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'killed'
+  | 'interrupted';
 
 /** 冻结模型身份，不保存 API key。 */
 export interface SubagentTranscriptModel {
@@ -89,14 +95,24 @@ export class SubagentTranscriptStore {
   public async write(record: SubagentTranscriptInput): Promise<void> {
     const file = this.getTranscriptPath(record.parentSessionId, record.agentId);
     const currentStatus = this.statuses.get(file);
-    if (currentStatus && isTerminalStatus(currentStatus) && currentStatus !== record.status) {
+    if (
+      currentStatus
+      && isTerminalStatus(currentStatus)
+      && currentStatus !== record.status
+      && !(currentStatus === 'cancelled' && record.status === 'killed')
+    ) {
       throw new Error(`transcript 终态不可回退: ${currentStatus} -> ${record.status}`);
     }
     const previous = this.queues.get(file) ?? Promise.resolve();
     const persist = async (): Promise<void> => {
       // 进程重启或新 Store 实例也必须读取既有终态，不能靠内存 Map 绕过回退保护。
       const queuedStatus = this.statuses.get(file) ?? await this.readStatus(file);
-      if (queuedStatus && isTerminalStatus(queuedStatus) && queuedStatus !== record.status) {
+      if (
+        queuedStatus
+        && isTerminalStatus(queuedStatus)
+        && queuedStatus !== record.status
+        && !(queuedStatus === 'cancelled' && record.status === 'killed')
+      ) {
         throw new Error(`transcript 终态不可回退: ${queuedStatus} -> ${record.status}`);
       }
       await this.writeAtomic(file, record);
@@ -132,6 +148,44 @@ export class SubagentTranscriptStore {
       }
       throw error;
     }
+  }
+
+  /**
+   * 只更新既有 transcript 的任务终态，不为缺失文件伪造正文或消息。
+   *
+   * @param parentSessionId - 父 session ID
+   * @param agentId - 子代理 ID
+   * @param status - 新的终态
+   * @param errorSummary - 可选低敏错误摘要
+   * @returns transcript 存在并完成更新时返回 true
+   */
+  public async updateStatus(
+    parentSessionId: string,
+    agentId: string,
+    status: SubagentTranscriptStatus,
+    errorSummary?: string,
+  ): Promise<boolean> {
+    if (status === 'running') {
+      throw new Error('transcript 状态更新必须提交终态');
+    }
+    const current = await this.read(parentSessionId, agentId);
+    if (!current) {
+      return false;
+    }
+    if (
+      isTerminalStatus(current.status)
+      && current.status !== status
+      && !(current.status === 'cancelled' && status === 'killed')
+    ) {
+      return false;
+    }
+    await this.write({
+      ...current,
+      status,
+      endedAt: current.endedAt ?? new Date().toISOString(),
+      ...(errorSummary ? { errorSummary: SubagentTranscriptStore.sanitizeErrorSummary(errorSummary) } : {}),
+    });
+    return true;
   }
 
   /** 将异常压缩为不携带完整对象和疑似凭据的诊断摘要。 */
@@ -196,7 +250,11 @@ function isNotFoundError(error: unknown): boolean {
 
 /** 判断 transcript 是否已进入不可回退终态。 */
 function isTerminalStatus(status: SubagentTranscriptStatus): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
+  return status === 'completed'
+    || status === 'failed'
+    || status === 'cancelled'
+    || status === 'killed'
+    || status === 'interrupted';
 }
 
 /** 判断从磁盘读取的状态是否属于当前版本协议。 */
@@ -204,5 +262,7 @@ function isTranscriptStatus(value: unknown): value is SubagentTranscriptStatus {
   return value === 'running'
     || value === 'completed'
     || value === 'failed'
-    || value === 'cancelled';
+    || value === 'cancelled'
+    || value === 'killed'
+    || value === 'interrupted';
 }

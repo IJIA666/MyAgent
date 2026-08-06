@@ -1,7 +1,11 @@
 import type { SessionContext } from '../../domain/context.js';
+import type {
+  SubagentContextPolicy,
+  SubagentToolPolicyKey,
+} from '../../../ports/driving/SubagentExecutionPort.js';
 
-/** 子代理上下文装载策略。 */
-export type SubagentContextPolicy = 'fresh' | 'history-replay';
+/** 兼容现有运行器导入路径的上下文策略类型重导出。 */
+export type { SubagentContextPolicy } from '../../../ports/driving/SubagentExecutionPort.js';
 
 /** 已注册的子代理定义。 */
 export interface SubagentDefinition {
@@ -12,7 +16,7 @@ export interface SubagentDefinition {
   /** 上下文装载策略。 */
   readonly contextPolicy: SubagentContextPolicy;
   /** 工具作用域策略键。 */
-  readonly toolPolicyKey: string;
+  readonly toolPolicyKey: SubagentToolPolicyKey;
   /** 为隔离上下文提供额外系统说明的构造器。 */
   readonly buildSystemPrompt: (context: SessionContext) => string;
 }
@@ -25,15 +29,28 @@ export class SubagentDefinitionRegistry {
   /** 按类型名保存定义，避免重复注册覆盖行为。 */
   private readonly definitions = new Map<string, SubagentDefinition>();
 
-  /** 创建只包含第一阶段内置定义的注册表。 */
-  constructor() {
+  /**
+   * 创建只包含内置定义的注册表。
+   *
+   * @param subagentForkEnabled - 是否把省略类型解析为 exact-fork
+   */
+  constructor(private readonly subagentForkEnabled = false) {
     this.register({
       type: 'general-purpose',
       description: '在当前项目中独立完成通用任务的前台子代理。',
       contextPolicy: 'fresh',
-      toolPolicyKey: 'general-purpose',
+      toolPolicyKey: 'freshForeground',
       buildSystemPrompt: context => context.getHistory()[0]?.content?.toString() ?? '',
     });
+    if (subagentForkEnabled) {
+      this.register({
+        type: 'exact-fork',
+        description: '在当前会话快照中后台执行任务的 exact-fork 子代理。',
+        contextPolicy: 'exact-fork',
+        toolPolicyKey: 'fork',
+        buildSystemPrompt: context => context.getHistory()[0]?.content?.toString() ?? '',
+      });
+    }
   }
 
   /**
@@ -58,8 +75,11 @@ export class SubagentDefinitionRegistry {
    * @param type - 模型请求的子代理类型
    * @returns 定义；未知类型返回 undefined
    */
-  public resolve(type: string): SubagentDefinition | undefined {
-    return this.definitions.get(type);
+  public resolve(type?: string): SubagentDefinition | undefined {
+    if (type === undefined && this.subagentForkEnabled) {
+      return this.definitions.get('exact-fork');
+    }
+    return this.definitions.get(type ?? 'general-purpose');
   }
 
   /**

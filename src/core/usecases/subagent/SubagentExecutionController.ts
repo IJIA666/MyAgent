@@ -8,8 +8,12 @@ import { SubagentRuntime } from './SubagentRuntime.js';
 
 /** 可被宿主绑定的子代理执行器。 */
 export interface SubagentExecutionHost extends SubagentExecutionPort {
-  /** 会话关闭时取消在途子代理。 */
-  cancelActive(reason?: string): void;
+  /** 普通父会话 abort 只取消仍处于前台阻塞边界的任务。 */
+  cancelForeground?(reason?: string): void;
+  /** 会话关闭时取消全部子任务并有界等待。 */
+  closeAll?(timeoutMs: number): Promise<void>;
+  /** 兼容上一阶段运行器的关闭取消能力。 */
+  cancelActive?(reason?: string): void;
 }
 
 /**
@@ -78,9 +82,30 @@ export class SubagentExecutionController implements SubagentExecutionPort {
     return this.binding.executor.execute(request);
   }
 
-  /** 会话关闭前取消当前所有子代理。 */
+  /** 普通会话 abort 只取消前台子代理。 */
+  public cancelForeground(reason = 'Session aborted'): void {
+    const executor = this.binding?.executor;
+    if (executor?.cancelForeground) {
+      executor.cancelForeground(reason);
+    } else {
+      // 上一阶段 Runtime 没有后台任务，兼容地取消其全部活动运行。
+      executor?.cancelActive?.(reason);
+    }
+  }
+
+  /** 会话关闭前取消全部子代理，并等待协调器完成资源回收。 */
+  public async closeAll(timeoutMs: number): Promise<void> {
+    const executor = this.binding?.executor;
+    if (executor?.closeAll) {
+      await executor.closeAll(timeoutMs);
+      return;
+    }
+    executor?.cancelActive?.('Session is closing');
+  }
+
+  /** 兼容旧调用方：旧语义等同于取消全部活动运行。 */
   public cancelActive(reason = 'Session is closing'): void {
-    this.binding?.executor.cancelActive(reason);
+    this.binding?.executor.cancelActive?.(reason);
   }
 
   /**
@@ -100,6 +125,7 @@ export class SubagentExecutionController implements SubagentExecutionPort {
       return;
     }
     this.cancelActive('Subagent execution controller closed');
+    void this.binding?.executor.closeAll?.(0);
     this.closed = true;
     this.binding = null;
   }
@@ -107,5 +133,9 @@ export class SubagentExecutionController implements SubagentExecutionPort {
 
 /** 类型守卫：确认执行器具备运行器关闭所需的 cancelActive 能力。 */
 export function isSubagentExecutionHost(value: SubagentExecutionPort): value is SubagentExecutionHost {
-  return value instanceof SubagentRuntime || typeof (value as Partial<SubagentExecutionHost>).cancelActive === 'function';
+  const host = value as Partial<SubagentExecutionHost>;
+  return value instanceof SubagentRuntime
+    || typeof host.cancelActive === 'function'
+    || typeof host.cancelForeground === 'function'
+    || typeof host.closeAll === 'function';
 }

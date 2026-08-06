@@ -149,6 +149,10 @@ export class InputListener {
           '/curator restore',
           '/curator backup',
           '/curator rollback',
+          '/subtask',
+          '/tasks',
+          '/tasks show',
+          '/tasks stop',
         ];
         const hits = commands.filter((c) => c.startsWith(line));
         return [hits.length ? hits : [], line];

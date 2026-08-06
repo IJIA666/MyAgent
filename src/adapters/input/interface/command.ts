@@ -15,6 +15,8 @@ import {
   SandboxCommand,
   MemoryCommand,
   CuratorCommand,
+  SubtaskCommand,
+  TasksCommand,
 } from './commands/index.js';
 import * as p from '@clack/prompts';
 import { theme } from './views/theme.js';
@@ -75,6 +77,8 @@ class CommandRegistry {
     this.register(new SandboxCommand());
     this.register(new MemoryCommand());
     this.register(new CuratorCommand());
+    this.register(new SubtaskCommand());
+    this.register(new TasksCommand());
   }
 
   private register(command: ICommand): void {
@@ -130,6 +134,8 @@ export async function showInteractiveMenu(): Promise<string | null> {
       { value: 'permissions', label: '管理权限规则与目录 (Permissions)' },
       { value: 'memory', label: '查看 Auto Memory (Memory)' },
       { value: 'curator', label: '维护 Agent Skill (Curator)' },
+      { value: 'subtask', label: '从当前快照启动后台任务 (Subtask)' },
+      { value: 'tasks', label: '查看或停止子代理任务 (Tasks)' },
       { value: 'sandbox', label: '查看沙箱状态 (Sandbox)' },
       { value: 'reload-rules', label: '重载全局和项目规则 (Reload Rules)' },
       { value: 'help', label: '查看帮助 (Help)' },
@@ -188,6 +194,8 @@ export async function showInteractiveMenu(): Promise<string | null> {
     'permissions',
     'memory',
     'curator',
+    'subtask',
+    'tasks',
     'sandbox',
   ].includes(mainAction as string)) {
     return `/${mainAction}`;

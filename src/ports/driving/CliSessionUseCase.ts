@@ -24,6 +24,7 @@ import type {
 import type {
   MemoryCandidate,
 } from '../../core/usecases/brain/memory-candidate-store.js';
+import type { TaskStatus, TaskUsage, TaskMode } from '../../core/usecases/subagent/task-state.js';
 
 /**
  * CLI 可消费的技能摘要信息。
@@ -128,6 +129,39 @@ export interface CliMemoryStatus {
   /** 最近一次启动索引加载诊断。 */
   readonly diagnostic: MemoryDiagnostic;
 }
+
+/** CLI 可见的子代理任务摘要，不含 prompt、transcript 路径和原始消息。 */
+export interface CliAgentTaskSummary {
+  readonly agentId: string;
+  readonly description: string;
+  readonly agentType: string;
+  readonly contextPolicy: 'fresh' | 'history-replay' | 'exact-fork';
+  readonly mode: TaskMode;
+  readonly status: TaskStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly endedAt?: string;
+  readonly usage?: TaskUsage;
+}
+
+/** CLI 可见的子代理任务详情，仅展示扫描结果和低敏错误。 */
+export interface CliAgentTaskDetail {
+  readonly task: CliAgentTaskSummary;
+  readonly result?: string;
+  readonly error?: string;
+}
+
+/** CLI 取消任务的幂等结果。 */
+export type CliAgentTaskCancelResult =
+  | { readonly status: 'cancelled'; readonly agentId: string }
+  | { readonly status: 'already_terminal'; readonly agentId: string }
+  | { readonly status: 'not_found' }
+  | { readonly status: 'error'; readonly agentId?: string; readonly message: string };
+
+/** `/subtask` 的受信 exact-fork 入口返回值。 */
+export type CliSubtaskResult =
+  | { readonly status: 'async_launched'; readonly agentId: string; readonly description: string }
+  | { readonly status: 'error'; readonly agentId?: string; readonly code: string; readonly message: string };
 
 /**
  * CLI 驱动会话专用端口。
@@ -330,4 +364,16 @@ export interface CliSessionUseCase extends ChatUseCase {
    * @returns 候选存在并删除时为 true
    */
   discardMemoryCandidate?(candidateId: string): boolean;
+
+  /** 从空闲且协议闭合的父会话启动后台 exact-fork。 */
+  startSubtask(prompt: string, description: string): Promise<CliSubtaskResult>;
+
+  /** 列出当前父会话的低敏子代理任务。 */
+  listAgentTasks(): Promise<readonly CliAgentTaskSummary[]>;
+
+  /** 查看一条当前父会话任务的扫描结果和低敏错误。 */
+  getAgentTask(agentId: string): Promise<CliAgentTaskDetail | { readonly status: 'not_found' }>;
+
+  /** 取消一条任务或全部任务。 */
+  cancelAgentTask(agentId: string | 'all'): Promise<CliAgentTaskCancelResult | readonly CliAgentTaskCancelResult[]>;
 }

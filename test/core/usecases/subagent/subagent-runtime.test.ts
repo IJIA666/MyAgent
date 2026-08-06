@@ -230,6 +230,7 @@ describe('SubagentRuntime', () => {
     const parentHistory = structuredClone(fixture.parent.getHistory());
 
     const result = await fixture.runtime.execute({
+      description: 'independent read task',
       prompt: '完成独立读取任务',
       subagentType: 'general-purpose',
       parentSession: fixture.parent,
@@ -258,6 +259,7 @@ describe('SubagentRuntime', () => {
   it('未知类型在创建客户端前失败且不生成 transcript', async () => {
     const fixture = createRuntime('complete');
     const result = await fixture.runtime.execute({
+      description: 'unknown task type',
       prompt: 'test',
       subagentType: 'unknown',
       parentSession: fixture.parent,
@@ -270,6 +272,7 @@ describe('SubagentRuntime', () => {
   it('没有最终 assistant 文本时返回稳定错误而不是空成功', async () => {
     const fixture = createRuntime('empty', 1);
     const result = await fixture.runtime.execute({
+      description: 'empty output task',
       prompt: 'test',
       subagentType: 'general-purpose',
       parentSession: fixture.parent,
@@ -283,6 +286,7 @@ describe('SubagentRuntime', () => {
     const fixture = createRuntime('wait');
     const controller = new AbortController();
     const resultPromise = fixture.runtime.execute({
+      description: 'wait cancellation task',
       prompt: 'wait for cancellation',
       subagentType: 'general-purpose',
       parentSession: fixture.parent,
@@ -305,6 +309,7 @@ describe('SubagentRuntime', () => {
     const fixture = createRuntime('repeat-tool', 4);
     fixture.appConfig.runtimeLimits.loopPreventionLimit = 1;
     const result = await fixture.runtime.execute({
+      description: 'repeat read task',
       prompt: '持续读取同一文件',
       subagentType: 'general-purpose',
       parentSession: fixture.parent,
@@ -318,6 +323,7 @@ describe('SubagentRuntime', () => {
   it('模型失败返回稳定错误并持久化 failed transcript', async () => {
     const fixture = createRuntime('fail');
     const result = await fixture.runtime.execute({
+      description: 'model failure task',
       prompt: '触发模型失败',
       subagentType: 'general-purpose',
       parentSession: fixture.parent,
@@ -340,6 +346,7 @@ describe('SubagentRuntime', () => {
   it('工具失败作为错误结果回到子模型后仍可生成最终报告', async () => {
     const fixture = createRuntime('tool-then-complete', 3, true);
     const result = await fixture.runtime.execute({
+      description: 'tool failure task',
       prompt: '处理工具失败',
       subagentType: 'general-purpose',
       parentSession: fixture.parent,
@@ -355,6 +362,7 @@ describe('SubagentRuntime', () => {
     const fixture = createRuntime('repeat-tool', 2);
     fixture.appConfig.runtimeLimits.loopPreventionLimit = 100;
     const result = await fixture.runtime.execute({
+      description: 'iteration limit task',
       prompt: '持续调用直到迭代上限',
       subagentType: 'general-purpose',
       parentSession: fixture.parent,

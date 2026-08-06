@@ -252,6 +252,14 @@ export interface RuntimeLimitsConfig {
   toolTimeoutMs: number;
   /** 大模型请求单次超时的时限（毫秒） */
   modelTimeoutMs: number;
+  /** 同时运行的子代理最大数量。 */
+  subagentMaxConcurrent: number;
+  /** 已登记但尚未终态的子代理最大数量。 */
+  subagentMaxInFlight: number;
+  /** 前台子代理自动转后台的等待时长；0 表示关闭。 */
+  subagentAutoBackgroundMs: number;
+  /** 是否启用省略类型即 exact-fork 的子代理语义。 */
+  subagentForkEnabled: boolean;
   /** 文件检索时过滤排除的目录名列表 */
   excludeDirs?: string[];
 }

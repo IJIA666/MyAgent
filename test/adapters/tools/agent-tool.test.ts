@@ -10,17 +10,22 @@ import { SUBAGENT_ERROR_CODES } from '../../../src/ports/driving/SubagentExecuti
 import type { ToolExecutionContext } from '../../../src/core/usecases/plugins/plugin-types.js';
 
 describe('AgentTool', () => {
-  it('schema 只包含 prompt 和 subagent_type，并使用 parent-signal', () => {
+  it('schema 包含阶段内四个字段，并使用 parent-signal', () => {
     const tool = new AgentTool();
-    const parameters = tool.definition.function.parameters as {
+    const parameters = (tool.definition.function as { parameters: {
       properties: Record<string, unknown>;
       required: string[];
-    };
+    } }).parameters;
 
     expect(tool.name).toBe('Agent');
     expect(tool.executionTimeoutPolicy).toBe('parent-signal');
-    expect(Object.keys(parameters.properties)).toEqual(['prompt', 'subagent_type']);
-    expect(parameters.required).toEqual(['prompt']);
+    expect(Object.keys(parameters.properties)).toEqual([
+      'description',
+      'prompt',
+      'subagent_type',
+      'run_in_background',
+    ]);
+    expect(parameters.required).toEqual(['description', 'prompt']);
     expect(tool.subagentToolPolicy).toEqual({
       freshForeground: false,
       freshBackground: false,
@@ -41,17 +46,17 @@ describe('AgentTool', () => {
     const caller = createTrustedCallContext('parent-caller');
     const signal = new AbortController().signal;
 
-    expect(JSON.parse(await tool.execute({ prompt: '   ' }))).toMatchObject({
+    expect(JSON.parse(await tool.execute({ description: 'read project file', prompt: '   ' }))).toMatchObject({
       status: 'error',
       code: 'INVALID_PROMPT',
     });
-    expect(JSON.parse(await tool.execute({ prompt: 'task', subagent_type: 3 }))).toMatchObject({
+    expect(JSON.parse(await tool.execute({ description: 'read project file', prompt: 'task', subagent_type: 3 }))).toMatchObject({
       status: 'error',
       code: 'UNKNOWN_SUBAGENT_TYPE',
     });
 
     const value = JSON.parse(await tool.execute(
-      { prompt: 'task' },
+      { description: 'read project file', prompt: 'task' },
       {
         sessionContext: session,
         approvalPort,
@@ -63,7 +68,9 @@ describe('AgentTool', () => {
     expect(value).toEqual({ status: 'completed', agentId: 'agent-1', output: 'done' });
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({
       prompt: 'task',
-      subagentType: 'general-purpose',
+      description: 'read project file',
+      subagentType: undefined,
+      runInBackground: false,
       parentSession: session,
       parentApprovalPort: approvalPort,
       interactionPort,
@@ -75,7 +82,7 @@ describe('AgentTool', () => {
   it('未绑定和执行异常都 fail-closed 为稳定 JSON', async () => {
     const session = new SessionContext('parent-session');
     const unbound = JSON.parse(await new AgentTool().execute(
-      { prompt: 'task' },
+      { description: 'read project file', prompt: 'task' },
       { sessionContext: session } as unknown as ToolExecutionContext,
     ));
     expect(unbound).toMatchObject({
@@ -85,7 +92,7 @@ describe('AgentTool', () => {
 
     const failing = new AgentTool({ execute: vi.fn(async () => { throw new Error('internal'); }) });
     const result = JSON.parse(await failing.execute(
-      { prompt: 'task' },
+      { description: 'read project file', prompt: 'task' },
       { sessionContext: session } as unknown as ToolExecutionContext,
     ));
     expect(result).toMatchObject({

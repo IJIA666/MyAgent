@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AppConfig, LlmConfig } from '../../../config/index.js';
 import { AgentTracer } from '../../domain/tracer.js';
 import { SessionContext } from '../../domain/context.js';
+import type { StoredChatMessage } from '../../domain/context.js';
 import { PermissionSessionState } from '../../domain/permissions/permission-session-state.js';
 import type { PermissionSessionSnapshot } from '../../domain/permissions/permission-session-state.js';
 import {
@@ -9,7 +10,7 @@ import {
   createTrustedCallContext,
   type TrustedCallContext,
 } from '../../domain/permissions/trusted-call-context.js';
-import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
+import type { ChatMessage, ModelRequestSnapshot } from '../../../ports/driven/llm/LlmPort.js';
 import type { ToolExecutionOutcome } from '../../../adapters/tools/tool-types.js';
 import type { LlmClientFactoryPort } from '../../../ports/driven/llm/LlmClientFactoryPort.js';
 import type { TokenEstimatorPort } from '../../../ports/driven/llm/TokenEstimatorPort.js';
@@ -17,7 +18,12 @@ import type { ContextAdapter } from '../../../ports/driven/session/ContextAdapte
 import type { ApprovalPort } from '../../../ports/driven/session/ApprovalPort.js';
 import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
-import type { SubagentExecutionRequest, SubagentExecutionResult } from '../../../ports/driving/SubagentExecutionPort.js';
+import type {
+  SubagentContextPolicy,
+  SubagentExecutionRequest,
+  SubagentExecutionResult,
+  SubagentToolPolicyKey,
+} from '../../../ports/driving/SubagentExecutionPort.js';
 import { SUBAGENT_ERROR_CODES } from '../../../ports/driving/SubagentExecutionPort.js';
 import { RuleManager } from '../brain/RuleManager.js';
 import type { SkillLibrary } from '../brain/skill-library.js';
@@ -34,7 +40,7 @@ import { TracerLogPlugin } from '../plugins/TracerLogPlugin.js';
 import { AgentLoop } from '../engine/agent-loop.js';
 import { createEmptyMemorySnapshot } from '../brain/memory-loader.js';
 import { SubagentContextBuilder } from './SubagentContextBuilder.js';
-import { SubagentDefinitionRegistry, type SubagentContextPolicy } from './SubagentDefinitionRegistry.js';
+import { SubagentDefinitionRegistry } from './SubagentDefinitionRegistry.js';
 import { ChildPermissionResolver } from './ChildPermissionResolver.js';
 import { ScopedToolRegistry } from './ScopedToolRegistry.js';
 import { SubagentOutputScanner } from './SubagentOutputScanner.js';
@@ -65,6 +71,8 @@ export interface SubagentRuntimeOptions {
   readonly transcriptStore?: SubagentTranscriptStore;
   /** 可测试的定义注册表。 */
   readonly definitionRegistry?: SubagentDefinitionRegistry;
+  /** 是否启用省略类型即 exact-fork 的定义解析。 */
+  readonly subagentForkEnabled?: boolean;
 }
 
 /** 供 Skill Review/Curator 复用的专用运行配置。 */
@@ -89,6 +97,16 @@ export interface SubagentRuntimeTaskOptions {
   readonly interactionPort?: InteractionPort;
   /** 父取消信号。 */
   readonly signal?: AbortSignal;
+  /** 提交时冻结的模型配置；后台出队时不得重新读取父配置。 */
+  readonly llmConfig?: LlmConfig;
+  /** exact-fork 使用的最终父模型请求快照。 */
+  readonly requestSnapshot?: ModelRequestSnapshot;
+  /** 触发本次调用的当前 assistant 消息（含本调用 tool_calls），fork 用它闭合历史并追加分支指令。 */
+  readonly currentAssistantMessage?: ChatMessage;
+  /** exact-fork 提交时冻结快照中的工具名集合，用于收束 fork 工具作用域。 */
+  readonly fixedToolNames?: ReadonlySet<string>;
+  /** 子代理工具策略；省略时按 freshForeground 保持既有 Skill 兼容。 */
+  readonly toolPolicyKey?: SubagentToolPolicyKey;
   /** 使用的工具视图；省略时由公共运行器构造 fresh 作用域。 */
   readonly toolRegistry?: ToolRegistryPort;
   /** 已提供的工具视图是否已经完成策略收窄。 */
@@ -131,6 +149,15 @@ export interface SubagentRuntimeTaskResult {
   readonly errorMessage?: string;
   /** 事件数量，供 Skill 后台既有诊断契约使用。 */
   readonly eventCount: number;
+  /** 任务级低敏用量汇总。 */
+  readonly usage?: {
+    /** 最后一次请求输入 Token 加所有请求输出 Token。 */
+    readonly totalTokens?: number;
+    /** 实际请求过的工具调用数量。 */
+    readonly toolUses: number;
+    /** 从运行开始到终态的耗时毫秒。 */
+    readonly durationMs: number;
+  };
 }
 
 /**
@@ -156,7 +183,8 @@ export class SubagentRuntime {
    * @param options - 运行器组合根依赖
    */
   constructor(private readonly options: SubagentRuntimeOptions) {
-    this.definitions = options.definitionRegistry ?? new SubagentDefinitionRegistry();
+    this.definitions = options.definitionRegistry
+      ?? new SubagentDefinitionRegistry(options.subagentForkEnabled ?? false);
     this.transcriptStore = options.transcriptStore
       ?? new SubagentTranscriptStore(options.appConfig.applicationPaths.subagentsDir);
   }
@@ -175,6 +203,13 @@ export class SubagentRuntime {
         message: 'Agent.prompt 必须是非空字符串',
       };
     }
+    if (!isThreeToFiveWordDescription(request.description)) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.invalidDescription,
+        message: 'Agent.description 必须是 3-5 个词的非空字符串',
+      };
+    }
     const definition = this.definitions.resolve(request.subagentType);
     if (!definition) {
       return {
@@ -188,6 +223,17 @@ export class SubagentRuntime {
         status: 'error',
         code: SUBAGENT_ERROR_CODES.nestedCall,
         message: '第一阶段不允许子代理嵌套调用 Agent',
+      };
+    }
+    // 兼容直接调用运行器的测试与旧宿主；生产协调器优先传入提交点快照。
+    const requestSnapshot = definition.contextPolicy === 'exact-fork'
+      ? request.requestSnapshot ?? request.parentSession.getLatestModelRequestSnapshot?.()
+      : undefined;
+    if (definition.contextPolicy === 'exact-fork' && !requestSnapshot) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.forkContextUnavailable,
+        message: 'exact-fork 缺少父会话最终请求快照',
       };
     }
 
@@ -206,6 +252,9 @@ export class SubagentRuntime {
       agentType: definition.type,
       contextPolicy: definition.contextPolicy,
       prompt: request.prompt,
+      requestSnapshot,
+      toolPolicyKey: definition.toolPolicyKey,
+      llmConfig: requestSnapshot ? snapshotLlmConfig(this.options.llmConfigProvider()) : undefined,
       permissionSnapshot: parentSnapshot,
       caller: childCaller,
       parentApprovalPort: request.parentApprovalPort,
@@ -242,7 +291,8 @@ export class SubagentRuntime {
     const childAppConfig = createChildAppConfig(this.options.appConfig, task.maxIterations);
     childContext.appConfig = childAppConfig;
 
-    const llmConfig = snapshotLlmConfig(this.options.llmConfigProvider());
+    // 协调器传入的配置已经在提交时冻结；专用 Skill 任务才在运行入口读取当前 provider。
+    const llmConfig = snapshotLlmConfig(task.llmConfig ?? this.options.llmConfigProvider());
     const driver = this.options.llmClientFactory.create(llmConfig);
     const childController = new AbortController();
     // 所有取消来源最终汇聚到子控制器，确保 cancelActive 即使存在父 signal 也能生效。
@@ -269,7 +319,10 @@ export class SubagentRuntime {
       paths.projectRulesDir,
       paths.userSkillsDir,
       paths.projectSkillsDir,
-      { enableWatcher: false },
+      {
+        enableWatcher: false,
+        initializeSystemPrompt: task.contextPolicy !== 'exact-fork',
+      },
       this.options.skillLibrary,
     );
     const ownsToolRegistry = !task.toolRegistryIsScoped || task.toolRegistry !== undefined;
@@ -282,6 +335,8 @@ export class SubagentRuntime {
         caller: task.caller,
         parentApprovalPort: task.parentApprovalPort,
         auditSource: `subagent:${task.agentType}`,
+        toolPolicyKey: task.toolPolicyKey ?? 'freshForeground',
+        fixedToolNames: task.fixedToolNames,
         afterToolCall: task.hooks?.mutationHook,
       });
     const contextRepo = new ContextRepository(childContext, paths.sessionsDir, true);
@@ -307,11 +362,19 @@ export class SubagentRuntime {
     );
     const messages = task.contextPolicy === 'fresh'
       ? this.contextBuilder.buildFresh(childContext, task.prompt)
-      : this.contextBuilder.buildHistoryReplay(
-        childContext,
-        task.conversationHistory ?? [],
-        task.prompt,
-      );
+      : task.contextPolicy === 'exact-fork'
+        ? buildExactForkHistory(
+          childContext,
+          this.contextBuilder,
+          task.requestSnapshot,
+          task.currentAssistantMessage,
+          task.prompt,
+        )
+        : this.contextBuilder.buildHistoryReplay(
+          childContext,
+          task.conversationHistory ?? [],
+          task.prompt,
+        );
     const tracer = new AgentTracer(
       paths.tracesDir,
       paths.auditsDir,
@@ -322,6 +385,8 @@ export class SubagentRuntime {
       ?? (task.enableDefaultSafetyPlugins
         ? this.createDefaultPluginRegistry(toolDispatcher, childAppConfig, tracer)
         : new PluginRegistry());
+    let latestInputTokens: number | undefined;
+    let accumulatedOutputTokens = 0;
     const loop = new AgentLoop({
       toolRegistry,
       context: childContext,
@@ -336,6 +401,12 @@ export class SubagentRuntime {
       maxIterations: task.maxIterations,
       memorySnapshotProvider: () => createEmptyMemorySnapshot(''),
       includeRuntimeReminder: false,
+      preserveRequestContext: task.contextPolicy === 'exact-fork',
+      fixedTools: task.contextPolicy === 'exact-fork' ? task.requestSnapshot?.tools : undefined,
+      onModelUsage: usage => {
+        latestInputTokens = usage.input_tokens;
+        accumulatedOutputTokens += usage.output_tokens;
+      },
     });
 
     const startedAt = new Date().toISOString();
@@ -359,6 +430,14 @@ export class SubagentRuntime {
     }
 
     let eventCount = 0;
+    const startedAtMs = Date.now();
+    const buildUsage = (): SubagentRuntimeTaskResult['usage'] => ({
+      totalTokens: latestInputTokens === undefined
+        ? undefined
+        : latestInputTokens + accumulatedOutputTokens,
+      toolUses: countToolUses(childContext.getHistory()),
+      durationMs: Date.now() - startedAtMs,
+    });
     try {
       for await (const event of loop.chat(undefined, tracer, llmConfig, { signal: activeSignal })) {
         // 显式消费事件对象，事件数量用于后台 Skill 的既有诊断契约。
@@ -376,7 +455,7 @@ export class SubagentRuntime {
         if (task.persistTranscript) {
           await this.writeTranscript(cancelledRecord);
         }
-        return adaptResult({ status: 'cancelled', agentId, eventCount });
+        return adaptResult({ status: 'cancelled', agentId, eventCount, usage: buildUsage() });
       }
       if (!output) {
         const errorMessage = '子代理未产生非空最终 assistant 输出';
@@ -396,6 +475,7 @@ export class SubagentRuntime {
           errorCode: SUBAGENT_ERROR_CODES.noFinalOutput,
           errorMessage,
           eventCount,
+          usage: buildUsage(),
         });
       }
 
@@ -420,7 +500,7 @@ export class SubagentRuntime {
       if (task.persistTranscript) {
         await this.writeTranscript(completedRecord);
       }
-      return adaptResult({ status: 'completed', agentId, output: scanned.text, eventCount });
+      return adaptResult({ status: 'completed', agentId, output: scanned.text, eventCount, usage: buildUsage() });
     } catch (error: unknown) {
       const errorCode = classifyRuntimeError(error, activeSignal);
       const errorMessage = SubagentTranscriptStore.sanitizeErrorSummary(error);
@@ -440,6 +520,7 @@ export class SubagentRuntime {
         errorCode,
         errorMessage,
         eventCount,
+        usage: buildUsage(),
       });
     } finally {
       if (task.signal) {
@@ -563,4 +644,83 @@ function cloneMessages(messages: readonly ChatMessage[]): ChatMessage[] {
       tool_calls: message.tool_calls.map(call => ({ ...call, function: { ...call.function } })),
     } : {}),
   }));
+}
+
+/** 将 exact-fork 历史写入子上下文，并对未知 tool 消息做最后一道协议清理。 */
+function buildExactForkHistory(
+  context: SessionContext,
+  builder: SubagentContextBuilder,
+  snapshot: ModelRequestSnapshot | undefined,
+  currentAssistantMessage: ChatMessage | undefined,
+  prompt: string,
+): StoredChatMessage[] {
+  if (!snapshot) {
+    throw new Error('exact-fork 缺少父会话最终请求快照');
+  }
+  const history = sanitizeExactForkHistory(
+    builder.buildExactFork(snapshot, prompt, currentAssistantMessage),
+  );
+  context.updateHistory(history as StoredChatMessage[]);
+  return history as StoredChatMessage[];
+}
+
+/** 删除无对应 assistant tool call 的孤立工具消息，并补齐仍未闭合的调用。 */
+function sanitizeExactForkHistory(messages: readonly ChatMessage[]): ChatMessage[] {
+  const knownIds = new Set<string>();
+  const closedIds = new Set<string>();
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      for (const call of message.tool_calls ?? []) {
+        knownIds.add(call.id);
+      }
+    }
+    if (message.role === 'tool' && message.tool_call_id) {
+      closedIds.add(message.tool_call_id);
+    }
+  }
+  const sanitized = messages
+    .filter(message => message.role !== 'tool' || (message.tool_call_id !== undefined && knownIds.has(message.tool_call_id)))
+    .map(cloneMessage);
+  const missingIds = [...knownIds].filter(id => !closedIds.has(id));
+  if (missingIds.length > 0) {
+    const insertAt = sanitized.length > 0 && sanitized[sanitized.length - 1].role === 'user'
+      ? sanitized.length - 1
+      : sanitized.length;
+    sanitized.splice(
+      insertAt,
+      0,
+      ...missingIds.map(id => ({
+        role: 'tool' as const,
+        tool_call_id: id,
+        content: SubagentContextBuilder.EXACT_FORK_TOOL_PLACEHOLDER,
+      })),
+    );
+  }
+  return sanitized;
+}
+
+/** 统计子代理历史中实际产生的工具调用数量。 */
+function countToolUses(history: readonly ChatMessage[]): number {
+  return history.reduce((count, message) => count + (message.role === 'assistant'
+    ? (message.tool_calls?.length ?? 0)
+    : 0), 0);
+}
+
+/** 复制 exact-fork 协议消息。 */
+function cloneMessage(message: ChatMessage): ChatMessage {
+  return {
+    ...message,
+    ...(message.tool_calls ? {
+      tool_calls: message.tool_calls.map(call => ({
+        ...call,
+        function: { ...call.function },
+      })),
+    } : {}),
+  };
+}
+
+/** 校验 Agent 展示摘要为 3-5 个词，防止任务索引承载长正文。 */
+function isThreeToFiveWordDescription(value: string): boolean {
+  const words = value.trim().split(/\s+/u).filter(Boolean);
+  return words.length >= 3 && words.length <= 5;
 }

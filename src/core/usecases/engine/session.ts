@@ -26,6 +26,10 @@ import type {
   CliCuratorSkillActionResult,
   CliCuratorArchivedSkill,
   CliCuratorBackup,
+  CliAgentTaskSummary,
+  CliAgentTaskDetail,
+  CliAgentTaskCancelResult,
+  CliSubtaskResult,
 } from '../../../ports/driving/CliSessionUseCase.js';
 import { TaskAborterPort } from '../../../ports/driven/tools/TaskAborterPort.js';
 import { PluginRegistry } from '../plugins/plugin-registry.js';
@@ -88,6 +92,14 @@ import type {
 import type { LlmClientFactoryPort } from '../../../ports/driven/llm/LlmClientFactoryPort.js';
 import { SubagentExecutionController } from '../subagent/SubagentExecutionController.js';
 import { SubagentRuntime } from '../subagent/SubagentRuntime.js';
+import { SubagentCoordinator } from '../subagent/SubagentCoordinator.js';
+import { TaskManager } from '../subagent/TaskManager.js';
+import { TaskStateStore } from '../subagent/TaskStateStore.js';
+import { SubagentTranscriptStore } from '../subagent/SubagentTranscriptStore.js';
+import type { TaskStateRecord } from '../subagent/task-state.js';
+
+/** 子代理任务控制面未注入时使用的稳定错误码。 */
+const SUBAGENT_NOT_AVAILABLE_CODE = 'SUBAGENT_EXECUTOR_NOT_BOUND';
 
 /**
  * 会话管理与模型交互调度中心。
@@ -136,6 +148,12 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   private readonly subagentExecutionController?: SubagentExecutionController;
   /** 与 Skill Review/Curator 共享隔离执行骨架的运行器。 */
   private readonly subagentRuntime?: SubagentRuntime;
+  /** 统一承载 Agent 前台、后台与 exact-fork 生命周期的协调器。 */
+  private readonly subagentCoordinator?: SubagentCoordinator;
+  /** 当前父会话任务索引仓储。 */
+  private readonly taskStateStore?: TaskStateStore;
+  /** Agent 任务使用的 transcript 访问仓储。 */
+  private readonly subagentTranscriptStore?: SubagentTranscriptStore;
   /** 大语言模型的核心驱动模块 */
   private driver: LlmPort;
   /** 上下文管理与组装适配器 */
@@ -243,10 +261,46 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
         llmConfigProvider: () => this.llmConfig,
         llmClientFactory: subagentLlmClientFactory,
         skillLibrary,
+        subagentForkEnabled: appConfig.runtimeLimits.subagentForkEnabled,
       })
       : undefined;
     if (this.subagentExecutionController && this.subagentRuntime) {
-      this.subagentExecutionController.bind(this.context.getSessionId(), this.subagentRuntime);
+      const transcriptStore = new SubagentTranscriptStore(appConfig.applicationPaths.subagentsDir);
+      const taskStateStore = new TaskStateStore(
+        appConfig.applicationPaths.subagentsDir,
+        this.context.getSessionId(),
+        transcriptStore,
+      );
+      const taskManager = new TaskManager({
+        stateStore: taskStateStore,
+        maxConcurrent: appConfig.runtimeLimits.subagentMaxConcurrent,
+        maxInFlight: appConfig.runtimeLimits.subagentMaxInFlight,
+        autoBackgroundMs: appConfig.runtimeLimits.subagentAutoBackgroundMs,
+      });
+      this.subagentTranscriptStore = transcriptStore;
+      this.taskStateStore = taskStateStore;
+      this.subagentCoordinator = new SubagentCoordinator({
+        runtime: this.subagentRuntime,
+        taskManager,
+        taskStateStore,
+        transcriptStore,
+        appConfig,
+        llmConfigProvider: () => this.llmConfig,
+        forkEnabled: appConfig.runtimeLimits.subagentForkEnabled,
+        // CLI 监听的是 SessionManager.agent_event，必须由这里转发任务状态事件。
+        onTaskStateChange: record => {
+          this.emit('agent_event', {
+            type: 'task_update',
+            agentId: record.agentId,
+            description: record.description,
+            subagentType: record.agentType,
+            contextPolicy: record.contextPolicy,
+            status: record.status,
+            time: record.updatedAt,
+          });
+        },
+      });
+      this.subagentExecutionController.bind(this.context.getSessionId(), this.subagentCoordinator);
     }
 
     // 初始化领域服务集群
@@ -482,6 +536,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
         appConfig.diagnostics,
       );
       this.agentLoop.resetTraceState();
+      await this.subagentCoordinator?.updateSessionId(this.context.getSessionId());
       this.subagentExecutionController?.updateSessionId(this.context.getSessionId());
     }
     return success;
@@ -536,7 +591,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.driver.abort();
     // 当前 Agent 工具可能已经进入子循环，父模型驱动的 abort 不会自动携带到该工具 Promise。
     // 通过会话绑定控制器显式取消所有在途子代理，避免用户中断只停止父模型而留下孤儿子任务。
-    this.subagentExecutionController?.cancelActive('Session aborted');
+    this.subagentExecutionController?.cancelForeground('Session aborted');
     this.context.cancelPendingInteraction();
     if (this.taskAborter) {
       this.taskAborter(this.context.getSessionId()).catch((err: unknown) => {
@@ -775,7 +830,6 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     }
 
     this.abort();
-    this.subagentExecutionController?.cancelActive('Session is closing');
     this.approvalInteraction.rejectAll('Session is closing');
 
     // 清理待回答的人机中断交互
@@ -784,6 +838,11 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     if (this.taskAborter) {
       await this.taskAborter(this.context.getSessionId());
     }
+
+    // 父工具注册表关闭前先取消并有界等待全部 Agent 任务，避免后台审批/工具继续借用父资源。
+    await this.subagentExecutionController?.closeAll(
+      this.context.appConfig?.runtimeLimits.modelTimeoutMs ?? 30_000,
+    );
 
     // 先取消并有界等待后台 Review，确保共享工具运行时关闭后不再进入 Skill 写入。
     await this.backgroundSkillReviewService?.close(
@@ -1181,6 +1240,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
 
     const previousWakeupCount = this.autoWakeupCount;
     this.isGenerating = true; // 同步原子加锁，防止同 Tick 重入
+    this.context.setGenerationActive(true);
     this.autoWakeupCount = 0;  // 每次人类主动交互，重置自动唤醒计数器
 
     // 用户输入是 Curator 的活动信号；状态写失败不应阻断主会话。
@@ -1256,6 +1316,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
 
     const previousWakeupCount = this.autoWakeupCount;
     this.isGenerating = true;
+    this.context.setGenerationActive(true);
     this.autoWakeupCount = 0;
     logger.debug('[SessionManager] interaction_resume_requested', {
       component: 'session',
@@ -1319,6 +1380,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       this.emit('agent_event', { type: 'complete' });
     } finally {
       this.isGenerating = false;
+      this.context.setGenerationActive(false);
       const waitingForInteraction = this.context.pendingInteraction?.state === 'pending';
       logger.debug('[SessionManager] generation_cycle_finished', {
         component: 'session',
@@ -1369,6 +1431,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
 
           this.autoWakeupCount++;
           this.isGenerating = true; // 同步加锁
+          this.context.setGenerationActive(true);
           this.runInternalGeneration().catch((err: unknown) => {
             logger.error('[SessionManager] 自唤醒级联推理失败:', err);
           });
@@ -1421,6 +1484,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.autoWakeupCount++;
     // 必须在启动异步生成前同步加锁，防止同一事件循环中的后续通知并发启动模型。
     this.isGenerating = true;
+    this.context.setGenerationActive(true);
     logger.debug('[SessionManager] auto_wakeup_triggered', {
       component: 'session',
       event: 'auto_wakeup_triggered',
@@ -1433,6 +1497,74 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.runInternalGeneration().catch((err: unknown) => {
       logger.error('[SessionManager] 自动唤醒推理执行失败:', err);
     });
+  }
+
+  /** 从空闲父会话启动后台 exact-fork，CLI 不直接接触任务管理器。 */
+  public async startSubtask(prompt: string, description: string): Promise<CliSubtaskResult> {
+    if (!this.subagentCoordinator) {
+      return {
+        status: 'error',
+        code: SUBAGENT_NOT_AVAILABLE_CODE,
+        message: '当前会话尚未绑定子代理任务控制面',
+      };
+    }
+    const result = await this.subagentCoordinator.startForkedTask(
+      prompt,
+      description,
+      this.context,
+      this.context,
+      this.agentLoop.interactionPort,
+    );
+    if (result.status === 'async_launched') {
+      return result;
+    }
+    if (result.status === 'error') {
+      return {
+        status: 'error',
+        ...(result.agentId ? { agentId: result.agentId } : {}),
+        code: result.code,
+        message: result.message,
+      };
+    }
+    return {
+      status: 'error',
+      code: 'SUBAGENT_EXECUTION_FAILED',
+      message: 'exact-fork 未返回后台接受态',
+    };
+  }
+
+  /** 返回当前父会话任务的低敏摘要。 */
+  public async listAgentTasks(): Promise<readonly CliAgentTaskSummary[]> {
+    const tasks = await this.subagentCoordinator?.listTasks() ?? [];
+    return tasks.map(toCliAgentTaskSummary);
+  }
+
+  /** 获取当前父会话任务的扫描结果与低敏错误。 */
+  public async getAgentTask(
+    agentId: string,
+  ): Promise<CliAgentTaskDetail | { readonly status: 'not_found' }> {
+    const detail = await this.subagentCoordinator?.getTaskDetail(agentId);
+    if (!detail) {
+      return { status: 'not_found' };
+    }
+    return {
+      task: toCliAgentTaskSummary(detail.task),
+      ...(detail.result ? { result: detail.result } : {}),
+      ...(detail.error ? { error: detail.error } : {}),
+    };
+  }
+
+  /** 取消当前父会话的一条或全部任务，并保持幂等结果。 */
+  public async cancelAgentTask(
+    agentId: string | 'all',
+  ): Promise<CliAgentTaskCancelResult | readonly CliAgentTaskCancelResult[]> {
+    if (!this.subagentCoordinator) {
+      return {
+        status: 'error',
+        message: '当前会话尚未绑定子代理任务控制面',
+      };
+    }
+    return this.subagentCoordinator.cancelTask(agentId);
   }
 
   /**
@@ -1675,5 +1807,21 @@ function cloneMemoryDiagnostic(diagnostic: MemoryDiagnostic): MemoryDiagnostic {
     unknownTypes: Object.freeze([...diagnostic.unknownTypes]),
     invalidFrontmatter: Object.freeze([...diagnostic.invalidFrontmatter]),
     warnings: Object.freeze([...diagnostic.warnings]),
+  });
+}
+
+/** 将任务索引投影为不暴露父 session 路径和正文的 CLI 摘要。 */
+function toCliAgentTaskSummary(record: TaskStateRecord): CliAgentTaskSummary {
+  return Object.freeze({
+    agentId: record.agentId,
+    description: record.description,
+    agentType: record.agentType,
+    contextPolicy: record.contextPolicy,
+    mode: record.mode,
+    status: record.status,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    ...(record.endedAt ? { endedAt: record.endedAt } : {}),
+    ...(record.usage ? { usage: { ...record.usage } } : {}),
   });
 }

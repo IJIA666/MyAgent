@@ -60,6 +60,10 @@ export function createMockAppConfig(custom?: Partial<AppConfig>): AppConfig {
       compactionSummaryMaxTokens: 4096,
       toolTimeoutMs: 30000,
       modelTimeoutMs: 60000,
+      subagentMaxConcurrent: 4,
+      subagentMaxInFlight: 16,
+      subagentAutoBackgroundMs: 0,
+      subagentForkEnabled: false,
     },
     diagnostics: {
       operationalEnabled: true,

@@ -36,6 +36,9 @@ import type { LlmClientFactoryPort } from '../../src/ports/driven/llm/LlmClientF
 
 type ChildMode = 'read' | 'write' | 'delayed-complete';
 
+/** 父循环第一次 Agent 调用的可编排形态。 */
+type ParentAgentMode = 'sync' | 'background' | 'fork-omitted';
+
 let tempRoot: string | undefined;
 
 /** 可记录父子请求并按角色生成确定响应的 Fake LLM。 */
@@ -47,10 +50,12 @@ class IntegrationLlm implements LlmPort {
   /**
    * @param role - 父循环或子循环
    * @param childMode - 子循环的工具/延迟行为
+   * @param parentAgentMode - 父循环第一次 Agent 调用的编排形态
    */
   constructor(
     private readonly role: 'parent' | 'child',
     private readonly childMode: ChildMode = 'read',
+    private readonly parentAgentMode: ParentAgentMode = 'sync',
   ) {}
 
   /** @returns 稳定的测试模型名称 */
@@ -85,12 +90,13 @@ class IntegrationLlm implements LlmPort {
 
     if (this.role === 'parent') {
       if (this.callCount === 1) {
+        const agentArguments = buildParentAgentArguments(this.parentAgentMode);
         yield {
           type: 'tool_calls',
           toolCalls: [{
             id: 'parent-agent-call',
             type: 'function',
-            function: { name: 'Agent', arguments: JSON.stringify({ prompt: '读取 child.txt' }) },
+            function: { name: 'Agent', arguments: agentArguments },
           }],
           assistantMessage: {
             role: 'assistant',
@@ -98,7 +104,7 @@ class IntegrationLlm implements LlmPort {
             tool_calls: [{
               id: 'parent-agent-call',
               type: 'function',
-              function: { name: 'Agent', arguments: JSON.stringify({ prompt: '读取 child.txt' }) },
+              function: { name: 'Agent', arguments: agentArguments },
             }],
           },
         };
@@ -190,6 +196,21 @@ class IntegrationLlmFactory implements LlmClientFactoryPort {
   }
 }
 
+/** 构造父循环第一次 Agent 调用参数。 */
+function buildParentAgentArguments(mode: ParentAgentMode): string {
+  if (mode === 'background') {
+    return JSON.stringify({
+      description: 'read child file',
+      prompt: '读取 child.txt',
+      run_in_background: true,
+    });
+  }
+  if (mode === 'fork-omitted') {
+    return JSON.stringify({ description: 'fork child task', prompt: 'fork 分支处理 child.txt' });
+  }
+  return JSON.stringify({ description: 'read child file', prompt: '读取 child.txt' });
+}
+
 describe('同步 Agent 子代理生产装配', () => {
   afterEach(() => {
     if (tempRoot) {
@@ -270,7 +291,7 @@ describe('同步 Agent 子代理生产装配', () => {
       await planFixture.session.close();
     }
 
-    const timeoutFixture = createFixture('delayed-complete', 5);
+    const timeoutFixture = createFixture('delayed-complete', { toolTimeoutMs: 5 });
     try {
       await timeoutFixture.session.open();
       const timeoutEvents: Array<{ type: string; message?: string }> = [];
@@ -326,21 +347,192 @@ describe('同步 Agent 子代理生产装配', () => {
 
   it('父会话 abort 会物理取消在途子模型并写入 cancelled transcript', async () => {
     const fixture = createFixture('delayed-complete');
-    const events: Array<{ type: string; message?: string }> = [];
     try {
       await fixture.session.open();
-      fixture.session.on('agent_event', event => events.push(event as { type: string; message?: string }));
       fixture.session.handleUserInput('启动一个等待中的子代理');
       await waitUntil(() => fixture.factory.clients[0]?.requests.length > 0);
 
       fixture.session.abort();
-      expect(fixture.factory.clients[0].aborted).toBe(true);
+      await waitUntil(() => fixture.factory.clients[0]?.aborted === true);
+
+      const transcript = await waitForTranscript(fixture.paths.subagentsDir, 'killed');
+      expect(transcript.status).toBe('killed');
+    } finally {
+      await fixture.session.close();
+    }
+  });
+
+  it('后台 Agent 立即返回 async_launched，完成后以 task-notification 交付且父历史不含子内部消息', async () => {
+    const fixture = createFixture('read', { parentAgentMode: 'background' });
+    try {
+      await fixture.session.open();
+      const events: Array<{ type: string; message?: string }> = [];
+      fixture.session.on('agent_event', event => events.push(event as { type: string; message?: string }));
+      fixture.session.handleUserInput('启动后台子代理');
       await waitForComplete(events);
 
-      const transcript = await waitForTranscript(fixture.paths.subagentsDir);
-      expect(transcript.status).toBe('cancelled');
+      // 父循环在子代理未完成时就已结束，Agent 工具结果为 async_launched。
       const toolMessage = fixture.session.getHistory().find(message => message.role === 'tool');
-      expect(toolMessage?.content).toContain('cancelled');
+      const agentResult = JSON.parse(extractToolText(toolMessage?.content)) as { status?: string; agentId?: string };
+      expect(agentResult.status).toBe('async_launched');
+      expect(agentResult.agentId).toEqual(expect.any(String));
+
+      // 后台任务随后完成，扫描结果通过通知进入父历史。
+      await waitUntil(() => findTaskNotification(fixture.session.getHistory()) !== undefined);
+      const notification = findTaskNotification(fixture.session.getHistory())!;
+      expect(notification).toContain('completed');
+      expect(notification).toContain('子代理完成');
+      // 父历史不得出现子代理的中间请求。
+      expect(JSON.stringify(fixture.session.getHistory())).not.toContain('child-tool-call');
+    } finally {
+      await fixture.session.close();
+    }
+  });
+
+  it('前台子代理超过 subagentAutoBackgroundMs 后自动转为后台', async () => {
+    const fixture = createFixture('delayed-complete', {
+      autoBackgroundMs: 10,
+    });
+    try {
+      await fixture.session.open();
+      const events: Array<{ type: string; message?: string }> = [];
+      fixture.session.on('agent_event', event => events.push(event as { type: string; message?: string }));
+      fixture.session.handleUserInput('前台任务应超时转后台');
+      await waitForComplete(events);
+
+      const toolMessage = fixture.session.getHistory().find(message => message.role === 'tool');
+      const agentResult = JSON.parse(extractToolText(toolMessage?.content)) as { status?: string };
+      expect(agentResult.status).toBe('async_launched');
+      await waitUntil(() => findTaskNotification(fixture.session.getHistory()) !== undefined);
+      expect(findTaskNotification(fixture.session.getHistory())).toContain('延迟子代理完成');
+    } finally {
+      await fixture.session.close();
+    }
+  });
+
+  it('fork 开关开启时模型省略 subagent_type 即隐式 fork，快照包含父历史与占位闭合', async () => {
+    const fixture = createFixture('read', {
+      parentAgentMode: 'fork-omitted',
+      forkEnabled: true,
+    });
+    try {
+      await fixture.session.open();
+      const events: Array<{ type: string; message?: string }> = [];
+      fixture.session.on('agent_event', event => events.push(event as { type: string; message?: string }));
+      fixture.session.handleUserInput('父任务不能进入子上下文');
+      await waitForComplete(events);
+
+      // fork 强制后台，Agent 工具返回 async_launched。
+      const toolMessage = fixture.session.getHistory().find(message => message.role === 'tool');
+      const agentResult = JSON.parse(extractToolText(toolMessage?.content)) as { status?: string };
+      expect(agentResult.status).toBe('async_launched');
+
+      // 子代理消息前缀来自父最终请求快照：包含父 system、记忆投影与父 user 历史；
+      // 触发 fork 的当前 assistant 调用追加到末尾并占位闭合，最后是带分支指令的任务消息。
+      const childRequest = await waitForChildRequest(fixture, 0);
+      const childMessages = childRequest.messages;
+      expect(childMessages[0]?.content).toContain('你是 MyAgent');
+      expect(childMessages.some(message =>
+        typeof message.content === 'string' && message.content.startsWith('父任务不能进入子上下文'))).toBe(true);
+      expect(childMessages.some(message =>
+        message.role === 'assistant' && (message.tool_calls?.length ?? 0) > 0
+        && message.tool_calls?.[0]?.function.name === 'Agent')).toBe(true);
+      expect(childMessages.some(message =>
+        message.role === 'tool' && message.content === '[exact-fork tool result unavailable]')).toBe(true);
+      expect(childMessages.some(message =>
+        typeof message.content === 'string' && message.content.includes('fork 分支处理 child.txt'))).toBe(true);
+
+      await waitUntil(() => findTaskNotification(fixture.session.getHistory()) !== undefined);
+      expect(findTaskNotification(fixture.session.getHistory())).toContain('子代理完成');
+    } finally {
+      await fixture.session.close();
+    }
+  });
+
+  it('/subtask 从空闲闭合会话创建后台 exact-fork', async () => {
+    const fixture = createFixture('read');
+    try {
+      await fixture.session.open();
+      const events: Array<{ type: string; message?: string }> = [];
+      fixture.session.on('agent_event', event => events.push(event as { type: string; message?: string }));
+      // 先跑一次父循环产生最终请求快照。
+      fixture.session.handleUserInput('为 subtask 生成请求快照');
+      await waitForComplete(events);
+
+      const result = await fixture.session.startSubtask('继续处理 child.txt 并报告结果', 'continue child task');
+      expect(result.status).toBe('async_launched');
+      if (result.status !== 'async_launched') return;
+      expect(result.agentId).toEqual(expect.any(String));
+
+      // 空闲且协议闭合时快照不含未闭合工具调用，子请求包含父历史、分支指令与 fork 任务消息。
+      // 父循环先创建了一个同步子代理（clients[0]），fork 任务是第二个客户端（clients[1]）。
+      const childRequest = await waitForChildRequest(fixture, 1);
+      const childMessages = childRequest.messages;
+      expect(childMessages.some(message =>
+        typeof message.content === 'string' && message.content.startsWith('为 subtask 生成请求快照'))).toBe(true);
+      expect(childMessages.some(message =>
+        typeof message.content === 'string' && message.content.includes('你是分支工作代理'))).toBe(true);
+      expect(childMessages.some(message =>
+        typeof message.content === 'string' && message.content.includes('继续处理 child.txt 并报告结果'))).toBe(true);
+
+      // 任务可通过任务控制面查询到。
+      const tasks = await fixture.session.listAgentTasks();
+      expect(tasks.some(task => task.agentId === result.agentId)).toBe(true);
+      await waitUntil(() => findTaskNotification(fixture.session.getHistory()) !== undefined);
+    } finally {
+      await fixture.session.close();
+    }
+  });
+
+  it('普通 abort 不取消已接受的后台任务，任务仍完成并通知', async () => {
+    const fixture = createFixture('delayed-complete', {
+      parentAgentMode: 'background',
+    });
+    try {
+      await fixture.session.open();
+      const events: Array<{ type: string; message?: string }> = [];
+      fixture.session.on('agent_event', event => events.push(event as { type: string; message?: string }));
+      fixture.session.handleUserInput('启动后台慢任务');
+      await waitUntil(() => fixture.factory.clients[0]?.requests.length > 0);
+
+      fixture.session.abort();
+      // 后台任务与父取消解绑，abort 后仍继续执行并完成通知；
+      // 子驱动在任务终态时由运行器正常释放（aborted 标志表示释放而非取消）。
+      await waitUntil(() => findTaskNotification(fixture.session.getHistory()) !== undefined);
+      expect(findTaskNotification(fixture.session.getHistory())).toContain('延迟子代理完成');
+      expect(fixture.factory.clients[0].requests.length).toBeGreaterThan(0);
+    } finally {
+      await fixture.session.close();
+    }
+  });
+
+  it('小并发下后台任务排队，超过在途上限后稳定拒绝', async () => {
+    const fixture = createFixture('delayed-complete', {
+      maxConcurrent: 1,
+      maxInFlight: 2,
+    });
+    try {
+      await fixture.session.open();
+      const events: Array<{ type: string; message?: string }> = [];
+      fixture.session.on('agent_event', event => events.push(event as { type: string; message?: string }));
+      fixture.session.handleUserInput('为任务队列生成请求快照');
+      await waitForComplete(events);
+
+      const first = await fixture.session.startSubtask('第一个后台任务', 'first background task');
+      expect(first.status).toBe('async_launched');
+      const second = await fixture.session.startSubtask('第二个后台任务', 'second background task');
+      expect(second.status).toBe('async_launched');
+      const third = await fixture.session.startSubtask('第三个后台任务', 'third background task');
+      expect(third.status).toBe('error');
+      if (third.status !== 'error') return;
+      expect(third.code).toBe('SUBAGENT_CAPACITY_EXCEEDED');
+
+      // 排队任务与运行任务在任务列表中可见，且不泄露 prompt。
+      const tasks = await fixture.session.listAgentTasks();
+      const summaries = JSON.stringify(tasks);
+      expect(summaries).toContain('first background task');
+      expect(summaries).not.toContain('第一个后台任务');
+      expect(tasks.some(task => task.status === 'pending')).toBe(true);
     } finally {
       await fixture.session.close();
     }
@@ -348,7 +540,17 @@ describe('同步 Agent 子代理生产装配', () => {
 });
 
 /** 创建临时工作区、真实 ToolRegistry、SessionManager 和 Agent 绑定控制器。 */
-function createFixture(childMode: ChildMode, toolTimeoutMs = 30000) {
+function createFixture(
+  childMode: ChildMode,
+  options: {
+    toolTimeoutMs?: number;
+    parentAgentMode?: ParentAgentMode;
+    forkEnabled?: boolean;
+    autoBackgroundMs?: number;
+    maxConcurrent?: number;
+    maxInFlight?: number;
+  } = {},
+) {
   tempRoot = mkdtempSync(join(tmpdir(), 'subagent-integration-'));
   const workspace = join(tempRoot, 'workspace');
   mkdirSync(workspace, { recursive: true });
@@ -364,12 +566,16 @@ function createFixture(childMode: ChildMode, toolTimeoutMs = 30000) {
   appConfig.runtimeLimits = {
     ...appConfig.runtimeLimits,
     maxIterations: 4,
-    toolTimeoutMs,
+    toolTimeoutMs: options.toolTimeoutMs ?? 30000,
     modelTimeoutMs: 1000,
+    subagentMaxConcurrent: options.maxConcurrent ?? 4,
+    subagentMaxInFlight: options.maxInFlight ?? 16,
+    subagentAutoBackgroundMs: options.autoBackgroundMs ?? 0,
+    subagentForkEnabled: options.forkEnabled ?? false,
   };
   const controller = new SubagentExecutionController();
   const registry = new ToolRegistry(undefined, { subagentExecutionPort: controller });
-  const parentLlm = new IntegrationLlm('parent');
+  const parentLlm = new IntegrationLlm('parent', 'read', options.parentAgentMode ?? 'sync');
   const factory = new IntegrationLlmFactory(childMode);
   const estimator = new TiktokenEstimator();
   const session = new SessionManager(
@@ -399,6 +605,17 @@ function createFixture(childMode: ChildMode, toolTimeoutMs = 30000) {
   };
 }
 
+/** 在父历史中查找最近一次后台任务通知。 */
+function findTaskNotification(history: readonly ChatMessage[]): string | undefined {
+  for (let index = history.length - 1; index >= 0; index--) {
+    const content = history[index].content;
+    if (typeof content === 'string' && content.includes('<task-notification>')) {
+      return content;
+    }
+  }
+  return undefined;
+}
+
 /** 等待真实 SessionManager 发出本轮唯一 complete 事件。 */
 async function waitForComplete(events: Array<{ type: string }>): Promise<void> {
   const started = Date.now();
@@ -422,7 +639,10 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
 }
 
 /** 等待并读取本次临时目录中唯一的子代理 transcript。 */
-async function waitForTranscript(subagentsDir: string): Promise<{ status?: string }> {
+async function waitForTranscript(
+  subagentsDir: string,
+  expectedStatus = 'cancelled',
+): Promise<{ status?: string }> {
   let transcriptPath: string | undefined;
   await waitUntil(() => {
     transcriptPath = findTranscript(subagentsDir);
@@ -430,7 +650,7 @@ async function waitForTranscript(subagentsDir: string): Promise<{ status?: strin
       return false;
     }
     const parsed = JSON.parse(readFileSync(transcriptPath, 'utf8')) as { status?: string };
-    return parsed.status === 'cancelled';
+    return parsed.status === expectedStatus;
   });
   return JSON.parse(readFileSync(transcriptPath!, 'utf8')) as { status?: string };
 }
@@ -468,6 +688,27 @@ function readWorkspaceFile(workspace: string, name: string): string | undefined 
 function getToolDefinitionName(tool: Record<string, unknown>): string {
   const fn = tool.function as { name?: unknown } | undefined;
   return typeof fn?.name === 'string' ? fn.name : String(tool.name ?? '');
+}
+
+/** 提取工具结果正文中的文本字段。 */
+function extractToolText(content: unknown): string {
+  const envelope = JSON.parse(typeof content === 'string' ? content : '{}') as {
+    content?: Array<{ text?: string }>;
+  };
+  return envelope.content?.[0]?.text ?? '';
+}
+
+/** 等待子代理工厂产生第 N 个客户端的首次请求。 */
+async function waitForChildRequest(
+  fixture: ReturnType<typeof createFixture>,
+  clientIndex: number,
+): Promise<{ messages: ChatMessage[] }> {
+  let client: IntegrationLlm | undefined;
+  await waitUntil(() => {
+    client = fixture.factory.clients[clientIndex];
+    return client !== undefined && client.requests.length > 0;
+  });
+  return client!.requests[0];
 }
 
 /** 延迟一小段时间，给取消和外层超时测试提供可观察窗口。 */

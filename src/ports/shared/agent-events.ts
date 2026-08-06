@@ -47,4 +47,20 @@ export type AgentEvent =
       skill: string;
       /** writeApproval 暂存标识；仅 staged 结果携带。 */
       pendingId?: string;
+    }
+  | {
+      /** 子代理任务生命周期状态行；不携带任务正文或原始输出。 */
+      type: 'task_update';
+      /** 任务 ID，同时也是 Agent ID。 */
+      agentId: string;
+      /** 用户可读任务摘要。 */
+      description: string;
+      /** 子代理类型。 */
+      subagentType: string;
+      /** 上下文装载策略。 */
+      contextPolicy: 'fresh' | 'history-replay' | 'exact-fork';
+      /** 当前任务生命周期状态。 */
+      status: 'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'killed' | 'interrupted';
+      /** 状态发生时间。 */
+      time: string;
     };

@@ -2,8 +2,10 @@ import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plu
 import type {
   SubagentExecutionPort,
   SubagentExecutionResult,
+  SubagentParentSession,
 } from '../../../../ports/driving/SubagentExecutionPort.js';
 import { SUBAGENT_ERROR_CODES } from '../../../../ports/driving/SubagentExecutionPort.js';
+import type { ChatMessage } from '../../../../ports/driven/llm/LlmPort.js';
 import type { NativeTool } from '../../tool-types.js';
 import type { ToolPermissionCheckResult } from '../../../../core/domain/permissions/permission-types.js';
 import { AGENT_TOOL_NAME } from '../../constants/native-tool-names.js';
@@ -15,6 +17,8 @@ import { AGENT_TOOL_NAME } from '../../constants/native-tool-names.js';
 export class AgentTool implements NativeTool {
   /** 由组合根注入的会话绑定执行端口。 */
   private readonly executionPort?: SubagentExecutionPort;
+  /** 控制模型是否使用省略类型即 exact-fork 的调用语义。 */
+  private readonly forkEnabled: boolean;
   /** Agent 编排调用不直接声明业务副作用。 */
   public readonly securityCategory = 'read' as const;
   /** 模型可见的稳定工具名。 */
@@ -27,35 +31,16 @@ export class AgentTool implements NativeTool {
     freshBackground: false,
     fork: false,
   });
-  /** 第一阶段严格限制为 prompt 与 subagent_type 两个参数。 */
-  public readonly definition = {
-    type: 'function' as const,
-    function: {
-      name: AGENT_TOOL_NAME,
-      description: '同步调用一个隔离的 general-purpose 子代理完成独立任务，并返回最终报告。',
-      parameters: {
-        type: 'object',
-        properties: {
-          prompt: {
-            type: 'string',
-            description: '交给子代理执行的非空任务描述。',
-          },
-          subagent_type: {
-            type: 'string',
-            description: '已注册的子代理类型；省略时使用 general-purpose。',
-          },
-        },
-        required: ['prompt'],
-        additionalProperties: false,
-      },
-    },
-  };
+  /** 模型可见的 Agent 参数 schema；fork 模式不泄露后台开关。 */
+  public readonly definition: Record<string, unknown>;
 
   /**
    * @param executionPort - 会话绑定的子代理执行端口；未注入时保持 fail-closed
    */
-  constructor(executionPort?: SubagentExecutionPort) {
+  constructor(executionPort?: SubagentExecutionPort, forkEnabled = false) {
     this.executionPort = executionPort;
+    this.forkEnabled = forkEnabled;
+    this.definition = buildAgentDefinition(forkEnabled);
   }
 
   /**
@@ -98,14 +83,34 @@ export class AgentTool implements NativeTool {
       });
     }
 
+    const description = typeof args.description === 'string' ? args.description.trim() : undefined;
+    if (!description || !isThreeToFiveWordDescription(description)) {
+      return serializeResult({
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.invalidDescription,
+        message: 'Agent.description 必须是 3-5 个词的非空字符串',
+      });
+    }
+
     const subagentType = args.subagent_type === undefined
-      ? 'general-purpose'
+      ? undefined
       : typeof args.subagent_type === 'string' ? args.subagent_type : undefined;
-    if (!subagentType || subagentType.trim().length === 0) {
+    if (args.subagent_type !== undefined && (!subagentType || subagentType.trim().length === 0)) {
       return serializeResult({
         status: 'error',
         code: 'UNKNOWN_SUBAGENT_TYPE',
         message: 'Agent.subagent_type 必须是非空字符串',
+      });
+    }
+
+    const runInBackground = args.run_in_background === undefined
+      ? false
+      : typeof args.run_in_background === 'boolean' ? args.run_in_background : undefined;
+    if (runInBackground === undefined) {
+      return serializeResult({
+        status: 'error',
+        code: 'INVALID_RUN_IN_BACKGROUND',
+        message: 'Agent.run_in_background 必须是布尔值',
       });
     }
 
@@ -122,12 +127,16 @@ export class AgentTool implements NativeTool {
     try {
       const result = await port.execute({
         prompt,
+        description,
         subagentType,
+        runInBackground: this.forkEnabled || runInBackground,
         parentSession,
         parentApprovalPort: context?.approvalPort,
         interactionPort: context?.interactionPort,
         signal,
         parentCaller: context?.caller,
+        // 工具执行时当前 assistant 消息已在会话历史中；fork 用它闭合历史并追加分支指令。
+        currentAssistantMessage: findCurrentAssistantMessage(parentSession),
       });
       return serializeResult(result);
     } catch {
@@ -141,7 +150,71 @@ export class AgentTool implements NativeTool {
   }
 }
 
+/** 从会话历史中定位触发本次调用的最后一条带工具调用的 assistant 消息。 */
+function findCurrentAssistantMessage(
+  session: SubagentParentSession,
+): ChatMessage | undefined {
+  const history = session.getHistory?.();
+  if (!history) {
+    return undefined;
+  }
+  for (let index = history.length - 1; index >= 0; index--) {
+    const message = history[index];
+    if (message.role === 'assistant' && (message.tool_calls?.length ?? 0) > 0) {
+      return message;
+    }
+  }
+  return undefined;
+}
+
 /** 将结构化结果转为 Agent 工具交付给父模型的文本。 */
 function serializeResult(result: SubagentExecutionResult | Record<string, string>): string {
   return JSON.stringify(result);
+}
+
+/** 构造不泄露 fork 内部细节的 Agent OpenAI function schema。 */
+function buildAgentDefinition(forkEnabled: boolean): Record<string, unknown> {
+  const properties: Record<string, unknown> = {
+    description: {
+      type: 'string',
+      description: '用 3-5 个词概括任务，供任务列表展示。',
+    },
+    prompt: {
+      type: 'string',
+      description: '交给子代理执行的非空任务描述。',
+    },
+    subagent_type: {
+      type: 'string',
+      description: forkEnabled
+        ? '可选的已注册子代理类型；省略时使用当前会话的 exact-fork 上下文。'
+        : '可选的已注册子代理类型；省略时使用 general-purpose。',
+    },
+  };
+  if (!forkEnabled) {
+    properties.run_in_background = {
+      type: 'boolean',
+      description: '是否立即转为后台任务，默认 false。',
+    };
+  }
+  return {
+    type: 'function',
+    function: {
+      name: AGENT_TOOL_NAME,
+      description: forkEnabled
+        ? '在当前会话快照上后台运行一个隔离子代理并返回任务 ID。'
+        : '调用一个隔离子代理完成独立任务，可选择后台运行并返回任务 ID。',
+      parameters: {
+        type: 'object',
+        properties,
+        required: ['description', 'prompt'],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+/** 校验用户可读任务描述的词数，拒绝把长正文塞入任务索引。 */
+function isThreeToFiveWordDescription(value: string): boolean {
+  const words = value.split(/\s+/u).filter(Boolean);
+  return words.length >= 3 && words.length <= 5;
 }

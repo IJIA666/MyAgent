@@ -34,6 +34,7 @@ export type { PluginPatchGroup };
 // 显式重导出 ApiUsage 和 ContextTokenUsage 类型，避免在 ESM 下因类型擦除引发运行时加载错误
 export type { ApiUsage, ContextTokenUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
 import type { ApiUsage } from '../../ports/driven/llm/TokenEstimatorPort.js';
+import type { ModelRequestSnapshot } from '../../ports/driven/llm/LlmPort.js';
 
 /**
  * 会话上下文管理类。
@@ -54,6 +55,10 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   private readonly interactionState: InteractionState;
   private readonly approvalInteractionState: ApprovalInteractionState;
   private readonly pluginMutationLog: PluginMutationLog;
+  /** 最近一次最终发送给模型的请求快照，供 exact-fork 入口只读消费。 */
+  private latestModelRequestSnapshot?: ModelRequestSnapshot;
+  /** 父会话是否正在运行主 AgentLoop。 */
+  private generationActive = false;
   /** 等待用户交互期间需要跨 run 和进程恢复的 Skill 学习证据。 */
   private skillLearningContinuation: Readonly<SkillLearningContinuation> | null = null;
   /** 跨普通成功回合累计的 Skill 学习节奏（零累计起步）。 */
@@ -85,6 +90,38 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
 
   public set isProcessing(val: boolean) {
     this.interactionState.isProcessing = val;
+  }
+
+  /** 返回主会话是否正在生成模型响应。 */
+  public isGenerating(): boolean {
+    return this.generationActive;
+  }
+
+  /** 更新主会话生成状态，供任务控制面执行空闲检查。 */
+  public setGenerationActive(active: boolean): void {
+    this.generationActive = active;
+  }
+
+  /** 返回当前是否存在等待用户回答的人机交互。 */
+  public hasPendingInteraction(): boolean {
+    return this.pendingInteraction !== null;
+  }
+
+  /** 返回最近一次最终模型请求的防御性快照。 */
+  public getLatestModelRequestSnapshot(): ModelRequestSnapshot | undefined {
+    return this.latestModelRequestSnapshot
+      ? cloneModelRequestSnapshot(this.latestModelRequestSnapshot)
+      : undefined;
+  }
+
+  /** 保存一次最终模型请求的独立副本，避免后续压缩或新回合改写 fork 输入。 */
+  public setLatestModelRequestSnapshot(snapshot: ModelRequestSnapshot): void {
+    this.latestModelRequestSnapshot = cloneModelRequestSnapshot(snapshot);
+  }
+
+  /** 判断当前消息历史是否不存在未闭合的工具调用协议。 */
+  public isMessageProtocolClosed(): boolean {
+    return !this.conversationState.hasUnresolvedToolCalls();
   }
 
   /** 当前活跃的人机中断交互记录（委托给 InteractionState） */
@@ -348,12 +385,13 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
 
   /**
    * 追加一条系统通知消息。
-   * Hook 忙碌或工具调用结果尚未闭合时暂存，避免破坏模型协议消息顺序。
+   * 主循环生成中、Hook 忙碌或工具调用结果尚未闭合时暂存，
+   * 避免模型请求在途时改变父历史或破坏消息协议顺序。
    *
    * @param message - 系统通知消息对象
    */
   public addNotification(message: StoredChatMessage): void {
-    if (this.isProcessing || this.conversationState.hasUnresolvedToolCalls()) {
+    if (this.generationActive || this.isProcessing || this.conversationState.hasUnresolvedToolCalls()) {
       this.interactionState.bufferNotification(message);
     } else {
       this.conversationState.addMessage(message);
@@ -522,4 +560,21 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
     return this.approvalInteractionState.waitApproval(approvalId, actionInfo, options, warningMsg);
   }
 
+}
+
+/** 深复制模型请求快照，保持消息字段和工具 schema 与父会话隔离。 */
+function cloneModelRequestSnapshot(snapshot: ModelRequestSnapshot): ModelRequestSnapshot {
+  return {
+    model: snapshot.model,
+    messages: snapshot.messages.map(message => ({
+      ...message,
+      ...(message.tool_calls ? {
+        tool_calls: message.tool_calls.map(call => ({
+          ...call,
+          function: { ...call.function },
+        })),
+      } : {}),
+    })),
+    tools: snapshot.tools.map(tool => structuredClone(tool)),
+  };
 }

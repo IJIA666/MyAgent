@@ -19,6 +19,8 @@ import type { SkillLibrary } from './skill-library.js';
 export interface RuleManagerOptions {
   /** 是否启用技能文件变更监听，默认 true（主会话启用，短生命周期实例禁用） */
   enableWatcher?: boolean;
+  /** 是否在构造期重建 system prompt；exact-fork 必须关闭以回放父快照字节。 */
+  initializeSystemPrompt?: boolean;
 }
 
 /** 技能文件路径比较器，用于检测真实内容变化。 */
@@ -116,11 +118,13 @@ export class RuleManager {
     // 构造期写入首条系统消息：Skill 元数据在此刻深复制为快照并冻结，
     // 之后任何自动变更都不得改写本会话系统提示词；新会话会读取最新列表。
     this.promptSkillSnapshot = this.skillsCacheToPromptSnapshot();
-    this.context.updateSystemPrompt(
-      this.cachedUserRules || undefined,
-      this.cachedProjectRules || undefined,
-      this.promptSkillSnapshot
-    );
+    if (options?.initializeSystemPrompt !== false) {
+      this.context.updateSystemPrompt(
+        this.cachedUserRules || undefined,
+        this.cachedProjectRules || undefined,
+        this.promptSkillSnapshot
+      );
+    }
 
     // 订阅 SkillLibrary 的变更通知（当 SkillLibrary 提供时）
     if (skillLibrary) {

@@ -38,12 +38,13 @@ export class SubagentOutputScanner {
       safeLine = `${roleMatch[1]}${role}\\: ${rest}`;
     }
 
-    const reservedTagPattern = /(^|[^\\])(<\/?(?:system-reminder|system|assistant|human|user|tool)(?=[\s>/])|<<\/?sys>>|\[\/?system\])/giu;
+    const reservedTagPattern = /(^|[^\\])(<\/?(?:system-reminder|task-notification|system|assistant|human|user|tool)(?=[\s>/])|<<\/?sys>>|\[\/?system\])/giu;
     if (reservedTagPattern.test(line)) {
       lineRuleIds.push('reserved-tag');
-      // 在每个尚未转义的保留标签首字符前加反斜杠，兼容标签位于行中以及 system-reminder 形态。
+      // 在每个尚未转义的保留标签首字符前加反斜杠，兼容标签位于行中以及 system-reminder 形态；
+      // task-notification 同样受保护，防止子代理输出提前闭合外层任务通知包裹。
       safeLine = safeLine.replace(
-        /(^|[^\\])(<\/?(?:system-reminder|system|assistant|human|user|tool)(?=[\s>/])|<<\/?sys>>|\[\/?system\])/giu,
+        /(^|[^\\])(<\/?(?:system-reminder|task-notification|system|assistant|human|user|tool)(?=[\s>/])|<<\/?sys>>|\[\/?system\])/giu,
         '$1\\$2',
       );
     }

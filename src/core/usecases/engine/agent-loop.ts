@@ -8,6 +8,7 @@ import {
   type ChatMessage,
   type CompactionPreference,
   type CompactionResult,
+  type ModelRequestSnapshot,
   type LlmPort,
   type LlmStreamEvent,
 } from '../../../ports/driven/llm/LlmPort.js';
@@ -29,6 +30,7 @@ import { ContextRepository } from '../brain/ContextRepository.js';
 import { ToolDispatcher } from './ToolDispatcher.js';
 import type { ContextBudgetCoordinator } from '../brain/ContextBudgetCoordinator.js';
 import { ModelRequestAssembler } from './model-request-assembler.js';
+import type { ModelRequestAssemblerOptions } from './model-request-assembler.js';
 import type { MemorySnapshot } from '../brain/memory-loader.js';
 import { ToolCallOrchestrator } from './tool-call-orchestrator.js';
 import {
@@ -79,6 +81,12 @@ export interface AgentLoopOptions {
   memorySnapshotProvider?: () => MemorySnapshot;
   /** 是否向最新用户消息注入日期与 CWD；隔离后台 Agent 可关闭。 */
   includeRuntimeReminder?: boolean;
+  /** exact-fork 是否保持父请求上下文和工具集合。 */
+  preserveRequestContext?: boolean;
+  /** exact-fork 提交时冻结的工具集合。 */
+  fixedTools?: readonly Record<string, unknown>[];
+  /** 接收每次模型回包的真实用量，用于任务 usage 汇总。 */
+  onModelUsage?: (usage: ApiUsage) => void;
 }
 /** 缓存击穿校验：缓存跌幅百分比阈值（5% = 0.95 倍） */
 const CACHE_DROP_RATIO_THRESHOLD = 0.95;
@@ -133,6 +141,10 @@ export class AgentLoop {
   private isFirstCall = true;
   /** 上次 Token 估算明细 */
   private lastEstimatedUsage: ContextTokenUsage | null = null;
+  /** 最近一次最终模型请求的独立快照。 */
+  private latestRequestSnapshot?: ModelRequestSnapshot;
+  /** 任务层可选的模型用量观察器。 */
+  private readonly onModelUsage?: (usage: ApiUsage) => void;
 
   /**
    * 构造函数，装配核心服务依赖。
@@ -161,7 +173,12 @@ export class AgentLoop {
       this.pluginRegistry, this.context, this.contextBudgetCoordinator,
       memorySnapshotProvider,
       options.includeRuntimeReminder ?? true,
+      {
+        preserveRequestContext: options.preserveRequestContext,
+        fixedTools: options.fixedTools,
+      } satisfies ModelRequestAssemblerOptions,
     );
+    this.onModelUsage = options.onModelUsage;
     this.toolCallOrchestrator = new ToolCallOrchestrator(
       this.toolRegistry, this.toolDispatcher, this.pluginRegistry,
       this.context, this._interactionPort
@@ -201,6 +218,18 @@ export class AgentLoop {
     this.pendingChanges = [];
     this.isFirstCall = true;
     this.lastEstimatedUsage = null;
+    this.latestRequestSnapshot = undefined;
+  }
+
+  /**
+   * 获取最近一次最终组装的请求快照。
+   *
+   * @returns 与 AgentLoop 内部状态隔离的请求快照；尚未组装请求时返回 undefined
+   */
+  public getLatestRequestSnapshot(): ModelRequestSnapshot | undefined {
+    return this.latestRequestSnapshot
+      ? cloneModelRequestSnapshot(this.latestRequestSnapshot)
+      : undefined;
   }
 
   /**
@@ -341,6 +370,13 @@ export class AgentLoop {
 
         const finalRequestMessages = assembly.messages;
         const finalRequestTools = assembly.tools;
+        // 在进入模型流前冻结最终消息和工具，供父会话 exact-fork 使用。
+        this.latestRequestSnapshot = {
+          model: llmConfig.model,
+          messages: finalRequestMessages.map(cloneChatMessage),
+          tools: finalRequestTools.map(tool => structuredClone(tool)),
+        };
+        this.context.setLatestModelRequestSnapshot(this.latestRequestSnapshot);
 
         const traceSessionId = this.context.getSessionId();
         const traceSystemMessages = buildCanonicalSystemMessages(finalRequestMessages as ChatMessage[]);
@@ -472,6 +508,7 @@ export class AgentLoop {
 
             // 更新真实 API 用量数据
             if (event.usage) {
+              this.onModelUsage?.(event.usage as ApiUsage);
               this.context.updateLastApiUsage(event.usage as ApiUsage, this.context.getHistory().length);
             }
 
@@ -641,6 +678,7 @@ export class AgentLoop {
             hasFinalResponse = true;
 
             if (event.usage) {
+              this.onModelUsage?.(event.usage as ApiUsage);
               const diagGen = this.checkCacheAndCalibrate(event.usage as ApiUsage);
               for (const diagEvent of diagGen) {
                 yield diagEvent;
@@ -767,8 +805,6 @@ export class AgentLoop {
     }
   }
 
-
-
   /**
    * 后置缓存失效检测与归因校准逻辑。
    *
@@ -815,4 +851,26 @@ export class AgentLoop {
     // 校准本地 Token 预算数据库
     this.context.updateLastApiUsage(usage, this.context.getHistory().length);
   }
+}
+
+/** 复制 AgentLoop 请求快照，防止后续压缩或模型响应反向修改 fork 输入。 */
+function cloneModelRequestSnapshot(snapshot: ModelRequestSnapshot): ModelRequestSnapshot {
+  return {
+    model: snapshot.model,
+    messages: snapshot.messages.map(cloneChatMessage),
+    tools: snapshot.tools.map(tool => structuredClone(tool)),
+  };
+}
+
+/** 逐字段复制一条模型消息并保留工具调用关联字段。 */
+function cloneChatMessage(message: ChatMessage): ChatMessage {
+  return {
+    ...message,
+    ...(message.tool_calls ? {
+      tool_calls: message.tool_calls.map(call => ({
+        ...call,
+        function: { ...call.function },
+      })),
+    } : {}),
+  };
 }
