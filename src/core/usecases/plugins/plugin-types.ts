@@ -11,6 +11,9 @@ import type { ApprovalChoice, ApprovalChoiceId } from '../../../ports/shared/app
 import type { SessionEventPort } from '../../../ports/driven/session/SessionEventPort.js';
 import type { EventNotificationPort } from '../../../ports/driven/session/EventNotificationPort.js';
 import type { ExecutionPlan } from '../../domain/permissions/execution-plan.js';
+import type { ApprovalPort } from '../../../ports/driven/session/ApprovalPort.js';
+import type { TrustedCallContext } from '../../domain/permissions/trusted-call-context.js';
+import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 export type { ApprovalChoice, ApprovalChoiceId };
 export type { PermissionDecision } from '../../domain/permissions/permission-types.js';
 
@@ -82,6 +85,12 @@ export interface ToolExecutionContext {
    * 后台子 Agent 可以没有交互会话，但仍必须收到 ExecutionPlan。
    */
   sessionContext?: SessionEventPort & EventNotificationPort;
+  /** 由宿主捕获的父审批端口，供子代理区分执行状态与展示通道。 */
+  approvalPort?: ApprovalPort;
+  /** 当前 Agent 可用的人机交互端口。 */
+  interactionPort?: InteractionPort;
+  /** 当前工具调用由权限网关注入的受信 caller。 */
+  caller?: TrustedCallContext;
   /** 本次工具调用的唯一标识。 */
   toolCallId: string;
   /** 被调用的工具名称。 */

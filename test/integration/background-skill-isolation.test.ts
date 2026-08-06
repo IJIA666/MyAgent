@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,9 +18,13 @@ import type { LlmConfig } from '../../src/config/index.js';
 import type {
   ChatMessage,
   LlmPort,
+  LlmPortOptions,
   LlmStreamEvent,
+  SummaryGenerationOptions,
 } from '../../src/ports/driven/llm/LlmPort.js';
+import type { LlmClientFactoryPort } from '../../src/ports/driven/llm/LlmClientFactoryPort.js';
 import type { TokenEstimatorPort } from '../../src/ports/driven/llm/TokenEstimatorPort.js';
+import type { ResolvedCuratorConfig } from '../../src/config/types.js';
 import type { ToolRegistryPort } from '../../src/ports/driven/tools/ToolRegistryPort.js';
 import { SessionContext } from '../../src/core/domain/context.js';
 import { PermissionSessionState } from '../../src/core/domain/permissions/permission-session-state.js';
@@ -31,8 +36,12 @@ import {
   SkillWriteApprovalController,
 } from '../../src/core/usecases/brain/skill-pending-store.js';
 import { SkillUsageStore } from '../../src/core/usecases/brain/skill-usage-store.js';
+import { SkillCuratorBackupStore } from '../../src/core/usecases/brain/skill-curator-backup.js';
+import { SkillCuratorStateStore } from '../../src/core/usecases/brain/skill-curator-state-store.js';
+import { SkillCurator } from '../../src/core/usecases/brain/skill-curator.js';
 import { ToolRegistry } from '../../src/adapters/tools/toolRegistry.js';
 import { SessionManager } from '../../src/core/usecases/engine/session.js';
+import { SubagentExecutionController } from '../../src/core/usecases/subagent/SubagentExecutionController.js';
 import { createMockAppConfig } from '../helpers/mock-factory.js';
 
 let tempRoot: string | undefined;
@@ -349,10 +358,12 @@ describe('后台 Skill Review 隔离', () => {
     );
     const pendingStore = new SkillPendingStore(paths.skillPendingDir, library);
     const approvalController = new SkillWriteApprovalController(false);
+    const subagentController = new SubagentExecutionController();
     const registry = new ToolRegistry(undefined, {
       skillLibrary: library,
       skillPendingStore: pendingStore,
       skillWriteApprovalController: approvalController,
+      subagentExecutionPort: subagentController,
     });
 
     // 后台 Review 假 LLM：第一次调用创建 Skill，第二次返回最终回复。
@@ -381,21 +392,24 @@ describe('后台 Skill Review 隔离', () => {
           } as LlmStreamEvent;
           return;
         }
-        yield {
-          type: 'complete',
-          content: 'review complete',
-          reasoning: '',
-          assistantMessage: { role: 'assistant', content: 'review complete' },
-        } as LlmStreamEvent;
+      yield {
+        type: 'complete',
+        content: 'review complete',
+        reasoning: '',
+        assistantMessage: { role: 'assistant', content: 'review complete' },
+      } as LlmStreamEvent;
       }),
+      chat: vi.fn().mockResolvedValue(''),
+      generateSummaryAsync: vi.fn().mockResolvedValue(''),
     } as unknown as LlmPort;
+    const llmClientFactory = new DelegatingLlmClientFactory(driver);
     const contextAdapter = {
       assemble: (history: ChatMessage[]) => structuredClone(history),
     } as unknown as import('../../src/ports/driven/session/ContextAdapter.js').ContextAdapter;
 
     // 父会话：真实 SessionManager，其 RuleManager 在构造时冻结了提示词快照。
     const parentSession = new SessionManager(
-      { model: 'mock-model' } as unknown as LlmConfig,
+      appConfig.llm,
       driver,
       createEstimator(),
       registry,
@@ -405,6 +419,10 @@ describe('后台 Skill Review 隔离', () => {
       library,
       pendingStore,
       approvalController,
+      undefined,
+      undefined,
+      subagentController,
+      llmClientFactory,
     );
 
     try {
@@ -441,13 +459,17 @@ describe('后台 Skill Review 隔离', () => {
       });
 
       expect(library.get('isolated-review-skill')).toBeDefined();
+      // 生产 SessionManager 通过独立工厂创建子模型，Skill Review 不写通用 transcript。
+      expect(llmClientFactory.clients).toHaveLength(1);
+      expect(llmClientFactory.clients[0]).not.toBe(driver);
+      expect(existsSync(paths.subagentsDir) ? readdirSync(paths.subagentsDir) : []).toEqual([]);
       // 活跃会话的首条系统消息与哈希保持冻结，不被后台 Skill 变更改写。
       expect(parentSession.getHistory()[0]?.content).toBe(systemPromptBefore);
       expect(parentSession.getSystemPromptHash()).toBeDefined();
 
       // 新会话读取最新元数据，可发现后台创建的 Skill。
       const freshSession = new SessionManager(
-        { model: 'mock-model' } as unknown as LlmConfig,
+        appConfig.llm,
         driver,
         createEstimator(),
         registry,
@@ -469,4 +491,188 @@ describe('后台 Skill Review 隔离', () => {
       await parentSession.close();
     }
   });
+
+  it('真实 SessionManager 注入 Curator 后按 due cadence 复用隔离运行器且不污染父历史', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'background-curator-runtime-'));
+    const workspace = join(tempRoot, 'workspace');
+    mkdirSync(workspace, { recursive: true });
+    const paths = createApplicationPaths(workspace, {
+      appDataRoot: join(tempRoot, 'app-data'),
+    });
+    const appConfig = createMockAppConfig({
+      workspace,
+      applicationPaths: paths,
+      diagnostics: {
+        operationalEnabled: false,
+        auditEnabled: false,
+        replayEnabled: false,
+        customPatterns: [],
+        traceRetentionDays: 1,
+        traceRetentionSessions: 1,
+        auditRetentionDays: 1,
+        auditRetentionSessions: 1,
+      },
+    });
+    const usageStore = new SkillUsageStore(paths.skillUsagePath);
+    const library = new SkillLibrary(
+      paths.userSkillsDir,
+      paths.projectSkillsDir,
+      paths.skillArchiveDir,
+      usageStore,
+      { enableWatcher: false },
+    );
+    const candidateDir = join(paths.userSkillsDir, 'curator-candidate');
+    mkdirSync(candidateDir, { recursive: true });
+    writeFileSync(
+      join(candidateDir, 'SKILL.md'),
+      '---\nname: curator-candidate\ndescription: Curator 集成候选\n---\n\n候选正文\n',
+      'utf8',
+    );
+    // 候选在 SkillLibrary 构造后写入，显式刷新索引以模拟实时库更新后的 Curator 扫描。
+    library.reloadSkills();
+    await usageStore.markAgentCreated('curator-candidate');
+    const stateStore = new SkillCuratorStateStore(paths.skillCuratorStatePath);
+    stateStore.writeBaseline(new Date(Date.now() - 3 * 24 * 60 * 60 * 1000));
+    const curatorConfig: ResolvedCuratorConfig = {
+      enabled: true,
+      intervalHours: 1,
+      minIdleHours: 1,
+      staleAfterDays: 365,
+      archiveAfterDays: 730,
+      consolidate: true,
+      backup: { enabled: false, keep: 1 },
+    };
+    const backupStore = new SkillCuratorBackupStore(
+      paths.userSkillsDir,
+      paths.skillArchiveDir,
+      paths.skillUsagePath,
+      paths.skillCuratorStatePath,
+      paths.skillCuratorBackupsDir,
+      1,
+    );
+    const curator = new SkillCurator(
+      curatorConfig,
+      library,
+      usageStore,
+      stateStore,
+      backupStore,
+    );
+    const subagentController = new SubagentExecutionController();
+    const registry = new ToolRegistry(undefined, {
+      skillLibrary: library,
+      skillPendingStore: new SkillPendingStore(paths.skillPendingDir, library),
+      skillWriteApprovalController: new SkillWriteApprovalController(false),
+      subagentExecutionPort: subagentController,
+    });
+    const observedTools: string[][] = [];
+    const driver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      abort: vi.fn(),
+      streamChat: vi.fn().mockImplementation(async function* (
+        _messages: ChatMessage[],
+        tools: Array<Record<string, unknown>>,
+      ) {
+        observedTools.push(tools.map(getToolDefinitionName));
+        yield {
+          type: 'complete',
+          content: 'Nothing to save',
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: 'Nothing to save' },
+        } as LlmStreamEvent;
+      }),
+      chat: vi.fn().mockResolvedValue(''),
+      generateSummaryAsync: vi.fn().mockResolvedValue(''),
+    } as unknown as LlmPort;
+    const llmClientFactory = new DelegatingLlmClientFactory(driver);
+    const contextAdapter = {
+      assemble: (history: ChatMessage[]) => structuredClone(history),
+    } as unknown as import('../../src/ports/driven/session/ContextAdapter.js').ContextAdapter;
+    const session = new SessionManager(
+      appConfig.llm,
+      driver,
+      createEstimator(),
+      registry,
+      contextAdapter,
+      appConfig,
+      undefined,
+      library,
+      undefined,
+      undefined,
+      undefined,
+      curator,
+      subagentController,
+      llmClientFactory,
+    );
+    const parentHistory = structuredClone(session.getHistory());
+
+    try {
+      await session.open();
+      const completed = await waitForCondition(() => (
+        stateStore.read().status === 'healthy'
+        && stateStore.read().state?.lastRunAt !== null
+      ));
+
+      expect(completed).toBe(true);
+      expect(llmClientFactory.clients).toHaveLength(1);
+      expect(observedTools[0]).toEqual(['skills_list', 'load_skill', 'skill_manage']);
+      expect(library.get('curator-candidate')).toBeDefined();
+      expect(session.getHistory()).toEqual(parentHistory);
+      expect(existsSync(paths.sessionsDir) ? readdirSync(paths.sessionsDir) : []).toEqual([]);
+      expect(existsSync(paths.subagentsDir) ? readdirSync(paths.subagentsDir) : []).toEqual([]);
+    } finally {
+      await session.close();
+    }
+  });
 });
+
+/** 从 OpenAI function 定义中读取工具名。 */
+function getToolDefinitionName(tool: Record<string, unknown>): string {
+  const fn = tool.function as { name?: unknown } | undefined;
+  return typeof fn?.name === 'string' ? fn.name : String(tool.name ?? '');
+}
+
+/** 等待 SessionManager 异步 due-check 完成，避免把固定睡眠当成生命周期同步点。 */
+async function waitForCondition(predicate: () => boolean, timeoutMs = 5_000): Promise<boolean> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt >= timeoutMs) {
+      return false;
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+  }
+  return true;
+}
+
+/** 为隔离 Review 创建独立客户端对象，保留测试模型的确定性脚本。 */
+class DelegatingLlmClientFactory implements LlmClientFactoryPort {
+  /** 已创建的子客户端。 */
+  public readonly clients: LlmPort[] = [];
+
+  /**
+   * @param source - 测试用主模型脚本
+   */
+  constructor(private readonly source: LlmPort) {}
+
+  /**
+   * @param _config - 公共运行器的配置快照
+   * @returns 与父驱动对象身份不同的客户端
+   */
+  public create(_config: LlmConfig): LlmPort {
+    const client: LlmPort = {
+      getModelName: () => this.source.getModelName(),
+      switchModel: (config, options) => this.source.switchModel(config, options),
+      abort: () => this.source.abort(),
+      streamChat: (messages, tools, options?: LlmPortOptions) => (
+        this.source.streamChat(messages, tools, options)
+      ),
+      chat: async (messages, options?: LlmPortOptions) => this.source.chat(messages, options),
+      generateSummaryAsync: async (
+        messages,
+        options?: SummaryGenerationOptions,
+      ) => this.source.generateSummaryAsync(messages, options),
+    };
+    this.clients.push(client);
+    return client;
+  }
+}

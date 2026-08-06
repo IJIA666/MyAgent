@@ -1,4 +1,8 @@
-import type { NativeTool } from './tool-types.js';
+import type {
+  NativeTool,
+  SubagentToolPolicy,
+  ToolExecutionTimeoutPolicy,
+} from './tool-types.js';
 import type { ToolMetadata } from '../../ports/driven/tools/ToolRegistryPort.js';
 import type { McpManagerPort } from '../../ports/driven/tools/McpManagerPort.js';
 import type { ToolAuthorizationAdapter } from '../../ports/driven/tools/ToolAuthorizationAdapter.js';
@@ -87,14 +91,34 @@ export class ToolCatalog {
    */
   getToolMetadata(name: string): ToolMetadata | undefined {
     const tool = this.toolsMap.get(name);
-    if (!tool) return undefined;
+    if (tool) {
+      return {
+        name: tool.name,
+        securityCategory: tool.securityCategory,
+        executionMode: tool.executionMode,
+        filePathParamKey: tool.filePathParamKey,
+        maxLines: tool.maxLines,
+        maxBytes: tool.maxBytes,
+        subagentToolPolicy: normalizeSubagentToolPolicy(tool.subagentToolPolicy),
+        executionTimeoutPolicy: normalizeExecutionTimeoutPolicy(tool.executionTimeoutPolicy),
+      };
+    }
+
+    const descriptor = this.mcpManager?.getToolDescriptor(name);
+    if (!descriptor) {
+      return undefined;
+    }
+
+    // MCP 工具的风险类别由 annotations 保守推导，子代理策略统一开放到现有权限链。
     return {
-      name: tool.name,
-      securityCategory: tool.securityCategory,
-      executionMode: tool.executionMode,
-      filePathParamKey: tool.filePathParamKey,
-      maxLines: tool.maxLines,
-      maxBytes: tool.maxBytes,
+      name: descriptor.name,
+      securityCategory: descriptor.annotations?.destructiveHint ? 'write' : 'read',
+      subagentToolPolicy: {
+        freshForeground: true,
+        freshBackground: false,
+        fork: false,
+      },
+      executionTimeoutPolicy: 'standard',
     };
   }
 
@@ -112,4 +136,22 @@ export class ToolCatalog {
     }
     return allTools;
   }
+}
+
+/** 将可选的工具策略归一化为不共享引用的三元快照。 */
+function normalizeSubagentToolPolicy(
+  policy: SubagentToolPolicy | undefined,
+): SubagentToolPolicy {
+  return Object.freeze({
+    freshForeground: policy?.freshForeground === true,
+    freshBackground: policy?.freshBackground === true,
+    fork: policy?.fork === true,
+  });
+}
+
+/** 缺失总超时策略时使用普通工具语义。 */
+function normalizeExecutionTimeoutPolicy(
+  policy: ToolExecutionTimeoutPolicy | undefined,
+): ToolExecutionTimeoutPolicy {
+  return policy ?? 'standard';
 }

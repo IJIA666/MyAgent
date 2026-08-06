@@ -85,6 +85,9 @@ import type {
 import type {
   PermissionSessionSnapshot,
 } from '../../domain/permissions/permission-session-state.js';
+import type { LlmClientFactoryPort } from '../../../ports/driven/llm/LlmClientFactoryPort.js';
+import { SubagentExecutionController } from '../subagent/SubagentExecutionController.js';
+import { SubagentRuntime } from '../subagent/SubagentRuntime.js';
 
 /**
  * 会话管理与模型交互调度中心。
@@ -129,6 +132,10 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   private readonly backgroundSkillReviewService?: BackgroundSkillReviewService;
   /** 共享 Skill Curator 生命周期维护器。 */
   private readonly skillCurator?: SkillCurator;
+  /** 主 Agent 使用的会话绑定子代理控制器。 */
+  private readonly subagentExecutionController?: SubagentExecutionController;
+  /** 与 Skill Review/Curator 共享隔离执行骨架的运行器。 */
+  private readonly subagentRuntime?: SubagentRuntime;
   /** 大语言模型的核心驱动模块 */
   private driver: LlmPort;
   /** 上下文管理与组装适配器 */
@@ -166,6 +173,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    * @param skillWriteApprovalController - 共享 Skill 写入审批开关
    * @param backgroundSkillReviewScheduler - 可选的非阻塞后台复盘调度器
    * @param skillCurator - 可选的共享 Skill Curator
+   * @param subagentExecutionController - 可选的 Agent 工具绑定控制器
+   * @param subagentLlmClientFactory - 可选的独立 LLM 客户端工厂
    */
   constructor(
     llmConfig: LlmConfig,
@@ -180,6 +189,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     skillWriteApprovalController?: SkillWriteApprovalController,
     backgroundSkillReviewScheduler?: BackgroundSkillReviewScheduler,
     skillCurator?: SkillCurator,
+    subagentExecutionController?: SubagentExecutionController,
+    subagentLlmClientFactory?: LlmClientFactoryPort,
   ) {
     super();
     this.llmConfig = llmConfig;
@@ -215,11 +226,28 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.skillPendingStore = skillPendingStore;
     this.skillWriteApprovalController = skillWriteApprovalController;
     this.skillCurator = skillCurator;
+    this.subagentExecutionController = subagentExecutionController;
     this.memorySnapshot = createEmptyMemorySnapshot(
       this.autoMemoryEnabled ? this.memoryDir : '',
     );
     this.memoryDiagnostic = createEmptyMemoryDiagnostic();
     this.memoryCandidateStore = new MemoryCandidateStore(this.memoryDir);
+
+    // 子代理运行器在组合根完成工具注册后创建，Agent 工具只持有此前已注入的控制器。
+    this.subagentRuntime = subagentExecutionController && subagentLlmClientFactory
+      ? new SubagentRuntime({
+        appConfig,
+        toolRegistry: this.toolRegistry,
+        estimator,
+        contextAdapter: this.contextAdapter,
+        llmConfigProvider: () => this.llmConfig,
+        llmClientFactory: subagentLlmClientFactory,
+        skillLibrary,
+      })
+      : undefined;
+    if (this.subagentExecutionController && this.subagentRuntime) {
+      this.subagentExecutionController.bind(this.context.getSessionId(), this.subagentRuntime);
+    }
 
     // 初始化领域服务集群
     const paths = appConfig.applicationPaths;
@@ -274,6 +302,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
           this.context.getSessionId(),
           'interactive',
         ),
+        subagentRuntime: this.subagentRuntime,
         notify: mutation => {
           if (this.isClosed) {
             // 会话关闭后抵达的复盘结果只记录诊断，不重新激活会话。
@@ -453,6 +482,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
         appConfig.diagnostics,
       );
       this.agentLoop.resetTraceState();
+      this.subagentExecutionController?.updateSessionId(this.context.getSessionId());
     }
     return success;
   }
@@ -504,6 +534,9 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    */
   public abort(): void {
     this.driver.abort();
+    // 当前 Agent 工具可能已经进入子循环，父模型驱动的 abort 不会自动携带到该工具 Promise。
+    // 通过会话绑定控制器显式取消所有在途子代理，避免用户中断只停止父模型而留下孤儿子任务。
+    this.subagentExecutionController?.cancelActive('Session aborted');
     this.context.cancelPendingInteraction();
     if (this.taskAborter) {
       this.taskAborter(this.context.getSessionId()).catch((err: unknown) => {
@@ -742,6 +775,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     }
 
     this.abort();
+    this.subagentExecutionController?.cancelActive('Session is closing');
     this.approvalInteraction.rejectAll('Session is closing');
 
     // 清理待回答的人机中断交互
@@ -755,6 +789,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     await this.backgroundSkillReviewService?.close(
       this.context.appConfig?.runtimeLimits.modelTimeoutMs ?? 30_000,
     );
+
+    this.subagentExecutionController?.close();
 
     // 代理给 ToolRegistryPort close，物理断开并清理所有物理连接（含 MCP）
     await this.toolRegistry.close();

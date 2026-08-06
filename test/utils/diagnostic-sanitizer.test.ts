@@ -45,7 +45,7 @@ describe('diagnostic sanitizer', () => {
 
   it('should apply built-in and custom patterns, then clean JSONL separators', () => {
     const sanitized = sanitizeDiagnosticData(
-      'url=https://user:secret@example.com\ncustom=customer-secret\r\nBearer abcdefghijkl',
+      'url=https://user:secret@example.com\ncustom=customer-secret\r\nBearer abcdefghijkl ghp_abcdefghijklmnopqrstuvwxyz github_pat_abcdefghijklmnopqrstuvwxyz',
       'audit',
       { customPatterns: ['customer-secret'] }
     );
@@ -54,6 +54,8 @@ describe('diagnostic sanitizer', () => {
     expect(sanitized).toContain('custom=[REDACTED]\\n');
     expect(sanitized).not.toContain('customer-secret');
     expect(sanitized).not.toContain('Bearer abcdefghijkl');
+    expect(sanitized).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz');
+    expect(sanitized).not.toContain('github_pat_abcdefghijklmnopqrstuvwxyz');
   });
 
   it('should summarize oversized strings and arrays', () => {

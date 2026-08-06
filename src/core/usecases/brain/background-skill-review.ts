@@ -29,6 +29,7 @@ import {
 } from './background-skill-agent.js';
 import { createEmptyMemorySnapshot } from './memory-loader.js';
 import type { SkillLibrary } from './skill-library.js';
+import type { SubagentRuntime } from '../subagent/SubagentRuntime.js';
 import {
   SKILL_CURATOR_CALLER_ID_PREFIX,
   SKILL_REVIEW_CALLER_ID_PREFIX,
@@ -94,6 +95,8 @@ export interface BackgroundSkillReviewServiceOptions {
   readonly parentCallerProvider: () => TrustedCallContext;
   /** 真实 Skill 变更后的非阻塞通知。 */
   readonly notify?: (result: BackgroundSkillMutationResult) => void;
+  /** 生产运行时注入的公共子代理隔离内核。 */
+  readonly subagentRuntime?: SubagentRuntime;
 }
 
 /** 隔离 Skill Agent 的通用单次任务。 */
@@ -283,15 +286,15 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
       .filter((name): name is string => name !== undefined);
     const parentPermissionState = this.options.parentPermissionStateProvider();
     const mutations: BackgroundSkillMutationResult[] = [];
-    const backgroundContext = new SessionContext(`skill-review-${randomUUID()}`);
-    backgroundContext.appConfig = this.options.appConfig;
-    backgroundContext.setPermissionMode(parentPermissionState.getMode());
+    // 公共运行器接管生产路径的上下文创建；这里只提前生成隔离任务标识，
+    // 避免在进入公共运行器前额外装配一套重复的 SessionContext。
+    const isolatedTaskId = randomUUID();
 
     const restrictedTools = new BackgroundSkillAgent(this.options.toolRegistry, {
       parentPermissionState,
       parentCaller: this.options.parentCallerProvider(),
       parentToolNames,
-      callerId: `${task.callerIdPrefix}:${backgroundContext.getSessionId()}`,
+      callerId: `${task.callerIdPrefix}:${isolatedTaskId}`,
       callerIdPrefix: task.callerIdPrefix,
       ...(task.allowedExistingSkillNames
         ? { allowedExistingSkillNames: task.allowedExistingSkillNames }
@@ -306,6 +309,32 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
         this.options.notify?.(mutation);
       },
     });
+
+    // 生产组合根使用公共运行器；保留下方旧装配仅供未注入运行器的窄测试替身使用。
+    if (this.options.subagentRuntime) {
+      const runtimeResult = await this.options.subagentRuntime.runTask({
+        agentType: task.callerIdPrefix,
+        contextPolicy: 'history-replay',
+        prompt: task.input,
+        conversationHistory: task.conversationHistory,
+        permissionSnapshot: restrictedTools.getPermissionSnapshot(),
+        caller: restrictedTools.getCaller(),
+        signal,
+        toolRegistry: restrictedTools,
+        toolRegistryIsScoped: true,
+        maxIterations: task.maxIterations,
+        persistTranscript: false,
+      });
+      return Object.freeze({
+        cancelled: runtimeResult.status === 'cancelled' || signal.aborted,
+        mutations: Object.freeze([...mutations]),
+        eventCount: runtimeResult.eventCount,
+      });
+    }
+    // 未注入公共运行器时保留旧装配，仅供兼容性测试替身使用。
+    const backgroundContext = new SessionContext(`skill-review-${isolatedTaskId}`);
+    backgroundContext.appConfig = this.options.appConfig;
+    backgroundContext.setPermissionMode(parentPermissionState.getMode());
     const paths = this.options.appConfig.applicationPaths;
     const ruleManager = new RuleManager(
       backgroundContext,

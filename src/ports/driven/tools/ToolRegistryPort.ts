@@ -8,7 +8,11 @@ import type { EventNotificationPort } from '../session/EventNotificationPort.js'
 import type { McpManagerPort } from './McpManagerPort.js';
 import type { ApprovalPort } from '../session/ApprovalPort.js';
 import type { InteractionPort } from '../session/InteractionPort.js';
-import type { ToolExecutionOutcome } from '../../../adapters/tools/tool-types.js';
+import type {
+  ToolExecutionOutcome,
+  SubagentToolPolicy,
+  ToolExecutionTimeoutPolicy,
+} from '../../../adapters/tools/tool-types.js';
 import type {
   PermissionUpdate,
   ToolPermissionCheckResult,
@@ -37,6 +41,10 @@ export interface ToolMetadata {
   readonly maxLines?: number;
   /** 可选的去中心化最大字节数配额，超限触发折叠 */
   readonly maxBytes?: number;
+  /** 子代理工具可见性策略；缺失时按三项 false 处理。 */
+  readonly subagentToolPolicy: SubagentToolPolicy;
+  /** 总执行超时策略；缺失时按 standard 处理。 */
+  readonly executionTimeoutPolicy: ToolExecutionTimeoutPolicy;
 }
 
 /** 工具获批后、真正执行前使用的准备钩子。 */
@@ -61,7 +69,11 @@ export interface ToolExecutionLifecycleHooks {
     readonly approvalAllowed: boolean;
     /** 去敏审计来源，如 extract_memories。 */
     readonly auditSource: string;
+    /** 子代理调用时捕获的父审批端口；不得替换为子 SessionContext 的审批状态。 */
+    readonly approvalPort?: ApprovalPort;
   };
+  /** 普通工具总超时或仅跟随父取消信号的长时编排策略。 */
+  readonly timeoutPolicy?: ToolExecutionTimeoutPolicy;
 }
 
 /**

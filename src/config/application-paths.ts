@@ -106,6 +106,8 @@ export interface ApplicationPaths {
   readonly stateDir: string;
   /** 会话快照目录：`<stateDir>/sessions/`。 */
   readonly sessionsDir: string;
+  /** 子代理 transcript 目录：`<stateDir>/subagents/`，与主会话快照隔离。 */
+  readonly subagentsDir: string;
   /** 浏览器状态目录：`<stateDir>/browser/`。 */
   readonly browserDir: string;
 
@@ -192,6 +194,7 @@ export function createApplicationPaths(
     auditsDir: resolve(projectDataDir, 'logs', 'audits'),
     stateDir: resolve(projectDataDir, 'state'),
     sessionsDir: resolve(projectDataDir, 'state', 'sessions'),
+    subagentsDir: resolve(projectDataDir, 'state', 'subagents'),
     browserDir: resolve(projectDataDir, 'state', 'browser'),
     artifactsDir: resolve(projectDataDir, 'artifacts'),
     toolOutputsDir: resolve(projectDataDir, 'artifacts', 'tool-outputs'),

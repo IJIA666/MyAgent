@@ -2,7 +2,7 @@
  * @file BackgroundSkillReviewService 的隔离 Agent、prompt、结果门槛与取消测试。
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,8 +11,11 @@ import type { LlmConfig } from '../../../../src/config/index.js';
 import type {
   ChatMessage,
   LlmPort,
+  LlmPortOptions,
   LlmStreamEvent,
+  SummaryGenerationOptions,
 } from '../../../../src/ports/driven/llm/LlmPort.js';
+import type { LlmClientFactoryPort } from '../../../../src/ports/driven/llm/LlmClientFactoryPort.js';
 import type { TokenEstimatorPort } from '../../../../src/ports/driven/llm/TokenEstimatorPort.js';
 import type { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdapter.js';
 import type { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
@@ -26,6 +29,8 @@ import {
 import { SkillLibrary } from '../../../../src/core/usecases/brain/skill-library.js';
 import { SkillUsageStore } from '../../../../src/core/usecases/brain/skill-usage-store.js';
 import type { BackgroundSkillReviewRequest } from '../../../../src/core/usecases/plugins/SkillLearningPlugin.js';
+import { SubagentRuntime } from '../../../../src/core/usecases/subagent/SubagentRuntime.js';
+import { SubagentTranscriptStore } from '../../../../src/core/usecases/subagent/SubagentTranscriptStore.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 
 const tempDirs: string[] = [];
@@ -174,6 +179,19 @@ function createService(
   const contextAdapter: ContextAdapter = {
     assemble: (history: ChatMessage[]) => structuredClone(history),
   };
+  // 测试模型保留原有 mock 的观测能力，但通过新客户端对象进入公共运行器，
+  // 从而同时验证独立 LLM 工厂、Skill 专用运行配置和不落盘契约。
+  const llmClientFactory = new DelegatingLlmClientFactory(driver);
+  const subagentRuntime = new SubagentRuntime({
+    appConfig: environment.appConfig,
+    toolRegistry: registry as unknown as ToolRegistryPort,
+    estimator: createEstimator(),
+    contextAdapter,
+    llmConfigProvider: () => environment.appConfig.llm as LlmConfig,
+    llmClientFactory,
+    skillLibrary: environment.skillLibrary,
+    transcriptStore: new SubagentTranscriptStore(environment.paths.subagentsDir),
+  });
   const service = new BackgroundSkillReviewService({
     toolRegistry: registry as unknown as ToolRegistryPort,
     driver,
@@ -184,9 +202,55 @@ function createService(
     skillLibrary: environment.skillLibrary,
     parentPermissionStateProvider: () => permissionState,
     parentCallerProvider: () => createTrustedCallContext('parent-session'),
+    subagentRuntime,
     notify,
   });
-  return { service, notify, ...environment };
+  return { service, notify, llmClientFactory, ...environment };
+}
+
+/** 为旧测试 Fake 包装一个完整的、每次创建都独立的 LLM 客户端。 */
+class DelegatingLlmClientFactory implements LlmClientFactoryPort {
+  /** 已创建的子客户端，供测试核对实例隔离。 */
+  public readonly clients: LlmPort[] = [];
+
+  /**
+   * @param source - 只实现了测试所需最小方法集的旧 Fake
+   */
+  constructor(private readonly source: LlmPort) {}
+
+  /**
+   * 创建不共享客户端对象的代理；旧 Fake 缺少的非流式方法使用安全空实现。
+   *
+   * @param config - 冻结的 LLM 配置快照
+   * @returns 可被公共运行器完整消费的独立客户端
+   */
+  public create(_config: LlmConfig): LlmPort {
+    const source = this.source as unknown as Partial<LlmPort>;
+    const client: LlmPort = {
+      getModelName: () => source.getModelName?.() ?? 'mock-model',
+      switchModel: (config, options) => {
+        source.switchModel?.call(this.source, config, options);
+      },
+      abort: () => {
+        source.abort?.call(this.source);
+      },
+      streamChat: (messages, tools, options?: LlmPortOptions) => {
+        if (!source.streamChat) {
+          throw new Error('测试 Fake 未提供 streamChat');
+        }
+        return source.streamChat.call(this.source, messages, tools, options);
+      },
+      chat: async (messages, options?: LlmPortOptions) => (
+        source.chat?.call(this.source, messages, options) ?? ''
+      ),
+      generateSummaryAsync: async (
+        messages,
+        options?: SummaryGenerationOptions,
+      ) => source.generateSummaryAsync?.call(this.source, messages, options) ?? '',
+    };
+    this.clients.push(client);
+    return client;
+  }
 }
 
 afterEach(() => {
@@ -385,7 +449,10 @@ describe('BackgroundSkillReviewService', () => {
     });
     const { service } = createService(driver, registry);
 
-    await expect(service.runReview(createReviewRequest())).rejects.toThrow('16');
+    // 公共运行器把迭代上限作为结构化失败收口，服务层只暴露后台业务结果，
+    // 因此这里不再依赖旧装配抛出的字符串异常。
+    const result = await service.runReview(createReviewRequest());
+    expect(result.cancelled).toBe(false);
     expect(modelCallCount).toBe(16);
     expect(registry.callTool).toHaveBeenCalledTimes(16);
   });
@@ -591,7 +658,7 @@ describe('BackgroundSkillReviewService', () => {
         yield completeEvent('done');
       }),
     } as unknown as LlmPort;
-    const { service } = createService(driver, createParentRegistry());
+    const { service, llmClientFactory, paths } = createService(driver, createParentRegistry());
 
     await service.runReview({
       ...createReviewRequest(),
@@ -622,6 +689,10 @@ describe('BackgroundSkillReviewService', () => {
     const tail = first[first.length - 1];
     expect(tail.role).toBe('user');
     expect(tail.content).toContain('Skill Review Agent');
+    // Review 通过独立客户端工厂运行，且 Skill 专用任务明确不写 transcript。
+    expect(llmClientFactory.clients).toHaveLength(1);
+    expect(llmClientFactory.clients[0]).not.toBe(driver);
+    expect(existsSync(paths.subagentsDir) ? readdirSync(paths.subagentsDir) : []).toEqual([]);
   });
 
   it('超过 80 条且单条超过 6000 字符的快照原样回放，Review 自身不再裁剪或 JSON 嵌套', async () => {

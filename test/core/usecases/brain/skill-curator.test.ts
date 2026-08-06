@@ -23,6 +23,7 @@ import { SkillCurator } from '../../../../src/core/usecases/brain/skill-curator.
 import { SkillLibrary } from '../../../../src/core/usecases/brain/skill-library.js';
 import type { SkillUsageRecord } from '../../../../src/core/usecases/brain/skill-types.js';
 import { SkillUsageStore } from '../../../../src/core/usecases/brain/skill-usage-store.js';
+import type { IsolatedSkillTaskRunner } from '../../../../src/core/usecases/brain/background-skill-review.js';
 
 describe('SkillCurator', () => {
   let tempDir: string;
@@ -267,10 +268,50 @@ describe('SkillCurator', () => {
     )).status).toBe('paused');
   });
 
+  it('融合阶段通过隔离运行器固定迭代上限、候选范围和变更前备份', async () => {
+    const now = new Date('2026-07-01T00:00:00.000Z');
+    writeSkill(userSkillsDir, 'candidate-skill', '可融合正文');
+    writeUsage({
+      'candidate-skill': usageRecord('2026-06-30T00:00:00.000Z'),
+    });
+    let capturedTask: Readonly<Parameters<IsolatedSkillTaskRunner['runIsolatedSkillTask']>[0]> | undefined;
+    const runner: IsolatedSkillTaskRunner = {
+      runIsolatedSkillTask: vi.fn(async task => {
+        capturedTask = task;
+        // 模拟公共 Scope 在真实 skill_manage 前触发 Curator 的备份钩子。
+        task.beforeSkillMutation?.();
+        return {
+          cancelled: false,
+          mutations: [{ status: 'success' as const, action: 'patch', name: 'candidate-skill' }],
+          eventCount: 2,
+        };
+      }),
+    };
+    const { curator, stateStore } = createHarness({ consolidate: true }, {}, runner);
+    stateStore.writeBaseline(new Date('2026-01-01T00:00:00.000Z'));
+
+    const result = await curator.run({ manual: true }, now);
+
+    expect(capturedTask).toMatchObject({
+      maxIterations: 8,
+      callerIdPrefix: 'background-skill-curator',
+      allowedExistingSkillNames: ['candidate-skill'],
+    });
+    expect(capturedTask?.input).toContain('candidate-skill');
+    expect(result.consolidations).toEqual([{
+      status: 'success',
+      action: 'patch',
+      name: 'candidate-skill',
+    }]);
+    // 真实写入前必须先完成 Curator 备份，避免公共运行器失败时不可恢复。
+    expect(existsSync(backupsDir)).toBe(true);
+  });
+
   /** 构造共享测试依赖。 */
   function createHarness(
     configOverride: Partial<ResolvedCuratorConfig> = {},
     backupOptions: SkillCuratorBackupStoreOptions = {},
+    consolidationRunner?: IsolatedSkillTaskRunner,
   ): {
     curator: SkillCurator;
     library: SkillLibrary;
@@ -311,6 +352,8 @@ describe('SkillCurator', () => {
         usageStore,
         stateStore,
         backupStore,
+        undefined,
+        consolidationRunner,
       ),
       library,
       usageStore,

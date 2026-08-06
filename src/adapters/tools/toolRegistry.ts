@@ -213,8 +213,10 @@ export class ToolRegistry implements ToolRegistryPort {
     lifecycleHooks?: ToolExecutionLifecycleHooks,
   ): Promise<ToolExecutionOutcome<unknown>> {
     // 检查目标工具是否隶属于本地内置集合
+    const localTool = this.catalog.getTool(functionName);
     const toolMeta = this.catalog.getToolMetadata(functionName);
-    const isLocalTool = toolMeta !== undefined;
+    // 元数据同时覆盖 MCP 工具，因此必须用本地实例判断 Gateway 分流，避免把 MCP 当成本地工具执行。
+    const isLocalTool = localTool !== undefined;
     const hasMcp = this.mcpManager !== undefined;
 
     // 工具完全不存在时直接抛出，不包装为 outcome
@@ -238,6 +240,7 @@ export class ToolRegistry implements ToolRegistryPort {
           functionArgs,
           permissionState,
           sessionContext,
+          securityContext ? (securityContext.approvalPort ?? null) : sessionContext,
         );
       if (isLocalTool) {
         const gatewayResult = await this.gateway.execute(
@@ -253,11 +256,17 @@ export class ToolRegistry implements ToolRegistryPort {
               correlationId: toolCallId,
               context: sessionContext,
               signal,
-              timeoutMs,
+              timeoutMs: lifecycleHooks?.timeoutPolicy === 'parent-signal'
+                ? undefined
+                : timeoutMs ?? 30000,
               interactionPort,
               prepareExecution: lifecycleHooks?.prepareExecution,
               getPermissionStateVersion: () => permissionState.getStateVersion(),
               auditSource: securityContext?.auditSource,
+              caller,
+              approvalPort: securityContext
+                ? (securityContext.approvalPort ?? null)
+                : undefined,
             },
           },
         );
@@ -298,10 +307,16 @@ export class ToolRegistry implements ToolRegistryPort {
               sessionId: sessionContext?.getSessionId(),
               correlationId: toolCallId,
               signal,
-              timeoutMs,
+              timeoutMs: lifecycleHooks?.timeoutPolicy === 'parent-signal'
+                ? undefined
+                : timeoutMs ?? 30000,
               prepareExecution: lifecycleHooks?.prepareExecution,
               getPermissionStateVersion: () => permissionState.getStateVersion(),
               auditSource: securityContext?.auditSource,
+              caller,
+              approvalPort: securityContext
+                ? (securityContext.approvalPort ?? null)
+                : undefined,
             },
           },
         );
@@ -344,8 +359,10 @@ export class ToolRegistry implements ToolRegistryPort {
     args: Record<string, unknown>,
     permissionState: PermissionSessionState,
     sessionContext?: SessionEventPort & ApprovalPort & EventNotificationPort,
+    approvalPort?: ApprovalPort | null,
   ): PermissionPromptAdapter | undefined {
-    if (!sessionContext) {
+    const promptPort = approvalPort === null ? undefined : approvalPort ?? sessionContext;
+    if (!promptPort) {
       return undefined;
     }
     const promptAdapter = new PermissionPromptAdapter(
@@ -364,7 +381,7 @@ export class ToolRegistry implements ToolRegistryPort {
           );
         }
 
-        const approval = await sessionContext.waitApproval(
+        const approval = await promptPort.waitApproval(
           `permission_${Date.now()}_${toolName}`,
           { name: toolName, arguments: args },
           { signal, choices },

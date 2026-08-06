@@ -12,6 +12,19 @@ import type { ToolPermissionCheckResult } from '../../core/domain/permissions/pe
 import type { ToolPermissionChecker } from '../../core/domain/permissions/tool-permission-service.js';
 import type { ToolAuthorizationAdapter } from '../../ports/driven/tools/ToolAuthorizationAdapter.js';
 
+/** 子代理工具可见性策略。缺失策略由目录层按三项 false 处理。 */
+export interface SubagentToolPolicy {
+  /** 是否对 fresh 前台子代理开放。 */
+  readonly freshForeground: boolean;
+  /** 是否对 fresh 后台子代理开放。 */
+  readonly freshBackground: boolean;
+  /** 是否对 fork 子代理开放。 */
+  readonly fork: boolean;
+}
+
+/** 工具总执行超时策略。 */
+export type ToolExecutionTimeoutPolicy = 'standard' | 'parent-signal';
+
 /**
  * 工具执行模式。
  * - `immediate`：普通即时工具，可在同步/异步流程中独立完成，沿用现有超时模型。
@@ -96,6 +109,12 @@ export interface NativeTool {
    * 提供稳定权限身份和正式资源证据。缺少适配器的 effectful 工具 fail closed。
    */
   authorizationAdapter?: ToolAuthorizationAdapter;
+
+  /** 不进入模型 schema 的子代理工具作用域策略。 */
+  readonly subagentToolPolicy?: SubagentToolPolicy;
+
+  /** 外层工具执行器使用的总超时策略。 */
+  readonly executionTimeoutPolicy?: ToolExecutionTimeoutPolicy;
 }
 
 /**

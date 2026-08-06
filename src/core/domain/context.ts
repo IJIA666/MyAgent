@@ -99,12 +99,17 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    *
    * @param sessionId - 可选的会话标识，若不传则自动按当前时间戳生成
    * @param tenantId - 可选的租户标识，若不传则默认为 'default'
+   * @param permissionState - 可选的宿主冻结权限派生状态，供隔离子会话注入独立副本
    */
-  constructor(sessionId?: string, tenantId?: string) {
+  constructor(
+    sessionId?: string,
+    tenantId?: string,
+    permissionState?: PermissionSessionState,
+  ) {
     super();
     this.sessionId = sessionId || createSessionId();
     this.tenantId = tenantId || 'default';
-    this.permissionSessionState = new PermissionSessionState({
+    this.permissionSessionState = permissionState ?? new PermissionSessionState({
       mode: getDefaultPermissionMode(),
     });
 

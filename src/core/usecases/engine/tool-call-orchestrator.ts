@@ -278,6 +278,11 @@ export class ToolCallOrchestrator {
       let outputResult: { content: string; originalPath?: string; isTruncated: boolean; } | null = null;
       // 超时值只向 Gateway 传递，Gateway 在权限审批完成后才创建计时信号。
       const executionTimeoutMs = this.context.appConfig?.runtimeLimits?.toolTimeoutMs ?? 30000;
+      const executionTimeoutPolicy = this.toolRegistry.getTool(functionName)?.executionTimeoutPolicy;
+      // 子代理工具的生命周期由父级取消信号管理，不能套用普通工具的固定超时。
+      const effectiveExecutionTimeoutMs = executionTimeoutPolicy === 'parent-signal'
+        ? undefined
+        : executionTimeoutMs;
       try {
         const outcome = await this.toolRegistry.callTool(
           functionName,
@@ -286,8 +291,11 @@ export class ToolCallOrchestrator {
           this.interactionPort,
           signal,
           toolCall.id,
-          executionTimeoutMs,
-          { prepareExecution },
+          effectiveExecutionTimeoutMs,
+          {
+            prepareExecution,
+            timeoutPolicy: executionTimeoutPolicy,
+          },
         );
         executionStarted = outcome.effect.executionStarted;
         // 使用 outcome 中的 effect（工具可能已精化），供后续质量门禁消费
@@ -386,9 +394,25 @@ export class ToolCallOrchestrator {
           throw new Error(`尾随工具调用被插件拦截：${tailBeforeToolResult.control.reason ?? '安全策略限制'}`);
         }
 
-        const tailOutcome = await this.toolRegistry.callTool(
-          tailCall.name, tailCall.args, this.context, this.interactionPort, signal, tailCallId, executionTimeoutMs
-        );
+        const tailExecutionTimeoutPolicy = this.toolRegistry.getTool(tailCall.name)?.executionTimeoutPolicy;
+        // 尾随调用与普通调用遵循相同的父级信号超时策略。
+        const tailExecutionTimeoutMs = tailExecutionTimeoutPolicy === 'parent-signal'
+          ? undefined
+          : executionTimeoutMs;
+        // 未声明策略时保留原有七参数调用形态，避免把未配置的 undefined 扩散到调用方。
+        const tailCallArguments: Parameters<ToolRegistryPort['callTool']> = [
+          tailCall.name,
+          tailCall.args,
+          this.context,
+          this.interactionPort,
+          signal,
+          tailCallId,
+          tailExecutionTimeoutMs,
+        ];
+        if (tailExecutionTimeoutPolicy !== undefined) {
+          tailCallArguments.push({ timeoutPolicy: tailExecutionTimeoutPolicy });
+        }
+        const tailOutcome = await this.toolRegistry.callTool(...tailCallArguments);
         const tailResultRaw: unknown = tailOutcome.value;
 
         // tail call 同样需要进入 AfterTool 生命周期

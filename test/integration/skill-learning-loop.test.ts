@@ -13,11 +13,13 @@ import { createApplicationPaths } from '../../src/config/application-paths.js';
 import type { LlmConfig } from '../../src/config/index.js';
 import type {
   LlmPort,
+  LlmPortOptions,
   LlmStreamEvent,
+  SummaryGenerationOptions,
 } from '../../src/ports/driven/llm/LlmPort.js';
+import type { LlmClientFactoryPort } from '../../src/ports/driven/llm/LlmClientFactoryPort.js';
 import type { TokenEstimatorPort } from '../../src/ports/driven/llm/TokenEstimatorPort.js';
 import { SessionContext } from '../../src/core/domain/context.js';
-import { PermissionSessionState } from '../../src/core/domain/permissions/permission-session-state.js';
 import { createTrustedCallContext } from '../../src/core/domain/permissions/trusted-call-context.js';
 import { BackgroundSkillReviewService } from '../../src/core/usecases/brain/background-skill-review.js';
 import { SkillLibrary } from '../../src/core/usecases/brain/skill-library.js';
@@ -30,6 +32,8 @@ import {
 } from '../../src/core/usecases/brain/skill-types.js';
 import { SkillUsageStore } from '../../src/core/usecases/brain/skill-usage-store.js';
 import { ContextRepository } from '../../src/core/usecases/brain/ContextRepository.js';
+import { SessionManager } from '../../src/core/usecases/engine/session.js';
+import { SubagentExecutionController } from '../../src/core/usecases/subagent/SubagentExecutionController.js';
 import {
   SkillLearningPlugin,
   type BackgroundSkillReviewRequest,
@@ -43,8 +47,13 @@ import {
 import { createMockAppConfig } from '../helpers/mock-factory.js';
 
 const createdRoots: string[] = [];
+const createdSessions: SessionManager[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  // 即使断言提前失败，也先关闭真实 SessionManager，再删除临时应用目录。
+  for (const session of createdSessions.splice(0)) {
+    await session.close();
+  }
   for (const root of createdRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -108,7 +117,7 @@ describe('Skill learning loop integration', () => {
       name: 'plain-text-social-posting',
     })) as { content: string };
     expect(loaded.content).toContain('发布前校验');
-    await harness.registry.close();
+    await harness.session.close();
   });
 
   it('writeApproval=true 时后台只产生 pending，受信批准后下一会话才可加载', async () => {
@@ -169,7 +178,7 @@ describe('Skill learning loop integration', () => {
       name: 'plain-text-social-posting',
     })) as { content: string };
     expect(loaded.content).toContain('纯文字平台');
-    await harness.registry.close();
+    await harness.session.close();
   });
 
   it('达到阈值但没有可复用学习证据时 Review 合法 no-op，不创建 Skill', async () => {
@@ -188,7 +197,7 @@ describe('Skill learning loop integration', () => {
     expect(review?.mutations).toEqual([]);
     expect(harness.library.list()).toEqual([]);
     expect(harness.pendingStore.list()).toEqual([]);
-    await harness.registry.close();
+    await harness.session.close();
   });
 
   it('等待交互前的学习证据在会话恢复后仍参与最终 Review', async () => {
@@ -275,11 +284,11 @@ describe('Skill learning loop integration', () => {
       action: 'create',
       name: 'plain-text-social-posting',
     }]);
-    await harness.registry.close();
+    await harness.session.close();
   });
 });
 
-/** 创建真实 Skill 存储、工具网关与隔离 Review 服务。 */
+/** 创建真实 Skill 存储、工具网关、SessionManager 与公共隔离 Review 服务。 */
 function createHarness(options: {
   readonly writeApproval: boolean;
   readonly driver: LlmPort;
@@ -320,33 +329,77 @@ function createHarness(options: {
   );
   const pendingStore = new SkillPendingStore(paths.skillPendingDir, library);
   const approvalController = new SkillWriteApprovalController(options.writeApproval);
+  const subagentController = new SubagentExecutionController();
   const registry = new ToolRegistry(undefined, {
     skillLibrary: library,
     skillPendingStore: pendingStore,
     skillWriteApprovalController: approvalController,
+    subagentExecutionPort: subagentController,
   });
-  const parentPermissionState = new PermissionSessionState();
-  const reviewService = new BackgroundSkillReviewService({
-    toolRegistry: registry,
-    driver: options.driver,
-    llmConfigProvider: () => appConfig.llm as LlmConfig,
-    estimator: createEstimator(),
-    contextAdapter: {
+  const llmClientFactory = new DelegatingLlmClientFactory(options.driver);
+  const session = new SessionManager(
+    appConfig.llm,
+    options.driver,
+    createEstimator(),
+    registry,
+    {
       assemble: history => structuredClone(history),
     },
     appConfig,
-    skillLibrary: library,
-    parentPermissionStateProvider: () => parentPermissionState,
-    parentCallerProvider: () => createTrustedCallContext('main-session', 'interactive'),
-  });
+    undefined,
+    library,
+    pendingStore,
+    approvalController,
+    undefined,
+    undefined,
+    subagentController,
+    llmClientFactory,
+  );
+  createdSessions.push(session);
+  const reviewService = (session as unknown as {
+    backgroundSkillReviewService?: BackgroundSkillReviewService;
+  }).backgroundSkillReviewService;
+  if (!reviewService) {
+    throw new Error('测试 SessionManager 未装配 BackgroundSkillReviewService');
+  }
   return {
     appConfig,
     paths,
     library,
     pendingStore,
     registry,
+    session,
     reviewService,
   };
+}
+
+/** 为学习闭环测试创建独立的子模型客户端对象，保留原 Fake 的调用观测。 */
+class DelegatingLlmClientFactory implements LlmClientFactoryPort {
+  /**
+   * @param source - 主测试 Fake LLM
+   */
+  constructor(private readonly source: LlmPort) {}
+
+  /**
+   * @param _config - 公共运行器提供的冻结配置
+   * @returns 不与主会话共享对象身份的 LLM 代理
+   */
+  public create(_config: LlmConfig): LlmPort {
+    const source = this.source;
+    return {
+      getModelName: () => source.getModelName(),
+      switchModel: (config, options) => source.switchModel(config, options),
+      abort: () => source.abort(),
+      streamChat: (messages, tools, options?: LlmPortOptions) => (
+        source.streamChat(messages, tools, options)
+      ),
+      chat: async (messages, options?: LlmPortOptions) => source.chat(messages, options),
+      generateSummaryAsync: async (
+        messages,
+        options?: SummaryGenerationOptions,
+      ) => source.generateSummaryAsync(messages, options),
+    };
+  }
 }
 
 /** 创建可观测但不阻塞 SkillLearningPlugin 的后台调度器。 */

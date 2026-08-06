@@ -236,7 +236,9 @@ function sanitizeString(value: string, fieldName: string | undefined, context: S
     return `${prefix}[REDACTED]`;
   });
   sanitized = sanitized.replace(/([a-z][a-z\d+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[REDACTED]@');
-  sanitized = sanitized.replace(/\b(?:sk|pk|ghp|github_pat|xoxb|xoxp)-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]');
+  sanitized = sanitized.replace(/\b(?:sk|pk|xoxb|xoxp)-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]');
+  sanitized = sanitized.replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{8,}\b/g, '[REDACTED]');
+  sanitized = sanitized.replace(/\bgithub_pat_[A-Za-z0-9_]{8,}\b/g, '[REDACTED]');
   for (const pattern of context.customPatterns) {
     sanitized = sanitized.replace(pattern, '[REDACTED]');
   }

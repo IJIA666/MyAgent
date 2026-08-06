@@ -11,6 +11,7 @@ import { buildSystemTools } from './impl/system/index.js';
 import { getSkillTools } from './impl/skill/index.js';
 import { getInteractionTools } from './impl/interaction/index.js';
 import { getBrowserTools } from './impl/browser/browser-tool-registry.js';
+import { AgentTool } from './impl/agent/AgentTool.js';
 import type { NativeTool } from './tool-types.js';
 import type { ShellCompoundFeatureConfig } from './impl/system/command-analysis/index.js';
 import type { SkillLibrary } from '../../core/usecases/brain/skill-library.js';
@@ -18,6 +19,42 @@ import type {
   SkillPendingStore,
   SkillWriteApprovalController,
 } from '../../core/usecases/brain/skill-pending-store.js';
+import type { SubagentExecutionPort } from '../../ports/driving/SubagentExecutionPort.js';
+import { AGENT_TOOL_NAME } from './constants/native-tool-names.js';
+
+/** 已完成 fresh 前台子代理安全审计的原生工具名；集合外工具默认不可见。 */
+const FRESH_FOREGROUND_SUBAGENT_TOOLS = new Set<string>([
+  'Bash',
+  'PowerShell',
+  'applyPatch',
+  'browser_back',
+  'browser_click',
+  'browser_ensure_login',
+  'browser_get_text',
+  'browser_navigate',
+  'browser_press',
+  'browser_scroll',
+  'browser_type',
+  'browser_vision',
+  'copyPath',
+  'createDirectory',
+  'deletePath',
+  'editFile',
+  'get_current_time',
+  'gitShowDiff',
+  'gitShowLog',
+  'gitShowStatus',
+  'globSearch',
+  'grepSearch',
+  'listFiles',
+  'load_skill',
+  'movePath',
+  'readFile',
+  'readManyFiles',
+  'skill_manage',
+  'skills_list',
+  'writeFile',
+]);
 
 /** buildNativeTools 的选项参数 */
 export interface BuildNativeToolsOptions {
@@ -29,6 +66,8 @@ export interface BuildNativeToolsOptions {
   skillWriteApprovalController?: SkillWriteApprovalController;
   /** Shell 复合命令能力开关。 */
   shellCompoundFeatures?: Readonly<ShellCompoundFeatureConfig>;
+  /** 主 Agent 使用的会话绑定子代理执行端口；未注入时 Agent 工具安全返回未绑定错误。 */
+  subagentExecutionPort?: SubagentExecutionPort;
 }
 
 /**
@@ -40,7 +79,7 @@ export interface BuildNativeToolsOptions {
  * @returns 所有领域工具实例的扁平数组
  */
 export function buildNativeTools(options?: BuildNativeToolsOptions): NativeTool[] {
-  return [
+  const tools: NativeTool[] = [
     ...gitTools,
     ...fileSystemTools,
     ...buildSystemTools(options?.shellCompoundFeatures),
@@ -51,5 +90,29 @@ export function buildNativeTools(options?: BuildNativeToolsOptions): NativeTool[
     ),
     ...getInteractionTools(),
     ...getBrowserTools(),
+    new AgentTool(options?.subagentExecutionPort),
   ];
+  return tools.map(tool => withSubagentMetadata(tool, options?.subagentExecutionPort));
+}
+
+/** 为所有内建工具补齐已审计的子代理策略和总超时策略。 */
+function withSubagentMetadata(
+  tool: NativeTool,
+  _subagentExecutionPort?: SubagentExecutionPort,
+): NativeTool {
+  if (tool.name === AGENT_TOOL_NAME) {
+    return tool;
+  }
+  const existingPolicy = tool.subagentToolPolicy;
+  // 必须在原实例上补元数据，保留 class prototype 上的 execute/checkPermissions 方法。
+  Object.assign(tool, {
+    subagentToolPolicy: Object.freeze({
+      freshForeground: existingPolicy?.freshForeground === true
+        || (existingPolicy === undefined && FRESH_FOREGROUND_SUBAGENT_TOOLS.has(tool.name)),
+      freshBackground: existingPolicy?.freshBackground === true,
+      fork: existingPolicy?.fork === true,
+    }),
+    executionTimeoutPolicy: tool.executionTimeoutPolicy ?? 'standard',
+  });
+  return tool;
 }

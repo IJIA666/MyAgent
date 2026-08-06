@@ -10,9 +10,11 @@ import type { ToolPermissionEvidence } from '../../core/domain/permissions/permi
 import type { ToolExecutionContext } from '../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../ports/driven/session/SessionEventPort.js';
 import type { InteractionPort } from '../../ports/driven/session/InteractionPort.js';
+import type { ApprovalPort } from '../../ports/driven/session/ApprovalPort.js';
 import { createSandboxAttestation } from '../../core/domain/security/sandbox-attestation.js';
 import type { EventNotificationPort } from '../../ports/driven/session/EventNotificationPort.js';
 import { createCredentialProfile } from '../../core/domain/security/credential-profile.js';
+import type { TrustedCallContext } from '../../core/domain/permissions/trusted-call-context.js';
 
 /** 已授权工具执行时使用的非权限运行时参数。 */
 export interface AuthorizedToolRuntime {
@@ -30,10 +32,14 @@ export interface AuthorizedToolRuntime {
   readonly timeoutMs?: number;
   /** 可选交互端口。 */
   readonly interactionPort?: InteractionPort;
+  /** 子代理调用时捕获的父审批展示端口。 */
+  readonly approvalPort?: ApprovalPort | null;
   /** 获得权限后、真正执行前运行的排队、加锁或备份准备。 */
   readonly prepareExecution?: () => Promise<(() => void) | void>;
   /** 读取当前会话权限状态版本，用于让授权后状态变更使旧 grant 失效。 */
   readonly getPermissionStateVersion?: () => number;
+  /** 当前调用的受信 caller，供工具继续派生子调用身份。 */
+  readonly caller?: TrustedCallContext;
 }
 
 /** 在工具已获授权后创建实际执行使用的取消信号。 */
@@ -149,6 +155,9 @@ export function createToolExecutionContext(
   if (runtime.context && 'toolCallId' in runtime.context) {
     return {
       ...runtime.context,
+      approvalPort: resolveApprovalPort(runtime),
+      interactionPort: runtime.interactionPort,
+      caller: runtime.caller,
       toolName: authorizedContext.toolName,
       executionPlan: authorizedContext.plan,
       permissionAnalysis: authorizedContext.analysis,
@@ -156,11 +165,30 @@ export function createToolExecutionContext(
   }
   return {
     sessionContext: runtime.context,
+    approvalPort: resolveApprovalPort(runtime),
+    interactionPort: runtime.interactionPort,
+    caller: runtime.caller,
     toolCallId: runtime.correlationId ?? authorizedContext.nonce,
     toolName: authorizedContext.toolName,
     executionPlan: authorizedContext.plan,
     permissionAnalysis: authorizedContext.analysis,
   };
+}
+
+/** 解析审批展示端口：显式 null 表示隔离子任务禁止借用执行 session。 */
+function resolveApprovalPort(runtime: AuthorizedToolRuntime): ApprovalPort | undefined {
+  if (runtime.approvalPort === null) {
+    return undefined;
+  }
+  if (runtime.approvalPort !== undefined) {
+    return runtime.approvalPort;
+  }
+  if (runtime.context && 'approvalPort' in runtime.context) {
+    return runtime.context.approvalPort;
+  }
+  return runtime.context && 'waitApproval' in runtime.context
+    ? runtime.context as unknown as ApprovalPort
+    : undefined;
 }
 
 /** 验证执行前的权限状态与 sandbox profile 仍与授权计划一致。 */

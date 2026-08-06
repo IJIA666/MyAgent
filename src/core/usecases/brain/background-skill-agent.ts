@@ -28,6 +28,7 @@ import {
   SkillReviewReadLedger,
   skillReadLedgerRegistry,
 } from './skill-review-read-ledger.js';
+import { ScopedToolRegistry } from '../subagent/ScopedToolRegistry.js';
 
 /** Skill Review Agent 的固定工具上限：目录 → 读取 → 写入。 */
 const BACKGROUND_SKILL_TOOL_NAMES = new Set(['skills_list', 'load_skill', 'skill_manage']);
@@ -94,6 +95,8 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
   private readonly beforeSkillMutation?: () => void;
   private readonly readLedger: SkillReviewReadLedger;
   private readonly allowedExistingSkillNames?: Set<string>;
+  /** 公共作用域注册表，统一承载 caller、子权限和 approvalAllowed=false。 */
+  private readonly scopedRegistry: ScopedToolRegistry;
 
   /**
    * @param parentRegistry - 已装配统一 ToolGateway 的父工具注册表
@@ -125,6 +128,13 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
     this.readLedger = options.readLedger
       ?? new SkillReviewReadLedger(this.caller.caller.callerId);
     skillReadLedgerRegistry.register(this.readLedger);
+    this.scopedRegistry = new ScopedToolRegistry({
+      parent: parentRegistry,
+      permissionState: this.permissionState,
+      caller: this.caller,
+      auditSource: 'background_skill_review',
+      toolVisibility: name => this.isAllowedTool(name),
+    });
   }
 
   /**
@@ -133,11 +143,7 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
    * @returns skills_list/load_skill/skill_manage 与父工具面的交集
    */
   public async getTools(): Promise<unknown[]> {
-    const tools = await this.parentRegistry.getTools();
-    return tools.filter(tool => {
-      const name = getToolDefinitionName(tool);
-      return name !== undefined && this.isAllowedTool(name);
-    });
+    return this.scopedRegistry.getTools();
   }
 
   /**
@@ -147,9 +153,7 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
    * @returns 允许且父工具存在时的元数据
    */
   public getTool(name: string): ToolMetadata | undefined {
-    return this.isAllowedTool(name)
-      ? this.parentRegistry.getTool(name)
-      : undefined;
+    return this.scopedRegistry.getTool(name);
   }
 
   /**
@@ -183,11 +187,11 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
       this.assertSkillMutationInScope(functionArgs);
     }
 
-    const outcome = await this.parentRegistry.callTool(
+    const outcome = await this.scopedRegistry.callTool(
       functionName,
       structuredClone(functionArgs),
-      undefined,
-      undefined,
+      _sessionContext,
+      _interactionPort,
       signal,
       toolCallId,
       timeoutMs,
@@ -197,12 +201,6 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
           if (functionName === 'skill_manage') {
             this.beforeSkillMutation?.();
           }
-        },
-        securityContext: {
-          caller: this.caller,
-          permissionState: this.permissionState,
-          approvalAllowed: false,
-          auditSource: 'background_skill_review',
         },
       },
     );
@@ -254,6 +252,7 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
    * 同时注销本次任务的读取账本，关闭后凭证不可复用。
    */
   public async close(): Promise<void> {
+    await this.scopedRegistry.close();
     skillReadLedgerRegistry.unregister(this.caller.caller.callerId);
   }
 
@@ -399,19 +398,6 @@ export class BackgroundSkillAgent implements ToolRegistryPort {
       throw error;
     }
   }
-}
-
-/** 从 OpenAI function definition 或扁平工具元数据中读取工具名。 */
-function getToolDefinitionName(value: unknown): string | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  if (typeof value.name === 'string') {
-    return value.name;
-  }
-  return isRecord(value.function) && typeof value.function.name === 'string'
-    ? value.function.name
-    : undefined;
 }
 
 /** 从 ToolGateway 的 MCP 兼容包络解析真实 Skill 管理结果。 */

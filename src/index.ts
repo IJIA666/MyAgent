@@ -9,6 +9,7 @@ import { loadConfig, ensureConfigFiles } from './config/index.js';
 import { startCli } from './adapters/input/interface/index.js';
 import { theme } from './adapters/input/interface/views/theme.js';
 import { OpenAiLlmAdapter } from './adapters/llm/OpenAiLlmAdapter.js';
+import { OpenAiLlmClientFactory } from './adapters/llm/OpenAiLlmClientFactory.js';
 import { TiktokenEstimator } from './adapters/llm/TiktokenEstimator.js';
 import { abortSessionTasks } from './adapters/tools/impl/system/terminal-engine.js';
 import { setBrowserPaths } from './adapters/tools/impl/browser/browser-action.js';
@@ -28,6 +29,7 @@ import { SkillCuratorStateStore } from './core/usecases/brain/skill-curator-stat
 import { SkillCuratorBackupStore } from './core/usecases/brain/skill-curator-backup.js';
 import { SkillCurator } from './core/usecases/brain/skill-curator.js';
 import { SkillCuratorReportStore } from './core/usecases/brain/skill-curator-report.js';
+import { SubagentExecutionController } from './core/usecases/subagent/SubagentExecutionController.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -141,10 +143,15 @@ async function main() {
       skillCuratorReportStore,
     );
 
+    // 控制器先于 ToolRegistry 创建，Agent 工具只获得稳定端口；具体运行器稍后由 SessionManager 绑定。
+    const subagentExecutionController = new SubagentExecutionController();
+    const subagentLlmClientFactory = new OpenAiLlmClientFactory();
+
     const toolRegistry = new ToolRegistry(mcpManager, {
       skillLibrary,
       skillPendingStore,
       skillWriteApprovalController,
+      subagentExecutionPort: subagentExecutionController,
     }, permissionSettingsStore);
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
@@ -162,6 +169,8 @@ async function main() {
       skillWriteApprovalController,
       undefined,
       skillCurator,
+      subagentExecutionController,
+      subagentLlmClientFactory,
     );
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);

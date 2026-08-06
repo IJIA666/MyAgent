@@ -127,6 +127,8 @@ describe('BackgroundSkillAgent', () => {
     });
 
     const lifecycle = parent.callTool.mock.calls[0][7];
+    // Skill 作用域不接收任何父交互上下文，审批入口必须在网关层明确关闭。
+    expect(parent.callTool.mock.calls[0][2]).toBeUndefined();
     expect(lifecycle.securityContext).toMatchObject({
       approvalAllowed: false,
       auditSource: 'background_skill_review',

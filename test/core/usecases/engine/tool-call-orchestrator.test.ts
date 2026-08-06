@@ -129,6 +129,61 @@ describe('ToolCallOrchestrator', () => {
       expect(result.events.some(e => e.type === 'tool_call_result')).toBe(true);
     });
 
+    it('Agent 工具应由父级信号管理超时，普通工具仍使用标准超时', async () => {
+      const calls: Array<{ name: string; timeoutMs: unknown; timeoutPolicy: unknown }> = [];
+      const timeoutRegistry = {
+        getTools: async () => [],
+        getTool: (name: string) => {
+          if (name === 'Agent') {
+            return {
+              name,
+              securityCategory: 'read' as const,
+              executionMode: 'auto' as const,
+              subagentToolPolicy: { freshForeground: false, freshBackground: false, fork: false },
+              executionTimeoutPolicy: 'parent-signal' as const,
+            };
+          }
+          if (name === 'echo') {
+            return {
+              name,
+              securityCategory: 'read' as const,
+              executionMode: 'auto' as const,
+              subagentToolPolicy: { freshForeground: true, freshBackground: false, fork: false },
+              executionTimeoutPolicy: 'standard' as const,
+            };
+          }
+          return undefined;
+        },
+        callTool: async (...args: unknown[]) => {
+          const lifecycleHooks = args[7] as { timeoutPolicy?: unknown } | undefined;
+          calls.push({
+            name: String(args[0]),
+            timeoutMs: args[6],
+            timeoutPolicy: lifecycleHooks?.timeoutPolicy,
+          });
+          return {
+            value: { result: 'ok' },
+            effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const },
+          };
+        },
+        close: async () => {},
+      } as unknown as ToolRegistryPort;
+      const timeoutOrchestrator = new ToolCallOrchestrator(
+        timeoutRegistry,
+        dispatcher,
+        { getPluginsForEvent: () => [] } as unknown as PluginRegistry,
+        context,
+      );
+
+      await timeoutOrchestrator.execute(0, makeToolCall('Agent', { prompt: 'delegate' }), makeSignal(), () => {});
+      await timeoutOrchestrator.execute(1, makeToolCall('echo', { message: 'hello' }), makeSignal(), () => {});
+
+      expect(calls).toEqual([
+        { name: 'Agent', timeoutMs: undefined, timeoutPolicy: 'parent-signal' },
+        { name: 'echo', timeoutMs: 30000, timeoutPolicy: 'standard' },
+      ]);
+    });
+
     it('应为只读工具正确推导 read effect', async () => {
       const toolCall = makeToolCall('echo', { message: 'hello' });
 

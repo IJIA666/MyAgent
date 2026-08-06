@@ -62,6 +62,8 @@ describe('createApplicationPaths', () => {
 
       expect(paths.stateDir).toBe(resolve(paths.projectDataDir, 'state'));
       expect(paths.sessionsDir).toBe(resolve(paths.stateDir, 'sessions'));
+      expect(paths.subagentsDir).toBe(resolve(paths.stateDir, 'subagents'));
+      expect(paths.subagentsDir).not.toBe(paths.sessionsDir);
       expect(paths.browserDir).toBe(resolve(paths.stateDir, 'browser'));
 
       expect(paths.artifactsDir).toBe(resolve(paths.projectDataDir, 'artifacts'));
@@ -99,6 +101,7 @@ describe('createApplicationPaths', () => {
       const b = createApplicationPaths('/home/user/project-b', options);
 
       expect(a.projectDataDir).not.toBe(b.projectDataDir);
+      expect(a.subagentsDir).not.toBe(b.subagentsDir);
       expect(a.skillUsagePath).toBe(b.skillUsagePath);
       expect(a.skillArchiveDir).toBe(b.skillArchiveDir);
       expect(a.skillPendingDir).toBe(b.skillPendingDir);
