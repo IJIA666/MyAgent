@@ -25,8 +25,10 @@ const MAX_INDEX_BYTES = 25 * 1024;
 const MAX_TOPIC_DIAGNOSTIC_BYTES = 64 * 1024;
 /** kebab-case ASCII 校验正则。 */
 const KEBAB_CASE_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
-/** 索引条目行正则：`- [标题](topics/文件名.md) — 描述`。文件名捕获后单独校验 kebab-case。 */
-const INDEX_ENTRY_RE = /^- \[([^\]]+)\]\(topics\/([^)]+)\)\s*—\s*(.+)$/;
+/** 保留主题 slug：`memory.md`（任意大小写）在大小写不敏感文件系统上与索引 `MEMORY.md` 是同一文件，禁止作为主题名。 */
+const RESERVED_TOPIC_SLUG = 'memory';
+/** 索引条目行正则：`- [标题](文件名.md) — 描述`。文件名捕获后单独校验 kebab-case，含 `/` 等路径分隔符的条目（如旧 `topics/` 前缀格式）自然失效。 */
+const INDEX_ENTRY_RE = /^- \[([^\]]+)\]\(([^)]+\.md)\)\s*—\s*(.+)$/;
 // ── 类型定义 ──
 
 /** 主题 type 的合法取值。 */
@@ -138,7 +140,7 @@ interface ParsedIndexEntry {
 /**
  * 从指定记忆目录加载记忆快照。
  * 读取 `MEMORY.md` 前 200 行或前 25KB（先到者为准）。
- * 只解析 MEMORY.md 自身的索引行用于诊断，不隐式打开 topics/*.md。
+ * 只解析 MEMORY.md 自身的索引行用于诊断，不隐式打开主题文件。
  *
  * @param memoryDir - 当前项目的 memoryDir 绝对路径
  * @returns 不可变记忆快照和结构化诊断
@@ -219,8 +221,8 @@ export function loadMemorySnapshot(memoryDir: string): MemoryLoadResult {
   for (const [, entry] of entryMap) {
     const { title, filename, description } = entry;
 
-    // 校验文件名格式
-    if (!KEBAB_CASE_RE.test(filename)) {
+    // 校验文件名格式与保留名（memory.md 大小写变体与索引 MEMORY.md 冲突，fail-closed）
+    if (!KEBAB_CASE_RE.test(filename) || isReservedTopicFilename(filename)) {
       invalidFilenames.push(filename);
       continue;
     }
@@ -292,8 +294,13 @@ export function diagnoseMemoryTopics(
   const physicalRoot = getPhysicalMemoryRoot(memoryDir);
   for (const topic of loaded.snapshot.topics) {
     const filename = `${topic.slug}.md`;
-    const topicPath = resolve(memoryDir, 'topics', filename);
-    if (!isPathInside(resolve(memoryDir, 'topics'), topicPath)) {
+    // 防御性保留名检查：外部传入快照可能包含 memory.md 大小写变体，显式诊断同样 fail-closed。
+    if (isReservedTopicFilename(filename)) {
+      mutable.invalidFilenames.push(filename);
+      continue;
+    }
+    const topicPath = resolve(memoryDir, filename);
+    if (!isPathInside(resolve(memoryDir), topicPath)) {
       mutable.invalidFilenames.push(filename);
       continue;
     }
@@ -544,6 +551,11 @@ function stripMatchingQuotes(value: string): string {
     return value.slice(1, -1);
   }
   return value;
+}
+
+/** 判断文件名是否为保留主题名：大小写折叠后等于 `memory.md`（与索引 `MEMORY.md` 冲突）。 */
+function isReservedTopicFilename(filename: string): boolean {
+  return filename.replace(/\.md$/, '').toLowerCase() === RESERVED_TOPIC_SLUG;
 }
 
 /** 判断显式 topic type 是否属于契约允许值。 */

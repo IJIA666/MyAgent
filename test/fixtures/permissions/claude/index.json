@@ -207,7 +207,7 @@
       "intentionalDifference": "memory-specific allow（Phase 8）尚未实现",
       "input": {
         "runtimeToolName": "writeFile",
-        "params": { "targetPath": "/home/user/.myagent/projects/MyAgent/memory/topics/note.md" },
+        "params": { "targetPath": "/home/user/.myagent/projects/MyAgent/memory/note.md" },
         "session": {
           "mode": "default",
           "rules": [],
@@ -251,7 +251,7 @@
       "intentionalDifference": "memory-specific allow（Phase 8）尚未实现",
       "input": {
         "runtimeToolName": "createDirectory",
-        "params": { "directoryPath": "/home/user/.myagent/projects/MyAgent/memory/topics" },
+        "params": { "directoryPath": "/home/user/.myagent/projects/MyAgent/memory" },
         "session": {
           "mode": "default",
           "rules": [],

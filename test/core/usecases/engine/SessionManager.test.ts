@@ -1061,15 +1061,15 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     it('读取失败时应保留旧快照，合法空索引才替换为空快照', async () => {
       const tempRoot = mkdtempSync(join(tmpdir(), 'session-memory-'));
       const memoryDir = join(tempRoot, 'memory');
-      mkdirSync(join(memoryDir, 'topics'), { recursive: true });
+      mkdirSync(memoryDir, { recursive: true });
       writeFileSync(
-        join(memoryDir, 'topics', 'project-context.md'),
+        join(memoryDir, 'project-context.md'),
         '---\nname: 项目背景\ndescription: 稳定项目背景\ntype: project\n---\n',
         'utf-8',
       );
       writeFileSync(
         join(memoryDir, 'MEMORY.md'),
-        '- [项目背景](topics/project-context.md) — 稳定项目背景\n',
+        '- [项目背景](project-context.md) — 稳定项目背景\n',
         'utf-8',
       );
 

@@ -53,7 +53,7 @@ describe('默认 Auto Memory 权限', () => {
       [new ReadFileTool(), { targetPath: join(memory, 'MEMORY.md') }],
       [new WriteFileTool(), { targetPath: join(memory, 'MEMORY.md') }],
       [new EditFileTool(), { targetPath: join(memory, 'MEMORY.md') }],
-      [new CreateDirectoryTool(), { directoryPath: join(memory, 'topics') }],
+      [new CreateDirectoryTool(), { directoryPath: join(memory) }],
       [new ApplyPatchTool(), { targetPath: join(memory, 'MEMORY.md') }],
     ] as const;
 
@@ -101,6 +101,71 @@ describe('默认 Auto Memory 权限', () => {
     });
   });
 
+  it('保留名 memory.md 的写/建目标被拒绝，原形 MEMORY.md 保持放行', () => {
+    const { memory } = createPaths();
+
+    expect(new WriteFileTool().checkPermissions({
+      targetPath: join(memory, 'memory.md'),
+    })).toMatchObject({ kind: 'deny' });
+    expect(new WriteFileTool().checkPermissions({
+      targetPath: join(memory, 'Memory.md'),
+    })).toMatchObject({ kind: 'deny' });
+    expect(new CreateDirectoryTool().checkPermissions({
+      directoryPath: join(memory, 'memory.md'),
+    })).toMatchObject({ kind: 'deny' });
+    // 索引更新的合法目标：原形 MEMORY.md 不受保留名保护影响。
+    expect(new WriteFileTool().checkPermissions({
+      targetPath: join(memory, 'MEMORY.md'),
+    })).toMatchObject({ kind: 'allow' });
+  });
+
+  it('保留名保护不误伤记忆根外的工作区文件', () => {
+    const { memory, workspace } = createPaths();
+
+    // 工作区 docs/memory.md 走普通流程，不得因保留名 deny。
+    expect(new WriteFileTool().checkPermissions({
+      targetPath: join(workspace, 'docs', 'memory.md'),
+    })).not.toMatchObject({ kind: 'deny' });
+    expect(new CreateDirectoryTool().checkPermissions({
+      directoryPath: join(workspace, 'docs'),
+    })).not.toMatchObject({ kind: 'deny' });
+    // 记忆根内 memory.md 仍被拒绝。
+    expect(new WriteFileTool().checkPermissions({
+      targetPath: join(memory, 'memory.md'),
+    })).toMatchObject({ kind: 'deny' });
+  });
+
+  it('自定义记忆根内保留名同样拒绝', () => {
+    const root = mkdtempSync(join(tmpdir(), 'myagent-custom-reserved-'));
+    roots.push(root);
+    const workspace = join(root, 'workspace');
+    const customMemory = join(root, 'custom-memory');
+    initWorkspace(workspace, customMemory, 'custom');
+
+    expect(new WriteFileTool().checkPermissions({
+      targetPath: join(customMemory, 'memory.md'),
+    })).toMatchObject({ kind: 'deny' });
+    expect(new WriteFileTool().checkPermissions({
+      targetPath: join(customMemory, 'Memory.md'),
+    })).toMatchObject({ kind: 'deny' });
+    // 自定义根内普通文件仍走 ask，保留名保护不影响既有自定义根语义。
+    expect(new WriteFileTool().checkPermissions({
+      targetPath: join(customMemory, 'note.md'),
+    })).toMatchObject({ kind: 'ask' });
+  });
+
+  it('未启用 Auto Memory 时保留名保护不生效', () => {
+    const root = mkdtempSync(join(tmpdir(), 'myagent-no-memory-'));
+    roots.push(root);
+    const workspace = join(root, 'workspace');
+    initWorkspace(workspace);
+
+    // 无记忆根（getAuthorizedMemoryDir 为 null）时，工作区 memory.md 不被保留名拦截。
+    expect(new WriteFileTool().checkPermissions({
+      targetPath: join(workspace, 'docs', 'memory.md'),
+    })).not.toMatchObject({ kind: 'deny' });
+  });
+
   it('内部候选 provenance 暂存区不得继承默认 memory 写特例', async () => {
     const { memory } = createPaths();
     const state = new PermissionSessionState({ mode: 'bypassPermissions' });
@@ -140,7 +205,7 @@ describe('默认 Auto Memory 权限', () => {
       targetPath: memoryFile,
     })).toMatchObject({ kind: 'ask' });
     expect(new CreateDirectoryTool().checkPermissions({
-      directoryPath: join(customMemory, 'topics'),
+      directoryPath: join(customMemory, 'notes'),
     })).toMatchObject({ kind: 'ask' });
   });
 
@@ -154,13 +219,13 @@ describe('默认 Auto Memory 权限', () => {
     try {
       await registry.callTool(
         'createDirectory',
-        { directoryPath: join(memory, 'topics') },
+        { directoryPath: join(memory) },
         session,
       );
       await registry.callTool(
         'writeFile',
         {
-          targetPath: join(memory, 'topics', 'project.md'),
+          targetPath: join(memory, 'project.md'),
           content: '# 项目记忆',
         },
         session,
@@ -169,7 +234,7 @@ describe('默认 Auto Memory 权限', () => {
         'writeFile',
         {
           targetPath: join(memory, 'MEMORY.md'),
-          content: '- [项目](topics/project.md) — 项目记忆\n',
+          content: '- [项目](project.md) — 项目记忆\n',
         },
         session,
       );

@@ -11,7 +11,7 @@ import type { NativeTool } from '../../tool-types.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import { applyReplacePatch } from './apply-patch-helper.js';
-import { isAutoMemPath } from '../../permissions/memory-path-policy.js';
+import { isAutoMemPath, isReservedMemoryWriteTarget } from '../../permissions/memory-path-policy.js';
 import { createFileResourceEvidence } from '../../permissions/path-resource-evidence.js';
 
 /**
@@ -87,6 +87,14 @@ export class ApplyPatchTool implements NativeTool {
         'apply-patch:target',
       )],
     };
+    // 保留名确定性保护：记忆根内 memory.md 变体作为补丁目标直接拒绝（与 WriteFileTool 同一判定）。
+    if (isReservedMemoryWriteTarget(targetPath, getAuthorizedMemoryDir())) {
+      return {
+        kind: 'deny',
+        decisionReason: '保留名 memory.md 与索引 MEMORY.md 冲突，禁止应用补丁',
+        evidence,
+      };
+    }
     const memoryDirectory = getAuthorizedMemoryDir();
     if (
       getAuthorizedMemoryRootKind() === 'default'

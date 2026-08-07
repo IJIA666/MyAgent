@@ -186,3 +186,5 @@ Agent Team / swarm（mailbox、task list、权限桥、in-process runner）与 c
 | 2026-08-07 | 3c（subagent-background-field）完成归档：全门禁通过（1263 单测 + 133 契约） | 提交点 OR 语义对齐官方 AgentTool.tsx:567；background 非布尔 fail-closed |
 | 2026-08-07 | hooks 命令型基础设施与 worktree（3d）短期不做 | 用户决策：优先 @-mention 与子代理记忆；hooks/worktree 后续再评估 |
 | 2026-08-07 | @-mention 用户引导与子代理记忆激活为进行中 | 两项独立小 change；子代理记忆沿用既有结论：机制独立，不与 MyAgent 长期记忆体系融合 |
+| 2026-08-08 | @-mention（subagent-at-mention）完成归档：全门禁通过（1272 单测 + 133 契约） | 提及正则对齐官方 extractAgentMentions；提醒注入置于用户消息前、不参与 initialPrompt 合并；未注册类型零注入 |
+| 2026-08-08 | memory-flat-layout 完成归档：主记忆布局平铺化（对齐 Claude Code 默认/常见平铺形态，去除 topics/ 子目录，保留更严格单层契约）；全门禁通过（1279 单测 + 135 契约） | 两轮 GPT 评审修正：memory.md 保留名三层防护（提示词/加载器 fail-closed/权限层记忆根内 deny，共享判定 isReservedMemoryWriteTarget）；旧 topics/ 索引 BREAKING（无存量故零迁移成本）；子代理记忆 change 的前置 |

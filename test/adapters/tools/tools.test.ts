@@ -376,11 +376,11 @@ describe('长期记忆目录路径边界', () => {
         rmSync(dir, { recursive: true, force: true });
       }
     }
-    mkdirSync(join(memoryDir, 'topics'), { recursive: true });
+    mkdirSync(memoryDir, { recursive: true });
     mkdirSync(workspaceDir, { recursive: true });
     mkdirSync(outsideDir, { recursive: true });
-    writeFileSync(join(memoryDir, 'MEMORY.md'), '- [test](topics/test.md) — test\n');
-    writeFileSync(join(memoryDir, 'topics', 'test.md'), '---\nname: test\ndescription: test\ntype: user\n---\n');
+    writeFileSync(join(memoryDir, 'MEMORY.md'), '- [test](test.md) — test\n');
+    writeFileSync(join(memoryDir, 'test.md'), '---\nname: test\ndescription: test\ntype: user\n---\n');
     writeFileSync(join(workspaceDir, 'workspace-file.txt'), 'workspace file');
 
     // 初始化工作区并单独注入记忆目录
@@ -402,8 +402,8 @@ describe('长期记忆目录路径边界', () => {
     expect(resolved).toBeTruthy();
   });
 
-  test('memoryDir 内 topics 文件可读取', () => {
-    const resolved = secureResolveReadPath(join(memoryDir, 'topics', 'test.md'));
+  test('memoryDir 内平铺主题文件可读取', () => {
+    const resolved = secureResolveReadPath(join(memoryDir, 'test.md'));
     expect(resolved).toBeTruthy();
   });
 
@@ -412,10 +412,10 @@ describe('长期记忆目录路径边界', () => {
     const writeTool = new WriteFileTool();
     const listTool = new ListFilesTool();
     const deleteTool = new DeletePathTool();
-    const createdTopicPath = join(memoryDir, 'topics', 'created-by-tool.md');
+    const createdTopicPath = join(memoryDir, 'created-by-tool.md');
 
     const readResult = await readTool.execute({ targetPath: join(memoryDir, 'MEMORY.md') });
-    expect(readResult).toContain('topics/test.md');
+    expect(readResult).toContain('test.md');
 
     await writeTool.execute({
       targetPath: createdTopicPath,
@@ -423,7 +423,7 @@ describe('长期记忆目录路径边界', () => {
     });
     expect(existsSync(createdTopicPath)).toBe(true);
 
-    const listResult = await listTool.execute({ targetPath: join(memoryDir, 'topics') });
+    const listResult = await listTool.execute({ targetPath: join(memoryDir) });
     expect(listResult).toContain('created-by-tool.md');
 
     await deleteTool.execute({ targetPath: createdTopicPath });

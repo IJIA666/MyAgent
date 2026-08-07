@@ -93,7 +93,7 @@ export interface ApplicationPaths {
 
   /**
    * 长期记忆目录：`<project-data>/memory/`。
-   * 采用 Markdown-first 项目私有长期记忆，以 MEMORY.md 为索引、topics/*.md 为主题正文。
+   * 采用 Markdown-first 项目私有长期记忆，以 MEMORY.md 为索引、同层平铺 *.md 为主题正文。
    */
   readonly memoryDir: string;
 

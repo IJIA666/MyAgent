@@ -18,7 +18,7 @@ import type { NativeTool } from '../../tool-types.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
 import { logger, LOG_COMPONENT, LOG_EVENT } from '../../../../utils/logger.js';
-import { isAutoMemPath } from '../../permissions/memory-path-policy.js';
+import { isAutoMemPath, isReservedMemoryWriteTarget } from '../../permissions/memory-path-policy.js';
 import {
   createDirectoryScopeEvidence,
   createFileResourceEvidence,
@@ -729,6 +729,15 @@ export class WriteFileTool implements NativeTool {
       riskReason: sensitive ? `写入敏感文件 ${targetPath}` : `写入文件 ${targetPath}`,
       resources: [createFilePathResource(targetPath, 'write')],
     };
+    // 保留名确定性保护：memory.md 大小写变体在大小写不敏感文件系统上与索引 MEMORY.md
+    // 是同一文件，作为记忆根内写入目标直接拒绝（先于默认 memory 根 allow）。
+    if (isReservedMemoryWriteTarget(targetPath, getAuthorizedMemoryDir())) {
+      return {
+        kind: 'deny',
+        decisionReason: '保留名 memory.md 与索引 MEMORY.md 冲突，禁止写入',
+        evidence,
+      };
+    }
     if (!sensitive && isDefaultMemoryPath(targetPath)) {
       return {
         kind: 'allow',
@@ -841,6 +850,14 @@ export class EditFileTool implements NativeTool {
       riskReason: sensitive ? `编辑敏感文件 ${targetPath}` : `编辑文件 ${targetPath}`,
       resources: [createFilePathResource(targetPath, 'write')],
     };
+    // 保留名确定性保护：与 WriteFileTool 同一判定，阻止记忆根内 memory.md 变体覆盖索引。
+    if (isReservedMemoryWriteTarget(targetPath, getAuthorizedMemoryDir())) {
+      return {
+        kind: 'deny',
+        decisionReason: '保留名 memory.md 与索引 MEMORY.md 冲突，禁止写入',
+        evidence,
+      };
+    }
     if (!sensitive && isDefaultMemoryPath(targetPath)) {
       return {
         kind: 'allow',

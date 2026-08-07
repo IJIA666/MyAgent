@@ -11,7 +11,7 @@ import type { NativeTool } from '../../tool-types.js';
 import { copyRecursiveSync } from './directory-manager-helper.js';
 import type { SessionEventPort } from '../../../../ports/driven/session/SessionEventPort.js';
 import type { ToolExecutionContext } from '../../../../core/usecases/plugins/plugin-types.js';
-import { isAutoMemPath } from '../../permissions/memory-path-policy.js';
+import { isAutoMemPath, isReservedMemoryWriteTarget } from '../../permissions/memory-path-policy.js';
 import { createFileResourceEvidence } from '../../permissions/path-resource-evidence.js';
 import type { FileResourceEvidence } from '../../../../core/domain/permissions/permission-types.js';
 
@@ -71,6 +71,14 @@ export class CreateDirectoryTool implements NativeTool {
       riskReason: `创建目录: ${directoryPath}`,
       resources: [createPathResource(directoryPath, 'create')],
     };
+    // 保留名确定性保护：记忆根内 memory.md 变体作为建目录目标直接拒绝（与 WriteFileTool 同一判定）。
+    if (isReservedMemoryWriteTarget(directoryPath, getAuthorizedMemoryDir())) {
+      return {
+        kind: 'deny',
+        decisionReason: '保留名 memory.md 与索引 MEMORY.md 冲突，禁止创建',
+        evidence,
+      };
+    }
     const memoryDirectory = getAuthorizedMemoryDir();
     if (
       getAuthorizedMemoryRootKind() === 'default'

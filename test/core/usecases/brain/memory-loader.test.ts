@@ -6,7 +6,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -19,9 +18,9 @@ import {
   loadMemorySnapshot,
 } from '../../../../src/core/usecases/brain/memory-loader.js';
 
-/** 生成一条合法索引行。 */
+/** 生成一条合法索引行（平铺格式，无 topics/ 前缀）。 */
 function indexLine(index: number, description = '描述'): string {
-  return `- [主题 ${index}](topics/topic-${index}.md) — ${description}`;
+  return `- [主题 ${index}](topic-${index}.md) — ${description}`;
 }
 
 describe('loadMemorySnapshot', () => {
@@ -51,9 +50,8 @@ describe('loadMemorySnapshot', () => {
 
   it('启动加载只读取 MEMORY.md，不打开或解释 topic frontmatter', () => {
     const content = `${indexLine(1)}\n`;
-    mkdirSync(join(memoryDir, 'topics'));
     writeFileSync(
-      join(memoryDir, 'topics', 'topic-1.md'),
+      join(memoryDir, 'topic-1.md'),
       '---\ntype: unknown\n---\n不应在启动时读取',
       'utf-8',
     );
@@ -128,9 +126,9 @@ describe('loadMemorySnapshot', () => {
 
   it('重复引用只保留第一条，非法文件名只进入诊断', () => {
     const content = [
-      '- [第一条](topics/same-topic.md) — first',
-      '- [重复条](topics/same-topic.md) — duplicate',
-      '- [非法](topics/UPPER_CASE.md) — invalid',
+      '- [第一条](same-topic.md) — first',
+      '- [重复条](same-topic.md) — duplicate',
+      '- [非法](UPPER_CASE.md) — invalid',
     ].join('\n');
     writeFileSync(join(memoryDir, 'MEMORY.md'), content, 'utf-8');
 
@@ -140,6 +138,43 @@ describe('loadMemorySnapshot', () => {
     expect(result.snapshot.topics[0].title).toBe('第一条');
     expect(result.diagnostic.duplicates).toEqual(['same-topic.md']);
     expect(result.diagnostic.invalidFilenames).toEqual(['UPPER_CASE.md']);
+  });
+
+  it('旧格式 topics/ 前缀索引条目不被接受', () => {
+    writeFileSync(join(memoryDir, 'MEMORY.md'), '- [旧](topics/foo.md) — desc\n', 'utf-8');
+
+    const result = loadMemorySnapshot(memoryDir);
+
+    expect(result.snapshot.topics).toHaveLength(0);
+    // fail-closed：含路径分隔符的条目不进入主题列表，但保留在无效文件名诊断中。
+    expect(result.diagnostic.invalidFilenames).toEqual(['topics/foo.md']);
+  });
+
+  it('memory.md 为保留名，大小写变体均记为无效文件名', () => {
+    writeFileSync(
+      join(memoryDir, 'MEMORY.md'),
+      [
+        '- [保留](memory.md) — desc',
+        '- [变体](Memory.md) — desc',
+        '- [正常](other.md) — desc',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const result = loadMemorySnapshot(memoryDir);
+
+    expect(result.snapshot.topics).toHaveLength(1);
+    expect(result.snapshot.topics[0].slug).toBe('other');
+    expect(result.diagnostic.invalidFilenames).toEqual(['memory.md', 'Memory.md']);
+  });
+
+  it('显式诊断同样将保留名 memory.md 记为无效文件名', () => {
+    writeFileSync(join(memoryDir, 'MEMORY.md'), '- [保留](memory.md) — desc\n', 'utf-8');
+
+    const explicit = diagnoseMemoryTopics(memoryDir);
+
+    expect(explicit.diagnostic.invalidFilenames).toEqual(['memory.md']);
+    expect(explicit.topics).toHaveLength(0);
   });
 
   it('加载器不修改 MEMORY.md 的磁盘内容', () => {
@@ -152,29 +187,28 @@ describe('loadMemorySnapshot', () => {
   });
 
   it('只有显式诊断才读取 topic，并报告断链、未知 type 与无效 frontmatter', () => {
-    mkdirSync(join(memoryDir, 'topics'));
     writeFileSync(
       join(memoryDir, 'MEMORY.md'),
       [
-        '- [有效](topics/valid.md) — valid',
-        '- [未知](topics/unknown.md) — unknown',
-        '- [损坏](topics/broken.md) — broken',
-        '- [缺失](topics/missing.md) — missing',
+        '- [有效](valid.md) — valid',
+        '- [未知](unknown.md) — unknown',
+        '- [损坏](broken.md) — broken',
+        '- [缺失](missing.md) — missing',
       ].join('\n'),
       'utf-8',
     );
     writeFileSync(
-      join(memoryDir, 'topics', 'valid.md'),
+      join(memoryDir, 'valid.md'),
       '---\nname: 有效主题\ndescription: 有效描述\ntype: project\n---\n正文',
       'utf-8',
     );
     writeFileSync(
-      join(memoryDir, 'topics', 'unknown.md'),
+      join(memoryDir, 'unknown.md'),
       '---\nname: 未知主题\ndescription: 未知描述\ntype: secret\n---\n正文',
       'utf-8',
     );
     writeFileSync(
-      join(memoryDir, 'topics', 'broken.md'),
+      join(memoryDir, 'broken.md'),
       '没有 frontmatter',
       'utf-8',
     );

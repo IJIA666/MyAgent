@@ -95,6 +95,16 @@ export function checkMemoryPermission(
     return 'none';
   }
 
+  // 保留名确定性保护：记忆根内大小写折叠后等于 memory.md 且原形非 MEMORY.md 的写/建目标直接拒绝。
+  // 在大小写不敏感文件系统上，memory.md 变体与索引 MEMORY.md 是同一文件，模型将其当作
+  // 主题名写入会覆盖索引；原形 MEMORY.md 是索引更新的合法目标，继续走既有放行逻辑。
+  if (
+    (operation === 'write' || operation === 'create-directory')
+    && isReservedMemoryWriteTarget(targetPath, activeRoot)
+  ) {
+    return 'deny';
+  }
+
   // 默认根：读/写/创建目录直接 allow
   if (!isCustomRoot) {
     if (operation === 'read' || operation === 'write' || operation === 'create-directory') {
@@ -109,6 +119,32 @@ export function checkMemoryPermission(
   }
 
   return 'none';
+}
+
+/**
+ * 判断写/建目标是否为记忆根内的保留名变体。
+ * 仅当目标位于 memoryRoot 之内，且 basename 大小写折叠后等于 `memory.md`、原形字符串不等于
+ * `MEMORY.md` 时返回 true。原形 `MEMORY.md`（索引更新）放行；`memory.md`/`Memory.md` 等
+ * 变体（意图建主题）拒绝。目标位于记忆根之外（如工作区普通目录的 memory.md）时返回 false，
+ * 不误伤非记忆文件。
+ * 工具层（file-system/directory-manager/apply-patch）与权限判定共用，保证同一判定逻辑。
+ *
+ * @param targetPath - 工具收到的原始目标路径（绝对或相对）
+ * @param memoryRoot - 当前授权的记忆根绝对路径；未启用记忆（null/空）时不做任何拦截
+ * @returns 目标是否位于记忆根内且为保留名变体
+ */
+export function isReservedMemoryWriteTarget(
+  targetPath: string,
+  memoryRoot: string | null | undefined,
+): boolean {
+  if (!memoryRoot) {
+    return false;
+  }
+  if (!isPathInside(resolve(memoryRoot), resolve(targetPath))) {
+    return false;
+  }
+  const basename = targetPath.split(/[\\/]/).pop() ?? '';
+  return basename.toLowerCase() === 'memory.md' && basename !== 'MEMORY.md';
 }
 
 /** 使用路径分段而非字符串前缀判断子树关系。 */

@@ -1,6 +1,6 @@
 /**
  * @fileoverview 长期记忆端到端静态契约测试。
- * 验证 memoryDir 隔离、MEMORY.md + topics/*.md 布局、四种类型、固定容量、
+ * 验证 memoryDir 隔离、MEMORY.md + 同层平铺 *.md 布局、四种类型、固定容量、
  * 独立请求投影、标准文件工具授权、无专用 memory 工具注册。
  * 同时验证写入顺序与遗忘规则的提示词约束。
  */
@@ -34,17 +34,40 @@ describe('长期记忆静态契约', () => {
     });
   });
 
-  describe('MEMORY.md + topics/*.md 布局', () => {
-    it('加载器支持 topics 单层目录', () => {
+  describe('MEMORY.md + 同层 *.md 平铺布局', () => {
+    it('加载器支持 memoryDir 根下平铺主题文件', () => {
       const dir = join(tmpdir(), `mem-contract-${Date.now()}`);
-      mkdirSync(join(dir, 'topics'), { recursive: true });
-      writeFileSync(join(dir, 'MEMORY.md'), '- [test](topics/test.md) — desc\n', 'utf-8');
-      writeFileSync(join(dir, 'topics', 'test.md'), '---\nname: test\ndescription: desc\ntype: user\n---\n', 'utf-8');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'MEMORY.md'), '- [test](test.md) — desc\n', 'utf-8');
+      writeFileSync(join(dir, 'test.md'), '---\nname: test\ndescription: desc\ntype: user\n---\n', 'utf-8');
 
       const { snapshot } = loadMemorySnapshot(dir);
       expect(snapshot.isEmpty).toBe(false);
       expect(snapshot.topics).toHaveLength(1);
       expect(snapshot.topics[0].slug).toBe('test');
+
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('旧格式 topics/ 前缀索引条目不被接受', () => {
+      const dir = join(tmpdir(), `mem-contract-legacy-${Date.now()}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'MEMORY.md'), '- [旧](topics/foo.md) — desc\n', 'utf-8');
+
+      const { snapshot } = loadMemorySnapshot(dir);
+      expect(snapshot.topics).toHaveLength(0);
+
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('memory.md 为保留名，不进入主题列表', () => {
+      const dir = join(tmpdir(), `mem-contract-reserved-${Date.now()}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'MEMORY.md'), '- [保留](memory.md) — desc\n- [变体](Memory.md) — desc\n', 'utf-8');
+
+      const { snapshot, diagnostic } = loadMemorySnapshot(dir);
+      expect(snapshot.topics).toHaveLength(0);
+      expect(diagnostic.invalidFilenames).toEqual(['memory.md', 'Memory.md']);
 
       rmSync(dir, { recursive: true, force: true });
     });
@@ -64,9 +87,9 @@ describe('长期记忆静态契约', () => {
     for (const type of types) {
       it(`type="${type}" 可通过校验`, () => {
         const dir = join(tmpdir(), `mem-type-${type}-${Date.now()}`);
-        mkdirSync(join(dir, 'topics'), { recursive: true });
-        writeFileSync(join(dir, 'MEMORY.md'), `- [${type}](topics/${type}.md) — ${type}\n`, 'utf-8');
-        writeFileSync(join(dir, 'topics', `${type}.md`), `---\nname: ${type}\ndescription: ${type}\ntype: ${type}\n---\n`, 'utf-8');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'MEMORY.md'), `- [${type}](${type}.md) — ${type}\n`, 'utf-8');
+        writeFileSync(join(dir, `${type}.md`), `---\nname: ${type}\ndescription: ${type}\ntype: ${type}\n---\n`, 'utf-8');
 
         const { snapshot, diagnostic } = loadMemorySnapshot(dir);
         expect(snapshot.isEmpty).toBe(false);
@@ -82,11 +105,11 @@ describe('长期记忆静态契约', () => {
   describe('固定容量', () => {
     it('200 行索引不截断', () => {
       const dir = join(tmpdir(), `mem-200-${Date.now()}`);
-      mkdirSync(join(dir, 'topics'), { recursive: true });
+      mkdirSync(dir, { recursive: true });
       for (let i = 0; i < 200; i++) {
-        writeFileSync(join(dir, 'topics', `t${i}.md`), `---\nname: t${i}\ndescription: t${i}\ntype: user\n---\n`, 'utf-8');
+        writeFileSync(join(dir, `t${i}.md`), `---\nname: t${i}\ndescription: t${i}\ntype: user\n---\n`, 'utf-8');
       }
-      const lines = Array.from({ length: 200 }, (_, i) => `- [t${i}](topics/t${i}.md) — desc ${i}`);
+      const lines = Array.from({ length: 200 }, (_, i) => `- [t${i}](t${i}.md) — desc ${i}`);
       writeFileSync(join(dir, 'MEMORY.md'), lines.join('\n') + '\n', 'utf-8');
 
       const { snapshot } = loadMemorySnapshot(dir);
@@ -100,9 +123,9 @@ describe('长期记忆静态契约', () => {
   describe('独立请求投影', () => {
     it('MemorySnapshot 主题包含构造投影所需全部字段', () => {
       const dir = join(tmpdir(), `mem-proj-${Date.now()}`);
-      mkdirSync(join(dir, 'topics'), { recursive: true });
-      writeFileSync(join(dir, 'MEMORY.md'), '- [偏好](topics/pref.md) — 用户偏好\n', 'utf-8');
-      writeFileSync(join(dir, 'topics', 'pref.md'), '---\nname: 偏好\ndescription: 用户编码风格\ntype: user\n---\n', 'utf-8');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'MEMORY.md'), '- [偏好](pref.md) — 用户偏好\n', 'utf-8');
+      writeFileSync(join(dir, 'pref.md'), '---\nname: 偏好\ndescription: 用户编码风格\ntype: user\n---\n', 'utf-8');
 
       const { snapshot } = loadMemorySnapshot(dir);
       expect(snapshot.topics[0]).toHaveProperty('title');
@@ -139,7 +162,7 @@ describe('长期记忆静态契约', () => {
       expect(LONG_TERM_MEMORY_RULES).toContain('name: {{清晰、稳定的主题名称}}');
       expect(LONG_TERM_MEMORY_RULES).toContain('description: {{用于未来判断相关性的一行具体描述}}');
       expect(LONG_TERM_MEMORY_RULES).toContain('type: {{user、feedback、project、reference 四选一}}');
-      expect(LONG_TERM_MEMORY_RULES).toContain('- [简洁标题](topics/<slug>.md) — 一行相关性摘要');
+      expect(LONG_TERM_MEMORY_RULES).toContain('- [简洁标题](<slug>.md) — 一行相关性摘要');
     });
 
     it('system prompt 要求写后自检且禁止补充未经确认的事实', () => {

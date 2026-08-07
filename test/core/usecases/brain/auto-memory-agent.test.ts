@@ -39,7 +39,7 @@ describe('后台 Auto Memory Agent', () => {
     const root = mkdtempSync(join(tmpdir(), 'auto-memory-agent-'));
     roots.push(root);
     const memoryDir = join(root, 'memory');
-    mkdirSync(join(memoryDir, 'topics'), { recursive: true });
+    mkdirSync(memoryDir, { recursive: true });
     return memoryDir;
   }
 
@@ -91,7 +91,7 @@ describe('后台 Auto Memory Agent', () => {
     const canUseTool = createAutoMemCanUseTool(memoryDir);
 
     await expect(canUseTool('writeFile', {
-      targetPath: join(memoryDir, 'topics', 'project.md'),
+      targetPath: join(memoryDir, 'project.md'),
       content: 'project',
     })).resolves.toMatchObject({ behavior: 'allow' });
     await expect(canUseTool('editFile', {
