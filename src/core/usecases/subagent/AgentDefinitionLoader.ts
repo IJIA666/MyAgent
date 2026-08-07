@@ -19,7 +19,6 @@ const DEFERRED_FIELDS = [
   'effort',
   'color',
   'skills',
-  'background',
   'memory',
   'hooks',
   'isolation',
@@ -57,6 +56,8 @@ export interface AgentFileDefinition {
   readonly mcpServers?: ReadonlyArray<AgentMcpServerSpec>;
   /** 定义级首轮前缀（`--agent` 主会话模式与首条用户输入合并）。 */
   readonly initialPrompt?: string;
+  /** 定义级强制后台：声明 true 时模型调用该类型一律后台执行。 */
+  readonly background?: boolean;
   /** `.md` 正文，作为子代理系统提示的自定义部分。 */
   readonly systemPrompt: string;
 }
@@ -240,6 +241,22 @@ function parseAgentFile(
   const mcpServers = parseMcpServers(data.mcpServers, type, filePath);
   const initialPrompt = typeof data.initialPrompt === 'string' ? data.initialPrompt.trim() : undefined;
 
+  // 定义级强制后台：仅接受布尔；非布尔值 fail-closed 拒绝（不静默忽略，对齐 tools/model/maxTurns 风格）。
+  let background: boolean | undefined;
+  if (data.background !== undefined) {
+    if (typeof data.background === 'boolean') {
+      background = data.background;
+    } else {
+      logger.warn('[AgentDefinitionLoader] background 必须为布尔值，拒绝注册', {
+        component: 'agent_definition_loader',
+        event: 'agent_invalid_background',
+        file: filePath,
+        agentType: type,
+      });
+      return null;
+    }
+  }
+
   return Object.freeze({
     type,
     description,
@@ -253,6 +270,7 @@ function parseAgentFile(
     ...(data.omitClaudeMd === true ? { omitClaudeMd: true as const } : {}),
     ...(mcpServers && mcpServers.length > 0 ? { mcpServers } : {}),
     ...(initialPrompt ? { initialPrompt } : {}),
+    ...(background ? { background: true as const } : {}),
     systemPrompt: content.trim(),
   });
 }

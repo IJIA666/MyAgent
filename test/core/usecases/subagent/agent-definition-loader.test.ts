@@ -152,6 +152,59 @@ describe('AgentDefinitionLoader', () => {
     expect(deferredCalls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('background: true 解析生效且不记录未启用 warning', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    writeAgent('project', 'bg-agent.md', [
+      '---',
+      'name: bg-agent',
+      'description: 强制后台代理',
+      'background: true',
+      '---',
+      '正文',
+    ].join('\n'));
+
+    const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
+    const definition = loader.load()[0];
+    expect(definition?.background).toBe(true);
+    // background 已启用：不得出现在"未启用字段"warning 中。
+    const deferredCalls = warn.mock.calls.filter(call => String(call[0]).includes('未启用'));
+    expect(deferredCalls).toHaveLength(0);
+  });
+
+  it('background: false 视为未声明', () => {
+    writeAgent('project', 'bg-false.md', [
+      '---',
+      'name: bg-false',
+      'description: 显式非后台',
+      'background: false',
+      '---',
+      '正文',
+    ].join('\n'));
+
+    const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
+    const definition = loader.load()[0];
+    expect(definition?.background).toBeUndefined();
+  });
+
+  it('非法 background 值拒绝定义（fail-closed）', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    writeAgent('project', 'bg-invalid.md', [
+      '---',
+      'name: bg-invalid',
+      'description: 非法后台值',
+      'background: "yes"',
+      '---',
+      '正文',
+    ].join('\n'));
+
+    const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
+    expect(loader.load()).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('background 必须为布尔值'),
+      expect.objectContaining({ event: 'agent_invalid_background' }),
+    );
+  });
+
   it('目录不存在时返回空结果', () => {
     const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
     expect(loader.load()).toEqual([]);

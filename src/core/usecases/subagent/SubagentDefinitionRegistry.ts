@@ -95,6 +95,8 @@ export interface SubagentDefinition {
   }>;
   /** 定义级首轮前缀（`--agent` 主会话模式与首条用户输入合并；子代理执行路径不消费）。 */
   readonly initialPrompt?: string;
+  /** 定义级强制后台：声明 true 时模型调用该类型一律后台执行（OR 语义，模型传 false 不覆盖）。 */
+  readonly background?: boolean;
   /** `.md` 正文形式的系统提示（自定义定义专用；内置定义用 buildSystemPrompt）。 */
   readonly systemPrompt?: string;
 }
@@ -192,6 +194,7 @@ export class SubagentDefinitionRegistry {
         ...(definition.omitClaudeMd ? { omitClaudeMd: true as const } : {}),
         ...(definition.mcpServers ? { mcpServers: definition.mcpServers } : {}),
         ...(definition.initialPrompt ? { initialPrompt: definition.initialPrompt } : {}),
+        ...(definition.background ? { background: true as const } : {}),
         systemPrompt: definition.systemPrompt,
       });
     }

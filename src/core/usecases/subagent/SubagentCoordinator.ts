@@ -612,7 +612,12 @@ export class SubagentCoordinator implements SubagentExecutionPort {
       `subagent:${agentId}`,
       'script',
     );
-    const background = forceExactFork || this.options.forkEnabled === true || request.runInBackground === true;
+    // 定义级 background 与工具参数 run_in_background 为 OR 语义（对齐官方 AgentTool.tsx:567）：
+    // 模型显式传 false 不覆盖定义级强制后台。
+    const background = forceExactFork
+      || this.options.forkEnabled === true
+      || request.runInBackground === true
+      || definition.background === true;
     this.parentSessions.set(agentId, request.parentSession);
     this.lastParentSession = request.parentSession;
     try {

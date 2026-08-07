@@ -74,25 +74,25 @@
 
 ### 阶段 3：协作与配置增强（worktree 延后，与主代理合并一次建设）
 
-**3a（协作/控制面，先行）：任务寻址、停靠与输出读取**
+**3a（协作/控制面）已归档 ✅ 2026-08-07（change `subagent-collaboration`）**
 
 | 能力 | 官方机制参考 | 关键点 | 状态 |
 |---|---|---|---|
-| 子代理消息投递与恢复 | LocalAgentTask.tsx:162（queuePendingMessage）、resumeAgent.ts（resumeAgentBackground） | 运行中子代理排队消息；从 transcript 恢复已结束子代理继续对话（非 SendMessageTool——其主体为 swarm 协议，不在计划内） | 🔄 3a |
-| TaskStop 模型工具 | TaskStopTool.ts（stopTask） | 模型可停运行中任务（含后台）；主场景：新信息导致放弃后台任务，非中途纠偏 | 🔄 3a |
-| outputFile 机制 | utils/task/diskOutput.ts、AgentTool.tsx:152（canReadOutputFile） | 任务输出实时落盘；模型主动读运行中进度、大输出按需读取 | 🔄 3a |
+| 子代理消息投递与恢复 | LocalAgentTask.tsx:162（queuePendingMessage）、resumeAgent.ts（resumeAgentBackground） | 运行中子代理排队消息；从 transcript 恢复已结束子代理继续对话（非 SendMessageTool——其主体为 swarm 协议，不在计划内） | ✅ 3a |
+| TaskStop 模型工具 | TaskStopTool.ts（stopTask） | 模型可停运行中任务（含后台）；主场景：新信息导致放弃后台任务，非中途纠偏 | ✅ 3a |
+| outputFile 机制 | utils/task/diskOutput.ts、AgentTool.tsx:152（canReadOutputFile） | 任务输出实时落盘；模型主动读运行中进度、大输出按需读取 | ✅ 3a |
 
-**3b（资源清理，先行 🔄）**
-
-| 能力 | 官方机制参考 | 关键点 | 状态 |
-|---|---|---|---|
-| 子代理 shell 任务清理 | runAgent.ts:816-859（killShellTasksForAgent） | 子代理结束时清理其启动的 shell 任务：abortSessionTasks 底座已有（terminal-engine.ts:788），缺口 = SubagentRuntime finally 未调用；只关新建 MCP 已由 2b 覆盖 | 🔄 3b |
-
-**3c（配置面）：强制后台**
+**3b（资源清理）已归档 ✅ 2026-08-07（change `subagent-shell-cleanup`）**
 
 | 能力 | 官方机制参考 | 关键点 | 状态 |
 |---|---|---|---|
-| verification 类强制后台 agent | verificationAgent.ts（background: true） | 定义级 background 字段启用（后台能力 1 阶段已有） | 🔄 3c |
+| 子代理 shell 任务清理 | runAgent.ts:816-859（killShellTasksForAgent） | 子代理结束时清理其启动的 shell 任务：abortAndCleanup 回调（平台 killCommand 完整树）+ abortSessionTasks 重构 + SubagentRuntime finally 调用；只关新建 MCP 已由 2b 覆盖 | ✅ 3b |
+
+**3c（配置面）已归档 ✅ 2026-08-07（change `subagent-background-field`）**
+
+| 能力 | 官方机制参考 | 关键点 | 状态 |
+|---|---|---|---|
+| verification 类强制后台 agent | verificationAgent.ts（background: true） | 定义级 background 字段启用：布尔 fail-closed 解析 + 提交点 OR 强制（模型传 false 不覆盖）；后台能力 1 阶段已有 | ✅ 3c |
 
 **3d（隔离面，延后 ⏸）：worktree**
 
@@ -102,7 +102,9 @@
 
 **已砍**：嵌套多层（当前已禁止，从 0 放开到 3 层收益低，维持禁止）；Ctrl+B 后台化（autoBackgroundMs 已覆盖，且依赖未知 CLI 输入能力）。
 
-**验收（3a/3b）**：模型能停运行中任务、能读子代理运行中输出、已结束子代理可恢复继续；子代理结束后其启动的 shell 任务无残留。
+**验收（3a）✅**：模型能停运行中任务、能读子代理运行中输出、已结束子代理可恢复继续。
+**验收（3b）✅**：子代理结束后其启动的 shell 任务无残留（真实进程树回收验证）。
+**验收（3c）✅**：声明 `background: true` 的定义强制后台运行，模型无法以前台调用（OR 语义，传 false 不覆盖）。
 **验收（3d 延后）**：fork 在 worktree 里跑、主代理可 EnterWorktree 隔离改代码。
 
 ### 阶段 4：不在计划内
@@ -178,3 +180,7 @@ Agent Team / swarm（mailbox、task list、权限桥、in-process runner）与 c
 | 2026-08-07 | 清理语义对齐列为 3b 先行（改动小：SubagentRuntime finally 补 abortSessionTasks；资源泄漏防护；不依赖延后项） | 修正此前"随 3b 延后"的归类——主题一致不构成延后理由（用户指正）；worktree 顺延为 3d |
 | 2026-08-07 | 安全标准 = 对齐 Claude Code（市场检验），不额外加严；"安全只严不松"非用户观点 | 用户明确表态：过严策略影响体验 |
 | 2026-08-07 | 3a 决策：outputFile 暴露原始 transcript（官方形态）——主动读文件与读任意工作文件同权，输出扫描边界限定为自动交付通道；SendMessage/TaskStop 在子代理工具面可见（官方不排除） | 依据上条安全标准修正探索文档 D2/D4 |
+| 2026-08-07 | 3a（subagent-collaboration）完成归档：五轮评审（含外部 GPT）修正后全门禁通过（1254 单测 + 133 契约） | 评审修正：beginResume 接入、投递竞态/终态时序、后台工具策略、canReadOutputFile schema 解析 |
+| 2026-08-07 | 3b（subagent-shell-cleanup）完成归档：terminal-engine 中止能力完善（abortAndCleanup 回调 + 平台 killCommand + POSIX pkill -P 补齐）+ SubagentRuntime finally 回收；两轮评审修正后全门禁通过（1258 单测 + 133 契约） | 评审修正：完整进程树回收（原单 PID 降级）、内部资源清理（原直接删 Map 致 Promise 悬挂）、真实进程树集成测试 |
+| 2026-08-07 | 3c 启动：定义级 background 字段启用（强制后台） | 后台能力 1 阶段已有，仅启用定义字段 + 提交点强制 |
+| 2026-08-07 | 3c（subagent-background-field）完成归档：全门禁通过（1263 单测 + 133 契约） | 提交点 OR 语义对齐官方 AgentTool.tsx:567；background 非布尔 fail-closed |

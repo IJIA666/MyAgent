@@ -310,4 +310,54 @@ describe('配置型子代理提交点消费', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('background: true 定义强制后台，模型显式传 false 不覆盖', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agent-bg-'));
+    try {
+      const agentsDir = join(root, '.myagent', 'agents');
+      mkdirSync(agentsDir, { recursive: true });
+      writeFileSync(join(agentsDir, 'bg-agent.md'), [
+        '---',
+        'name: bg-agent',
+        'description: 强制后台验证',
+        'background: true',
+        '---',
+        '后台验证代理。',
+      ].join('\n'), 'utf8');
+      const loader = new AgentDefinitionLoader(
+        join(root, 'user-agents'),
+        agentsDir,
+      );
+      const registry = new SubagentDefinitionRegistry(false, loader);
+      const { coordinator, parentSession, taskManager } = createCoordinator({ definitionRegistry: registry });
+      const result = await coordinator.execute({
+        prompt: '验证强制后台',
+        description: 'read child file',
+        subagentType: 'bg-agent',
+        // 模型显式传 false：定义级 background 为 OR 语义，不覆盖强制后台。
+        runInBackground: false,
+        parentSession,
+      });
+      expect(result).toMatchObject({ status: 'async_launched' });
+      // 提交以 background 模式进入任务管理器。
+      expect(taskManager.submit).toHaveBeenCalledWith(expect.objectContaining({
+        agentType: 'bg-agent',
+        mode: 'background',
+      }));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('未声明 background 的定义保持前台语义', async () => {
+    const { coordinator, parentSession, taskManager } = createCoordinator();
+    const result = await coordinator.execute({
+      prompt: '前台任务',
+      description: 'read child file',
+      parentSession,
+    });
+    expect(result.status).not.toBe('error');
+    // general-purpose 未声明 background：省略 run_in_background 保持前台。
+    expect(taskManager.submit).toHaveBeenCalledWith(expect.objectContaining({ mode: 'foreground' }));
+  });
 });
