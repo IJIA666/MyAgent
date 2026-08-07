@@ -60,6 +60,10 @@ function createCoordinator(options: {
   const transcriptStore = {
     read: vi.fn(async () => undefined),
     updateStatus: vi.fn(async () => true),
+    // 提交点初始化 transcript 契约（outputFile 路径与初始基线写入）。
+    getTranscriptPath: vi.fn((parentSessionId: string, agentId: string) =>
+      join('transcripts', parentSessionId, agentId, 'transcript.json')),
+    write: vi.fn(async () => undefined),
   } as unknown as SubagentTranscriptStore;
 
   const snapshot = options.hasSnapshot === false

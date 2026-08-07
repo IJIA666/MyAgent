@@ -94,6 +94,7 @@ export class SubagentTranscriptStore {
    */
   public async write(record: SubagentTranscriptInput): Promise<void> {
     const file = this.getTranscriptPath(record.parentSessionId, record.agentId);
+    // 同步快速失败：终态不可回退（含 cancelled -> killed 例外）。
     const currentStatus = this.statuses.get(file);
     if (
       currentStatus
@@ -103,10 +104,7 @@ export class SubagentTranscriptStore {
     ) {
       throw new Error(`transcript 终态不可回退: ${currentStatus} -> ${record.status}`);
     }
-    const previous = this.queues.get(file) ?? Promise.resolve();
-    const persist = async (): Promise<void> => {
-      // 进程重启或新 Store 实例也必须读取既有终态，不能靠内存 Map 绕过回退保护。
-      const queuedStatus = this.statuses.get(file) ?? await this.readStatus(file);
+    await this.enqueueWrite(file, record, queuedStatus => {
       if (
         queuedStatus
         && isTerminalStatus(queuedStatus)
@@ -115,18 +113,53 @@ export class SubagentTranscriptStore {
       ) {
         throw new Error(`transcript 终态不可回退: ${queuedStatus} -> ${record.status}`);
       }
+    });
+  }
+
+  /**
+   * 恢复路径专用：终态校验后允许新一轮 `running` 记录覆盖（绕过终态回退保护）。
+   * 同一 agentId 代表同一逻辑任务，恢复以覆盖语义续写；普通写仍受终态回退保护。
+   * 调用方必须先读取旧记录并完成终态校验。
+   *
+   * @param record - 新一轮 running 基线记录
+   */
+  public async beginResume(record: SubagentTranscriptInput): Promise<void> {
+    const file = this.getTranscriptPath(record.parentSessionId, record.agentId);
+    await this.enqueueWrite(file, record, queuedStatus => {
+      // 与 write 相反：仅拒绝非终态覆盖；终态 -> running 是恢复的合法路径。
+      if (queuedStatus && !isTerminalStatus(queuedStatus)) {
+        throw new Error(`transcript 非终态不可恢复覆盖: ${queuedStatus} -> ${record.status}`);
+      }
+    });
+  }
+
+  /**
+   * 同路径写队列：串行化并发写入并执行守卫。
+   * 进程重启或新 Store 实例也必须读取既有状态，不能靠内存 Map 绕过守卫。
+   *
+   * @param file - transcript 文件路径
+   * @param record - 待写入记录
+   * @param guard - 写前守卫；抛错则放弃写入
+   */
+  private enqueueWrite(
+    file: string,
+    record: SubagentTranscriptInput,
+    guard: (queuedStatus: SubagentTranscriptStatus | undefined) => void,
+  ): Promise<void> {
+    const previous = this.queues.get(file) ?? Promise.resolve();
+    const persist = async (): Promise<void> => {
+      const queuedStatus = this.statuses.get(file) ?? await this.readStatus(file);
+      guard(queuedStatus);
       await this.writeAtomic(file, record);
       this.statuses.set(file, record.status);
     };
     const task = previous.then(persist, persist);
     this.queues.set(file, task);
-    try {
-      await task;
-    } finally {
+    return task.finally(() => {
       if (this.queues.get(file) === task) {
         this.queues.delete(file);
       }
-    }
+    });
   }
 
   /**

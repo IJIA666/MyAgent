@@ -177,8 +177,10 @@ describe('AgentLoop 动态安全特性测试', () => {
     vi.restoreAllMocks();
   });
 
-  /** 使用当前 beforeEach 中的依赖创建 AgentLoop。 */
-  function createLoop(): AgentLoop {
+  /** 使用当前 beforeEach 中的依赖创建 AgentLoop，可覆盖任意构造选项。 */
+  function createLoop(
+    overrides: Partial<ConstructorParameters<typeof AgentLoop>[0]> = {},
+  ): AgentLoop {
     return new AgentLoop({
       toolRegistry: mockToolRegistry as ToolRegistryPort,
       context,
@@ -189,8 +191,63 @@ describe('AgentLoop 动态安全特性测试', () => {
       toolDispatcher: mockToolDispatcher as ToolDispatcher,
       contextBudgetCoordinator: mockContextBudgetCoordinator as ContextBudgetCoordinator,
       pluginRegistry,
+      ...overrides,
     });
   }
+
+  it('onRoundCommitted 在 tool_calls 与 complete 两个响应分支都触发', async () => {
+    const committed: number[] = [];
+    mockLlmDriver = {
+      getModelName: () => 'mock-model',
+      switchModel: () => {},
+      streamChat: vi.fn().mockImplementation(async function* () {
+        const toolCalls = [{
+          id: 'call-committed-1',
+          type: 'function' as const,
+          function: { name: 'read_file', arguments: JSON.stringify({ path: 'a.txt' }) },
+        }];
+        yield {
+          type: 'tool_calls',
+          toolCalls,
+          assistantMessage: {
+            role: 'assistant',
+            content: '读取文件。',
+            tool_calls: toolCalls,
+          },
+        } as LlmStreamEvent;
+        yield {
+          type: 'complete',
+          content: '读取完成。',
+          reasoning: '',
+          assistantMessage: { role: 'assistant', content: '读取完成。' },
+        } as LlmStreamEvent;
+      }),
+    };
+    mockToolRegistry = {
+      getTools: vi.fn().mockResolvedValue([{ name: 'read_file', securityCategory: 'read' }]),
+      getTool: vi.fn().mockReturnValue({ name: 'read_file', securityCategory: 'read' }),
+      callTool: vi.fn().mockResolvedValue({
+        value: { content: [{ type: 'text', text: 'ok' }] },
+        effect: {
+          kind: 'read',
+          executionStarted: true,
+          completed: true,
+          resources: [],
+          reason: 'declared_read_tool',
+        },
+      }),
+    } as unknown as ToolRegistryPort;
+    const loop = createLoop({
+      onRoundCommitted: () => {
+        committed.push(committed.length);
+      },
+    });
+    for await (const _event of loop.chat(undefined, createTestTracer('round-committed'), { model: 'mock-model' } as LlmConfig)) {
+      void _event;
+    }
+    // tool_calls 响应与 complete 响应各提交一轮。
+    expect(committed).toHaveLength(2);
+  });
 
   it('RunEnd 应区分模型循环、工具型响应、并行调用数和最终回复', async () => {
     let streamCallCount = 0;

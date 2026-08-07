@@ -4,6 +4,7 @@ import { getModelConfig } from '../../../config/models.js';
 import { getRuntimeEnv } from '../../../config/env.js';
 import type { McpServerEntry } from '../../../config/types.js';
 import type {
+  SubagentContextPolicy,
   SubagentExecutionPort,
   SubagentExecutionRequest,
   SubagentExecutionResult,
@@ -12,8 +13,10 @@ import type {
 import { SUBAGENT_ERROR_CODES } from '../../../ports/driving/SubagentExecutionPort.js';
 import type { ApprovalPort } from '../../../ports/driven/session/ApprovalPort.js';
 import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
-import type { ModelRequestSnapshot } from '../../../ports/driven/llm/LlmPort.js';
-import type { SubagentTranscriptStore } from './SubagentTranscriptStore.js';
+import type { ChatMessage, ModelRequestSnapshot } from '../../../ports/driven/llm/LlmPort.js';
+import type { SubagentTranscriptRecord } from './SubagentTranscriptStore.js';
+import { SubagentTranscriptStore } from './SubagentTranscriptStore.js';
+import { logger } from '../../../utils/logger.js';
 import { snapshotLlmConfig } from './llm-config-snapshot.js';
 import { SubagentDefinitionRegistry, type SubagentDefinition } from './SubagentDefinitionRegistry.js';
 import { ApprovalRouter } from './ApprovalRouter.js';
@@ -30,6 +33,7 @@ import { PermissionSessionState } from '../../domain/permissions/permission-sess
 import {
   createChildTrustedCallContext,
   createTrustedCallContext,
+  type TrustedCallContext,
 } from '../../domain/permissions/trusted-call-context.js';
 
 /** CLI 查询任务详情时可见的低敏结果。 */
@@ -54,6 +58,8 @@ export class SubagentCoordinator implements SubagentExecutionPort {
   private readonly permissionResolver = new ChildPermissionResolver();
   /** 已提交任务到父会话能力视图的绑定。 */
   private readonly parentSessions = new Map<string, SubagentParentSession>();
+  /** 最近一次提交的父会话视图；终态兜底恢复与 SendMessage 未显式携带时使用。 */
+  private lastParentSession?: SubagentParentSession;
   /** 关闭后拒绝新的 Agent 和 CLI 任务。 */
   private closed = false;
 
@@ -77,6 +83,9 @@ export class SubagentCoordinator implements SubagentExecutionPort {
     options.taskManager.setHooks({
       onStateChange: record => this.handleStateChange(record),
       onTerminal: (record, result) => this.handleTerminal(record, result),
+      // 终态结算兜底：投递队列仍有未消费消息时自动转恢复路径。
+      onTerminalWithPendingMessages: (record, messages) =>
+        this.handlePendingMessagesAtTerminal(record, messages),
     });
   }
 
@@ -88,6 +97,252 @@ export class SubagentCoordinator implements SubagentExecutionPort {
    */
   public async execute(request: SubagentExecutionRequest): Promise<SubagentExecutionResult> {
     return this.submitRequest(request, false);
+  }
+
+  /**
+   * 从终态 transcript 恢复子代理（SendMessage 投递到终态任务 / 终态结算兜底）。
+   * 复用原 agentId 强制后台重开；历史经 transcript 重建——剔除末尾未闭合 tool_use 的
+   * assistant 消息、剥离旧 system 后按当前解析到的定义重建（身份不丢失）。
+   *
+   * @param agentId - 终态任务 ID
+   * @param message - 恢复投递的新 user 消息
+   * @param parentSession - 调用方父会话视图；省略时使用最近提交的父会话
+   * @returns 后台接受态或稳定错误
+   */
+  public async resumeTask(
+    agentId: string,
+    message: string,
+    parentSession?: SubagentParentSession,
+  ): Promise<SubagentExecutionResult> {
+    if (this.closed) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.sessionClosed,
+        message: '当前会话已关闭，不再接受子代理任务',
+      };
+    }
+    if (typeof message !== 'string' || message.trim().length === 0) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.invalidPrompt,
+        message: '恢复消息必须是非空字符串',
+      };
+    }
+    const task = await this.options.taskManager.get(agentId);
+    if (!task) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.taskNotFound,
+        message: `子代理任务不存在: ${agentId}`,
+      };
+    }
+    if (!isTerminalTaskStatus(task.status)) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.taskNotTerminal,
+        message: `任务尚未终态，不能恢复: ${agentId}（当前 ${task.status}）`,
+      };
+    }
+    const transcript = await this.options.transcriptStore?.read(task.parentSessionId, agentId);
+    if (!transcript) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.transcriptNotFound,
+        message: `未找到可恢复的 transcript: ${agentId}`,
+      };
+    }
+    if (transcript.contextPolicy === 'exact-fork') {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.forkNotResumable,
+        message: 'exact-fork 任务不支持恢复',
+      };
+    }
+    // 恢复按当前解析到的定义装配（对齐官方 resume 按定义重新解析语义），未注册回退 general-purpose。
+    const definition = this.definitions.resolve(transcript.agentType)
+      ?? this.definitions.resolve('general-purpose');
+    if (!definition) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.unknownType,
+        message: `未知的子代理类型: ${transcript.agentType}`,
+      };
+    }
+    const parent = parentSession ?? this.lastParentSession;
+    if (!parent) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.parentSessionUnavailable,
+        message: '缺少父会话视图，不能恢复任务',
+      };
+    }
+    const modelResolution = resolveSubagentModel(getRuntimeEnv().MYAGENT_SUBAGENT_MODEL, undefined, definition.model);
+    if (!modelResolution.ok) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.invalidModel,
+        message: modelResolution.error,
+      };
+    }
+    let frozenConfig: LlmConfig;
+    try {
+      frozenConfig = modelResolution.resolved.kind === 'inherit'
+        ? snapshotLlmConfig(this.options.llmConfigProvider())
+        : getModelConfig(modelResolution.resolved.profileId, { allowEnvModelOverride: false });
+    } catch {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.executionFailed,
+        message: '子代理模型配置不可用',
+      };
+    }
+    const parentPermissionSnapshot = parent.getPermissionSessionState?.()?.snapshot()
+      ?? new PermissionSessionState().snapshot();
+    const frozenPermissionSnapshot = definition.permissionMode
+      ? this.permissionResolver.derive(parentPermissionSnapshot, definition.permissionMode).snapshot()
+      : parentPermissionSnapshot;
+    const frozenMaxIterations = definition.maxTurns ?? this.options.appConfig.runtimeLimits.maxIterations;
+    const resumedHistory = filterUnresolvedToolUses(transcript.messages);
+    // 恢复任务的父会话绑定重建（任务终态时 parentSessions 条目已删除，SubagentCoordinator.handleTerminal）。
+    this.parentSessions.set(agentId, parent);
+    try {
+      const submission = await this.options.taskManager.reopen({
+        agentId,
+        description: task.description,
+        agentType: definition.type,
+        contextPolicy: definition.contextPolicy,
+        mode: 'background',
+        execute: signal => this.options.runtime.runTask({
+          agentId,
+          agentType: definition.type,
+          contextPolicy: definition.contextPolicy,
+          prompt: message,
+          resumeHistory: resumedHistory,
+          llmConfig: frozenConfig,
+          permissionSnapshot: frozenPermissionSnapshot,
+          caller: createChildTrustedCallContext(
+            createTrustedCallContext(parent.getSessionId(), 'interactive', '1.0.0', 'agent'),
+            `subagent:${agentId}`,
+            'script',
+          ),
+          signal,
+          // 恢复任务强制后台，工具策略必须与普通后台提交路径一致（freshBackground 收窄，
+          // 不得使用定义默认的 freshForeground 前台策略）。
+          toolPolicyKey: definition.contextPolicy === 'fresh'
+            ? 'freshBackground'
+            : definition.toolPolicyKey,
+          definitionToolVisibility: compileDefinitionToolVisibility(definition.tools, definition.disallowedTools),
+          definitionSystemPromptBuilder: definition.contextPolicy === 'fresh'
+            ? definition.buildSystemPrompt
+            : undefined,
+          omitClaudeMd: definition.omitClaudeMd,
+          agentMcpDeclarations: definition.contextPolicy === 'fresh' && definition.mcpServers
+            ? normalizeMcpDeclarations(definition.mcpServers)
+            : undefined,
+          maxIterations: frozenMaxIterations,
+          persistTranscript: true,
+          enableDefaultSafetyPlugins: true,
+          // 恢复任务：初始基线经 beginResume 覆盖既有终态 transcript；仍可接收投递（下一轮注入）。
+          resuming: true,
+          pendingMessageProvider: () => this.options.taskManager.drainMessages(agentId),
+        }),
+      });
+      if (submission.kind === 'error') {
+        this.parentSessions.delete(agentId);
+        return { status: 'error', code: submission.code, message: submission.message };
+      }
+      if (submission.kind === 'foreground') {
+        // reopen 以 background 模式提交，前台终态理论上不会发生；防御性失败。
+        this.parentSessions.delete(agentId);
+        return {
+          status: 'error',
+          agentId,
+          code: SUBAGENT_ERROR_CODES.executionFailed,
+          message: '恢复任务未按后台模式执行',
+        };
+      }
+      return {
+        status: 'async_launched',
+        agentId: submission.agentId,
+        description: submission.description,
+        outputFile: this.options.transcriptStore
+          ? this.options.transcriptStore.getTranscriptPath(task.parentSessionId, agentId)
+          : undefined,
+        canReadOutputFile: computeCanReadOutputFile(parent),
+      };
+    } catch {
+      this.parentSessions.delete(agentId);
+      return {
+        status: 'error',
+        agentId,
+        code: SUBAGENT_ERROR_CODES.executionFailed,
+        message: '子代理任务恢复失败',
+      };
+    }
+  }
+
+  /** 查询任务状态（SendMessage/TaskStop 寻址判定）；不存在返回 undefined。 */
+  public async getTaskStatus(agentId: string): Promise<string | undefined> {
+    const record = await this.options.taskManager.get(agentId);
+    return record?.status;
+  }
+
+  /** 向非终态任务入队投递消息（终态任务返回 SUBAGENT_TASK_NOT_ACTIVE 改走恢复）。 */
+  public async enqueueMessage(
+    agentId: string,
+    message: string,
+  ): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
+    if (this.closed) {
+      return { ok: false, code: SUBAGENT_ERROR_CODES.sessionClosed, message: '当前会话已关闭' };
+    }
+    return this.options.taskManager.enqueueMessage(agentId, message);
+  }
+
+  /** TaskStop 端口实现：仅停止 running 状态任务（对齐官方 stopTask 只停 running 语义）。 */
+  public async stopTask(
+    agentId: string,
+  ): Promise<{ status: 'cancelled'; agentId: string } | { status: 'not_running' } | { status: 'not_found' } | { status: 'error'; message: string }> {
+    if (this.closed) {
+      return { status: 'error', message: '当前会话已关闭' };
+    }
+    const record = await this.options.taskManager.get(agentId);
+    if (!record) {
+      return { status: 'not_found' };
+    }
+    if (record.status !== 'running') {
+      return { status: 'not_running' };
+    }
+    const result = await this.options.taskManager.cancel(agentId);
+    if (result.status === 'cancelled') {
+      return { status: 'cancelled', agentId: result.agentId };
+    }
+    return { status: 'error', message: result.status === 'error' ? result.message : '任务停止结果未确认' };
+  }
+
+  /** 终态结算兜底：投递队列消息合并后自动转恢复路径（失败仅记录，不阻断槽位释放）。 */
+  private async handlePendingMessagesAtTerminal(
+    record: TaskStateRecord,
+    messages: readonly string[],
+  ): Promise<void> {
+    // 被显式停止（TaskStop / 用户取消）的任务不自动复活。
+    if (record.status === 'killed') {
+      logger.warn('[SubagentCoordinator] 被停止的任务不自动恢复，待投递消息丢弃', {
+        component: 'subagent_coordinator',
+        event: 'pending_messages_killed_task_skipped',
+        agentId: record.agentId,
+      });
+      return;
+    }
+    const parent = this.lastParentSession;
+    if (!parent) {
+      logger.warn('[SubagentCoordinator] 终态待投递消息缺少父会话，跳过自动恢复', {
+        component: 'subagent_coordinator',
+        event: 'pending_messages_recovery_skipped',
+        agentId: record.agentId,
+      });
+      return;
+    }
+    await this.resumeTask(record.agentId, messages.join('\n'), parent);
   }
 
   /**
@@ -359,6 +614,7 @@ export class SubagentCoordinator implements SubagentExecutionPort {
     );
     const background = forceExactFork || this.options.forkEnabled === true || request.runInBackground === true;
     this.parentSessions.set(agentId, request.parentSession);
+    this.lastParentSession = request.parentSession;
     try {
       const submission = await this.options.taskManager.submit({
         agentId,
@@ -411,6 +667,8 @@ export class SubagentCoordinator implements SubagentExecutionPort {
             maxIterations: frozenMaxIterations,
             persistTranscript: true,
             enableDefaultSafetyPlugins: true,
+            // SendMessage 投递队列接入点：每轮请求组装前由运行器调用 drain 取出待投递消息。
+            pendingMessageProvider: () => this.options.taskManager.drainMessages(agentId),
           });
         },
       });
@@ -418,14 +676,33 @@ export class SubagentCoordinator implements SubagentExecutionPort {
         this.parentSessions.delete(agentId);
         return { status: 'error', code: submission.code, message: submission.message };
       }
+      // 提交点输出文件契约：任务登记成功后立即初始化 transcript（排队期文件即存在），
+      // 并计算父工具面是否含 Read 类工具（canReadOutputFile 的声明依据）。
+      const parentSessionId = extractParentSessionId(parentCaller);
+      const outputFile = this.options.transcriptStore
+        ? this.options.transcriptStore.getTranscriptPath(parentSessionId, agentId)
+        : undefined;
+      const canReadOutputFile = computeCanReadOutputFile(request.parentSession);
+      if (this.options.transcriptStore) {
+        await this.writeInitialTranscript({
+          agentId,
+          parentSessionId,
+          agentType: definition.type,
+          contextPolicy: definition.contextPolicy,
+          model: frozenConfig,
+          prompt: request.prompt,
+        });
+      }
       if (submission.kind === 'async_launched') {
         return {
           status: 'async_launched',
           agentId: submission.agentId,
           description: submission.description,
+          outputFile,
+          canReadOutputFile,
         };
       }
-      return toExecutionResult(submission.result);
+      return toExecutionResult(submission.result, { outputFile, canReadOutputFile });
     } catch {
       this.parentSessions.delete(agentId);
       return {
@@ -436,6 +713,82 @@ export class SubagentCoordinator implements SubagentExecutionPort {
       };
     }
   }
+
+  /** 提交点初始化 transcript：以最小基线记录保证 outputFile 在排队期可读。 */
+  private async writeInitialTranscript(input: {
+    agentId: string;
+    parentSessionId: string;
+    agentType: string;
+    contextPolicy: SubagentContextPolicy;
+    model: LlmConfig;
+    prompt: string;
+  }): Promise<void> {
+    const record: SubagentTranscriptRecord = {
+      version: 1,
+      agentId: input.agentId,
+      parentSessionId: input.parentSessionId,
+      agentType: input.agentType,
+      contextPolicy: input.contextPolicy,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      model: { provider: input.model.profile.id, model: input.model.model },
+      messages: [{ role: 'user', content: input.prompt } as ChatMessage],
+      scanRuleIds: [],
+    };
+    // 初始写入是成功返回 outputFile 的前置条件：落盘失败则任务登记失败，
+    // 不向模型承诺一个读不到的文件（通用 Read 对不存在文件报错，不做 ENOENT 空返回）。
+    await this.options.transcriptStore?.write(record);
+  }
+}
+
+/** 从子 caller 的 parentAgent 读取父 session；缺失时使用 caller ID 作为安全诊断键。 */
+function extractParentSessionId(caller: TrustedCallContext): string {
+  return caller.caller.parentAgent ?? caller.caller.callerId;
+}
+
+/** 父工具面是否含 Read 类工具（对齐官方 FILE_READ_TOOL_NAME 判断，MyAgent 只读名单）。 */
+function computeCanReadOutputFile(parentSession: SubagentParentSession): boolean {
+  const snapshot = parentSession.getLatestModelRequestSnapshot?.();
+  const tools = snapshot?.tools;
+  if (!tools) {
+    return false;
+  }
+  return tools.some(tool => {
+    // 快照工具为 OpenAI 定义结构（function.name）或扁平 name，两种形态都解析。
+    const record = tool as { name?: unknown; function?: { name?: unknown } };
+    const name = typeof record.name === 'string'
+      ? record.name
+      : typeof record.function?.name === 'string'
+        ? record.function.name
+        : undefined;
+    return name !== undefined && OUTPUT_FILE_READ_TOOL_NAMES.has(name);
+  });
+}
+
+/** 具备读取 outputFile 能力的父工具名集合。 */
+const OUTPUT_FILE_READ_TOOL_NAMES = new Set(['readFile', 'readManyFiles']);
+
+/**
+ * 剔除末尾未闭合 tool_use 的 assistant 消息及其后的历史（对齐官方 filterUnresolvedToolUses 精神）。
+ * 正常终态的子代理消息闭合；仅中断/失败/取消的历史可能残留未闭合 tool_use。
+ */
+function filterUnresolvedToolUses(messages: readonly ChatMessage[]): readonly ChatMessage[] {
+  const toolResultIds = new Set<string>();
+  for (const message of messages) {
+    if (message.role === 'tool' && typeof message.tool_call_id === 'string') {
+      toolResultIds.add(message.tool_call_id);
+    }
+  }
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (
+      message.role === 'assistant'
+      && (message.tool_calls ?? []).some(call => !toolResultIds.has(call.id))
+    ) {
+      return messages.slice(0, index);
+    }
+  }
+  return messages;
 }
 
 /** 构造不依赖运行时配置的 exact-fork 定义。 */
@@ -449,10 +802,19 @@ function exactForkDefinition(): SubagentDefinition {
   };
 }
 
-/** 将运行器结果映射成 Agent 端口的前台协议。 */
-function toExecutionResult(result: SubagentRuntimeTaskResult): SubagentExecutionResult {
+/** 将运行器结果映射成 Agent 端口的前台协议（携带输出文件契约字段）。 */
+function toExecutionResult(
+  result: SubagentRuntimeTaskResult,
+  output: { outputFile?: string; canReadOutputFile?: boolean } = {},
+): SubagentExecutionResult {
   if (result.status === 'completed' && result.output !== undefined) {
-    return { status: 'completed', agentId: result.agentId, output: result.output };
+    return {
+      status: 'completed',
+      agentId: result.agentId,
+      output: result.output,
+      outputFile: output.outputFile,
+      canReadOutputFile: output.canReadOutputFile,
+    };
   }
   if (result.status === 'cancelled') {
     return { status: 'cancelled', agentId: result.agentId };

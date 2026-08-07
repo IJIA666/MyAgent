@@ -12,6 +12,8 @@ import { getSkillTools } from './impl/skill/index.js';
 import { getInteractionTools } from './impl/interaction/index.js';
 import { getBrowserTools } from './impl/browser/browser-tool-registry.js';
 import { AgentTool } from './impl/agent/AgentTool.js';
+import { SendMessageTool } from './impl/agent/SendMessageTool.js';
+import { TaskStopTool } from './impl/agent/TaskStopTool.js';
 import type { NativeTool } from './tool-types.js';
 import type { ShellCompoundFeatureConfig } from './impl/system/command-analysis/index.js';
 import type { SkillLibrary } from '../../core/usecases/brain/skill-library.js';
@@ -19,7 +21,7 @@ import type {
   SkillPendingStore,
   SkillWriteApprovalController,
 } from '../../core/usecases/brain/skill-pending-store.js';
-import type { SubagentExecutionPort } from '../../ports/driving/SubagentExecutionPort.js';
+import type { SubagentExecutionPort, SubagentMessagingPort } from '../../ports/driving/SubagentExecutionPort.js';
 import { AGENT_TOOL_NAME } from './constants/native-tool-names.js';
 
 /** 已完成 fresh 前台子代理安全审计的原生工具名；集合外工具默认不可见。 */
@@ -89,6 +91,8 @@ export interface BuildNativeToolsOptions {
   shellCompoundFeatures?: Readonly<ShellCompoundFeatureConfig>;
   /** 主 Agent 使用的会话绑定子代理执行端口；未注入时 Agent 工具安全返回未绑定错误。 */
   subagentExecutionPort?: SubagentExecutionPort;
+  /** 主 Agent 使用的子代理协作端口（SendMessage/TaskStop）；未注入时工具安全返回未绑定错误。 */
+  subagentMessagingPort?: SubagentMessagingPort;
   /** 是否启用省略子代理类型即 exact-fork 的模型语义。 */
   subagentForkEnabled?: boolean;
   /** 已注册子代理类型快照；写入 Agent 工具 schema enum 供模型发现。 */
@@ -120,6 +124,10 @@ export function buildNativeTools(options?: BuildNativeToolsOptions): NativeTool[
       options?.subagentForkEnabled ?? false,
       options?.agentTypes,
     ),
+    // 协作工具（SendMessage/TaskStop）仅主代理工具面可见；默认子代理策略未包含，
+    // 故子代理工具面不含二者（对齐官方 ALL_AGENT_DISALLOWED_TOOLS 语义）。
+    new SendMessageTool(options?.subagentMessagingPort),
+    new TaskStopTool(options?.subagentMessagingPort),
   ];
   return tools.map(tool => withSubagentMetadata(tool, options?.subagentExecutionPort));
 }

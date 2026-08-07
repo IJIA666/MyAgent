@@ -71,6 +71,13 @@ const INTERACTION_TOOLS: readonly EffectfulEntrypoint[] = [
   { name: 'ask_user_question', kind: 'native-tool', sideEffect: 'read', sourcePath: 'src/adapters/tools/impl/interaction/ask-user-question.ts' },
 ];
 
+// ── 子代理协作工具 ──
+
+const SUBAGENT_COLLABORATION_TOOLS: readonly EffectfulEntrypoint[] = [
+  { name: 'SendMessage', kind: 'native-tool', sideEffect: 'read', sourcePath: 'src/adapters/tools/impl/agent/SendMessageTool.ts' },
+  { name: 'TaskStop', kind: 'native-tool', sideEffect: 'write', sourcePath: 'src/adapters/tools/impl/agent/TaskStopTool.ts', adapterName: 'taskStopAuthorizationAdapter' },
+];
+
 // ── 技能工具 ──
 
 const SKILL_TOOLS: readonly EffectfulEntrypoint[] = [
@@ -136,6 +143,7 @@ export const EFFECTFUL_ENTRYPOINTS: readonly EffectfulEntrypoint[] = [
   ...INTERACTION_TOOLS,
   ...SKILL_TOOLS,
   ...BROWSER_TOOLS,
+  ...SUBAGENT_COLLABORATION_TOOLS,
   ...MCP_ENTRYPOINTS,
   ...TAIL_CALL_ENTRYPOINTS,
   ...INTERNAL_HELPERS,

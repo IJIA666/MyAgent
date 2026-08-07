@@ -65,6 +65,11 @@ export const SUBAGENT_ERROR_CODES = {
   forkContextUnavailable: 'SUBAGENT_FORK_CONTEXT_UNAVAILABLE',
   sessionBusy: 'SUBAGENT_SESSION_BUSY',
   protocolNotClosed: 'SUBAGENT_PROTOCOL_NOT_CLOSED',
+  taskNotFound: 'SUBAGENT_TASK_NOT_FOUND',
+  taskNotTerminal: 'SUBAGENT_TASK_NOT_TERMINAL',
+  transcriptNotFound: 'SUBAGENT_TRANSCRIPT_NOT_FOUND',
+  forkNotResumable: 'SUBAGENT_FORK_NOT_RESUMABLE',
+  parentSessionUnavailable: 'SUBAGENT_PARENT_SESSION_UNAVAILABLE',
 } as const;
 
 /** 子代理运行失败时可交付给父 Agent 的稳定结果。 */
@@ -81,9 +86,25 @@ export interface SubagentErrorResult {
 
 /** 同步子代理执行结果。 */
 export type SubagentExecutionResult =
-  | { readonly status: 'completed'; readonly agentId: string; readonly output: string }
+  | {
+    readonly status: 'completed';
+    readonly agentId: string;
+    readonly output: string;
+    /** 该子代理 transcript 文件路径；父模型可经 Read 工具主动读取（原始内容）。 */
+    readonly outputFile?: string;
+    /** 父工具面是否含 Read 类工具（能否读取 outputFile 的声明）。 */
+    readonly canReadOutputFile?: boolean;
+  }
   | { readonly status: 'cancelled'; readonly agentId: string }
-  | { readonly status: 'async_launched'; readonly agentId: string; readonly description: string }
+  | {
+    readonly status: 'async_launched';
+    readonly agentId: string;
+    readonly description: string;
+    /** 该子代理 transcript 文件路径；提交点已初始化，排队期即可读。 */
+    readonly outputFile?: string;
+    /** 父工具面是否含 Read 类工具（能否读取 outputFile 的声明）。 */
+    readonly canReadOutputFile?: boolean;
+  }
   | SubagentErrorResult;
 
 /** 主 Agent 调用同步子代理的输出端口。 */
@@ -95,4 +116,32 @@ export interface SubagentExecutionPort {
    * @returns 可安全序列化的子代理结果
    */
   execute(request: SubagentExecutionRequest): Promise<SubagentExecutionResult>;
+}
+
+/** 消息投递入队结果；终态任务改走恢复路径。 */
+export type SubagentEnqueueResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly code: string; readonly message: string };
+
+/** TaskStop 停止任务结果（对齐官方 stopTask 的 not_running / not_found 语义）。 */
+export type TaskStopResult =
+  | { readonly status: 'cancelled'; readonly agentId: string }
+  | { readonly status: 'not_running' }
+  | { readonly status: 'not_found' }
+  | { readonly status: 'error'; readonly message: string };
+
+/** 模型侧协作工具端口（SendMessage/TaskStop 依赖的寻址与控制面）。 */
+export interface SubagentMessagingPort {
+  /** 查询任务状态；任务不存在返回 undefined。 */
+  getTaskStatus(agentId: string): Promise<string | undefined>;
+  /** 向非终态任务入队投递消息（终态任务返回 SUBAGENT_TASK_NOT_ACTIVE 改走恢复）。 */
+  enqueueMessage(agentId: string, message: string): Promise<SubagentEnqueueResult>;
+  /** 从终态 transcript 恢复任务（强制后台，复用原 agentId）。 */
+  resumeTask(
+    agentId: string,
+    message: string,
+    parentSession?: SubagentParentSession,
+  ): Promise<SubagentExecutionResult>;
+  /** 仅停止 running 状态任务（对齐官方 stopTask 语义）。 */
+  stopTask(agentId: string): Promise<TaskStopResult>;
 }

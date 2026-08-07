@@ -51,6 +51,11 @@ export interface TaskManagerHooks {
     record: TaskStateRecord,
     result: SubagentRuntimeTaskResult,
   ) => void | Promise<void>;
+  /** 任务进入终态时投递队列仍有未消费消息（终态结算兜底，转恢复路径）。 */
+  readonly onTerminalWithPendingMessages?: (
+    record: TaskStateRecord,
+    messages: readonly string[],
+  ) => void | Promise<void>;
 }
 
 /** 统一承载前台、后台和排队子代理的 FIFO 任务管理器。 */
@@ -147,6 +152,108 @@ export class TaskManager {
   /** 绑定协调器的状态与终态观察器，避免组合根处理循环依赖。 */
   public setHooks(hooks: TaskManagerHooks): void {
     this.hooks = hooks;
+  }
+
+  /**
+   * 以同一 agentId 重开一个已终态任务（transcript 恢复的索引基础）。
+   * 恢复任务强制后台：调用方以 mode: 'background' 提交。
+   *
+   * @param input - 冻结任务输入（agentId 必须与旧终态任务一致）
+   * @returns 后台接受态或稳定错误
+   */
+  public async reopen(input: TaskManagerSubmitInput): Promise<TaskManagerSubmitResult> {
+    if (this.closed) {
+      return {
+        kind: 'error',
+        code: 'SUBAGENT_SESSION_CLOSED',
+        message: '当前会话已关闭，不再接受子代理任务',
+      };
+    }
+    const existing = await this.options.stateStore.get(input.agentId);
+    if (!existing) {
+      return {
+        kind: 'error',
+        code: 'SUBAGENT_TASK_NOT_FOUND',
+        message: `子代理任务不存在: ${input.agentId}`,
+      };
+    }
+    if (!isTerminalTaskStatus(existing.status)) {
+      return {
+        kind: 'error',
+        code: 'SUBAGENT_TASK_NOT_TERMINAL',
+        message: `任务尚未进入终态，不能重开: ${input.agentId}（当前 ${existing.status}）`,
+      };
+    }
+    let record: TaskStateRecord;
+    try {
+      record = await this.options.stateStore.reopen(input, this.options.maxInFlight);
+    } catch (error: unknown) {
+      if (error instanceof CapacityExceededError) {
+        return { kind: 'error', code: error.code, message: error.message };
+      }
+      return { kind: 'error', code: 'SUBAGENT_TASK_REOPEN_FAILED', message: '子代理任务重开失败' };
+    }
+    // 覆盖语义：移除旧内存条目后以同一 agentId 重新注册。
+    this.entries.delete(input.agentId);
+    const entry = createManagedEntry(input, record);
+    this.entries.set(input.agentId, entry);
+    this.queue.push(input.agentId);
+    await this.emitState(record);
+    if (input.mode === 'background') {
+      entry.backgrounded = true;
+    }
+    this.pump();
+    if (input.mode === 'background') {
+      return { kind: 'async_launched', agentId: input.agentId, description: input.description };
+    }
+    return entry.foregroundResult;
+  }
+
+  /**
+   * 向运行中的任务投递一条消息；非终态任务（pending/running/waiting_approval）可入队。
+   * 投递不持久化：任务终态后队列消息由终态结算兜底转恢复路径承载。
+   *
+   * @param agentId - 目标任务 ID
+   * @param message - 待投递消息
+   * @returns 入队成功或稳定错误
+   */
+  public async enqueueMessage(
+    agentId: string,
+    message: string,
+  ): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
+    const record = await this.options.stateStore.get(agentId);
+    if (!record) {
+      return { ok: false, code: 'SUBAGENT_TASK_NOT_FOUND', message: `子代理任务不存在: ${agentId}` };
+    }
+    if (isTerminalTaskStatus(record.status)) {
+      return {
+        ok: false,
+        code: 'SUBAGENT_TASK_NOT_ACTIVE',
+        message: `任务已终态，消息改走恢复路径: ${agentId}（当前 ${record.status}）`,
+      };
+    }
+    const entry = this.entries.get(agentId);
+    // entry.finished 是内存终态判定：状态读取与入队之间任务可能已结束，
+    // 消息不得压入已完成的条目（终态结算兜底只覆盖结算时仍在队列的消息）。
+    if (!entry || entry.finished) {
+      return { ok: false, code: 'SUBAGENT_TASK_NOT_EXECUTABLE', message: '任务当前进程不可执行' };
+    }
+    entry.pendingMessages.push(message);
+    return { ok: true };
+  }
+
+  /**
+   * 取出任务的全部待投递消息并清空队列；多条消息由注入点合并为一次 user 注入。
+   *
+   * @param agentId - 目标任务 ID
+   * @returns 待投递消息数组（可能为空）
+   */
+  public drainMessages(agentId: string): readonly string[] {
+    const entry = this.entries.get(agentId);
+    if (!entry || entry.pendingMessages.length === 0) {
+      return [];
+    }
+    return entry.pendingMessages.splice(0, entry.pendingMessages.length);
   }
 
   /** 将等待中的任务推进到 waiting_approval。 */
@@ -360,6 +467,13 @@ export class TaskManager {
       await this.emitState(terminalRecord);
       await this.emitTerminal(terminalRecord, result);
     }
+    // 终态结算兜底：必须在旧任务完整终态结算（含通知与父会话路由清理）之后触发恢复，
+    // 避免恢复任务的新路由被旧终态清理误删。被显式停止（killed）的任务不自动恢复
+    // （TaskStop / 用户取消的语义是终止，不是重试）。
+    if (entry.pendingMessages.length > 0 && status !== 'killed') {
+      const pending = entry.pendingMessages.splice(0, entry.pendingMessages.length);
+      void this.emitPendingMessagesAtTerminal(entry.input.agentId, pending);
+    }
     this.runningCount = Math.max(0, this.runningCount - 1);
     entry.resolveDone(result);
     if (!entry.foregroundResolved) {
@@ -497,6 +611,26 @@ export class TaskManager {
       });
     }
   }
+
+  /** 终态结算兜底观察器：失败仅记录日志，不阻塞槽位释放。 */
+  private async emitPendingMessagesAtTerminal(
+    agentId: string,
+    messages: readonly string[],
+  ): Promise<void> {
+    try {
+      const record = await this.options.stateStore.get(agentId);
+      if (record) {
+        await this.hooks?.onTerminalWithPendingMessages?.(record, messages);
+      }
+    } catch (error: unknown) {
+      logger.warn('[TaskManager] 终态待投递消息转交恢复路径失败。', {
+        component: 'subagent_task_manager',
+        event: 'task_pending_messages_recovery_failed',
+        agentId,
+        reason: sanitizeError(error),
+      });
+    }
+  }
 }
 
 /** 单个任务在内存中的调度条目。 */
@@ -514,6 +648,8 @@ interface ManagedTaskEntry {
   startedAt?: string;
   backgroundTimer?: NodeJS.Timeout;
   parentAbortListener?: () => void;
+  /** 运行中经 SendMessage 投递、等待下一轮注入的消息队列。 */
+  pendingMessages: string[];
 }
 
 /** 创建有独立控制器和前台等待器的任务条目。 */
@@ -531,6 +667,7 @@ function createManagedEntry(input: TaskManagerSubmitInput, _record: TaskStateRec
     finished: false,
     backgrounded: input.mode === 'background',
     foregroundResolved: false,
+    pendingMessages: [],
   };
   return entry;
 }

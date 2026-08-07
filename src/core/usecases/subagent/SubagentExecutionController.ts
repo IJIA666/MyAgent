@@ -2,6 +2,8 @@ import type {
   SubagentExecutionPort,
   SubagentExecutionRequest,
   SubagentExecutionResult,
+  SubagentMessagingPort,
+  SubagentParentSession,
 } from '../../../ports/driving/SubagentExecutionPort.js';
 import { SUBAGENT_ERROR_CODES } from '../../../ports/driving/SubagentExecutionPort.js';
 import { SubagentRuntime } from './SubagentRuntime.js';
@@ -20,7 +22,7 @@ export interface SubagentExecutionHost extends SubagentExecutionPort {
  * 会话绑定的子代理执行控制器。
  * Agent 工具只持有该稳定端口，具体运行器由 SessionManager 在组合完成后绑定。
  */
-export class SubagentExecutionController implements SubagentExecutionPort {
+export class SubagentExecutionController implements SubagentExecutionPort, SubagentMessagingPort {
   /** 当前会话绑定信息。 */
   private binding: { sessionId: string; executor: SubagentExecutionHost } | null = null;
   /** 控制器是否已经关闭。 */
@@ -80,6 +82,55 @@ export class SubagentExecutionController implements SubagentExecutionPort {
       };
     }
     return this.binding.executor.execute(request);
+  }
+
+  /** 查询任务状态（SendMessage/TaskStop 寻址判定）。 */
+  public async getTaskStatus(agentId: string): Promise<string | undefined> {
+    const executor = this.binding?.executor as Partial<SubagentMessagingPort> | undefined;
+    if (this.closed || !executor || typeof executor.getTaskStatus !== 'function') {
+      return undefined;
+    }
+    return executor.getTaskStatus(agentId);
+  }
+
+  /** 向非终态任务入队投递消息。 */
+  public async enqueueMessage(
+    agentId: string,
+    message: string,
+  ): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
+    const executor = this.binding?.executor as Partial<SubagentMessagingPort> | undefined;
+    if (this.closed || !executor || typeof executor.enqueueMessage !== 'function') {
+      return { ok: false, code: SUBAGENT_ERROR_CODES.notBound, message: '子代理执行控制器未绑定可用会话' };
+    }
+    return executor.enqueueMessage(agentId, message);
+  }
+
+  /** 从终态 transcript 恢复任务（强制后台）。 */
+  public async resumeTask(
+    agentId: string,
+    message: string,
+    parentSession?: SubagentParentSession,
+  ): Promise<SubagentExecutionResult> {
+    const executor = this.binding?.executor as Partial<SubagentMessagingPort> | undefined;
+    if (this.closed || !executor || typeof executor.resumeTask !== 'function') {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.notBound,
+        message: '子代理执行控制器未绑定可用会话',
+      };
+    }
+    return executor.resumeTask(agentId, message, parentSession);
+  }
+
+  /** 仅停止 running 状态任务（TaskStop 端口）。 */
+  public async stopTask(
+    agentId: string,
+  ): Promise<{ status: 'cancelled'; agentId: string } | { status: 'not_running' } | { status: 'not_found' } | { status: 'error'; message: string }> {
+    const executor = this.binding?.executor as Partial<SubagentMessagingPort> | undefined;
+    if (this.closed || !executor || typeof executor.stopTask !== 'function') {
+      return { status: 'error', message: '子代理执行控制器未绑定可用会话' };
+    }
+    return executor.stopTask(agentId);
   }
 
   /** 普通会话 abort 只取消前台子代理。 */

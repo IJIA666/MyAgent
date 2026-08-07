@@ -124,6 +124,12 @@ export interface SubagentRuntimeTaskOptions {
   readonly maxIterations: number;
   /** 是否写入独立 transcript；Skill 专用任务为 false。 */
   readonly persistTranscript: boolean;
+  /** 每轮请求组装前的待投递消息提供器（SendMessage 投递队列接入点）。 */
+  readonly pendingMessageProvider?: () => readonly string[];
+  /** transcript 恢复历史（已剔除未闭合 tool_use）；存在时走 buildResume 装载。 */
+  readonly resumeHistory?: readonly ChatMessage[];
+  /** 是否恢复任务：初始基线经 beginResume 写入（终态 transcript 允许新一轮 running 覆盖）。 */
+  readonly resuming?: boolean;
   /** 是否装配通用子代理的循环防护、JIT 规则和审计插件。 */
   readonly enableDefaultSafetyPlugins?: boolean;
   /** 可选的专用插件、结果适配和工具 mutation 观察钩子。 */
@@ -409,25 +415,33 @@ export class SubagentRuntime {
       compactionService,
       () => llmConfig,
     );
-    const messages = task.contextPolicy === 'fresh'
-      ? this.contextBuilder.buildFresh(
+    // 恢复装载优先：重建 system（含当前定义正文）+ 回放 transcript 历史 + 新 user。
+    const messages = task.resumeHistory
+      ? this.contextBuilder.buildResume(
         childContext,
+        task.resumeHistory,
         task.prompt,
         task.definitionSystemPromptBuilder?.(childContext),
       )
-      : task.contextPolicy === 'exact-fork'
-        ? buildExactForkHistory(
+      : task.contextPolicy === 'fresh'
+        ? this.contextBuilder.buildFresh(
           childContext,
-          this.contextBuilder,
-          task.requestSnapshot,
-          task.currentAssistantMessage,
           task.prompt,
+          task.definitionSystemPromptBuilder?.(childContext),
         )
-        : this.contextBuilder.buildHistoryReplay(
-          childContext,
-          task.conversationHistory ?? [],
-          task.prompt,
-        );
+        : task.contextPolicy === 'exact-fork'
+          ? buildExactForkHistory(
+            childContext,
+            this.contextBuilder,
+            task.requestSnapshot,
+            task.currentAssistantMessage,
+            task.prompt,
+          )
+          : this.contextBuilder.buildHistoryReplay(
+            childContext,
+            task.conversationHistory ?? [],
+            task.prompt,
+          );
     const tracer = new AgentTracer(
       paths.tracesDir,
       paths.auditsDir,
@@ -458,6 +472,18 @@ export class SubagentRuntime {
         latestInputTokens = usage.input_tokens;
         accumulatedOutputTokens += usage.output_tokens;
       },
+      pendingMessageProvider: task.pendingMessageProvider,
+      // 运行中快照：每轮模型响应提交后原子更新 transcript（终态快照仍为权威）。
+      // 注意：baseRecord 在 loop 构造后才赋值，闭包在 chat 运行时访问时已就绪。
+      onRoundCommitted: () => {
+        if (baseRecord && task.persistTranscript) {
+          void this.writeTranscript({
+            ...baseRecord,
+            status: 'running',
+            messages: cloneMessages(childContext.getHistory()),
+          });
+        }
+      },
     });
     const startedAt = new Date().toISOString();
     baseRecord = {
@@ -476,7 +502,13 @@ export class SubagentRuntime {
       scanRuleIds: [],
     };
     if (task.persistTranscript) {
-      await this.writeTranscript(baseRecord);
+      // 恢复任务必须经 beginResume 覆盖既有终态 transcript（普通 write 受终态回退保护拒绝）。
+      // 该调用先于循环内任何运行中快照，保证恢复期间 outputFile 显示新一轮状态。
+      if (task.resuming) {
+        await this.transcriptStore.beginResume(baseRecord);
+      } else {
+        await this.writeTranscript(baseRecord);
+      }
     }
 
     startedAtMs = Date.now();

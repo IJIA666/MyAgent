@@ -63,6 +63,33 @@ export class SubagentContextBuilder {
   }
 
   /**
+   * 为 transcript 恢复构造"重建 system + 历史回放 + 新任务"的装载。
+   * 与 buildHistoryReplay 的区别：system 追加当前解析到的定义正文（自定义 .md / 内置提示），
+   * 恢复后子代理身份不丢失；transcript 中的旧 system 被剥离（仅回放非 system 消息）。
+   *
+   * @param context - 已由 RuleManager 重建基础 system 的子上下文
+   * @param history - transcript 读取的历史（剔除未闭合 tool_use 后）
+   * @param prompt - 恢复投递的新 user 消息
+   * @param definitionSystemPrompt - 当前定义正文；省略时保持基础 system
+   * @returns 装载后的深复制消息
+   */
+  public buildResume(
+    context: SessionContext,
+    history: readonly ChatMessage[],
+    prompt: string,
+    definitionSystemPrompt?: string,
+  ): ChatMessage[] {
+    const system = context.getHistory()[0];
+    const replayed: StoredChatMessage[] = [
+      ...(system ? [cloneChatMessageWithSystemPrompt(system, definitionSystemPrompt)] : []),
+      ...history.filter(message => message.role !== 'system').map(cloneChatMessage),
+      { role: 'user', content: prompt },
+    ];
+    context.updateHistory(replayed);
+    return replayed.map(cloneChatMessage);
+  }
+
+  /**
    * 从父模型最终请求快照构造 exact-fork 历史。
    * 该方法不调用规则、Skill 或记忆装载逻辑，确保 system 与消息字节来自父请求。
    * 触发 fork 的当前 assistant 调用（快照产生于模型响应之前，不含该调用）会追加到

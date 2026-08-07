@@ -131,6 +131,83 @@ describe('TaskManager', () => {
     expect(await manager.submit(createInput('after-close', 'background', () => Promise.resolve(completed('after-close')))))
       .toMatchObject({ kind: 'error', code: 'SUBAGENT_SESSION_CLOSED' });
   });
+
+  it('reopen 允许终态任务以同一 agentId 重开，非终态拒绝', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'task-manager-reopen-'));
+    const manager = createManager();
+    await manager.submit(createInput('resume-task', 'background', () => Promise.resolve(completed('resume-task'))));
+    await waitUntil(async () => (await manager.get('resume-task'))?.status === 'completed');
+
+    // 非终态任务拒绝重开且不影响现有执行。
+    const running = createDeferred<SubagentRuntimeTaskResult>();
+    await manager.submit(createInput('running-task', 'background', () => running.promise));
+    await waitUntil(async () => (await manager.get('running-task'))?.status === 'running');
+    const rejected = await manager.reopen(createInput('running-task', 'background', () => Promise.resolve(completed('running-task'))));
+    expect(rejected).toMatchObject({ kind: 'error', code: 'SUBAGENT_TASK_NOT_TERMINAL' });
+
+    // 终态任务重开成功（覆盖语义：同一 agentId 重新注册）。
+    const reopened = await manager.reopen(createInput('resume-task', 'background', () => Promise.resolve(completed('resume-task'))));
+    expect(reopened).toMatchObject({ kind: 'async_launched', agentId: 'resume-task' });
+    await waitUntil(async () => (await manager.get('resume-task'))?.status === 'completed');
+    running.resolve(completed('running-task'));
+  });
+
+  it('enqueueMessage 非终态可入队且 drain 取空，终态后拒绝入队', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'task-manager-enqueue-'));
+    const running = createDeferred<SubagentRuntimeTaskResult>();
+    const manager = createManager();
+    await manager.submit(createInput('queue-task', 'background', () => running.promise));
+    await waitUntil(async () => (await manager.get('queue-task'))?.status === 'running');
+
+    expect((await manager.enqueueMessage('queue-task', '第一条')).ok).toBe(true);
+    expect((await manager.enqueueMessage('queue-task', '第二条')).ok).toBe(true);
+    expect(manager.drainMessages('queue-task')).toEqual(['第一条', '第二条']);
+    expect(manager.drainMessages('queue-task')).toEqual([]);
+
+    // 任务终态后消息改走恢复路径（拒绝入队）。
+    running.resolve(completed('queue-task'));
+    await waitUntil(async () => (await manager.get('queue-task'))?.status === 'completed');
+    const rejected = await manager.enqueueMessage('queue-task', '迟到消息');
+    expect(rejected).toMatchObject({ ok: false, code: 'SUBAGENT_TASK_NOT_ACTIVE' });
+    expect(manager.drainMessages('queue-task')).toEqual([]);
+  });
+
+  it('终态结算后触发待投递消息兜底，且严格晚于 onTerminal', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'task-manager-pending-'));
+    const order: string[] = [];
+    const running = createDeferred<SubagentRuntimeTaskResult>();
+    const manager = createManager(2, 4, 0, {
+      onTerminal: async () => {
+        order.push('terminal');
+      },
+      onTerminalWithPendingMessages: async () => {
+        order.push('pending-recovery');
+      },
+    });
+    await manager.submit(createInput('natural-task', 'background', () => running.promise));
+    await waitUntil(async () => (await manager.get('natural-task'))?.status === 'running');
+    await manager.enqueueMessage('natural-task', '未消费消息');
+    running.resolve(completed('natural-task'));
+    await waitUntil(() => order.includes('pending-recovery'));
+    // 兜底必须发生在旧任务完整终态结算（onTerminal）之后，避免恢复路由被旧清理误删。
+    expect(order).toEqual(['terminal', 'pending-recovery']);
+  });
+
+  it('被停止（killed）任务不触发自动恢复兜底', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'task-manager-killed-'));
+    const recovered: string[] = [];
+    const manager = createManager(2, 4, 0, {
+      onTerminalWithPendingMessages: async record => {
+        recovered.push(record.agentId);
+      },
+    });
+    await manager.submit(createInput('stop-task', 'background', signal => waitForCancellation(signal, 'stop-task')));
+    await waitUntil(async () => (await manager.get('stop-task'))?.status === 'running');
+    await manager.enqueueMessage('stop-task', '不复活');
+    await manager.cancel('stop-task');
+    await waitUntil(async () => (await manager.get('stop-task'))?.status === 'killed');
+    expect(recovered).toEqual([]);
+  });
 });
 
 /** 创建测试用任务管理器及隔离索引。 */

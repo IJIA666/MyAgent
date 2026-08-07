@@ -8,7 +8,7 @@
 
 ### Requirement: 主 Agent 可同步或后台调用已注册子代理
 
-系统 SHALL 提供模型可调用的 `Agent` 工具，支持内置 `general-purpose`、`Explore`、`Plan` 与自定义注册类型。工具 MUST 接受必填 `description`（3-5 词任务摘要）、必填非空 `prompt`、可选 `subagent_type`、可选 `run_in_background` 和可选 `model`；省略类型且 fork 开关关闭时 MUST 使用 `general-purpose`，省略后台开关时 MUST 保持同步前台执行。
+系统 SHALL 提供模型可调用的 `Agent` 工具，支持内置 `general-purpose`、`Explore`、`Plan` 与自定义注册类型。工具 MUST 接受必填 `description`（3-5 词任务摘要）、必填非空 `prompt`、可选 `subagent_type`、可选 `run_in_background` 和可选 `model`；省略类型且 fork 开关关闭时 MUST 使用 `general-purpose`，省略后台开关时 MUST 保持同步前台执行。Agent 工具结果（接受态与前台终态）MUST 携带该子代理 transcript 路径的 `outputFile` 与父工具面是否含 Read 类工具的 `canReadOutputFile`。
 
 #### Scenario: 默认调用通用子代理
 
@@ -32,6 +32,7 @@
 
 - **WHEN** 主 Agent 使用 `run_in_background: true` 调用 `Agent`
 - **THEN** 系统提交一个 `fresh` 后台子代理并立即返回 `async_launched` 状态、`agentId` 与 `description`
+- **AND** 接受态结果携带 `outputFile`（该子代理 transcript 路径，提交点已初始化、排队期即可读）与 `canReadOutputFile`（父工具面是否含 Read 类工具）
 - **AND** 主 Agent 无需等待该子代理进入终态即可继续当前循环
 
 #### Scenario: Agent schema 只暴露阶段内字段
@@ -201,13 +202,19 @@
 
 ### Requirement: 子代理 transcript 与主会话隔离
 
-系统 SHALL 在 `state/subagents` 下为每次通用子代理执行保存独立、版本化的原始 transcript，并 MUST NOT 将子代理内部消息写入主 `ContextRepository` snapshot。
+系统 SHALL 在 `state/subagents` 下为每次通用子代理执行保存独立、版本化的原始 transcript，并 MUST NOT 将子代理内部消息写入主 `ContextRepository` snapshot。子代理运行中 MUST 每轮模型响应完成后原子更新 transcript 的 `running` 快照（含截至该轮的全部原始消息），使输出文件在运行中可读；终态快照 MUST 仍为最终权威记录。
 
 #### Scenario: 原子保存完整终态
 
 - **WHEN** 子代理进入 `running` 或任一终态
 - **THEN** 系统通过同目录临时文件与 rename 原子更新 `transcript.json`
 - **AND** 文件包含安全派生的父 session 路径、`agentId`、类型、上下文策略、时间、冻结模型标识、状态和原始消息
+
+#### Scenario: 运行中快照可读
+
+- **WHEN** 子代理处于运行中且已完成至少一轮模型响应
+- **THEN** transcript 记录状态为 `running` 且消息包含截至最近一轮的完整历史
+- **AND** 读取该 transcript 路径可观察到运行进展，终态后由权威终态记录覆盖
 
 #### Scenario: 主会话操作不混入子代理记录
 

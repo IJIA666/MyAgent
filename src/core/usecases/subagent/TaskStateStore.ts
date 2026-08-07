@@ -116,6 +116,60 @@ export class TaskStateStore {
   }
 
   /**
+   * 以同一 agentId 重开一个已终态任务（transcript 恢复的索引基础）。
+   * 覆盖语义：同一 agentId 代表同一逻辑任务，新记录替换旧终态记录（历史经 transcript messages 保留），
+   * 不做新旧并存；非终态任务拒绝重开。
+   *
+   * @param input - 与 create 相同的冻结任务输入
+   * @returns 重开后的 pending 记录
+   */
+  public async reopen(
+    input: {
+      agentId: string;
+      description: string;
+      agentType: string;
+      contextPolicy: SubagentContextPolicy;
+      mode: TaskMode;
+    },
+    maxInFlight?: number,
+  ): Promise<TaskStateRecord> {
+    await this.initialize();
+    if (!isSafeTaskId(input.agentId) || !isTaskDescription(input.description)) {
+      throw new Error('任务索引参数不符合安全边界');
+    }
+    const existing = this.records.get(input.agentId);
+    // 重开只允许发生在旧记录已终态之后；不存在则等同 create。
+    if (existing && !isTerminalTaskStatus(existing.status)) {
+      throw new Error('非终态任务不可重开');
+    }
+    if (maxInFlight !== undefined) {
+      const inFlightCount = [...this.records.values()]
+        .filter(record => !isTerminalTaskStatus(record.status))
+        .length;
+      if (inFlightCount >= maxInFlight) {
+        throw new CapacityExceededError(`子代理在途任务已达到容量上限: ${maxInFlight}`);
+      }
+    }
+    const now = new Date().toISOString();
+    const record: TaskStateRecord = {
+      version: 1,
+      agentId: input.agentId,
+      parentSessionId: this.parentSessionId,
+      description: input.description.trim(),
+      agentType: input.agentType,
+      contextPolicy: input.contextPolicy,
+      mode: input.mode,
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now,
+    };
+    // 覆盖语义：直接替换同键记录，不保留旧终态。
+    this.records.set(record.agentId, record);
+    await this.persist();
+    return cloneTaskState(record);
+  }
+
+  /**
    * 原子提交状态迁移；终态竞争时只有第一个调用成功。
    *
    * @param agentId - 任务 ID

@@ -178,6 +178,8 @@ async function main() {
       skillPendingStore,
       skillWriteApprovalController,
       subagentExecutionPort: subagentExecutionController,
+      // 协作工具端口复用同一控制器（实现 SubagentMessagingPort 转发）。
+      subagentMessagingPort: subagentExecutionController,
       subagentForkEnabled: appConfig.runtimeLimits.subagentForkEnabled,
       agentTypes: subagentDefinitionRegistry.list().map(definition => definition.type),
     }, permissionSettingsStore);

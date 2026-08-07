@@ -37,7 +37,8 @@ describe('subagent execution contract', () => {
       .filter(tool => tool.subagentToolPolicy?.freshForeground !== true)
       .map(tool => tool.name)
       .sort())
-      .toEqual(['Agent', 'ask_user_question']);
+      // SendMessage/TaskStop 为协作工具，默认不开放给子代理（对齐官方 ALL_AGENT_DISALLOWED_TOOLS 语义）。
+      .toEqual(['Agent', 'SendMessage', 'TaskStop', 'ask_user_question']);
   });
 
   it('第一阶段不注册后台、fork、任务队列或 Markdown Agent 入口', () => {

@@ -274,6 +274,7 @@ export type PermissionIdentity =
   | 'ExternalSideEffect'
   | 'McpCall'
   | 'SkillManage'
+  | 'TaskStop'
   | 'UnknownEffect';
 
 /**

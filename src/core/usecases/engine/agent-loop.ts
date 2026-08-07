@@ -92,6 +92,10 @@ export interface AgentLoopOptions {
   };
   /** 接收每次模型回包的真实用量，用于任务 usage 汇总。 */
   onModelUsage?: (usage: ApiUsage) => void;
+  /** 每轮模型响应提交后必调（与 usage 无关），供运行中 transcript 快照等确定性观察使用。 */
+  onRoundCommitted?: () => void;
+  /** 每轮请求组装前调用；返回的待投递消息合并为一次 user 注入（对齐官方 queued_command 语义）。 */
+  pendingMessageProvider?: () => readonly string[];
 }
 /** 缓存击穿校验：缓存跌幅百分比阈值（5% = 0.95 倍） */
 const CACHE_DROP_RATIO_THRESHOLD = 0.95;
@@ -150,6 +154,10 @@ export class AgentLoop {
   private latestRequestSnapshot?: ModelRequestSnapshot;
   /** 任务层可选的模型用量观察器。 */
   private readonly onModelUsage?: (usage: ApiUsage) => void;
+  /** 每轮模型响应提交后的确定性观察器（与 usage 无关）。 */
+  private readonly onRoundCommitted?: () => void;
+  /** 每轮请求组装前的待投递消息提供器。 */
+  private readonly pendingMessageProvider?: () => readonly string[];
 
   /**
    * 构造函数，装配核心服务依赖。
@@ -185,6 +193,8 @@ export class AgentLoop {
       } satisfies ModelRequestAssemblerOptions,
     );
     this.onModelUsage = options.onModelUsage;
+    this.onRoundCommitted = options.onRoundCommitted;
+    this.pendingMessageProvider = options.pendingMessageProvider;
     this.toolCallOrchestrator = new ToolCallOrchestrator(
       this.toolRegistry, this.toolDispatcher, this.pluginRegistry,
       this.context, this._interactionPort
@@ -337,6 +347,11 @@ export class AgentLoop {
       iteration++;
 
       try {
+        // 待投递消息在每轮请求组装前注入（多条合并为一次 user 注入，非打断式）。
+        const pendingMessages = this.pendingMessageProvider?.() ?? [];
+        if (pendingMessages.length > 0) {
+          this.context.addMessage({ role: 'user', content: pendingMessages.join('\n') });
+        }
         // 委托 ModelRequestAssembler 执行模型请求组装（getTools → BeforeToolSelection → assemble → BeforeModel → system-reminder → Plan 裁剪）
         const assembly = await this.modelRequestAssembler.assemble(
           transientSkillContent,
@@ -511,6 +526,8 @@ export class AgentLoop {
 
             const finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatMessage;
             this.context.addMessage(finalAssistantMessage);
+            // 每轮响应提交后确定性通知（与 usage 无关），供运行中 transcript 快照使用。
+            this.onRoundCommitted?.();
 
             // 更新真实 API 用量数据
             if (event.usage) {
@@ -681,6 +698,8 @@ export class AgentLoop {
 
             const finalAssistantMessage = (afterModelResult.llmResponse ?? event.assistantMessage) as ChatMessage;
             this.context.addMessage(finalAssistantMessage);
+            // 最终 complete 分支同样提交一轮响应：运行中 transcript 快照须覆盖此路径。
+            this.onRoundCommitted?.();
             hasFinalResponse = true;
 
             if (event.usage) {

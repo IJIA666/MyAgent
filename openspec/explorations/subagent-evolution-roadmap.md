@@ -55,7 +55,7 @@
 
 ### 阶段 2：配置型子代理（对齐 loadAgentsDir.ts / builtInAgents.ts）
 
-**2a（change `configured-subagent-core`）已归档 ✅ 2026-08-07；2b（MCP + --agent）进行中。**
+**2a（change `configured-subagent-core`）与 2b（change `subagent-mcp-agent-mode`）均已归档 ✅ 2026-08-07。**
 
 | 能力 | 官方机制参考 | 关键点 | 状态 |
 |---|---|---|---|
@@ -63,8 +63,8 @@
 | 内置 Explore / Plan | exploreAgent.ts、planAgent.ts | 只读允许名单 + 固定 `permissionMode: plan`（网关级强制只读）+ `omitClaudeMd: true` | ✅ 2a |
 | general-purpose 完善 | generalPurposeAgent.ts | `['*']` 工具池 | ✅ 2a |
 | model 解析完整化 | utils/model/agent.ts:37-95 | env > tool > frontmatter > inherit；值域 inherit + BUILTIN_MODELS（同 tier 防降级不落地，MyAgent 无 alias/tier 体系） | ✅ 2a |
-| 子代理专属 MCP | runAgent.ts:648-656（内联定义新建、字符串引用共享） | 引用共享父连接；内联动态建连、子代理结束关闭 | 🔄 2b |
-| `--agent` 会话模式 | main.tsx:1000、REPL.tsx（主线程装配） | 子代理定义成为主会话；system prompt/model/tools 裁剪；permissionMode/hooks/mcpServers/maxTurns 不生效；Agent 工具不扣留 | 🔄 2b |
+| 子代理专属 MCP | runAgent.ts:648-656（内联定义新建、字符串引用共享） | 引用共享父连接；内联动态建连、子代理结束关闭 | ✅ 2b |
+| `--agent` 会话模式 | main.tsx:1000、REPL.tsx（主线程装配） | 子代理定义成为主会话；system prompt/model/tools 裁剪；permissionMode/hooks/mcpServers/maxTurns 不生效；Agent 工具不扣留 | ✅ 2b |
 | hooks 映射 | runAgent.ts:531-575（SubagentStart/Stop） | **移出 2b**：MyAgent 无命令型 hooks 基础设施；子代理结束通知已由 task_update/task-notification 覆盖。命令型 hooks（HooksSchema + 命令执行，主会话共用）**独立立项**，事件面随立项一并做 | ⏸ 独立立项 |
 | @-mention 用户引导 | utils/messages.ts（提醒转换） | 不绕过 Agent 工具，转成高优先级提醒 | 未定 |
 | 子代理记忆 | loadAgentsDir.ts memory 字段 | user/project/local 三域（与 MyAgent 长期记忆体系融合评估，结论：机制独立，不融合） | ⏸ 留待评估 |
@@ -72,20 +72,38 @@
 **验收（2a）**：写一个 `.md` 文件就能获得一个新子代理类型；Explore/Plan 行为对齐（只读、不加载规则）。✅
 **验收（2b）**：子代理定义可声明专属 MCP（引用共享/内联隔离）；`myagent --agent <type>` 以定义启动主会话。
 
-### 阶段 3：隔离与协作增强
+### 阶段 3：协作与配置增强（worktree 延后，与主代理合并一次建设）
 
-| 能力 | 官方机制参考 | 关键点 |
-|---|---|---|
-| worktree 隔离 | AgentTool.tsx:590-593、utils/worktree.ts | 无变更自动清理、有变更保留并回报 |
-| 嵌套多层 | 深度限制扣留 Agent 工具（fork 保留但报错） | 官方默认 3 层可配置 |
-| SendMessage 恢复 | SendMessageTool.ts（agentId/name 寻址、队列或 resume） | 已完成子代理可继续对话 |
-| TaskStop 模型工具 | TaskStopTool.ts | 模型可停任务（当前只有用户 /tasks stop） |
-| outputFile 机制 | getTaskOutputPath / evictTaskOutput | 任务可读输出文件 + `canReadOutputFile` |
-| Ctrl+B 后台化 | AgentTool.tsx:886-1053 | 依赖 CLI 输入监听能力评估 |
-| verification 类强制后台 agent | verificationAgent.ts（background: true） | 定义级 background 字段 |
-| 清理语义对齐 | runAgent.ts:816-859 | killShellTasksForAgent、只关新建 MCP、清缓存 |
+**3a（协作/控制面，先行）：任务寻址、停靠与输出读取**
 
-**验收**：fork 在 worktree 里跑、模型能自己停任务、子代理结果可恢复继续。
+| 能力 | 官方机制参考 | 关键点 | 状态 |
+|---|---|---|---|
+| 子代理消息投递与恢复 | LocalAgentTask.tsx:162（queuePendingMessage）、resumeAgent.ts（resumeAgentBackground） | 运行中子代理排队消息；从 transcript 恢复已结束子代理继续对话（非 SendMessageTool——其主体为 swarm 协议，不在计划内） | 🔄 3a |
+| TaskStop 模型工具 | TaskStopTool.ts（stopTask） | 模型可停运行中任务（含后台）；主场景：新信息导致放弃后台任务，非中途纠偏 | 🔄 3a |
+| outputFile 机制 | utils/task/diskOutput.ts、AgentTool.tsx:152（canReadOutputFile） | 任务输出实时落盘；模型主动读运行中进度、大输出按需读取 | 🔄 3a |
+
+**3b（资源清理，先行 🔄）**
+
+| 能力 | 官方机制参考 | 关键点 | 状态 |
+|---|---|---|---|
+| 子代理 shell 任务清理 | runAgent.ts:816-859（killShellTasksForAgent） | 子代理结束时清理其启动的 shell 任务：abortSessionTasks 底座已有（terminal-engine.ts:788），缺口 = SubagentRuntime finally 未调用；只关新建 MCP 已由 2b 覆盖 | 🔄 3b |
+
+**3c（配置面）：强制后台**
+
+| 能力 | 官方机制参考 | 关键点 | 状态 |
+|---|---|---|---|
+| verification 类强制后台 agent | verificationAgent.ts（background: true） | 定义级 background 字段启用（后台能力 1 阶段已有） | 🔄 3c |
+
+**3d（隔离面，延后 ⏸）：worktree**
+
+| 能力 | 官方机制参考 | 关键点 | 状态 |
+|---|---|---|---|
+| worktree 隔离（子代理 + 主代理合并建设） | utils/worktree.ts（getOrCreateWorktree 共享核心；createAgentWorktree 临时版 / createWorktreeForSession + EnterWorktree 持久版） | 本质 = 同一仓库的附加 checkout 工作区（非拷贝、非分支，对象库共享）；临时版自动命名用后即删、持久版用户命名可保留恢复；node_modules symlink 防占盘；30 天过期清扫 | ⏸ 延后 |
+
+**已砍**：嵌套多层（当前已禁止，从 0 放开到 3 层收益低，维持禁止）；Ctrl+B 后台化（autoBackgroundMs 已覆盖，且依赖未知 CLI 输入能力）。
+
+**验收（3a/3b）**：模型能停运行中任务、能读子代理运行中输出、已结束子代理可恢复继续；子代理结束后其启动的 shell 任务无残留。
+**验收（3d 延后）**：fork 在 worktree 里跑、主代理可 EnterWorktree 隔离改代码。
 
 ### 阶段 4：不在计划内
 
@@ -97,7 +115,7 @@ Agent Team / swarm（mailbox、task list、权限桥、in-process runner）与 c
 
 1. **权限只继承或收窄**：父 bypassPermissions/acceptEdits 优先不可覆盖；子代理无法自选特权模式。
 2. **Agent 放行不等于子工具授权**：每个子工具独立授权、审计。
-3. **输出扫描唯一交付边界**：transcript 存原文，父模型只见扫描副本；`task-notification` 只用 deliveredOutput。
+3. **自动交付通道唯一边界**：transcript 存原文；自动交付通道（`task-notification`/deliveredOutput）只用扫描副本；主动读取通道（outputFile）按官方形态暴露原始 transcript——主动读文件与读任意工作文件同权，输出扫描不延伸到文件系统。
 4. **资源所有权**：子代理绝不关闭父 LLM/Registry/MCP；后台任务与父 AbortSignal 解绑，会话 close 才有权取消。
 5. **通知安全点**：task-notification 永不打断生成；缓冲 + 协议闭合 + 熔断 + `notified` 原子去重。
 6. **重启诚实收敛**：不恢复执行，只收敛为 `interrupted`。
@@ -118,11 +136,12 @@ Agent Team / swarm（mailbox、task list、权限桥、in-process runner）与 c
 | Explore/Plan | 可追 | 2 | |
 | hooks | 可追 | 2 | 映射 PluginRegistry |
 | MCP 内联 | 可追 | 2 | |
-| worktree | 可追 | 3 | |
-| 嵌套多层 | 可追 | 3 | |
-| SendMessage 恢复 | 可追 | 3 | |
-| TaskStop / outputFile | 可追 | 3 | |
-| Ctrl+B | 可追（待评估） | 3 | 依赖 CLI 输入能力 |
+| worktree | 可追（延后） | 3d | 与主代理 worktree 合并一次建设 |
+| 清理语义对齐（killShellTasksForAgent） | 可追 | 3b | abortSessionTasks 底座已有，缺口 = 子代理 finally 调用 |
+| 嵌套多层 | **不追** | — | 维持禁止（放开收益低） |
+| 子代理消息投递与恢复 | 可追 | 3a | |
+| TaskStop / outputFile | 可追 | 3a | |
+| Ctrl+B | **不追** | — | autoBackgroundMs 已覆盖 |
 | 缓存字节级对齐 | **不追** | — | 缓存归上下文管理模块；子代理只保证 fork 前缀一致 |
 | Agent Team / coordinator | **不追** | — | 明确不在计划内（用户确认） |
 | GrowthBook 实验平台 | **不追** | — | 本地配置开关等价替代 |
@@ -141,7 +160,7 @@ Agent Team / swarm（mailbox、task list、权限桥、in-process runner）与 c
 | 2026-08-06 | 后台白名单收窄去浏览器 | ASYNC_AGENT_ALLOWED_TOOLS（constants/tools.ts:55-71） |
 | 2026-08-06 | 保留并发上限与 FIFO 排队（官方本地无上限） | 本地运行防限流风暴，pending 是增强 |
 | 2026-08-06 | 命名照搬官方 | 降低与 Claude Code 对照的理解成本 |
-| 2026-08-06 | 输出扫描保留并强化（官方无） | 安全只严不松原则 |
+| 2026-08-06 | 输出扫描保留并强化（官方无） | MyAgent 自研补充层：自动交付通道的提示注入防护（伪角色前缀/保留标签/权限绕过措辞） |
 | 2026-08-06 | 缓存对齐归上下文管理模块，子代理只保证 fork 前缀一致 | 各大模型均有缓存，命中由 provider 规则决定（用户确认） |
 | 2026-08-06 | Agent Team / coordinator 明确不在计划内 | 用户确认 |
 | 2026-08-06 | 实验体系以本地配置开关替代（不建 GrowthBook） | fork 开关与 autoBackgroundMs 已覆盖灰度需求 |
@@ -151,3 +170,11 @@ Agent Team / swarm（mailbox、task list、权限桥、in-process runner）与 c
 | 2026-08-07 | 同 tier 防降级不落地 | MyAgent 无 Claude 式 alias/tier 体系，模型值域限定 inherit + BUILTIN_MODELS |
 | 2026-08-07 | hooks 移出 2b，命令型 hooks 独立立项 | MyAgent 无命令型 hooks 基础设施；子代理结束通知已由 task_update/task-notification 覆盖；事件面无消费者=过度设计 |
 | 2026-08-07 | 2b 范围 = 子代理专属 MCP + `--agent` 会话模式 | 共享定义字段启用路径；--agent 独立入口改造，tasks 内分组 |
+| 2026-08-07 | 2b 完成并归档（全门禁通过：1230 单测 + 133 契约） | 三轮 GPT 评审修正后验收通过 |
+| 2026-08-07 | 阶段 3 暂定拆分 3a/3b/3c：3a 协作/控制面（SendMessage/TaskStop/outputFile）先行，3b 隔离面（worktree/清理对齐），3c 深度与配置面（嵌套/background/Ctrl+B） | 3a 与 1/2 阶段主链连贯且无未知项依赖；Ctrl+B 依赖 CLI 输入监听待评估，故放 3c |
+| 2026-08-07 | 3a 对标修正：子代理消息投递与恢复对齐 queuePendingMessage + resumeAgentBackground，非 SendMessageTool（其主体为 swarm 协议，不在计划内）；TaskStop 主场景 = 新信息导致放弃后台任务（官方与 MyAgent 均不向主代理 LLM 注入运行中输出，纠偏靠 outputFile 主动读取） | 官方源码核实（LocalAgentTask.tsx:162、resumeAgent.ts、TaskStopTool.ts、AgentTool.tsx:152） |
+| 2026-08-07 | 嵌套多层维持禁止（从 0 放开到 3 层收益低）；Ctrl+B 砍掉（autoBackgroundMs 已覆盖，依赖未知 CLI 输入能力） | 用户确认 |
+| 2026-08-07 | worktree 延后：子代理版与主代理版（--worktree/EnterWorktree）合并一次建设 | 同一套机制（getOrCreateWorktree 共享，仅上层封装不同），分两次建底层浪费；worktree 不阻塞 3a |
+| 2026-08-07 | 清理语义对齐列为 3b 先行（改动小：SubagentRuntime finally 补 abortSessionTasks；资源泄漏防护；不依赖延后项） | 修正此前"随 3b 延后"的归类——主题一致不构成延后理由（用户指正）；worktree 顺延为 3d |
+| 2026-08-07 | 安全标准 = 对齐 Claude Code（市场检验），不额外加严；"安全只严不松"非用户观点 | 用户明确表态：过严策略影响体验 |
+| 2026-08-07 | 3a 决策：outputFile 暴露原始 transcript（官方形态）——主动读文件与读任意工作文件同权，输出扫描边界限定为自动交付通道；SendMessage/TaskStop 在子代理工具面可见（官方不排除） | 依据上条安全标准修正探索文档 D2/D4 |
