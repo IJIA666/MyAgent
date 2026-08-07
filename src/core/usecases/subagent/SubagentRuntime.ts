@@ -107,6 +107,12 @@ export interface SubagentRuntimeTaskOptions {
   readonly fixedToolNames?: ReadonlySet<string>;
   /** 子代理工具策略；省略时按 freshForeground 保持既有 Skill 兼容。 */
   readonly toolPolicyKey?: SubagentToolPolicyKey;
+  /** 定义级工具名单谓词（由 tools/disallowedTools 编译）；只允许在默认策略放行基础上收窄。 */
+  readonly definitionToolVisibility?: (name: string) => boolean;
+  /** 定义级系统提示构造器（.md 正文）；fresh 模式下其输出追加到基础 system 之后。 */
+  readonly definitionSystemPromptBuilder?: (context: SessionContext) => string;
+  /** 定义级 omitClaudeMd：为 true 时 RuleManager 跳过 CLAUDE.md 规则加载与注入。 */
+  readonly omitClaudeMd?: boolean;
   /** 使用的工具视图；省略时由公共运行器构造 fresh 作用域。 */
   readonly toolRegistry?: ToolRegistryPort;
   /** 已提供的工具视图是否已经完成策略收窄。 */
@@ -322,6 +328,8 @@ export class SubagentRuntime {
       {
         enableWatcher: false,
         initializeSystemPrompt: task.contextPolicy !== 'exact-fork',
+        // omitClaudeMd 语义：跳过 CLAUDE.md 规则加载与注入，Skill 元数据快照保留。
+        skipRules: task.omitClaudeMd === true,
       },
       this.options.skillLibrary,
     );
@@ -337,6 +345,7 @@ export class SubagentRuntime {
         auditSource: `subagent:${task.agentType}`,
         toolPolicyKey: task.toolPolicyKey ?? 'freshForeground',
         fixedToolNames: task.fixedToolNames,
+        definitionToolVisibility: task.definitionToolVisibility,
         afterToolCall: task.hooks?.mutationHook,
       });
     const contextRepo = new ContextRepository(childContext, paths.sessionsDir, true);
@@ -361,7 +370,11 @@ export class SubagentRuntime {
       () => llmConfig,
     );
     const messages = task.contextPolicy === 'fresh'
-      ? this.contextBuilder.buildFresh(childContext, task.prompt)
+      ? this.contextBuilder.buildFresh(
+        childContext,
+        task.prompt,
+        task.definitionSystemPromptBuilder?.(childContext),
+      )
       : task.contextPolicy === 'exact-fork'
         ? buildExactForkHistory(
           childContext,

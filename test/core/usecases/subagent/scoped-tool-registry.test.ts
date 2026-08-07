@@ -10,6 +10,7 @@ import { SessionContext } from '../../../../src/core/domain/context.js';
 import { PermissionSessionState } from '../../../../src/core/domain/permissions/permission-session-state.js';
 import { createTrustedCallContext } from '../../../../src/core/domain/permissions/trusted-call-context.js';
 import { ScopedToolRegistry } from '../../../../src/core/usecases/subagent/ScopedToolRegistry.js';
+import { compileDefinitionToolVisibility } from '../../../../src/core/usecases/subagent/ScopedToolRegistry.js';
 import type { PermissionUpdate } from '../../../../src/core/domain/permissions/permission-types.js';
 
 /** 创建作用域测试使用的标准化父工具元数据。 */
@@ -241,4 +242,61 @@ describe('ScopedToolRegistry', () => {
     expect(parentClose).not.toHaveBeenCalled();
     expect(mcpClose).not.toHaveBeenCalled();
   });
+
+  it('定义级名单与默认策略取交集：自定义 tools 无法重新暴露默认禁用工具', async () => {
+    const parentClose = vi.fn(async () => undefined);
+    const parentCall = vi.fn(async (): Promise<ToolExecutionOutcome<unknown>> => ({
+      value: { ok: true },
+      effect: {
+        kind: 'read',
+        executionStarted: true,
+        completed: true,
+        resources: [],
+        reason: 'declared_read_tool',
+      },
+    }));
+    const definitions = [
+      { type: 'function', function: { name: 'read_file', parameters: { type: 'object' } } },
+      { type: 'function', function: { name: 'Agent', parameters: { type: 'object' } } },
+      { type: 'function', function: { name: 'ask_user_question', parameters: { type: 'object' } } },
+      { type: 'function', function: { name: 'write_file', parameters: { type: 'object' } } },
+    ];
+    const metadata = new Map([
+      ['read_file', createMetadata('read_file', true)],
+      ['Agent', createMetadata('Agent', false)],
+      ['ask_user_question', createMetadata('ask_user_question', false)],
+      ['write_file', createMetadata('write_file', true)],
+    ]);
+    const parent: ToolRegistryPort = {
+      getTools: vi.fn(async () => definitions),
+      getTool: vi.fn(name => metadata.get(name)),
+      callTool: parentCall,
+      close: parentClose,
+    };
+    // 恶意/误配的自定义名单：试图把默认禁用工具重新暴露。
+    const toolVisibility = compileDefinitionToolVisibility(
+      ['read_file', 'Agent', 'ask_user_question'],
+      undefined,
+    );
+    const child = new ScopedToolRegistry({
+      parent,
+      permissionState: new PermissionSessionState(),
+      sessionContext: new SessionContext('child-scope'),
+      caller: createTrustedCallContext('child-caller', 'script', '1.0.0', 'subagent'),
+      auditSource: 'test-subagent',
+      definitionToolVisibility: toolVisibility,
+    });
+
+    const visible = (await child.getTools()).map(readToolName);
+    // 交集语义：默认策略放行的 read_file/write_file 中只保留名单成员；Agent/交互工具仍不可见。
+    expect(visible).toEqual(['read_file']);
+    expect(child.getTool('Agent')).toBeUndefined();
+    expect(child.getTool('ask_user_question')).toBeUndefined();
+  });
 });
+
+/** 从 OpenAI function definition 中读取工具名。 */
+function readToolName(value: unknown): string {
+  const record = value as { function?: { name?: string }; name?: string };
+  return record.name ?? record.function?.name ?? '';
+}

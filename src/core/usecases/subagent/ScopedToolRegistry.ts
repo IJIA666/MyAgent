@@ -37,8 +37,10 @@ export interface ScopedToolRegistryOptions {
   readonly parentApprovalPort?: ApprovalPort;
   /** 低敏审计来源。 */
   readonly auditSource: string;
-  /** 可选的业务专用可见性收窄器；默认消费 freshForeground 策略。 */
+  /** 可选的业务专用可见性收窄器（Skill 等）；存在时全权决定可见性，不读默认策略元数据。 */
   readonly toolVisibility?: (name: string, metadata: ToolMetadata | undefined) => boolean;
+  /** 定义级工具名单谓词（tools/disallowedTools 编译）；只允许在默认策略放行基础上收窄（交集）。 */
+  readonly definitionToolVisibility?: (name: string) => boolean;
   /** 由协调器显式选择的工具作用域策略。 */
   readonly toolPolicyKey?: SubagentToolPolicyKey;
   /** fork 提交时冻结快照中的工具名集合；fork 模式只允许执行快照成员。 */
@@ -222,9 +224,17 @@ export class ScopedToolRegistry implements ToolRegistryPort {
           || this.options.parent.mcpManager?.getToolDescriptor(name) !== undefined;
     }
     const metadata = this.options.parent.getTool(name);
-    return this.options.toolVisibility
-      ? this.options.toolVisibility(name, metadata)
-      : metadata?.subagentToolPolicy[this.options.toolPolicyKey ?? 'freshForeground'] === true;
+    // 业务专用谓词（Skill 等）保持全权决定语义，不读默认策略元数据。
+    if (this.options.toolVisibility) {
+      return this.options.toolVisibility(name, metadata);
+    }
+    // 安全基线：默认策略必须放行（元数据缺失视为未放行）。
+    if (metadata?.subagentToolPolicy[this.options.toolPolicyKey ?? 'freshForeground'] !== true) {
+      return false;
+    }
+    // 定义级名单只允许在默认策略放行基础上收窄（交集），
+    // 防止自定义 tools 名单重新暴露 Agent、交互工具等默认禁用工具。
+    return this.options.definitionToolVisibility ? this.options.definitionToolVisibility(name) : true;
   }
 
   /** 拒绝关闭后的所有调用。 */
@@ -245,6 +255,28 @@ function readToolDefinitionName(value: unknown): string | undefined {
   }
   const nested = value.function;
   return isRecord(nested) && typeof nested.name === 'string' ? nested.name : undefined;
+}
+
+/**
+ * 将定义级 `tools`/`disallowedTools` 编译为可见性谓词。
+ * 语义（对齐 change 契约）：声明 `tools` 时只可见名单成员；声明 `disallowedTools` 时
+ * 从默认池剔除；同时声明时先按允许名单过滤再剔除交集（允许名单优先、剔除只收窄）；
+ * 均未声明返回 undefined，由作用域注册表沿用默认策略。
+ *
+ * @param tools - 显式允许名单
+ * @param disallowedTools - 剔除名单
+ * @returns 可见性谓词；无定义级声明时返回 undefined
+ */
+export function compileDefinitionToolVisibility(
+  tools: readonly string[] | undefined,
+  disallowedTools: readonly string[] | undefined,
+): ((name: string) => boolean) | undefined {
+  if (tools === undefined && disallowedTools === undefined) {
+    return undefined;
+  }
+  const allow = tools !== undefined ? new Set(tools) : undefined;
+  const deny = disallowedTools !== undefined ? new Set(disallowedTools) : undefined;
+  return name => (allow === undefined || allow.has(name)) && (deny === undefined || !deny.has(name));
 }
 
 /** 判断未知值是否为普通对象。 */

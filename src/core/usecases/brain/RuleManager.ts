@@ -21,6 +21,8 @@ export interface RuleManagerOptions {
   enableWatcher?: boolean;
   /** 是否在构造期重建 system prompt；exact-fork 必须关闭以回放父快照字节。 */
   initializeSystemPrompt?: boolean;
+  /** 是否跳过 CLAUDE.md 规则加载与注入（omitClaudeMd 语义）；Skill 元数据快照仍保留。 */
+  skipRules?: boolean;
 }
 
 /** 技能文件路径比较器，用于检测真实内容变化。 */
@@ -112,7 +114,10 @@ export class RuleManager {
     this.userSkillsDir = userSkillsDir;
     this.projectSkillsDir = projectSkillsDir;
     this.skillLibrary = skillLibrary;
-    this.loadRulesToCache();
+    // omitClaudeMd 语义：skipRules 时规则缓存保持空，且不注入规则；技能快照不受影响。
+    if (options?.skipRules !== true) {
+      this.loadRulesToCache();
+    }
     this.refreshSkillsCache();
 
     // 构造期写入首条系统消息：Skill 元数据在此刻深复制为快照并冻结，
@@ -120,8 +125,8 @@ export class RuleManager {
     this.promptSkillSnapshot = this.skillsCacheToPromptSnapshot();
     if (options?.initializeSystemPrompt !== false) {
       this.context.updateSystemPrompt(
-        this.cachedUserRules || undefined,
-        this.cachedProjectRules || undefined,
+        options?.skipRules ? undefined : (this.cachedUserRules || undefined),
+        options?.skipRules ? undefined : (this.cachedProjectRules || undefined),
         this.promptSkillSnapshot
       );
     }

@@ -24,6 +24,7 @@ describe('AgentTool', () => {
       'prompt',
       'subagent_type',
       'run_in_background',
+      'model',
     ]);
     expect(parameters.required).toEqual(['description', 'prompt']);
     expect(tool.subagentToolPolicy).toEqual({
@@ -31,6 +32,23 @@ describe('AgentTool', () => {
       freshBackground: false,
       fork: false,
     });
+  });
+
+  it('已注册类型快照写入 schema enum，模型可发现自定义子代理类型', () => {
+    const tool = new AgentTool(undefined, false, ['general-purpose', 'Explore', 'Plan', 'reviewer']);
+    const properties = (tool.definition.function as { parameters: {
+      properties: Record<string, { enum?: string[] }>;
+    } }).parameters.properties;
+
+    expect(properties.subagent_type?.enum).toEqual(['general-purpose', 'Explore', 'Plan', 'reviewer']);
+  });
+
+  it('未注入类型快照时不声明 enum（向后兼容）', () => {
+    const tool = new AgentTool();
+    const properties = (tool.definition.function as { parameters: {
+      properties: Record<string, { enum?: string[] }>;
+    } }).parameters.properties;
+    expect(properties.subagent_type?.enum).toBeUndefined();
   });
 
   it('校验参数、默认类型并传递父 session/caller/审批端口', async () => {

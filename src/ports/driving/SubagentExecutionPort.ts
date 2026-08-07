@@ -29,6 +29,8 @@ export interface SubagentExecutionRequest {
   readonly subagentType?: string;
   /** 是否请求后台执行；fork 语义下由协调器强制为 true。 */
   readonly runInBackground?: boolean;
+  /** 调用指定的子代理模型：`inherit` 或 `BUILTIN_MODELS` 已注册 profile ID；fork 语义下被忽略。 */
+  readonly model?: string;
   /** 调用时捕获的父会话端口。 */
   readonly parentSession: SubagentParentSession;
   /** 调用时捕获的父批准展示端口。 */
@@ -49,6 +51,7 @@ export interface SubagentExecutionRequest {
 export const SUBAGENT_ERROR_CODES = {
   invalidPrompt: 'INVALID_PROMPT',
   invalidDescription: 'INVALID_DESCRIPTION',
+  invalidModel: 'INVALID_SUBAGENT_MODEL',
   unknownType: 'UNKNOWN_SUBAGENT_TYPE',
   notBound: 'SUBAGENT_EXECUTOR_NOT_BOUND',
   sessionMismatch: 'SUBAGENT_SESSION_MISMATCH',

@@ -30,6 +30,8 @@ import { SkillCuratorBackupStore } from './core/usecases/brain/skill-curator-bac
 import { SkillCurator } from './core/usecases/brain/skill-curator.js';
 import { SkillCuratorReportStore } from './core/usecases/brain/skill-curator-report.js';
 import { SubagentExecutionController } from './core/usecases/subagent/SubagentExecutionController.js';
+import { SubagentDefinitionRegistry } from './core/usecases/subagent/SubagentDefinitionRegistry.js';
+import { AgentDefinitionLoader } from './core/usecases/subagent/AgentDefinitionLoader.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -147,12 +149,23 @@ async function main() {
     const subagentExecutionController = new SubagentExecutionController();
     const subagentLlmClientFactory = new OpenAiLlmClientFactory();
 
+    // 子代理定义注册表：组合根创建唯一实例（内置 + user/project 自定义 Markdown 定义），
+    // 类型快照写入 Agent 工具 schema，实例共享注入 SessionManager（运行器与协调器）。
+    const subagentDefinitionRegistry = new SubagentDefinitionRegistry(
+      appConfig.runtimeLimits.subagentForkEnabled,
+      new AgentDefinitionLoader(
+        appConfig.applicationPaths.userAgentsDir,
+        appConfig.applicationPaths.projectAgentsDir,
+      ),
+    );
+
     const toolRegistry = new ToolRegistry(mcpManager, {
       skillLibrary,
       skillPendingStore,
       skillWriteApprovalController,
       subagentExecutionPort: subagentExecutionController,
       subagentForkEnabled: appConfig.runtimeLimits.subagentForkEnabled,
+      agentTypes: subagentDefinitionRegistry.list().map(definition => definition.type),
     }, permissionSettingsStore);
     const llmAdapter = new OpenAiLlmAdapter(appConfig.llm);
     const tokenEstimator = new TiktokenEstimator();
@@ -172,6 +185,7 @@ async function main() {
       skillCurator,
       subagentExecutionController,
       subagentLlmClientFactory,
+      subagentDefinitionRegistry,
     );
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);

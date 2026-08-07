@@ -2,13 +2,13 @@
 
 ## Purpose
 
-定义主 Agent 通过 `Agent` 工具调用隔离子代理的执行契约：同步与后台提交、description 必填摘要、独立上下文与冻结模型客户端、显式默认拒绝的工具作用域、exact-fork 双入口（模型开关与 `/subtask`）与占位闭合、不超过父会话的权限派生、确定终态与取消传播、与主会话隔离的 transcript、确定性输出扫描、资源所有权边界，以及 Skill Review/Curator 复用公共内核时保持的既有契约。自定义 Markdown Agent 与嵌套多层由后续 change 扩展。
+定义主 Agent 通过 `Agent` 工具调用隔离子代理的执行契约：同步与后台提交、description 必填摘要、独立上下文与冻结模型客户端、显式默认拒绝的工具作用域、exact-fork 双入口（模型开关与 `/subtask`）与占位闭合、不超过父会话的权限派生、确定终态与取消传播、与主会话隔离的 transcript、确定性输出扫描、资源所有权边界，以及 Skill Review/Curator 复用公共内核时保持的既有契约。自定义 Markdown Agent 的加载契约见 `configured-subagent-definitions`，Explore/Plan 内置只读代理见 `builtin-explore-plan-agents`，子代理模型解析见 `subagent-model-resolution`；嵌套多层由后续 change 扩展。
 
 ## Requirements
 
-### Requirement: 主 Agent 可同步或后台调用通用子代理
+### Requirement: 主 Agent 可同步或后台调用已注册子代理
 
-系统 SHALL 提供模型可调用的 `Agent` 工具，并仅支持 `general-purpose` 子代理。工具 MUST 接受必填 `description`（3-5 词任务摘要）、必填非空 `prompt`、可选 `subagent_type` 和可选 `run_in_background`；省略类型且 fork 开关关闭时 MUST 使用 `general-purpose`，省略后台开关时 MUST 保持同步前台执行。
+系统 SHALL 提供模型可调用的 `Agent` 工具，支持内置 `general-purpose`、`Explore`、`Plan` 与自定义注册类型。工具 MUST 接受必填 `description`（3-5 词任务摘要）、必填非空 `prompt`、可选 `subagent_type`、可选 `run_in_background` 和可选 `model`；省略类型且 fork 开关关闭时 MUST 使用 `general-purpose`，省略后台开关时 MUST 保持同步前台执行。
 
 #### Scenario: 默认调用通用子代理
 
@@ -36,15 +36,15 @@
 
 #### Scenario: Agent schema 只暴露阶段内字段
 
-- **WHEN** 模型读取 `Agent` 工具 schema
-- **THEN** schema 只声明 `description`、`prompt`、`subagent_type` 与 `run_in_background`
-- **AND** 不声明模型覆盖、权限提升、隔离模式、任务查询或批量任务参数
+- **WHEN** 模型读取 `Agent` 工具 schema（fork 开关关闭）
+- **THEN** schema 只声明 `description`、`prompt`、`subagent_type`、`run_in_background` 与 `model`
+- **AND** 不声明权限提升、隔离模式、任务查询或批量任务参数
 - **AND** fork 开关关闭时不提示省略类型即 fork 的语义
 
-#### Scenario: fork 开关开启时强制后台并隐藏后台参数
+#### Scenario: fork 开关开启时强制后台并隐藏后台与模型参数
 
 - **WHEN** fork 配置开关开启且模型读取 `Agent` 工具 schema
-- **THEN** schema 不包含 `run_in_background` 字段
+- **THEN** schema 不包含 `run_in_background` 字段与 `model` 字段
 - **AND** 模型任何 `Agent` 调用都作为后台任务提交并返回 `async_launched`
 
 ### Requirement: 通用子代理使用独立的新上下文
@@ -370,3 +370,23 @@ Skill Review 与 Skill Curator SHALL 通过通用运行器的专用配置执行�
 - **WHEN** caller audience 已是 `subagent`
 - **THEN** `fresh` 子代理的工具列表中不含 `Agent`
 - **AND** fork 子代理保留 `Agent` 定义但对控制端口的直接调用返回稳定的嵌套拒绝错误
+
+### Requirement: 子代理定义可声明最大回合数
+
+系统 MUST 使子代理定义 frontmatter 的 `maxTurns`（正整数）生效：子代理循环达到该回合数时 MUST 按既有循环上限语义收敛（不伪装成功，返回稳定错误码的 `error` 结果），且回合上限 MUST 在调用时冻结，父会话后续配置修改不影响在途子代理。未声明 `maxTurns` 时 MUST 使用既有 `runtimeLimits.maxIterations`。
+
+#### Scenario: maxTurns 生效并冻结
+
+- **WHEN** 定义 frontmatter 声明 `maxTurns: 8` 且子代理执行中父会话修改运行配置
+- **THEN** 子代理在 8 个回合后按循环上限收敛
+- **AND** 父会话配置修改不改变该在途上限
+
+#### Scenario: 未声明时回退默认上限
+
+- **WHEN** 定义未声明 `maxTurns`
+- **THEN** 子代理使用既有 `runtimeLimits.maxIterations` 作为循环上限
+
+#### Scenario: 非法 maxTurns 被拒绝
+
+- **WHEN** 定义 frontmatter 声明非正整数的 `maxTurns`
+- **THEN** 该定义被拒绝注册并记录可诊断日志

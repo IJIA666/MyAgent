@@ -19,6 +19,8 @@ export class AgentTool implements NativeTool {
   private readonly executionPort?: SubagentExecutionPort;
   /** 控制模型是否使用省略类型即 exact-fork 的调用语义。 */
   private readonly forkEnabled: boolean;
+  /** 已注册子代理类型快照（会话内字节稳定），写入 schema enum 供模型发现。 */
+  private readonly agentTypes?: readonly string[];
   /** Agent 编排调用不直接声明业务副作用。 */
   public readonly securityCategory = 'read' as const;
   /** 模型可见的稳定工具名。 */
@@ -36,11 +38,14 @@ export class AgentTool implements NativeTool {
 
   /**
    * @param executionPort - 会话绑定的子代理执行端口；未注入时保持 fail-closed
+   * @param forkEnabled - 是否启用省略类型即 exact-fork 的调用语义
+   * @param agentTypes - 已注册子代理类型快照；写入 schema enum 供模型发现
    */
-  constructor(executionPort?: SubagentExecutionPort, forkEnabled = false) {
+  constructor(executionPort?: SubagentExecutionPort, forkEnabled = false, agentTypes?: readonly string[]) {
     this.executionPort = executionPort;
     this.forkEnabled = forkEnabled;
-    this.definition = buildAgentDefinition(forkEnabled);
+    this.agentTypes = agentTypes;
+    this.definition = buildAgentDefinition(forkEnabled, agentTypes);
   }
 
   /**
@@ -114,6 +119,18 @@ export class AgentTool implements NativeTool {
       });
     }
 
+    // model 只做类型校验；值域（inherit / 已注册 profile ID）由协调器提交点解析校验。
+    const model = args.model === undefined
+      ? undefined
+      : typeof args.model === 'string' ? args.model.trim() : undefined;
+    if (args.model !== undefined && (!model || model.length === 0)) {
+      return serializeResult({
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.invalidModel,
+        message: 'Agent.model 必须是非空字符串',
+      });
+    }
+
     const parentSession = context?.sessionContext;
     const port = this.executionPort;
     if (!parentSession || !port) {
@@ -130,6 +147,7 @@ export class AgentTool implements NativeTool {
         description,
         subagentType,
         runInBackground: this.forkEnabled || runInBackground,
+        model,
         parentSession,
         parentApprovalPort: context?.approvalPort,
         interactionPort: context?.interactionPort,
@@ -173,7 +191,10 @@ function serializeResult(result: SubagentExecutionResult | Record<string, string
 }
 
 /** 构造不泄露 fork 内部细节的 Agent OpenAI function schema。 */
-function buildAgentDefinition(forkEnabled: boolean): Record<string, unknown> {
+function buildAgentDefinition(
+  forkEnabled: boolean,
+  agentTypes?: readonly string[],
+): Record<string, unknown> {
   const properties: Record<string, unknown> = {
     description: {
       type: 'string',
@@ -188,12 +209,18 @@ function buildAgentDefinition(forkEnabled: boolean): Record<string, unknown> {
       description: forkEnabled
         ? '可选的已注册子代理类型；省略时使用当前会话的 exact-fork 上下文。'
         : '可选的已注册子代理类型；省略时使用 general-purpose。',
+      // 已注册类型快照写入 enum，模型无需猜测即可发现自定义子代理类型。
+      ...(agentTypes && agentTypes.length > 0 ? { enum: agentTypes } : {}),
     },
   };
   if (!forkEnabled) {
     properties.run_in_background = {
       type: 'boolean',
       description: '是否立即转为后台任务，默认 false。',
+    };
+    properties.model = {
+      type: 'string',
+      description: '可选：子代理使用的模型（inherit 或已注册 profile ID）；省略时继承父模型。',
     };
   }
   return {

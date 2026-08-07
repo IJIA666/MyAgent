@@ -93,6 +93,7 @@ import type { LlmClientFactoryPort } from '../../../ports/driven/llm/LlmClientFa
 import { SubagentExecutionController } from '../subagent/SubagentExecutionController.js';
 import { SubagentRuntime } from '../subagent/SubagentRuntime.js';
 import { SubagentCoordinator } from '../subagent/SubagentCoordinator.js';
+import type { SubagentDefinitionRegistry } from '../subagent/SubagentDefinitionRegistry.js';
 import { TaskManager } from '../subagent/TaskManager.js';
 import { TaskStateStore } from '../subagent/TaskStateStore.js';
 import { SubagentTranscriptStore } from '../subagent/SubagentTranscriptStore.js';
@@ -150,6 +151,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   private readonly subagentRuntime?: SubagentRuntime;
   /** 统一承载 Agent 前台、后台与 exact-fork 生命周期的协调器。 */
   private readonly subagentCoordinator?: SubagentCoordinator;
+  /** 组合根共享的子代理定义注册表（内置 + user/project 自定义 Markdown 定义）。 */
+  private readonly subagentDefinitionRegistry?: SubagentDefinitionRegistry;
   /** 当前父会话任务索引仓储。 */
   private readonly taskStateStore?: TaskStateStore;
   /** Agent 任务使用的 transcript 访问仓储。 */
@@ -209,6 +212,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     skillCurator?: SkillCurator,
     subagentExecutionController?: SubagentExecutionController,
     subagentLlmClientFactory?: LlmClientFactoryPort,
+    subagentDefinitionRegistry?: SubagentDefinitionRegistry,
   ) {
     super();
     this.llmConfig = llmConfig;
@@ -251,6 +255,10 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.memoryDiagnostic = createEmptyMemoryDiagnostic();
     this.memoryCandidateStore = new MemoryCandidateStore(this.memoryDir);
 
+    // 子代理定义注册表由组合根（index.ts）创建唯一实例并注入；
+    // 同一实例共享给运行器与协调器，保证类型解析、工具池与字段消费基于同一快照。
+    this.subagentDefinitionRegistry = subagentDefinitionRegistry;
+
     // 子代理运行器在组合根完成工具注册后创建，Agent 工具只持有此前已注入的控制器。
     this.subagentRuntime = subagentExecutionController && subagentLlmClientFactory
       ? new SubagentRuntime({
@@ -262,6 +270,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
         llmClientFactory: subagentLlmClientFactory,
         skillLibrary,
         subagentForkEnabled: appConfig.runtimeLimits.subagentForkEnabled,
+        definitionRegistry: this.subagentDefinitionRegistry,
       })
       : undefined;
     if (this.subagentExecutionController && this.subagentRuntime) {
@@ -287,6 +296,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
         appConfig,
         llmConfigProvider: () => this.llmConfig,
         forkEnabled: appConfig.runtimeLimits.subagentForkEnabled,
+        definitionRegistry: this.subagentDefinitionRegistry,
         // CLI 监听的是 SessionManager.agent_event，必须由这里转发任务状态事件。
         onTaskStateChange: record => {
           this.emit('agent_event', {

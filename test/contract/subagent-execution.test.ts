@@ -28,7 +28,7 @@ describe('subagent execution contract', () => {
     expect(agent?.subagentToolPolicy?.freshForeground).toBe(false);
     expect(agent?.executionTimeoutPolicy).toBe('parent-signal');
     expect(Object.keys((agent?.definition as { function: { parameters: { properties: Record<string, unknown> } } }).function.parameters.properties))
-      .toEqual(['description', 'prompt', 'subagent_type', 'run_in_background']);
+      .toEqual(['description', 'prompt', 'subagent_type', 'run_in_background', 'model']);
     expect((agent?.definition as { function: { parameters: { required: string[] } } }).function.parameters.required)
       .toEqual(['description', 'prompt']);
     expect(names.has('ask_user_question') ? tools.find(tool => tool.name === 'ask_user_question')?.subagentToolPolicy?.freshForeground : false)

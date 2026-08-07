@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AppConfig, LlmConfig } from '../../../config/index.js';
+import { getModelConfig } from '../../../config/models.js';
+import { getRuntimeEnv } from '../../../config/env.js';
 import type {
   SubagentExecutionPort,
   SubagentExecutionRequest,
@@ -14,6 +16,9 @@ import type { SubagentTranscriptStore } from './SubagentTranscriptStore.js';
 import { snapshotLlmConfig } from './llm-config-snapshot.js';
 import { SubagentDefinitionRegistry, type SubagentDefinition } from './SubagentDefinitionRegistry.js';
 import { ApprovalRouter } from './ApprovalRouter.js';
+import { ChildPermissionResolver } from './ChildPermissionResolver.js';
+import { compileDefinitionToolVisibility } from './ScopedToolRegistry.js';
+import { resolveSubagentModel } from './resolve-subagent-model.js';
 import { SubagentRuntime, type SubagentRuntimeTaskResult } from './SubagentRuntime.js';
 import { TaskManager, type TaskCancelResult } from './TaskManager.js';
 import { TaskStateStore } from './TaskStateStore.js';
@@ -41,8 +46,10 @@ export interface SubagentTaskDetail {
  * 运行器本身仍只负责一次隔离 AgentLoop。
  */
 export class SubagentCoordinator implements SubagentExecutionPort {
-  /** 解析内置 fresh/exact-fork 定义。 */
+  /** 解析内置与自定义定义。 */
   private readonly definitions: SubagentDefinitionRegistry;
+  /** 提交点权限收窄服务（仅允许 plan 或保持父模式）。 */
+  private readonly permissionResolver = new ChildPermissionResolver();
   /** 已提交任务到父会话能力视图的绑定。 */
   private readonly parentSessions = new Map<string, SubagentParentSession>();
   /** 关闭后拒绝新的 Agent 和 CLI 任务。 */
@@ -287,10 +294,11 @@ export class SubagentCoordinator implements SubagentExecutionPort {
       ? exactForkDefinition()
       : this.definitions.resolve(request.subagentType);
     if (!definition) {
+      // 生产路径错误必须携带全部已注册类型清单，供模型修正 subagent_type。
       return {
         status: 'error',
         code: SUBAGENT_ERROR_CODES.unknownType,
-        message: '未知的子代理类型',
+        message: `未知的子代理类型: ${request.subagentType ?? ''}。可用类型: ${this.definitions.list().map(item => item.type).join(', ')}`,
       };
     }
     const snapshot = definition.contextPolicy === 'exact-fork'
@@ -304,9 +312,25 @@ export class SubagentCoordinator implements SubagentExecutionPort {
       };
     }
 
+    // exact-fork（含模型省略类型隐式 fork）语义下模型始终继承提交点父配置
+    // （冻结快照字节一致），env、工具参数与定义 model 一律忽略。
+    const modelResolution = definition.contextPolicy === 'exact-fork'
+      ? { ok: true as const, resolved: { kind: 'inherit' as const } }
+      : resolveSubagentModel(getRuntimeEnv().MYAGENT_SUBAGENT_MODEL, request.model, definition.model);
+    if (!modelResolution.ok) {
+      return {
+        status: 'error',
+        code: SUBAGENT_ERROR_CODES.invalidModel,
+        message: modelResolution.error,
+      };
+    }
     let frozenConfig: LlmConfig;
     try {
-      frozenConfig = snapshotLlmConfig(this.options.llmConfigProvider());
+      // profile ID 用完整模型档案构造冻结配置（禁止 AGENT_LLM_MODEL 环境覆盖，
+      // 避免显式指定 flash 实际却运行 pro 的静默漂移）；inherit 沿用提交点父配置。
+      frozenConfig = modelResolution.resolved.kind === 'inherit'
+        ? snapshotLlmConfig(this.options.llmConfigProvider())
+        : getModelConfig(modelResolution.resolved.profileId, { allowEnvModelOverride: false });
     } catch {
       return {
         status: 'error',
@@ -315,9 +339,13 @@ export class SubagentCoordinator implements SubagentExecutionPort {
       };
     }
     // 配置、权限和循环上限都在提交点冻结，排队期间不读取父会话的后续变化。
-    const frozenPermissionSnapshot = request.parentSession.getPermissionSessionState?.()?.snapshot()
+    const parentPermissionSnapshot = request.parentSession.getPermissionSessionState?.()?.snapshot()
       ?? new PermissionSessionState().snapshot();
-    const frozenMaxIterations = this.options.appConfig.runtimeLimits.maxIterations;
+    // 定义级 permissionMode 在提交点收窄（仅允许 plan 或保持父模式），派生快照再冻结。
+    const frozenPermissionSnapshot = definition.permissionMode
+      ? this.permissionResolver.derive(parentPermissionSnapshot, definition.permissionMode).snapshot()
+      : parentPermissionSnapshot;
+    const frozenMaxIterations = definition.maxTurns ?? this.options.appConfig.runtimeLimits.maxIterations;
     const frozenRequestSnapshot = snapshot ? cloneModelRequestSnapshot(snapshot) : undefined;
     const agentId = randomUUID();
     const parentCaller = request.parentCaller
@@ -366,6 +394,14 @@ export class SubagentCoordinator implements SubagentExecutionPort {
             toolPolicyKey: background && definition.contextPolicy === 'fresh'
               ? 'freshBackground'
               : definition.toolPolicyKey,
+            // 定义级工具池在提交点编译为可见性谓词，运行器构造作用域时与默认策略取交集。
+            definitionToolVisibility: compileDefinitionToolVisibility(definition.tools, definition.disallowedTools),
+            // 自定义正文在运行器创建子上下文后组装进 system（exact-fork 冻结父 system 不适用）。
+            definitionSystemPromptBuilder: definition.contextPolicy === 'fresh'
+              ? definition.buildSystemPrompt
+              : undefined,
+            // omitClaudeMd 透传运行器，控制 RuleManager 是否加载 CLAUDE.md 规则。
+            omitClaudeMd: definition.omitClaudeMd,
             maxIterations: frozenMaxIterations,
             persistTranscript: true,
             enableDefaultSafetyPlugins: true,

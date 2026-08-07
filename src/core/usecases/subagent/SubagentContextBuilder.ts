@@ -17,15 +17,22 @@ export class SubagentContextBuilder {
   ].join('\n');
   /**
    * 为通用子代理构造独立 system + 首条 user 消息。
+   * 定义级正文（.md 正文或内置提示）追加到 RuleManager 基础 system 之后；
+   * 无定义正文时保持既有行为。
    *
    * @param context - 已由 RuleManager 加载当前规则和 Skill 元数据的子上下文
    * @param prompt - 子代理任务
+   * @param definitionSystemPrompt - 自定义定义正文；省略时保持基础 system
    * @returns 装载后的深复制消息
    */
-  public buildFresh(context: SessionContext, prompt: string): ChatMessage[] {
+  public buildFresh(
+    context: SessionContext,
+    prompt: string,
+    definitionSystemPrompt?: string,
+  ): ChatMessage[] {
     const system = context.getHistory()[0];
     const history: StoredChatMessage[] = [
-      ...(system ? [cloneChatMessage(system)] : []),
+      ...(system ? [cloneChatMessageWithSystemPrompt(system, definitionSystemPrompt)] : []),
       { role: 'user', content: prompt },
     ];
     context.updateHistory(history);
@@ -127,6 +134,32 @@ function cloneChatMessage(message: ChatMessage): StoredChatMessage {
       })),
     } : {}),
   };
+}
+
+/** 深复制并可选追加定义级正文到 system 内容（无正文时行为等同 cloneChatMessage）。 */
+function cloneChatMessageWithSystemPrompt(
+  message: ChatMessage,
+  definitionSystemPrompt: string | undefined,
+): StoredChatMessage {
+  const content = appendDefinitionSystemPrompt(message.content, definitionSystemPrompt);
+  return {
+    ...cloneChatMessage(message),
+    ...(content !== undefined ? { content } : {}),
+  };
+}
+
+/** 将定义级正文追加到 system 文本；无正文时原样返回（undefined 表示不修改）。 */
+function appendDefinitionSystemPrompt(
+  content: string | null,
+  definitionSystemPrompt: string | undefined,
+): string | undefined {
+  if (definitionSystemPrompt === undefined || definitionSystemPrompt.trim() === '') {
+    return undefined;
+  }
+  if (content === null || content === '') {
+    return definitionSystemPrompt;
+  }
+  return `${content}\n\n${definitionSystemPrompt}`;
 }
 
 /** 找到最后一个带工具调用的 assistant，避免改写较早的已完成轮次。 */

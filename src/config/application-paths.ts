@@ -40,6 +40,8 @@ export interface ApplicationPaths {
   readonly projectRulesDir: string;
   /** 项目 skills 目录。 */
   readonly projectSkillsDir: string;
+  /** 项目子代理定义目录：`<projectConfigDir>/agents/`，存放 `.md` 子代理定义。 */
+  readonly projectAgentsDir: string;
 
   // ── 用户配置路径（位于 ~/.myagent 下） ──
   /** 用户 settings 目录。 */
@@ -50,6 +52,8 @@ export interface ApplicationPaths {
   readonly userRulesDir: string;
   /** 用户 skills 目录。 */
   readonly userSkillsDir: string;
+  /** 用户子代理定义目录：`<userConfigDir>/agents/`，存放 `.md` 子代理定义（跨项目可用）。 */
+  readonly userAgentsDir: string;
 
   // ── Skill 生命周期元数据路径（位于 ~/.myagent 下，不入 workspace） ──
   /**
@@ -170,12 +174,14 @@ export function createApplicationPaths(
     projectLocalSettingsPath: resolve(projectConfigDir, 'settings.local.json'),
     projectRulesDir: resolve(projectConfigDir, 'rules'),
     projectSkillsDir: resolve(projectConfigDir, 'skills'),
+    projectAgentsDir: resolve(projectConfigDir, 'agents'),
 
     // 用户配置
     userConfigDir,
     userSettingsPath: resolve(userConfigDir, 'settings.json'),
     userRulesDir: resolve(userConfigDir, 'rules'),
     userSkillsDir: resolve(userConfigDir, 'skills'),
+    userAgentsDir: resolve(userConfigDir, 'agents'),
 
     // Skill 生命周期元数据
     skillUsagePath: resolve(userConfigDir, 'skills', '.usage.json'),

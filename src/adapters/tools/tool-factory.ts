@@ -91,6 +91,8 @@ export interface BuildNativeToolsOptions {
   subagentExecutionPort?: SubagentExecutionPort;
   /** 是否启用省略子代理类型即 exact-fork 的模型语义。 */
   subagentForkEnabled?: boolean;
+  /** 已注册子代理类型快照；写入 Agent 工具 schema enum 供模型发现。 */
+  agentTypes?: readonly string[];
 }
 
 /**
@@ -113,7 +115,11 @@ export function buildNativeTools(options?: BuildNativeToolsOptions): NativeTool[
     ),
     ...getInteractionTools(),
     ...getBrowserTools(),
-    new AgentTool(options?.subagentExecutionPort, options?.subagentForkEnabled ?? false),
+    new AgentTool(
+      options?.subagentExecutionPort,
+      options?.subagentForkEnabled ?? false,
+      options?.agentTypes,
+    ),
   ];
   return tools.map(tool => withSubagentMetadata(tool, options?.subagentExecutionPort));
 }
