@@ -17,6 +17,7 @@ import { AgentEvent } from '../../../../src/core/usecases/engine/agent-loop.js';
 import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-types.js';
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 import { createApplicationPaths } from '../../../../src/config/application-paths.js';
+import { SubagentDefinitionRegistry } from '../../../../src/core/usecases/subagent/SubagentDefinitionRegistry.js';
 import { ToolRegistry } from '../../../../src/adapters/tools/toolRegistry.js';
 import { SkillLibrary } from '../../../../src/core/usecases/brain/skill-library.js';
 import { SkillUsageStore } from '../../../../src/core/usecases/brain/skill-usage-store.js';
@@ -1556,5 +1557,118 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     expect(firstClosedSpy).toHaveBeenCalledTimes(1);
     expect(secondClosedSpy).toHaveBeenCalledTimes(1);
     expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('@agent-<type> 提及已注册类型时注入提醒，置于用户消息之前', async () => {
+    const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+    const mockDriver = {
+      getModelName: () => 'MockModel',
+      switchModel: vi.fn(),
+      abort: vi.fn(),
+      streamChat: async function* () {
+        yield {
+          type: 'complete' as const,
+          content: 'ok',
+          reasoning: '',
+          assistantMessage: { role: 'assistant' as const, content: 'ok' },
+        };
+      },
+    } as unknown as LlmPort;
+    const mockEstimator = createMockEstimator();
+    const mockToolRegistry = {
+      getTools: async () => [],
+      callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }),
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ToolRegistryPort;
+    const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+    const registry = new SubagentDefinitionRegistry(false);
+    registry.register({
+      type: 'reviewer',
+      description: '代码评审',
+      contextPolicy: 'fresh',
+      toolPolicyKey: 'freshForeground',
+      buildSystemPrompt: () => 'reviewer prompt',
+      systemPrompt: 'reviewer prompt',
+    });
+    const session = new SessionManager(
+      mockLlmConfig,
+      mockDriver,
+      mockEstimator,
+      mockToolRegistry,
+      mockContextAdapter,
+      createMockAppConfig(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registry,
+    );
+
+    await runToComplete(session, '@agent-reviewer 帮我评审这段代码');
+
+    const history = session.getHistory();
+    const userContents = history
+      .filter(message => message.role === 'user')
+      .map(message => String(message.content));
+    // 提醒先于用户消息注入（模型先读提醒）。
+    expect(userContents[userContents.length - 2]).toContain('表达了调用子代理 "reviewer" 的意图');
+    expect(userContents[userContents.length - 2]).toContain('subagent_type 分别为 reviewer');
+    // 用户原始消息完整保留。
+    expect(userContents[userContents.length - 1]).toBe('@agent-reviewer 帮我评审这段代码');
+  });
+
+  it('未注册类型的 @agent- 提及不注入提醒', async () => {
+    const mockLlmConfig = { model: 'mock-model' } as unknown as LlmConfig;
+    const mockDriver = {
+      getModelName: () => 'MockModel',
+      switchModel: vi.fn(),
+      abort: vi.fn(),
+      streamChat: async function* () {
+        yield {
+          type: 'complete' as const,
+          content: 'ok',
+          reasoning: '',
+          assistantMessage: { role: 'assistant' as const, content: 'ok' },
+        };
+      },
+    } as unknown as LlmPort;
+    const mockEstimator = createMockEstimator();
+    const mockToolRegistry = {
+      getTools: async () => [],
+      callTool: async () => ({ value: {}, effect: { kind: 'read' as const, executionStarted: true, completed: true, resources: [], reason: 'declared_read_tool' as const } }),
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ToolRegistryPort;
+    const mockContextAdapter = { assemble: (baseHistory: ChatMessage[]) => baseHistory } as unknown as ContextAdapter;
+    const registry = new SubagentDefinitionRegistry(false);
+    const session = new SessionManager(
+      mockLlmConfig,
+      mockDriver,
+      mockEstimator,
+      mockToolRegistry,
+      mockContextAdapter,
+      createMockAppConfig(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      registry,
+    );
+
+    await runToComplete(session, '@agent-not-exist 继续');
+
+    const history = session.getHistory();
+    const userContents = history
+      .filter(message => message.role === 'user')
+      .map(message => String(message.content));
+    // 无提醒注入，用户消息原样（仅一条 user 消息）。
+    expect(userContents).toEqual(['@agent-not-exist 继续']);
   });
 });

@@ -65,9 +65,9 @@
 | model 解析完整化 | utils/model/agent.ts:37-95 | env > tool > frontmatter > inherit；值域 inherit + BUILTIN_MODELS（同 tier 防降级不落地，MyAgent 无 alias/tier 体系） | ✅ 2a |
 | 子代理专属 MCP | runAgent.ts:648-656（内联定义新建、字符串引用共享） | 引用共享父连接；内联动态建连、子代理结束关闭 | ✅ 2b |
 | `--agent` 会话模式 | main.tsx:1000、REPL.tsx（主线程装配） | 子代理定义成为主会话；system prompt/model/tools 裁剪；permissionMode/hooks/mcpServers/maxTurns 不生效；Agent 工具不扣留 | ✅ 2b |
-| hooks 映射 | runAgent.ts:531-575（SubagentStart/Stop） | **移出 2b**：MyAgent 无命令型 hooks 基础设施；子代理结束通知已由 task_update/task-notification 覆盖。命令型 hooks（HooksSchema + 命令执行，主会话共用）**独立立项**，事件面随立项一并做 | ⏸ 独立立项 |
-| @-mention 用户引导 | utils/messages.ts（提醒转换） | 不绕过 Agent 工具，转成高优先级提醒 | 未定 |
-| 子代理记忆 | loadAgentsDir.ts memory 字段 | user/project/local 三域（与 MyAgent 长期记忆体系融合评估，结论：机制独立，不融合） | ⏸ 留待评估 |
+| hooks 映射 | runAgent.ts:531-575（SubagentStart/Stop） | **移出 2b**：MyAgent 无命令型 hooks 基础设施；子代理结束通知已由 task_update/task-notification 覆盖。命令型 hooks（HooksSchema + 命令执行，主会话共用）**独立立项**，事件面随立项一并做 | ⏸ 短期不做（2026-08-07 用户决策） |
+| @-mention 用户引导 | utils/messages.ts（提醒转换） | 不绕过 Agent 工具，转成高优先级提醒 | 🔄 进行中（本 change） |
+| 子代理记忆 | loadAgentsDir.ts memory 字段 | user/project/local 三域（与 MyAgent 长期记忆体系融合评估，结论：机制独立，不融合） | 🔄 进行中（本 change） |
 
 **验收（2a）**：写一个 `.md` 文件就能获得一个新子代理类型；Explore/Plan 行为对齐（只读、不加载规则）。✅
 **验收（2b）**：子代理定义可声明专属 MCP（引用共享/内联隔离）；`myagent --agent <type>` 以定义启动主会话。
@@ -94,11 +94,11 @@
 |---|---|---|---|
 | verification 类强制后台 agent | verificationAgent.ts（background: true） | 定义级 background 字段启用：布尔 fail-closed 解析 + 提交点 OR 强制（模型传 false 不覆盖）；后台能力 1 阶段已有 | ✅ 3c |
 
-**3d（隔离面，延后 ⏸）：worktree**
+**3d（隔离面，短期不做 ⏸）：worktree**
 
 | 能力 | 官方机制参考 | 关键点 | 状态 |
 |---|---|---|---|
-| worktree 隔离（子代理 + 主代理合并建设） | utils/worktree.ts（getOrCreateWorktree 共享核心；createAgentWorktree 临时版 / createWorktreeForSession + EnterWorktree 持久版） | 本质 = 同一仓库的附加 checkout 工作区（非拷贝、非分支，对象库共享）；临时版自动命名用后即删、持久版用户命名可保留恢复；node_modules symlink 防占盘；30 天过期清扫 | ⏸ 延后 |
+| worktree 隔离（子代理 + 主代理合并建设） | utils/worktree.ts（getOrCreateWorktree 共享核心；createAgentWorktree 临时版 / createWorktreeForSession + EnterWorktree 持久版） | 本质 = 同一仓库的附加 checkout 工作区（非拷贝、非分支，对象库共享）；临时版自动命名用后即删、持久版用户命名可保留恢复；node_modules symlink 防占盘；30 天过期清扫 | ⏸ 短期不做（2026-08-07 用户决策） |
 
 **已砍**：嵌套多层（当前已禁止，从 0 放开到 3 层收益低，维持禁止）；Ctrl+B 后台化（autoBackgroundMs 已覆盖，且依赖未知 CLI 输入能力）。
 
@@ -184,3 +184,5 @@ Agent Team / swarm（mailbox、task list、权限桥、in-process runner）与 c
 | 2026-08-07 | 3b（subagent-shell-cleanup）完成归档：terminal-engine 中止能力完善（abortAndCleanup 回调 + 平台 killCommand + POSIX pkill -P 补齐）+ SubagentRuntime finally 回收；两轮评审修正后全门禁通过（1258 单测 + 133 契约） | 评审修正：完整进程树回收（原单 PID 降级）、内部资源清理（原直接删 Map 致 Promise 悬挂）、真实进程树集成测试 |
 | 2026-08-07 | 3c 启动：定义级 background 字段启用（强制后台） | 后台能力 1 阶段已有，仅启用定义字段 + 提交点强制 |
 | 2026-08-07 | 3c（subagent-background-field）完成归档：全门禁通过（1263 单测 + 133 契约） | 提交点 OR 语义对齐官方 AgentTool.tsx:567；background 非布尔 fail-closed |
+| 2026-08-07 | hooks 命令型基础设施与 worktree（3d）短期不做 | 用户决策：优先 @-mention 与子代理记忆；hooks/worktree 后续再评估 |
+| 2026-08-07 | @-mention 用户引导与子代理记忆激活为进行中 | 两项独立小 change；子代理记忆沿用既有结论：机制独立，不与 MyAgent 长期记忆体系融合 |

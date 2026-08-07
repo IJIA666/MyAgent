@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { AppConfig, LlmConfig, ConfigPermissionMode } from '../../../config/index.js';
 import { logger } from '../../../utils/logger.js'; // 导入统一日志单例 logger
+import { buildAtMentionReminder, extractAgentMentions } from './at-mention.js';
 import { AgentTracer } from '../../domain/tracer.js';
 import { SessionContext, ContextTokenUsage, type PendingInteraction } from '../../domain/context.js';
 import type {
@@ -1322,6 +1323,13 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     }
 
     // 1. 同步将消息写入上下文历史
+    // @-mention 引导：已注册子代理类型的提及转成高优先级提醒（不绕过 Agent 工具，
+    // 仅引导模型调用）。提醒先于学习轨迹起点记录，不作为 Skill 学习轨迹的起点。
+    const mentionedTypes = extractAgentMentions(input)
+      .filter(type => this.subagentDefinitionRegistry?.resolve(type) !== undefined);
+    if (mentionedTypes.length > 0) {
+      this.context.addMessage({ role: 'user', content: buildAtMentionReminder(mentionedTypes) });
+    }
     // 学习轨迹起点指向即将追加的用户消息本身：必须在 addUserMessage 前记录当前历史长度。
     const learningTrajectoryStartIndex = this.context.getHistory().length;
     logger.debug('[SessionManager] generation_requested', {
