@@ -199,7 +199,12 @@ function createParentRegistry(toolFailure = false) {
 }
 
 /** 创建使用临时应用数据根的运行器及父上下文。 */
-function createRuntime(mode: FakeLlmMode, maxIterations = 3, toolFailure = false) {
+function createRuntime(
+  mode: FakeLlmMode,
+  maxIterations = 3,
+  toolFailure = false,
+  taskAborter?: (sessionId: string) => Promise<void>,
+) {
   const workspace = mkdtempSync(join(tmpdir(), 'subagent-runtime-workspace-'));
   const applicationPaths = createApplicationPaths(workspace, {
     appDataRoot: join(workspace, 'app-data'),
@@ -220,6 +225,7 @@ function createRuntime(mode: FakeLlmMode, maxIterations = 3, toolFailure = false
     llmConfigProvider: () => appConfig.llm,
     llmClientFactory: factory,
     transcriptStore: new SubagentTranscriptStore(applicationPaths.subagentsDir),
+    taskAborter,
   });
   return { appConfig, applicationPaths, parent, parentTools, factory, runtime };
 }
@@ -283,7 +289,8 @@ describe('SubagentRuntime', () => {
   });
 
   it('父 signal 取消时向下取消 Fake LLM 并写入 cancelled transcript', async () => {
-    const fixture = createRuntime('wait');
+    const taskAborter = vi.fn(async (_sessionId: string) => undefined);
+    const fixture = createRuntime('wait', 3, false, taskAborter);
     const controller = new AbortController();
     const resultPromise = fixture.runtime.execute({
       description: 'wait cancellation task',
@@ -303,6 +310,9 @@ describe('SubagentRuntime', () => {
       .read(fixture.parent.getSessionId(), result.agentId);
     expect(transcript?.status).toBe('cancelled');
     expect(fixture.parentTools.close).not.toHaveBeenCalled();
+    // 取消路径同样触发 shell 回收（finally 覆盖），入参为子代理会话 ID。
+    expect(taskAborter).toHaveBeenCalledTimes(1);
+    expect(taskAborter.mock.calls[0][0]).toMatch(/^subagent-/u);
   });
 
   it('默认安全插件会在重复工具调用达到上限后阻止再次执行', async () => {
@@ -374,6 +384,54 @@ describe('SubagentRuntime', () => {
     });
     expect(fixture.parentTools.calls).toHaveLength(2);
     expect(JSON.stringify(fixture.factory.clients[0].requests)).not.toContain('安全熔断');
+  });
+
+  it('子代理正常完成后按子代理会话 ID 回收 shell 任务', async () => {
+    const taskAborter = vi.fn(async (_sessionId: string) => undefined);
+    const fixture = createRuntime('complete', 3, false, taskAborter);
+    const result = await fixture.runtime.execute({
+      description: 'cleanup verification task',
+      prompt: '完成清理验证',
+      subagentType: 'general-purpose',
+      parentSession: fixture.parent,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(taskAborter).toHaveBeenCalledTimes(1);
+    // 清理键为子代理独立会话 ID（subagent-<agentId>），绝不使用父会话 ID。
+    expect(taskAborter.mock.calls[0][0]).toMatch(/^subagent-/u);
+    expect(taskAborter.mock.calls[0][0]).not.toBe(fixture.parent.getSessionId());
+  });
+
+  it('子代理失败时同样触发 shell 回收（finally 覆盖失败路径）', async () => {
+    const taskAborter = vi.fn(async () => undefined);
+    const fixture = createRuntime('fail', 3, false, taskAborter);
+    const result = await fixture.runtime.execute({
+      description: 'failure cleanup task',
+      prompt: '触发失败清理',
+      subagentType: 'general-purpose',
+      parentSession: fixture.parent,
+    });
+
+    // 模型失败在 execute 层收敛为稳定 error（SUBAGENT_EXECUTION_FAILED），finally 清理仍执行。
+    expect(result.status).toBe('error');
+    expect(taskAborter).toHaveBeenCalledTimes(1);
+  });
+
+  it('taskAborter 抛错时不掩盖子代理真实终态', async () => {
+    const taskAborter = vi.fn(async () => {
+      throw new Error('kill failed');
+    });
+    const fixture = createRuntime('complete', 3, false, taskAborter);
+    const result = await fixture.runtime.execute({
+      description: 'aborter error task',
+      prompt: '清理失败不掩盖终态',
+      subagentType: 'general-purpose',
+      parentSession: fixture.parent,
+    });
+
+    // finally 中清理异常被捕获记录，终态契约不受影响。
+    expect(result.status).toBe('completed');
   });
 });
 

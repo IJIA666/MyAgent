@@ -19,6 +19,7 @@ import type { ContextAdapter } from '../../../ports/driven/session/ContextAdapte
 import type { ApprovalPort } from '../../../ports/driven/session/ApprovalPort.js';
 import type { InteractionPort } from '../../../ports/driven/session/InteractionPort.js';
 import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
+import type { TaskAborterPort } from '../../../ports/driven/tools/TaskAborterPort.js';
 import type {
   SubagentContextPolicy,
   SubagentExecutionRequest,
@@ -74,6 +75,8 @@ export interface SubagentRuntimeOptions {
   readonly definitionRegistry?: SubagentDefinitionRegistry;
   /** 是否启用省略类型即 exact-fork 的定义解析。 */
   readonly subagentForkEnabled?: boolean;
+  /** 会话级 shell 任务中止能力（组合根注入 abortSessionTasks）；未注入时跳过清理。 */
+  readonly taskAborter?: TaskAborterPort;
 }
 
 /** 供 Skill Review/Curator 复用的专用运行配置。 */
@@ -618,6 +621,20 @@ export class SubagentRuntime {
       activeSignal.removeEventListener('abort', abortChildDriver);
       this.activeControllers.delete(childController);
       driver.abort();
+      // 子代理 shell 任务回收：按其会话 ID 中止全部活跃进程树（正常/失败/取消三路径）。
+      // 尽力语义：异常仅记日志，不得掩盖子代理真实终态；未注入时跳过。
+      if (this.options.taskAborter) {
+        try {
+          await this.options.taskAborter(childContext.getSessionId());
+        } catch (error) {
+          logger.warn('[SubagentRuntime] 子代理 shell 任务清理失败', {
+            component: 'subagent_runtime',
+            event: 'subagent_shell_cleanup_failed',
+            agentId,
+            reason: SubagentTranscriptStore.sanitizeErrorSummary(error),
+          });
+        }
+      }
       ruleManager.close();
       // 子代理专属 MCP 作用域关闭：幂等；正常/失败/取消统一收敛，只清内联连接。
       if (agentMcpScope) {

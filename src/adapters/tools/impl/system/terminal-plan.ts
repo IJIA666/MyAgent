@@ -199,10 +199,15 @@ export function buildPlatformOptions(
 ): PlatformExecutionOptions {
   const isWindows = platform === 'win32';
 
-  // 进程树强杀命令模板
-  let killCommand: string[] | null = null;
+  // 进程树强杀命令模板：Windows 与 POSIX 均配置（killProcessTree 会对根进程补 SIGKILL）。
+  let killCommand: string[];
   if (isWindows) {
+    // Windows：taskkill /T 递归杀完整进程树（含根进程）。
     killCommand = ['taskkill', '/PID', '{pid}', '/T', '/F'];
+  } else {
+    // POSIX：pkill -P 杀直接子进程（配合 killProcessTree 对根进程的 SIGKILL 补杀，
+    // 覆盖父 + 直接子两层；孙进程为尽力回收的已知边界）。
+    killCommand = ['pkill', '-P', '{pid}'];
   }
 
   // npm/npx 重定向仅在 Windows 上需要（绕过 shell: false 无法调用 .cmd 的问题）

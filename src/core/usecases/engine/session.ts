@@ -275,6 +275,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
         skillLibrary,
         subagentForkEnabled: appConfig.runtimeLimits.subagentForkEnabled,
         definitionRegistry: this.subagentDefinitionRegistry,
+        // 子代理结束回收其会话内 shell 任务（组合根注入的 abortSessionTasks）。
+        taskAborter: this.taskAborter,
       })
       : undefined;
     if (this.subagentExecutionController && this.subagentRuntime) {

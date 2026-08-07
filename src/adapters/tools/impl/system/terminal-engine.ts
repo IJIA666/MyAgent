@@ -62,6 +62,11 @@ export interface TaskInfo {
   failureReason?: 'timeout' | 'stalled' | 'error';
   /** 敏感或逃逸警告信息 */
   advisoryWarnings?: string[];
+  /**
+   * 幂等中止回调：平台 killCommand 强杀完整进程树后执行 cleanup（定时器清理、日志流关闭、
+   * 终态收敛、resolve 挂起 Promise）。由任务创建处注册，供会话级中止复用。
+   */
+  abortAndCleanup?: () => Promise<void>;
 }
 
 /**
@@ -136,10 +141,17 @@ export function killProcessTree(pid: number, platformOptions?: PlatformExecution
   return new Promise((resolve) => {
     const killCmd = platformOptions?.killCommand;
     if (killCmd && killCmd.length > 0) {
-      // 使用 Plan 提供的平台特定杀进程命令模板
+      // 使用 Plan 提供的平台特定杀进程命令模板。
+      // Windows taskkill /T 已含根进程；POSIX pkill -P 只杀直接子进程，
+      // 命令完成后统一补杀根进程，保证父 + 直接子两层都被回收。
       const args = killCmd.map(arg => arg.replace('{pid}', pid.toString()));
       const killer = spawn(args[0], args.slice(1));
       killer.on('close', () => {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // 根进程可能已随树杀退出；忽略异常
+        }
         resolve();
       });
       killer.on('error', () => {
@@ -482,6 +494,16 @@ export async function runCommandEngine(
   };
   activeTasks.set(taskId, taskInfo);
 
+  // 注册幂等中止回调：会话级中止（abortSessionTasks）复用平台 killCommand 强杀完整
+  // 进程树 + cleanup 完整资源清理（定时器、日志流、终态收敛、resolve 挂起 Promise）。
+  // cleanup 为函数声明（提升），闭包可安全引用。
+  taskInfo.abortAndCleanup = async () => {
+    if (child.pid) {
+      await killProcessTree(child.pid, plan?.platformOptions);
+    }
+    cleanup();
+  };
+
   // 监听并透传 AbortSignal 物理强杀子进程树
   if (options?.signal) {
     if (options.signal.aborted) {
@@ -789,7 +811,13 @@ export async function abortSessionTasks(sessionId: string): Promise<void> {
   const killPromises: Promise<void>[] = [];
   for (const [taskId, task] of activeTasks.entries()) {
     if (task.sessionId === sessionId && (task.status === 'RUNNING' || task.status === 'STALLED')) {
-      if (transitionTaskState(taskId, 'FAILED')) {
+      const abort = task.abortAndCleanup;
+      if (abort) {
+        // 优先经任务注册的中止回调：平台 killCommand 强杀完整树 + cleanup 完整资源清理。
+        task.failureReason = 'error';
+        killPromises.push(abort());
+      } else if (transitionTaskState(taskId, 'FAILED')) {
+        // 兼容无回调条目（理论不应存在）：保留旧降级路径。
         task.failureReason = 'error';
         if (task.child && typeof task.child.pid === 'number') {
           // 会话级中止不持有 Plan，使用 process.kill 降级路径
