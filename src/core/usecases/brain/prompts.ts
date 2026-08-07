@@ -102,6 +102,11 @@ export interface SystemPromptOptions {
   workingDirectory?: string;
   /** 用户可见回复的偏好语言；未配置时不生成语言章节 */
   language?: string;
+  /**
+   * `--agent` 主会话模式的定义正文（组合语义，追加于基础人设之后）。
+   * 与官方"替换默认 prompt"不等价：MyAgent 基础人设含安全指令红线，保留组合。
+   */
+  agentSystemPrompt?: string;
 }
 
 /** 转义动态文本中的 XML 保留字符，避免破坏提示词标签结构。 */
@@ -147,6 +152,11 @@ export function buildSystemPrompt(
 
   // 1. stable（稳定人设层）
   parts.push(`<!-- 1. stable (稳定人设层) -->\n${BASE_SYSTEM_PROMPT}`);
+
+  // 1.5 agent（`--agent` 模式定义身份层，组合语义：基础人设之后、规则之前）
+  if (options.agentSystemPrompt?.trim()) {
+    parts.push(`\n<!-- 1.5 agent (定义身份层) -->\n${options.agentSystemPrompt}`);
+  }
 
   // 2. context (上下文环境层，工作区级稳定)
   const globalRules = customGlobalRules ?? '';

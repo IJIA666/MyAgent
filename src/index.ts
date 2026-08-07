@@ -32,6 +32,7 @@ import { SkillCuratorReportStore } from './core/usecases/brain/skill-curator-rep
 import { SubagentExecutionController } from './core/usecases/subagent/SubagentExecutionController.js';
 import { SubagentDefinitionRegistry } from './core/usecases/subagent/SubagentDefinitionRegistry.js';
 import { AgentDefinitionLoader } from './core/usecases/subagent/AgentDefinitionLoader.js';
+import { parseAgentCliArg } from './cli-args.js';
 
 /**
  * 负责初始化环境、加载会话管理器（SessionManager）等核心依赖装配，并启动主界面。
@@ -39,6 +40,12 @@ import { AgentDefinitionLoader } from './core/usecases/subagent/AgentDefinitionL
 async function main() {
   await initLogger();
   console.clear();
+
+  // 0. 最小 CLI 参数解析：--agent <type>（未知 flag 忽略保持向后兼容）
+  const agentCliType = parseAgentCliArg(process.argv);
+  if (agentCliType) {
+    console.log(theme.info(`[参数] 以子代理定义启动主会话: ${agentCliType}`));
+  }
 
   // 1. 文件引导：确保配置文件存在
   ensureConfigFiles();
@@ -158,6 +165,13 @@ async function main() {
         appConfig.applicationPaths.projectAgentsDir,
       ),
     );
+    // --agent 主线程定义解析：未知类型提示并回退默认行为（官方 warn 语义）。
+    const mainAgentDefinition = agentCliType
+      ? subagentDefinitionRegistry.resolve(agentCliType)
+      : undefined;
+    if (agentCliType && !mainAgentDefinition) {
+      console.log(theme.warning(`[参数] 未找到子代理定义 "${agentCliType}"，使用默认会话行为`));
+    }
 
     const toolRegistry = new ToolRegistry(mcpManager, {
       skillLibrary,
@@ -186,6 +200,7 @@ async function main() {
       subagentExecutionController,
       subagentLlmClientFactory,
       subagentDefinitionRegistry,
+      mainAgentDefinition,
     );
   } catch (initError: unknown) {
     const errorMsg = initError instanceof Error ? initError.message : String(initError);

@@ -49,6 +49,8 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   /** 会话唯一的权限状态聚合根。 */
   private readonly permissionSessionState: PermissionSessionState;
   private _appConfig?: AppConfig;
+  /** `--agent` 模式的定义正文附加位；每次 system 组装恒带上（RuleManager 重载不覆盖）。 */
+  private agentSystemPrompt?: string;
 
   // ── 子状态对象 ──
   private readonly conversationState: ConversationState;
@@ -184,9 +186,24 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
     }
     const systemPrompt = buildSystemPrompt(customGlobalRules, customLocalRules, skills, {
       language: this._appConfig?.language,
+      agentSystemPrompt: this.agentSystemPrompt,
     });
     this.conversationState.updateSystemPrompt(systemPrompt);
     this.conversationState.clearLastApiUsageBaseline();
+  }
+
+  /**
+   * 设置 `--agent` 模式的定义正文附加位。
+   * 持久保存在会话上下文：之后任何 updateSystemPrompt（含 RuleManager 技能重载）都带上。
+   * 仅设置字段不重建 system（重建由装配方随后以完整规则/技能调用 updateSystemPrompt）。
+   *
+   * @param text - 定义正文（.md 正文）；空串清除附加位
+   */
+  public setAgentSystemPrompt(text: string): void {
+    if (this.isProcessing) {
+      throw new Error('Cannot modify SessionContext: session is currently busy processing hooks.');
+    }
+    this.agentSystemPrompt = text.trim() || undefined;
   }
 
   // ── 会话元数据（保留在 façade）──

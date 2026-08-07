@@ -38,6 +38,7 @@ function createFakeMcpManager(): McpManagerPort {
     getMcpServersStatus: async () => [],
     connectServer: async () => undefined,
     disconnectServer: async () => undefined,
+    openAgentMcpScope: async () => { throw new Error('fixture 未实现作用域'); },
     getMcpTools: async () => [
       {
         type: 'function',

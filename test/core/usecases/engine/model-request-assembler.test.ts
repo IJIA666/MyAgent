@@ -97,6 +97,58 @@ describe('ModelRequestAssembler', () => {
     );
   });
 
+  /** 构造带主线程定义名单的 assembler。 */
+  function createAssemblerWithAgentTools(agentTools?: {
+    allow?: ReadonlySet<string>;
+    deny?: ReadonlySet<string>;
+  }): ModelRequestAssembler {
+    const ruleManager = { getProjectRules: () => null };
+    return new ModelRequestAssembler(
+      mockToolRegistry, mockContextAdapter, ruleManager,
+      mockPluginRegistry, context, mockBudgetCoordinator,
+      undefined, true,
+      agentTools ? { mainThreadAgentTools: agentTools } : undefined,
+    );
+  }
+
+  describe('--agent 主线程工具名单', () => {
+    it('省略名单时不裁剪（默认池含 Agent）', async () => {
+      const result = await assembler.assemble(undefined, 'gpt-4');
+      const names = result.tools.map(tool => (tool as { function?: { name?: string } }).function?.name);
+      expect(names).toContain('readFile');
+      expect(names).toContain('writeFile');
+      expect(names).toContain('search');
+    });
+
+    it('显式 allow 名单只含名单中工具（Agent 未写入则不保留）', async () => {
+      const agentAssembler = createAssemblerWithAgentTools({ allow: new Set(['readFile', 'search']) });
+      const result = await agentAssembler.assemble(undefined, 'gpt-4');
+      const names = result.tools.map(tool => (tool as { function?: { name?: string } }).function?.name);
+      expect(names).toEqual(['readFile', 'search']);
+    });
+
+    it('显式名单写入 Agent 才保留', async () => {
+      // mock 工具集补充 Agent 工具（默认池成员）。
+      mockToolRegistry.getTools = async () => [
+        ...makeMockTools(),
+        { type: 'function', function: { name: 'Agent', description: 'Agent tool' } },
+      ];
+      const agentAssembler = createAssemblerWithAgentTools({ allow: new Set(['readFile', 'Agent']) });
+      const result = await agentAssembler.assemble(undefined, 'gpt-4');
+      const names = result.tools.map(tool => (tool as { function?: { name?: string } }).function?.name);
+      expect(names).toEqual(['readFile', 'Agent']);
+    });
+
+    it('deny 名单从默认池剔除', async () => {
+      const agentAssembler = createAssemblerWithAgentTools({ deny: new Set(['writeFile']) });
+      const result = await agentAssembler.assemble(undefined, 'gpt-4');
+      const names = result.tools.map(tool => (tool as { function?: { name?: string } }).function?.name);
+      expect(names).toContain('readFile');
+      expect(names).not.toContain('writeFile');
+      expect(names).toContain('search');
+    });
+  });
+
   describe('assemble - 基础流程', () => {
     it('应在正常模式下返回组装好的消息和工具列表', async () => {
       const result = await assembler.assemble(undefined, 'gpt-4');

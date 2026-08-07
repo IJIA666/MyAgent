@@ -47,6 +47,8 @@ export interface ToolMetadata {
   readonly executionTimeoutPolicy: ToolExecutionTimeoutPolicy;
 }
 
+import type { AgentMcpScope } from './McpManagerPort.js';
+
 /** 工具获批后、真正执行前使用的准备钩子。 */
 export interface ToolExecutionLifecycleHooks {
   /**
@@ -71,6 +73,8 @@ export interface ToolExecutionLifecycleHooks {
     readonly auditSource: string;
     /** 子代理调用时捕获的父审批端口；不得替换为子 SessionContext 的审批状态。 */
     readonly approvalPort?: ApprovalPort;
+    /** 子代理专属 MCP 作用域：命中其工具时经作用域路由执行（内联 owned / 引用 borrowed）。 */
+    readonly agentMcpScope?: AgentMcpScope;
   };
   /** 普通工具总超时或仅跟随父取消信号的长时编排策略。 */
   readonly timeoutPolicy?: ToolExecutionTimeoutPolicy;

@@ -220,6 +220,44 @@ describe('配置型子代理提交点消费', () => {
     }
   });
 
+  it('定义 mcpServers 在提交点归一化为引用/内联声明透传', async () => {
+    const registry = new SubagentDefinitionRegistry();
+    registry.register({
+      type: 'mcp-agent',
+      description: '带 MCP 声明',
+      contextPolicy: 'fresh',
+      toolPolicyKey: 'freshForeground',
+      buildSystemPrompt: () => '',
+      mcpServers: ['slack', { name: 'review-db', config: { command: 'npx' } }],
+    });
+    const { coordinator, parentSession, runTask } = createCoordinator({ definitionRegistry: registry });
+    await coordinator.execute({
+      prompt: '读取文件',
+      description: 'read child file',
+      subagentType: 'mcp-agent',
+      parentSession,
+    });
+    const task = runTask.mock.calls[0][0];
+    expect(task.agentMcpDeclarations).toEqual({
+      references: ['slack'],
+      inline: [{ name: 'review-db', config: { command: 'npx' } }],
+    });
+  });
+
+  it('exact-fork 不携带 agentMcpDeclarations（冻结父快照不适用）', async () => {
+    const { coordinator, parentSession, runTask } = createCoordinator({
+      forkEnabled: true,
+      hasSnapshot: true,
+    });
+    await coordinator.execute({
+      prompt: '读取文件',
+      description: 'read child file',
+      parentSession,
+    });
+    const task = runTask.mock.calls[0][0];
+    expect(task.agentMcpDeclarations).toBeUndefined();
+  });
+
   it('装配链：真实加载器→注册表→协调器，定义字段全部生效', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agent-assembly-'));
     try {

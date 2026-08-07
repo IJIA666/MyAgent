@@ -59,6 +59,7 @@ describe('subagent execution contract', () => {
       disconnectServer: async () => undefined,
       getMcpTools: async () => [definition],
       callMcpTool: async () => undefined,
+      openAgentMcpScope: async () => { throw new Error('fixture 未实现作用域'); },
       getToolDescriptors: () => [{
         name: 'mcp_read',
         serverName: 'fixture',

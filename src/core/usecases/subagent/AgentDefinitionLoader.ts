@@ -10,20 +10,26 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import matter from 'gray-matter';
 import { BUILTIN_MODELS } from '../../../config/models.js';
+import type { McpServerEntry } from '../../../config/types.js';
 import type { PermissionMode } from '../../domain/permissions/permission-types.js';
 import { logger } from '../../../utils/logger.js';
 
-/** 本阶段解析但忽略的未启用字段（后续阶段启用，见 roadmap 阶段 2b）。 */
+/** 本阶段解析但忽略的未启用字段（后续阶段启用，见 roadmap）。 */
 const DEFERRED_FIELDS = [
   'effort',
   'color',
   'skills',
   'background',
   'memory',
-  'mcpServers',
   'hooks',
   'isolation',
 ] as const;
+
+/** 定义级 mcpServers 归一化声明元素：字符串（引用）或内联定义（单服务器）。 */
+export type AgentMcpServerSpec = string | {
+  readonly name: string;
+  readonly config: McpServerEntry;
+};
 
 /** 从单个 `.md` 文件解析出的子代理定义。 */
 export interface AgentFileDefinition {
@@ -47,6 +53,10 @@ export interface AgentFileDefinition {
   readonly permissionMode?: PermissionMode;
   /** 为 true 时不加载 CLAUDE.md 规则投影。 */
   readonly omitClaudeMd?: boolean;
+  /** 定义级 MCP 服务器声明（字符串引用或内联定义，见 `subagent-agent-mcp`）。 */
+  readonly mcpServers?: ReadonlyArray<AgentMcpServerSpec>;
+  /** 定义级首轮前缀（`--agent` 主会话模式与首条用户输入合并）。 */
+  readonly initialPrompt?: string;
   /** `.md` 正文，作为子代理系统提示的自定义部分。 */
   readonly systemPrompt: string;
 }
@@ -181,8 +191,9 @@ function parseAgentFile(
     }
   }
 
-  const tools = parseToolList(data.tools);
-  const disallowedTools = parseToolList(data.disallowedTools);
+  // 通配 '*' 语义 = 默认池（tools 恰好 ['*'] 归一化为 undefined；disallowedTools 不支持通配，同样归一化避免静默失效）。
+  const tools = parseToolList(data.tools, true);
+  const disallowedTools = parseToolList(data.disallowedTools, true);
 
   const model = typeof data.model === 'string' ? data.model.trim() : undefined;
   if (model !== undefined && model !== 'inherit' && !Object.hasOwn(BUILTIN_MODELS, model)) {
@@ -226,6 +237,9 @@ function parseAgentFile(
     }
   }
 
+  const mcpServers = parseMcpServers(data.mcpServers, type, filePath);
+  const initialPrompt = typeof data.initialPrompt === 'string' ? data.initialPrompt.trim() : undefined;
+
   return Object.freeze({
     type,
     description,
@@ -237,16 +251,98 @@ function parseAgentFile(
     ...(maxTurns !== undefined ? { maxTurns } : {}),
     ...(permissionMode ? { permissionMode } : {}),
     ...(data.omitClaudeMd === true ? { omitClaudeMd: true as const } : {}),
+    ...(mcpServers && mcpServers.length > 0 ? { mcpServers } : {}),
+    ...(initialPrompt ? { initialPrompt } : {}),
     systemPrompt: content.trim(),
   });
+}
+
+/**
+ * 解析 mcpServers 声明：数组元素为字符串（引用全局清单服务器名）或
+ * 对象（内联定义，单键 `{ name: { command, args?, env? } }`）；非法项拒绝并记录日志，
+ * 不影响定义其余字段。
+ */
+function parseMcpServers(
+  value: unknown,
+  agentType: string,
+  filePath: string,
+): ReadonlyArray<AgentMcpServerSpec> | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    logger.warn('[AgentDefinitionLoader] mcpServers 必须为数组，忽略该字段', {
+      component: 'agent_definition_loader',
+      event: 'agent_invalid_mcp_servers',
+      file: filePath,
+      agentType,
+    });
+    return undefined;
+  }
+  const specs: AgentMcpServerSpec[] = [];
+  for (const item of value) {
+    if (typeof item === 'string') {
+      const name = item.trim();
+      if (name) {
+        specs.push(name);
+        continue;
+      }
+      logger.warn('[AgentDefinitionLoader] mcpServers 引用名为空，拒绝该项', {
+        component: 'agent_definition_loader',
+        event: 'agent_invalid_mcp_reference',
+        file: filePath,
+        agentType,
+      });
+      continue;
+    }
+    if (isRecord(item)) {
+      const entries = Object.entries(item);
+      if (entries.length === 1) {
+        const [name, config] = entries[0];
+        if (typeof name === 'string' && name.trim() && isRecord(config) && typeof config.command === 'string') {
+          specs.push({
+            name: name.trim(),
+            config: {
+              command: config.command,
+              ...(Array.isArray(config.args)
+                ? { args: config.args.filter((arg): arg is string => typeof arg === 'string') }
+                : {}),
+              ...(isRecord(config.env)
+                ? {
+                  env: Object.fromEntries(
+                    Object.entries(config.env).filter(([, v]) => typeof v === 'string'),
+                  ) as Record<string, string>,
+                }
+                : {}),
+              ...(typeof config.enabled === 'boolean' ? { enabled: config.enabled } : {}),
+            },
+          });
+          continue;
+        }
+      }
+    }
+    logger.warn('[AgentDefinitionLoader] mcpServers 非法项，拒绝', {
+      component: 'agent_definition_loader',
+      event: 'agent_invalid_mcp_entry',
+      file: filePath,
+      agentType,
+    });
+  }
+  return specs.length > 0 ? Object.freeze(specs) : undefined;
+}
+
+/** 判断未知值是否为普通对象。 */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
  * 归一化 tools/disallowedTools 声明：支持数组或逗号分隔字符串，trim、去空、去重。
  * fail-closed 语义：显式声明但结果为空时返回空数组（允许名单为空 = 无工具可见），
  * 绝不回退为 undefined（默认全池），防止 `tools: []` 意外恢复默认工具面。
+ * 通配符语义：恰好 `['*']` 时归一化为 undefined（默认池），避免 `Set(['*'])` 过滤掉全部工具。
  */
-function parseToolList(value: unknown): readonly string[] | undefined {
+function parseToolList(value: unknown, wildcardAsDefault: boolean): readonly string[] | undefined {
   if (value === undefined || value === null) {
     return undefined;
   }
@@ -256,6 +352,10 @@ function parseToolList(value: unknown): readonly string[] | undefined {
       ? value.split(',')
       : [];
   const tools = [...new Set(rawList.map(item => item.trim()).filter(Boolean))];
+  // 恰好一个通配符：语义为默认池（未声明名单）。
+  if (wildcardAsDefault && tools.length === 1 && tools[0] === '*') {
+    return undefined;
+  }
   // 显式声明过（含空声明）时返回冻结数组；完全未声明才返回 undefined。
   return Object.freeze(tools);
 }

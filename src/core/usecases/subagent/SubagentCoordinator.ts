@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AppConfig, LlmConfig } from '../../../config/index.js';
 import { getModelConfig } from '../../../config/models.js';
 import { getRuntimeEnv } from '../../../config/env.js';
+import type { McpServerEntry } from '../../../config/types.js';
 import type {
   SubagentExecutionPort,
   SubagentExecutionRequest,
@@ -19,6 +20,7 @@ import { ApprovalRouter } from './ApprovalRouter.js';
 import { ChildPermissionResolver } from './ChildPermissionResolver.js';
 import { compileDefinitionToolVisibility } from './ScopedToolRegistry.js';
 import { resolveSubagentModel } from './resolve-subagent-model.js';
+import type { AgentMcpDeclaration } from '../../../ports/driven/tools/McpManagerPort.js';
 import { SubagentRuntime, type SubagentRuntimeTaskResult } from './SubagentRuntime.js';
 import { TaskManager, type TaskCancelResult } from './TaskManager.js';
 import { TaskStateStore } from './TaskStateStore.js';
@@ -402,6 +404,10 @@ export class SubagentCoordinator implements SubagentExecutionPort {
               : undefined,
             // omitClaudeMd 透传运行器，控制 RuleManager 是否加载 CLAUDE.md 规则。
             omitClaudeMd: definition.omitClaudeMd,
+            // 定义级 MCP 声明在提交点归一化透传（仅 fresh 消费；exact-fork 冻结父快照不适用）。
+            agentMcpDeclarations: definition.contextPolicy === 'fresh' && definition.mcpServers
+              ? normalizeMcpDeclarations(definition.mcpServers)
+              : undefined,
             maxIterations: frozenMaxIterations,
             persistTranscript: true,
             enableDefaultSafetyPlugins: true,
@@ -462,6 +468,25 @@ function toExecutionResult(result: SubagentRuntimeTaskResult): SubagentExecution
 /** 任务列表只允许把终态用于终态操作。 */
 function isTerminalStatus(status: TaskStateRecord['status']): status is TerminalTaskStatus {
   return isTerminalTaskStatus(status);
+}
+
+/** 将定义级 mcpServers 归一化为引用/内联声明结构。 */
+function normalizeMcpDeclarations(
+  specs: readonly (string | { readonly name: string; readonly config: McpServerEntry })[],
+): AgentMcpDeclaration {
+  const references: string[] = [];
+  const inline: Array<{ name: string; config: McpServerEntry }> = [];
+  for (const spec of specs) {
+    if (typeof spec === 'string') {
+      references.push(spec);
+    } else {
+      inline.push(spec);
+    }
+  }
+  return {
+    references: Object.freeze(references),
+    inline: Object.freeze(inline),
+  };
 }
 
 /** 从冻结快照提取工具名集合，用于收束 fork 工具作用域到提交点。 */

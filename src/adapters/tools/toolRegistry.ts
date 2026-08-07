@@ -272,7 +272,10 @@ export class ToolRegistry implements ToolRegistryPort {
         );
         return gatewayResult.outcome;
       } else if (this.mcpManager) {
-        const descriptor = this.mcpManager.getToolDescriptor(functionName);
+        // 子代理专属 MCP 工具优先经作用域 descriptor 与路由执行（内联 owned / 引用 borrowed）。
+        const agentScope = securityContext?.agentMcpScope;
+        const scopeDescriptor = agentScope?.getToolDescriptor(functionName);
+        const descriptor = scopeDescriptor ?? this.mcpManager.getToolDescriptor(functionName);
         if (!descriptor) {
           throw new Error(`MCP 工具 "${functionName}" 缺少当前 descriptor，拒绝授权`);
         }
@@ -288,16 +291,32 @@ export class ToolRegistry implements ToolRegistryPort {
             authorizationAdapter,
             checker,
             getCurrentDescriptorVersion: () =>
-              this.mcpManager?.getToolDescriptor(functionName)?.descriptorVersion,
-            execute: (authorizedArgs, executionSignal) => this.mcpManager!.callMcpTool(
-              functionName,
-              authorizedArgs,
-              {
-                serverName: descriptor.serverName,
-                descriptorVersion: descriptor.descriptorVersion,
-              },
-              executionSignal,
-            ),
+              (agentScope?.getToolDescriptor(functionName) ?? this.mcpManager?.getToolDescriptor(functionName))
+                ?.descriptorVersion,
+            execute: (authorizedArgs, executionSignal) => {
+              const scopeDescriptorNow = agentScope?.getToolDescriptor(functionName);
+              if (scopeDescriptorNow && agentScope) {
+                // 作用域路由：内联默认断开清理（owned）、引用永不销毁物理连接（borrowed 由作用域内部保证）。
+                return agentScope.callTool(
+                  functionName,
+                  authorizedArgs,
+                  {
+                    serverName: scopeDescriptorNow.serverName,
+                    descriptorVersion: scopeDescriptorNow.descriptorVersion,
+                  },
+                  executionSignal,
+                );
+              }
+              return this.mcpManager!.callMcpTool(
+                functionName,
+                authorizedArgs,
+                {
+                  serverName: descriptor.serverName,
+                  descriptorVersion: descriptor.descriptorVersion,
+                },
+                executionSignal,
+              );
+            },
           },
           {
             promptAdapter,

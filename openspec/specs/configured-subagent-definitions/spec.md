@@ -36,7 +36,7 @@
 
 ### Requirement: frontmatter 字段解析与生效清单
 
-系统 MUST 解析 `.md` 定义 frontmatter 并使以下字段生效：`description`（必填）、`tools`（显式工具名单）、`disallowedTools`（剔除名单）、`model`、`maxTurns`、`permissionMode`（仅允许收窄到 `plan` 或保持父模式，不得提升）、`omitClaudeMd`。字段 `effort`、`color`、`skills`、`background`、`memory`、`mcpServers`、`hooks`、`isolation` 属于本阶段未启用字段：MUST 被解析但 MUST NOT 生效，MUST 记录一条可诊断 warning，MUST NOT 导致文件被拒绝。自定义定义 MUST 使用 `fresh` 上下文策略，`.md` 不得声明上下文策略字段。`.md` 正文 MUST 作为子代理系统提示。
+系统 MUST 解析 `.md` 定义 frontmatter 并使以下字段生效：`description`（必填）、`tools`（显式工具名单）、`disallowedTools`（剔除名单）、`model`、`maxTurns`、`permissionMode`（仅允许收窄到 `plan` 或保持父模式，不得提升）、`omitClaudeMd`、`mcpServers`（字符串引用或内联定义，见 `subagent-agent-mcp`）、`initialPrompt`（`--agent` 主会话首轮前缀，见 `agent-session-mode`；子代理执行路径不消费）。字段 `effort`、`color`、`skills`、`background`、`memory`、`hooks`、`isolation` 属于本阶段未启用字段：MUST 被解析但 MUST NOT 生效，MUST 记录一条可诊断 warning，MUST NOT 导致文件被拒绝。`tools` 声明恰好为 `['*']` 时 MUST 归一化为未声明（默认池语义，避免通配符过滤掉全部工具）。自定义定义 MUST 使用 `fresh` 上下文策略，`.md` 不得声明上下文策略字段。`.md` 正文 MUST 作为子代理系统提示。
 
 #### Scenario: 合法字段全部生效
 
@@ -62,6 +62,24 @@
 
 - **WHEN** 定义未声明 `tools` 与 `disallowedTools`
 - **THEN** 子代理工具面等于当前策略默认池（对齐 `general-purpose` 的 `['*']` 语义并遵守嵌套与交互安全基线）
+
+#### Scenario: mcpServers 声明生效
+
+- **WHEN** 定义 frontmatter 声明 `mcpServers: [slack]` 或内联定义对象
+- **THEN** 字段按 `subagent-agent-mcp` 契约生效（引用共享/内联独立建连）
+- **AND** 不再记录"未启用字段"warning
+
+#### Scenario: initialPrompt 声明生效
+
+- **WHEN** 定义 frontmatter 声明非空 `initialPrompt`
+- **THEN** 该字段在 `--agent` 主会话模式下作为首轮前缀与首条用户输入合并
+- **AND** 子代理执行路径不消费该字段
+
+#### Scenario: tools 通配符归一化
+
+- **WHEN** 定义 frontmatter 声明 `tools: ["*"]`
+- **THEN** 名单归一化为未声明（默认池语义）
+- **AND** 不产生"过滤掉全部工具"的行为
 
 ### Requirement: 定义注册与模型可见性
 

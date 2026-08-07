@@ -85,6 +85,11 @@ export interface AgentLoopOptions {
   preserveRequestContext?: boolean;
   /** exact-fork 提交时冻结的工具集合。 */
   fixedTools?: readonly Record<string, unknown>[];
+  /** `--agent` 主线程定义工具名单（透传请求组装器，plan 剥离后应用）。 */
+  mainThreadAgentTools?: {
+    readonly allow?: ReadonlySet<string>;
+    readonly deny?: ReadonlySet<string>;
+  };
   /** 接收每次模型回包的真实用量，用于任务 usage 汇总。 */
   onModelUsage?: (usage: ApiUsage) => void;
 }
@@ -176,6 +181,7 @@ export class AgentLoop {
       {
         preserveRequestContext: options.preserveRequestContext,
         fixedTools: options.fixedTools,
+        mainThreadAgentTools: options.mainThreadAgentTools,
       } satisfies ModelRequestAssemblerOptions,
     );
     this.onModelUsage = options.onModelUsage;

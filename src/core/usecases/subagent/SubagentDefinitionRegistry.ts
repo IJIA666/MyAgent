@@ -1,5 +1,6 @@
 import type { SessionContext } from '../../domain/context.js';
 import type { PermissionMode } from '../../domain/permissions/permission-types.js';
+import type { McpServerEntry } from '../../../config/types.js';
 import type {
   SubagentContextPolicy,
   SubagentToolPolicyKey,
@@ -87,6 +88,13 @@ export interface SubagentDefinition {
   readonly permissionMode?: PermissionMode;
   /** 为 true 时不加载 CLAUDE.md 规则投影（Skill 元数据快照保留）。 */
   readonly omitClaudeMd?: boolean;
+  /** 定义级 MCP 服务器声明（字符串引用或内联定义，见 `subagent-agent-mcp`）。 */
+  readonly mcpServers?: ReadonlyArray<string | {
+    readonly name: string;
+    readonly config: McpServerEntry;
+  }>;
+  /** 定义级首轮前缀（`--agent` 主会话模式与首条用户输入合并；子代理执行路径不消费）。 */
+  readonly initialPrompt?: string;
   /** `.md` 正文形式的系统提示（自定义定义专用；内置定义用 buildSystemPrompt）。 */
   readonly systemPrompt?: string;
 }
@@ -182,6 +190,8 @@ export class SubagentDefinitionRegistry {
         ...(definition.maxTurns !== undefined ? { maxTurns: definition.maxTurns } : {}),
         ...(definition.permissionMode ? { permissionMode: definition.permissionMode } : {}),
         ...(definition.omitClaudeMd ? { omitClaudeMd: true as const } : {}),
+        ...(definition.mcpServers ? { mcpServers: definition.mcpServers } : {}),
+        ...(definition.initialPrompt ? { initialPrompt: definition.initialPrompt } : {}),
         systemPrompt: definition.systemPrompt,
       });
     }

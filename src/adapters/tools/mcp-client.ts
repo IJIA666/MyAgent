@@ -8,18 +8,16 @@ import { randomBytes } from 'node:crypto';
 import {
   McpManagerPort,
   McpToolDescriptor,
+  type AgentMcpCallOptions,
+  type AgentMcpDeclaration,
+  type AgentMcpScope,
   type McpCallAuthorization,
 } from '../../ports/driven/tools/McpManagerPort.js';
-
-// 系统本地内置文件操作及技能工具的命名集合，作为外部工具冲突校验的黑名单以防越权劫持
-const BUILTIN_TOOL_NAMES = new Set([
-  'readFile',
-  'writeFile',
-  'listFiles',
-  'skills_list',
-  'load_skill',
-  'skill_manage'
-]);
+import {
+  AgentMcpScopeImpl,
+  BUILTIN_TOOL_NAMES,
+  type McpManagerScopeDelegate,
+} from './agent-mcp-scope.js';
 
 /**
  * MCP (Model Context Protocol) 客户端管理类。
@@ -36,6 +34,8 @@ export class McpToolManager implements McpManagerPort {
   /** 每次发现、刷新或重连工具时递增，保证旧授权失效。 */
   private descriptorRevision = 0;
   private isClosed = false;
+  /** 活跃子代理 MCP 作用域登记（agentId → scope），供总关闭与 exit 同步清理兜底。 */
+  private readonly agentScopes = new Map<string, AgentMcpScopeImpl>();
   // 已加载的 MCP 配置（通过构造函数注入）
   private config: McpConfig;
 
@@ -48,15 +48,22 @@ export class McpToolManager implements McpManagerPort {
    */
   private syncExitHandler = () => {
     if (process.platform !== 'win32') return;
+    const killPid = (pid: number | null | undefined) => {
+      if (!pid) return;
+      try {
+        execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
+      } catch {
+        // 进程可能已退出，忽略
+      }
+    };
     try {
       for (const conn of this.connections.values()) {
-        const pid = conn.transport?.pid;
-        if (pid) {
-          try {
-            execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
-          } catch {
-            // 进程可能已退出，忽略
-          }
+        killPid(conn.transport?.pid);
+      }
+      // 子代理作用域内联连接同样纳入同步退出清理，防进程退出残留子进程。
+      for (const scope of this.agentScopes.values()) {
+        for (const pid of scope.collectInlinePids()) {
+          killPid(pid);
         }
       }
     } catch {
@@ -104,10 +111,18 @@ export class McpToolManager implements McpManagerPort {
   }
 
   /**
-   * 连接单个 MCP Server。
+   * 创建 MCP 连接（不登记任何连接表，归属由调用方决定）。
    * 使用白名单过滤后的安全环境变量，防止敏感凭据泄露给子进程。
+   *
+   * @param name - 目标 MCP 服务名称
+   * @param config - 服务连接配置（全局清单项或子代理内联定义）
+   * @returns 连接句柄（client + transport）
+   * @throws 建连失败时抛出（错误已记录诊断日志）
    */
-  private async connectSingle(name: string, config: McpServerEntry) {
+  private async createConnection(
+    name: string,
+    config: McpServerEntry,
+  ): Promise<{ client: Client; transport: StdioClientTransport }> {
     const client = new Client({
       name: `my-simple-agent-${name}-client`,
       version: "1.0.0"
@@ -135,7 +150,7 @@ export class McpToolManager implements McpManagerPort {
     try {
       await client.connect(transport);
       logger.info(`[MCP Client] [${name}] 握手成功，连接已建立。`);
-      this.connections.set(name, { client, transport });
+      return { client, transport };
     } catch (e) {
       if (stderrLog.includes("requires Administrator privileges")) {
         logger.error(`\n================================================================================\n[提示] 外部服务 [${name}] 启动失败！\n[原因] 该系统监控服务需要 Windows 管理员特权，但当前 IJIA Agent 以普通权限运行。\n[解决] 请以管理员身份重新运行您的终端（如“以管理员身份运行 PowerShell”），再启动 IJIA Agent。\n================================================================================\n`);
@@ -145,6 +160,24 @@ export class McpToolManager implements McpManagerPort {
           logger.error(`[MCP Client] [${name}] 错误日志:\n${stderrLog.trim()}`);
         }
       }
+      throw e;
+    }
+  }
+
+  /**
+   * 连接单个 MCP Server 并登记进全局连接表（父会话共享）。
+   *
+   * @param name - 目标 MCP 服务名称
+   * @param config - 服务连接配置（全局清单项或子代理内联定义）
+   * @returns 建连是否成功（供子代理作用域判断工具可用性）
+   */
+  private async connectSingle(name: string, config: McpServerEntry): Promise<boolean> {
+    try {
+      const connection = await this.createConnection(name, config);
+      this.connections.set(name, connection);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -280,6 +313,7 @@ export class McpToolManager implements McpManagerPort {
     args: Record<string, unknown>,
     authorization: McpCallAuthorization,
     signal?: AbortSignal,
+    options?: AgentMcpCallOptions,
   ) {
     if (this.isClosed) {
       throw new Error("MCP Client 已关闭");
@@ -321,13 +355,18 @@ export class McpToolManager implements McpManagerPort {
         continue;
       }
 
-      // 监听 AbortSignal 以彻底释放并强杀 MCP 悬空连接与子进程
+      // 监听 AbortSignal 以彻底释放并强杀 MCP 悬空连接与子进程；
+      // borrowed（引用共享父连接）语义下仅取消等待，不销毁物理连接。
       let abortHandler: (() => void) | undefined;
       if (signal) {
         if (signal.aborted) {
           throw new Error("工具执行已被 Abort 阻断");
         }
         abortHandler = () => {
+          if (options?.disconnectOnAbort === false) {
+            logger.warn(`[MCP Client] 引用型 MCP 调用已取消 [${serverName}]，连接保持（borrowed 语义）`);
+            return;
+          }
           logger.warn(`[MCP Client] 触发 Abort 超时，正在强制关闭连接并清理进程 [${serverName}]`);
           this.disconnectServer(serverName).catch((disconnectError: unknown) => {
             logger.error(`[MCP Client] 强制清理进程失败:`, disconnectError);
@@ -507,6 +546,52 @@ export class McpToolManager implements McpManagerPort {
       await Promise.all(closePromises);
       this.connections.clear();
     }
+
+    // 总关闭兜底：所有未显式关闭的子代理作用域一并清理，防止清理链异常时残留子进程。
+    if (this.agentScopes.size > 0) {
+      const scopeClosePromises: Promise<void>[] = [];
+      for (const scope of this.agentScopes.values()) {
+        scopeClosePromises.push(scope.close());
+      }
+      await Promise.all(scopeClosePromises);
+      this.agentScopes.clear();
+    }
+  }
+
+  /**
+   * 为一次子代理执行打开独立的 MCP 作用域句柄。
+   * 内联服务器在此处建连（失败记录 warning 不阻断，对应工具不可用）；
+   * 引用服务器仅登记名称（连接复用父会话全局连接）。
+   *
+   * @param agentId - 子代理任务 ID
+   * @param declarations - 定义级 mcpServers 归一化声明
+   * @returns 子代理专属 MCP 作用域
+   */
+  public async openAgentMcpScope(
+    agentId: string,
+    declarations: AgentMcpDeclaration,
+  ): Promise<AgentMcpScope> {
+    // 以窄接口委托访问外层私有能力，作用域实现保持在模块级。
+    const delegate: McpManagerScopeDelegate = {
+      getGlobalConnections: () => this.connections,
+      getGlobalToolDescriptors: () => this.getToolDescriptors(),
+      connectServer: name => this.connectServer(name),
+      createConnection: (name, config) => this.createConnection(name, config),
+      shutdownConnection: (name, conn) => this.shutdownConnection(name, conn),
+      unregisterScope: id => {
+        this.agentScopes.delete(id);
+      },
+    };
+    const scope = new AgentMcpScopeImpl(agentId, declarations, delegate);
+    // 先登记后初始化：初始化半途失败时由调用方 close 清理已建内联连接并注销登记。
+    this.agentScopes.set(agentId, scope);
+    try {
+      await scope.initialize();
+    } catch (error: unknown) {
+      await scope.close().catch(() => undefined);
+      throw error;
+    }
+    return scope;
   }
 
   /**
@@ -554,5 +639,3 @@ export class McpToolManager implements McpManagerPort {
     }
   }
 }
-
-

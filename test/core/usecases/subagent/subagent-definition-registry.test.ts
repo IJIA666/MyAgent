@@ -29,6 +29,9 @@ describe('SubagentDefinitionRegistry', () => {
       permissionMode: 'plan',
       omitClaudeMd: true,
     });
+    // 内置提示经 buildSystemPrompt 构造器输出（--agent 装配统一走该构造器）。
+    expect(registry.resolve('Explore')?.buildSystemPrompt(emptyContext)).toContain('只读');
+    expect(registry.resolve('Plan')?.buildSystemPrompt(emptyContext)).toContain('架构');
     expect(registry.resolve('Explore')?.tools).toBeDefined();
     expect(registry.resolve('Plan')?.permissionMode).toBe('plan');
     expect(registry.resolve('Plan')?.tools).toEqual(registry.resolve('Explore')?.tools);

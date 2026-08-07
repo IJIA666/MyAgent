@@ -39,6 +39,14 @@ export interface ModelRequestAssemblerOptions {
   readonly preserveRequestContext?: boolean;
   /** exact-fork 提交时冻结的父工具集合。 */
   readonly fixedTools?: readonly Record<string, unknown>[];
+  /**
+   * `--agent` 主线程定义工具名单：`allow` 为显式允许集（省略/`['*']` 时不裁剪、含 Agent），
+   * `deny` 为剔除集；在 plan 剥离后应用。
+   */
+  readonly mainThreadAgentTools?: {
+    readonly allow?: ReadonlySet<string>;
+    readonly deny?: ReadonlySet<string>;
+  };
 }
 
 /**
@@ -65,6 +73,11 @@ export class ModelRequestAssembler {
   private readonly preserveRequestContext: boolean;
   /** exact-fork 提交时冻结的工具定义。 */
   private readonly fixedTools?: readonly Record<string, unknown>[];
+  /** `--agent` 主线程定义工具名单（省略/通配时不裁剪，显式名单只含名单工具）。 */
+  private readonly mainThreadAgentTools?: {
+    readonly allow?: ReadonlySet<string>;
+    readonly deny?: ReadonlySet<string>;
+  };
 
   /**
    * @param toolRegistry - 工具注册端口，用于获取当前可用工具集
@@ -103,6 +116,16 @@ export class ModelRequestAssembler {
     this.includeRuntimeReminder = includeRuntimeReminder;
     this.preserveRequestContext = requestOptions?.preserveRequestContext === true;
     this.fixedTools = requestOptions?.fixedTools?.map(tool => structuredClone(tool));
+    this.mainThreadAgentTools = requestOptions?.mainThreadAgentTools
+      ? {
+        ...(requestOptions.mainThreadAgentTools.allow
+          ? { allow: new Set(requestOptions.mainThreadAgentTools.allow) }
+          : {}),
+        ...(requestOptions.mainThreadAgentTools.deny
+          ? { deny: new Set(requestOptions.mainThreadAgentTools.deny) }
+          : {}),
+      }
+      : undefined;
   }
 
   /**
@@ -280,6 +303,22 @@ export class ModelRequestAssembler {
       });
     }
 
+    // Step 6.5: `--agent` 主线程定义工具名单（plan 剥离后应用）
+    // 省略或 `['*']` 时 allow 为空集不裁剪（含 Agent）；显式名单只含名单中工具（写入 Agent 才保留）。
+    if (this.mainThreadAgentTools) {
+      const { allow, deny } = this.mainThreadAgentTools;
+      finalRequestTools = finalRequestTools.filter((t: unknown) => {
+        const name = readToolDefinitionName(t);
+        if (name === undefined) {
+          return true;
+        }
+        if (allow && !allow.has(name)) {
+          return false;
+        }
+        return deny === undefined || !deny.has(name);
+      });
+    }
+
     // 插件直接提供模型响应时不会发出真实请求，不应为虚拟请求触发有损压缩。
     if (beforeModelResult.llmResponse) {
       return {
@@ -403,4 +442,20 @@ function escapeMemoryProjectionText(value: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+/** 从 OpenAI function definition 或扁平定义中读取工具名。 */
+function readToolDefinitionName(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const record = value as { name?: unknown; function?: { name?: unknown } };
+  if (typeof record.name === 'string') {
+    return record.name;
+  }
+  const nested = record.function;
+  if (typeof nested?.name === 'string') {
+    return nested.name;
+  }
+  return undefined;
 }

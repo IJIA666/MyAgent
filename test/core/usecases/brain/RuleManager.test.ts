@@ -315,4 +315,19 @@ describe('RuleManager', () => {
     expect(context.getHistory()[0].content).toBe(promptBefore);
     expect(context.getSystemPromptHash()).toBe(hashBefore);
   });
+
+  it('skipRules 实例 reloadRules 后仍不注入规则（omitClaudeMd 会话级契约）', () => {
+    fs.writeFileSync(path.join(userRulesDir, 'rule.md'), '用户规则内容', 'utf8');
+    fs.writeFileSync(path.join(projectRulesDir, 'rule.md'), '项目规则内容', 'utf8');
+    const manager = new RuleManager(
+      context, userRulesDir, projectRulesDir, userSkillsDir, projectSkillsDir,
+      { skipRules: true },
+    );
+    const systemBefore = String(context.getHistory()[0]?.content ?? '');
+    expect(systemBefore).not.toContain('用户规则内容');
+    manager.reloadRules();
+    const systemAfter = String(context.getHistory()[0]?.content ?? '');
+    expect(systemAfter).not.toContain('用户规则内容');
+    expect(systemAfter).not.toContain('项目规则内容');
+  });
 });

@@ -11,6 +11,7 @@ import { PermissionSessionState } from '../../../../src/core/domain/permissions/
 import { createTrustedCallContext } from '../../../../src/core/domain/permissions/trusted-call-context.js';
 import { ScopedToolRegistry } from '../../../../src/core/usecases/subagent/ScopedToolRegistry.js';
 import { compileDefinitionToolVisibility } from '../../../../src/core/usecases/subagent/ScopedToolRegistry.js';
+import type { ToolExecutionLifecycleHooks } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
 import type { PermissionUpdate } from '../../../../src/core/domain/permissions/permission-types.js';
 
 /** 创建作用域测试使用的标准化父工具元数据。 */
@@ -216,6 +217,7 @@ describe('ScopedToolRegistry', () => {
       disconnectServer: async () => undefined,
       getMcpTools: async () => [definition],
       callMcpTool: async () => undefined,
+      openAgentMcpScope: async () => { throw new Error('fixture 未实现作用域'); },
       getToolDescriptors: () => [],
       getToolDescriptor: () => undefined,
       close: mcpClose,
@@ -292,6 +294,134 @@ describe('ScopedToolRegistry', () => {
     expect(visible).toEqual(['read_file']);
     expect(child.getTool('Agent')).toBeUndefined();
     expect(child.getTool('ask_user_question')).toBeUndefined();
+  });
+
+  it('子代理专属 MCP 工具附加进工具面且经安全上下文旁路执行', async () => {
+    const scopeTools = [{
+      type: 'function',
+      function: { name: 'db_query', description: 'DB query', parameters: { type: 'object' } },
+    }];
+    const agentMcpScope = {
+      getTools: vi.fn(async () => scopeTools),
+      getToolDescriptor: vi.fn((name: string) => name === 'db_query'
+        ? { name, serverName: 'review-db', descriptorVersion: 'scope-v1' }
+        : undefined),
+      callTool: vi.fn(async () => ({ ok: true })),
+      close: vi.fn(async () => undefined),
+    } as unknown as import('../../../../src/ports/driven/tools/McpManagerPort.js').AgentMcpScope;
+    const parentClose = vi.fn(async () => undefined);
+    const parentCall = vi.fn(async (
+      _functionName: string,
+      _functionArgs: Record<string, unknown>,
+      _sessionContext?: unknown,
+      _interactionPort?: unknown,
+      _signal?: unknown,
+      _toolCallId?: unknown,
+      _timeoutMs?: unknown,
+      lifecycleHooks?: ToolExecutionLifecycleHooks,
+    ): Promise<ToolExecutionOutcome<unknown>> => {
+      void lifecycleHooks;
+      return {
+        value: { ok: true },
+        effect: {
+          kind: 'read',
+          executionStarted: true,
+          completed: true,
+          resources: [],
+          reason: 'declared_read_tool',
+        },
+      };
+    });
+    const definitions = [
+      { type: 'function', function: { name: 'read_file', parameters: { type: 'object' } } },
+    ];
+    const metadata = new Map([['read_file', createMetadata('read_file', true)]]);
+    const parent: ToolRegistryPort = {
+      getTools: vi.fn(async () => definitions),
+      getTool: vi.fn(name => metadata.get(name)),
+      callTool: parentCall,
+      close: parentClose,
+    };
+    const child = new ScopedToolRegistry({
+      parent,
+      permissionState: new PermissionSessionState(),
+      sessionContext: new SessionContext('child-scope'),
+      caller: createTrustedCallContext('child-caller', 'script', '1.0.0', 'subagent'),
+      auditSource: 'test-subagent',
+      agentMcpScope,
+    });
+
+    // 工具面：父工具 + 作用域专属工具。
+    const visible = (await child.getTools()).map(readToolName);
+    expect(visible).toEqual(['read_file', 'db_query']);
+    // 旁路执行：scope 工具经 parent.callTool 委托（securityContext 携带作用域）。
+    await child.callTool('db_query', { q: '1' });
+    expect(parentCall).toHaveBeenCalled();
+    const [name, , , , , , , hooks] = parentCall.mock.calls[0];
+    expect(name).toBe('db_query');
+    expect(hooks?.securityContext?.agentMcpScope).toBe(agentMcpScope);
+    // 非作用域工具走既有路径且不携带作用域。
+    parentCall.mockClear();
+    await child.callTool('read_file', { path: 'a.txt' });
+    const hooksRead = parentCall.mock.calls[0][7];
+    expect(hooksRead?.securityContext?.agentMcpScope).toBeUndefined();
+  });
+
+  it('合并工具面时以真实可见父名兜底冲突：重名动态工具被跳过', async () => {
+    // 动态 MCP 返回与本地工具重名的 schema（如 readFile），不得重复附加。
+    const agentMcpScope = {
+      getTools: vi.fn(async () => [
+        { type: 'function', function: { name: 'read_file', description: 'dup', parameters: { type: 'object' } } },
+        { type: 'function', function: { name: 'db_query', description: 'DB query', parameters: { type: 'object' } } },
+      ]),
+      getToolDescriptor: vi.fn((name: string) => name === 'db_query'
+        ? { name, serverName: 'review-db', descriptorVersion: 'scope-v1' }
+        : undefined),
+      callTool: vi.fn(async () => ({ ok: true })),
+      close: vi.fn(async () => undefined),
+    } as unknown as import('../../../../src/ports/driven/tools/McpManagerPort.js').AgentMcpScope;
+    const parentClose = vi.fn(async () => undefined);
+    const parentCall = vi.fn(async (
+      _name: string,
+      _args: Record<string, unknown>,
+      _session?: unknown,
+      _interaction?: unknown,
+      _signal?: unknown,
+      _toolCallId?: unknown,
+      _timeoutMs?: unknown,
+      _hooks?: ToolExecutionLifecycleHooks,
+    ): Promise<ToolExecutionOutcome<unknown>> => ({
+      value: { ok: true },
+      effect: {
+        kind: 'read',
+        executionStarted: true,
+        completed: true,
+        resources: [],
+        reason: 'declared_read_tool',
+      },
+    }));
+    const definitions = [
+      { type: 'function', function: { name: 'read_file', parameters: { type: 'object' } } },
+    ];
+    const metadata = new Map([['read_file', createMetadata('read_file', true)]]);
+    const parent: ToolRegistryPort = {
+      getTools: vi.fn(async () => definitions),
+      getTool: vi.fn(name => metadata.get(name)),
+      callTool: parentCall,
+      close: parentClose,
+    };
+    const child = new ScopedToolRegistry({
+      parent,
+      permissionState: new PermissionSessionState(),
+      sessionContext: new SessionContext('child-scope'),
+      caller: createTrustedCallContext('child-caller', 'script', '1.0.0', 'subagent'),
+      auditSource: 'test-subagent',
+      agentMcpScope,
+    });
+
+    const visible = (await child.getTools()).map(readToolName);
+    // read_file 与可见父工具重名被跳过，db_query 附加。
+    expect(visible).toEqual(['read_file', 'db_query']);
   });
 });
 

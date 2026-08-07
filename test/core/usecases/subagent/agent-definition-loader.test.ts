@@ -176,6 +176,63 @@ describe('AgentDefinitionLoader', () => {
     expect(predicate?.('Bash')).toBe(false);
   });
 
+  it('mcpServers 支持引用/内联/混合解析，非法项拒绝且不影响其余', () => {
+    writeAgent('project', 'mcp-agent.md', [
+      '---',
+      'name: mcp-agent',
+      'description: 带 MCP 声明',
+      'mcpServers:',
+      '  - slack',
+      '  - review-db:',
+      '      command: npx',
+      '      args: [review-db-mcp]',
+      '  - 42',
+      '---',
+      '正文',
+    ].join('\n'));
+
+    const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
+    const definitions = loader.load();
+    expect(definitions).toHaveLength(1);
+    const definition = definitions[0];
+    // 合法两项保留（引用 + 内联），非法项 42 被拒绝。
+    expect(definition?.mcpServers).toEqual([
+      'slack',
+      { name: 'review-db', config: { command: 'npx', args: ['review-db-mcp'] } },
+    ]);
+    expect(definition?.systemPrompt).toBe('正文');
+  });
+
+  it('tools 通配符恰好 [*] 归一化为未声明（默认池语义）', () => {
+    writeAgent('project', 'wildcard.md', [
+      '---',
+      'name: wildcard',
+      'description: 通配名单',
+      'tools: ["*"]',
+      '---',
+      '正文',
+    ].join('\n'));
+
+    const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
+    const definition = loader.load()[0];
+    expect(definition?.tools).toBeUndefined();
+  });
+
+  it('initialPrompt 解析为非空字符串', () => {
+    writeAgent('project', 'prompted.md', [
+      '---',
+      'name: prompted',
+      'description: 带开场白',
+      'initialPrompt: 以评审模式开始',
+      '---',
+      '正文',
+    ].join('\n'));
+
+    const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
+    const definition = loader.load()[0];
+    expect(definition?.initialPrompt).toBe('以评审模式开始');
+  });
+
   it('memoize：重复 load 返回同一缓存快照', () => {
     writeAgent('project', 'cached.md', [
       '---',

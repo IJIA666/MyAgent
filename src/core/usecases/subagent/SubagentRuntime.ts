@@ -13,6 +13,7 @@ import {
 import type { ChatMessage, ModelRequestSnapshot } from '../../../ports/driven/llm/LlmPort.js';
 import type { ToolExecutionOutcome } from '../../../adapters/tools/tool-types.js';
 import type { LlmClientFactoryPort } from '../../../ports/driven/llm/LlmClientFactoryPort.js';
+import type { AgentMcpDeclaration, AgentMcpScope } from '../../../ports/driven/tools/McpManagerPort.js';
 import type { TokenEstimatorPort } from '../../../ports/driven/llm/TokenEstimatorPort.js';
 import type { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
 import type { ApprovalPort } from '../../../ports/driven/session/ApprovalPort.js';
@@ -113,6 +114,8 @@ export interface SubagentRuntimeTaskOptions {
   readonly definitionSystemPromptBuilder?: (context: SessionContext) => string;
   /** 定义级 omitClaudeMd：为 true 时 RuleManager 跳过 CLAUDE.md 规则加载与注入。 */
   readonly omitClaudeMd?: boolean;
+  /** 定义级 MCP 声明（引用 + 内联）；仅 fresh 子代理消费，exact-fork 不适用。 */
+  readonly agentMcpDeclarations?: AgentMcpDeclaration;
   /** 使用的工具视图；省略时由公共运行器构造 fresh 作用域。 */
   readonly toolRegistry?: ToolRegistryPort;
   /** 已提供的工具视图是否已经完成策略收窄。 */
@@ -333,21 +336,58 @@ export class SubagentRuntime {
       },
       this.options.skillLibrary,
     );
+    // 资源创建纳入最外层 try/catch/finally：此后任何构造或打开失败（含 MCP 作用域、
+    // 作用域注册表、上下文、Tracer、插件、AgentLoop、transcript 写入）都会先清理
+    // 已创建资源再收敛为失败终态，杜绝资源泄漏。catch/finally 依赖的变量在此提升声明。
+    let agentMcpScope: AgentMcpScope | undefined;
     const ownsToolRegistry = !task.toolRegistryIsScoped || task.toolRegistry !== undefined;
-    const toolRegistry = task.toolRegistryIsScoped
-      ? task.toolRegistry ?? this.options.toolRegistry
-      : new ScopedToolRegistry({
-        parent: task.toolRegistry ?? this.options.toolRegistry,
-        permissionState,
-        sessionContext: childContext,
-        caller: task.caller,
-        parentApprovalPort: task.parentApprovalPort,
-        auditSource: `subagent:${task.agentType}`,
-        toolPolicyKey: task.toolPolicyKey ?? 'freshForeground',
-        fixedToolNames: task.fixedToolNames,
-        definitionToolVisibility: task.definitionToolVisibility,
-        afterToolCall: task.hooks?.mutationHook,
-      });
+    let toolRegistry: ToolRegistryPort | undefined;
+    let baseRecord: SubagentTranscriptRecord | undefined;
+    let eventCount = 0;
+    let latestInputTokens: number | undefined;
+    let accumulatedOutputTokens = 0;
+    let startedAtMs = 0;
+    const buildUsage = (): SubagentRuntimeTaskResult['usage'] => ({
+      totalTokens: latestInputTokens === undefined
+        ? undefined
+        : latestInputTokens + accumulatedOutputTokens,
+      toolUses: countToolUses(childContext.getHistory()),
+      durationMs: Date.now() - startedAtMs,
+    });
+    try {
+      // 子代理专属 MCP 作用域：启动时打开（引用幂等共享、内联独立建连；失败不阻断），
+      // 终态清理阶段统一关闭（只清内联连接，引用连接不动）。
+      if (task.agentMcpDeclarations
+        && (task.agentMcpDeclarations.references.length > 0 || task.agentMcpDeclarations.inline.length > 0)) {
+        const mcpManager = this.options.toolRegistry.mcpManager;
+        if (mcpManager) {
+          try {
+            agentMcpScope = await mcpManager.openAgentMcpScope(agentId, task.agentMcpDeclarations);
+          } catch (error: unknown) {
+            logger.warn('[SubagentRuntime] 子代理 MCP 作用域打开失败', {
+              component: 'subagent_runtime',
+              event: 'agent_mcp_scope_open_failed',
+              agentId,
+              reason: SubagentTranscriptStore.sanitizeErrorSummary(error),
+            });
+          }
+        }
+      }
+      toolRegistry = task.toolRegistryIsScoped
+        ? task.toolRegistry ?? this.options.toolRegistry
+        : new ScopedToolRegistry({
+          parent: task.toolRegistry ?? this.options.toolRegistry,
+          permissionState,
+          sessionContext: childContext,
+          caller: task.caller,
+          parentApprovalPort: task.parentApprovalPort,
+          auditSource: `subagent:${task.agentType}`,
+          toolPolicyKey: task.toolPolicyKey ?? 'freshForeground',
+          fixedToolNames: task.fixedToolNames,
+          definitionToolVisibility: task.definitionToolVisibility,
+          agentMcpScope,
+          afterToolCall: task.hooks?.mutationHook,
+        });
     const contextRepo = new ContextRepository(childContext, paths.sessionsDir, true);
     const toolDispatcher = new ToolDispatcher(
       childContext,
@@ -398,8 +438,6 @@ export class SubagentRuntime {
       ?? (task.enableDefaultSafetyPlugins
         ? this.createDefaultPluginRegistry(toolDispatcher, childAppConfig, tracer)
         : new PluginRegistry());
-    let latestInputTokens: number | undefined;
-    let accumulatedOutputTokens = 0;
     const loop = new AgentLoop({
       toolRegistry,
       context: childContext,
@@ -421,9 +459,8 @@ export class SubagentRuntime {
         accumulatedOutputTokens += usage.output_tokens;
       },
     });
-
     const startedAt = new Date().toISOString();
-    const baseRecord: SubagentTranscriptRecord = {
+    baseRecord = {
       version: 1,
       agentId,
       parentSessionId: extractParentSessionId(task.caller),
@@ -442,16 +479,7 @@ export class SubagentRuntime {
       await this.writeTranscript(baseRecord);
     }
 
-    let eventCount = 0;
-    const startedAtMs = Date.now();
-    const buildUsage = (): SubagentRuntimeTaskResult['usage'] => ({
-      totalTokens: latestInputTokens === undefined
-        ? undefined
-        : latestInputTokens + accumulatedOutputTokens,
-      toolUses: countToolUses(childContext.getHistory()),
-      durationMs: Date.now() - startedAtMs,
-    });
-    try {
+    startedAtMs = Date.now();
       for await (const event of loop.chat(undefined, tracer, llmConfig, { signal: activeSignal })) {
         // 显式消费事件对象，事件数量用于后台 Skill 的既有诊断契约。
         void event;
@@ -517,8 +545,24 @@ export class SubagentRuntime {
     } catch (error: unknown) {
       const errorCode = classifyRuntimeError(error, activeSignal);
       const errorMessage = SubagentTranscriptStore.sanitizeErrorSummary(error);
+      // 资源创建阶段失败的兜底基线记录（transcript 尽力写入，不掩盖真实终态）。
+      const recordBase: SubagentTranscriptRecord = baseRecord ?? {
+        version: 1,
+        agentId,
+        parentSessionId: extractParentSessionId(task.caller),
+        agentType: task.agentType,
+        contextPolicy: task.contextPolicy,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        model: {
+          provider: llmConfig.profile.id,
+          model: llmConfig.model,
+        },
+        messages: cloneMessages(childContext.getHistory()),
+        scanRuleIds: [],
+      };
       const failedRecord: SubagentTranscriptRecord = {
-        ...baseRecord,
+        ...recordBase,
         status: errorCode === SUBAGENT_ERROR_CODES.cancelled ? 'cancelled' : 'failed',
         endedAt: new Date().toISOString(),
         messages: cloneMessages(childContext.getHistory()),
@@ -543,7 +587,18 @@ export class SubagentRuntime {
       this.activeControllers.delete(childController);
       driver.abort();
       ruleManager.close();
-      if (ownsToolRegistry) {
+      // 子代理专属 MCP 作用域关闭：幂等；正常/失败/取消统一收敛，只清内联连接。
+      if (agentMcpScope) {
+        await agentMcpScope.close().catch(error => {
+          logger.warn('[SubagentRuntime] 子代理 MCP 作用域关闭失败', {
+            component: 'subagent_runtime',
+            event: 'agent_mcp_scope_close_failed',
+            agentId,
+            reason: SubagentTranscriptStore.sanitizeErrorSummary(error),
+          });
+        });
+      }
+      if (ownsToolRegistry && toolRegistry) {
         await toolRegistry.close().catch(error => {
           logger.warn('[SubagentRuntime] 子代理工具视图关闭失败', {
             component: 'subagent_runtime',

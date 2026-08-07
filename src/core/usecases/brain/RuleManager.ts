@@ -58,6 +58,8 @@ function isSkillCandidate(eventType: string, filename: string | null): boolean {
  */
 export class RuleManager {
   /** 缓存的用户规则内容 */
+  /** omitClaudeMd 会话级契约：跳过规则加载与注入（构造期与 reloadRules 均生效）。 */
+  private readonly skipRules: boolean = false;
   private cachedUserRules: string | null = null;
   /** 缓存的项目规则内容 */
   private cachedProjectRules: string | null = null;
@@ -92,6 +94,21 @@ export class RuleManager {
    */
   private promptSkillSnapshot: SkillMetadata[] = [];
 
+  /** 已加载的用户级规则缓存（`--agent` 装配重建 system 时复用）。 */
+  public get cachedUserRulesText(): string | undefined {
+    return this.cachedUserRules ?? undefined;
+  }
+
+  /** 已加载的项目级规则缓存（`--agent` 装配重建 system 时复用）。 */
+  public get cachedProjectRulesText(): string | undefined {
+    return this.cachedProjectRules ?? undefined;
+  }
+
+  /** 构造时冻结的技能元数据快照（`--agent` 装配重建 system 时复用）。 */
+  public get promptSkillSnapshotView(): readonly SkillMetadata[] {
+    return this.promptSkillSnapshot;
+  }
+
   /**
    * @param context - 会话上下文管理实例
    * @param userRulesDir - 用户 rules 目录绝对路径
@@ -114,8 +131,9 @@ export class RuleManager {
     this.userSkillsDir = userSkillsDir;
     this.projectSkillsDir = projectSkillsDir;
     this.skillLibrary = skillLibrary;
-    // omitClaudeMd 语义：skipRules 时规则缓存保持空，且不注入规则；技能快照不受影响。
-    if (options?.skipRules !== true) {
+    // omitClaudeMd 为会话级契约：持久保存，构造期与 reloadRules 均保持跳过规则加载与注入。
+    this.skipRules = options?.skipRules === true;
+    if (!this.skipRules) {
       this.loadRulesToCache();
     }
     this.refreshSkillsCache();
@@ -408,12 +426,15 @@ export class RuleManager {
    */
   public reloadRules(): void {
     logger.info('[RuleManager] 正在重载规则与技能文件...');
-    this.loadRulesToCache();
+    // omitClaudeMd 为会话级契约：skipRules 实例重载时保持不加载规则、不注入规则。
+    if (!this.skipRules) {
+      this.loadRulesToCache();
+    }
     this.refreshSkillsCache();
 
     this.context.updateSystemPrompt(
-      this.cachedUserRules || undefined,
-      this.cachedProjectRules || undefined,
+      this.skipRules ? undefined : (this.cachedUserRules || undefined),
+      this.skipRules ? undefined : (this.cachedProjectRules || undefined),
       this.promptSkillSnapshot
     );
   }

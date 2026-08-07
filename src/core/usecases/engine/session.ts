@@ -93,7 +93,8 @@ import type { LlmClientFactoryPort } from '../../../ports/driven/llm/LlmClientFa
 import { SubagentExecutionController } from '../subagent/SubagentExecutionController.js';
 import { SubagentRuntime } from '../subagent/SubagentRuntime.js';
 import { SubagentCoordinator } from '../subagent/SubagentCoordinator.js';
-import type { SubagentDefinitionRegistry } from '../subagent/SubagentDefinitionRegistry.js';
+import type { SubagentDefinitionRegistry, SubagentDefinition } from '../subagent/SubagentDefinitionRegistry.js';
+import { getModelConfig } from '../../../config/models.js';
 import { TaskManager } from '../subagent/TaskManager.js';
 import { TaskStateStore } from '../subagent/TaskStateStore.js';
 import { SubagentTranscriptStore } from '../subagent/SubagentTranscriptStore.js';
@@ -153,6 +154,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   private readonly subagentCoordinator?: SubagentCoordinator;
   /** 组合根共享的子代理定义注册表（内置 + user/project 自定义 Markdown 定义）。 */
   private readonly subagentDefinitionRegistry?: SubagentDefinitionRegistry;
+  /** `--agent` 模式的待消费首轮前缀；与首条真实用户输入合并为同一条 user 消息。 */
+  private pendingInitialPrompt?: string;
   /** 当前父会话任务索引仓储。 */
   private readonly taskStateStore?: TaskStateStore;
   /** Agent 任务使用的 transcript 访问仓储。 */
@@ -213,6 +216,7 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     subagentExecutionController?: SubagentExecutionController,
     subagentLlmClientFactory?: LlmClientFactoryPort,
     subagentDefinitionRegistry?: SubagentDefinitionRegistry,
+    agentDefinition?: SubagentDefinition,
   ) {
     super();
     this.llmConfig = llmConfig;
@@ -321,9 +325,48 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       paths.projectRulesDir,
       paths.userSkillsDir,
       paths.projectSkillsDir,
-      undefined,
+      // `--agent` 模式：定义 omitClaudeMd 时跳过 CLAUDE.md 规则加载（Skill 元数据保留）。
+      agentDefinition?.omitClaudeMd ? { skipRules: true } : undefined,
       skillLibrary,
     );
+
+    // `--agent` 主线程装配：system prompt 组合语义（定义提示构造器统一调用，覆盖
+    // 自定义正文与内置 Explore/Plan 提示；附加位 + 以规则/技能重建，后续任何
+    // updateSystemPrompt 恒带附加位）；model 非 inherit 时覆盖主会话模型。
+    if (agentDefinition) {
+      if (agentDefinition.contextPolicy === 'exact-fork') {
+        // exact-fork 冻结父 system 字节，不作为 --agent 装配来源（防御：fork 开启时可解析到）。
+        logger.warn('[SessionManager] exact-fork 定义不可作为 --agent 装配来源，跳过', {
+          component: 'session',
+          event: 'agent_exact_fork_not_applicable',
+          sessionId: this.context.getSessionId(),
+          agentType: agentDefinition.type,
+        });
+      } else {
+        this.context.setAgentSystemPrompt(agentDefinition.buildSystemPrompt(this.context) ?? '');
+        this.context.updateSystemPrompt(
+          this.ruleManager.cachedUserRulesText,
+          this.ruleManager.cachedProjectRulesText,
+          [...this.ruleManager.promptSkillSnapshotView],
+        );
+      }
+      if (agentDefinition.model && agentDefinition.model !== 'inherit') {
+        try {
+          this.switchModel(getModelConfig(agentDefinition.model, { allowEnvModelOverride: false }));
+        } catch (error: unknown) {
+          logger.warn('[SessionManager] --agent 模型切换失败，保持默认模型', {
+            component: 'session',
+            event: 'agent_model_switch_failed',
+            sessionId: this.context.getSessionId(),
+            reason: String(error),
+          });
+        }
+      }
+      // initialPrompt 作为首轮前缀，与首条真实用户输入合并（不提前插入独立消息）。
+      if (agentDefinition.initialPrompt) {
+        this.pendingInitialPrompt = agentDefinition.initialPrompt;
+      }
+    }
     this.contextRepo = new ContextRepository(this.context, paths.sessionsDir);
     this.toolDispatcher = new ToolDispatcher(this.context, this.toolRegistry, paths.toolOutputsDir);
     // 工具输出位于 workspace 外，通过正式会话目录状态开放其精确目录树。
@@ -420,6 +463,15 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       pluginRegistry: this.pluginRegistry,
       maxIterations: this.maxIterations,
       memorySnapshotProvider: () => this.memorySnapshot,
+      // `--agent` 主线程工具名单：省略/`['*']` 不裁剪（含 Agent），显式名单只含名单工具。
+      ...(agentDefinition?.tools || agentDefinition?.disallowedTools
+        ? {
+          mainThreadAgentTools: {
+            ...(agentDefinition.tools ? { allow: new Set(agentDefinition.tools) } : {}),
+            ...(agentDefinition.disallowedTools ? { deny: new Set(agentDefinition.disallowedTools) } : {}),
+          },
+        }
+        : {}),
     });
 
     // 监听底层 Driven 事件总线抛出的异步任务事件，实施下沉后的自唤醒调度
@@ -434,7 +486,10 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
    * @param content - 用户侧的原始输入数据
    */
   private addUserMessage(content: string): void {
-    this.context.addMessage({ role: 'user', content });
+    // `--agent` initialPrompt 合并：首条真实用户输入与该前缀拼接为同一条 user 消息。
+    const merged = mergeInitialPrompt(this.pendingInitialPrompt, content);
+    this.pendingInitialPrompt = undefined;
+    this.context.addMessage({ role: 'user', content: merged });
   }
 
   /**
@@ -1834,4 +1889,16 @@ function toCliAgentTaskSummary(record: TaskStateRecord): CliAgentTaskSummary {
     ...(record.endedAt ? { endedAt: record.endedAt } : {}),
     ...(record.usage ? { usage: { ...record.usage } } : {}),
   });
+}
+
+/**
+ * `--agent` initialPrompt 与首条真实用户输入合并为同一条 user 消息。
+ * 与官方 main.tsx 的拼接语义一致：不提前插入独立消息。
+ *
+ * @param pending - 待消费的首轮前缀；无前缀时原样返回用户输入
+ * @param content - 用户输入
+ * @returns 合并后的消息内容
+ */
+export function mergeInitialPrompt(pending: string | undefined, content: string): string {
+  return pending ? `${pending}\n\n${content}` : content;
 }

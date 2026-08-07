@@ -12,6 +12,8 @@ import type { PermissionSessionSnapshot, PermissionSessionState } from '../../do
 import type { PermissionUpdate, ToolPermissionCheckResult } from '../../domain/permissions/permission-types.js';
 import type { TrustedCallContext } from '../../domain/permissions/trusted-call-context.js';
 import type { SubagentToolPolicyKey } from '../../../ports/driving/SubagentExecutionPort.js';
+import type { AgentMcpScope } from '../../../ports/driven/tools/McpManagerPort.js';
+import { logger } from '../../../utils/logger.js';
 
 /** exact-fork 可枚举但不得直接调用的交互与编排工具。 */
 const FORK_CALL_BLOCKED_TOOLS = new Set<string>([
@@ -41,6 +43,8 @@ export interface ScopedToolRegistryOptions {
   readonly toolVisibility?: (name: string, metadata: ToolMetadata | undefined) => boolean;
   /** 定义级工具名单谓词（tools/disallowedTools 编译）；只允许在默认策略放行基础上收窄（交集）。 */
   readonly definitionToolVisibility?: (name: string) => boolean;
+  /** 子代理专属 MCP 作用域：其工具经父网关外部分支路由执行（securityContext 透传）。 */
+  readonly agentMcpScope?: AgentMcpScope;
   /** 由协调器显式选择的工具作用域策略。 */
   readonly toolPolicyKey?: SubagentToolPolicyKey;
   /** fork 提交时冻结快照中的工具名集合；fork 模式只允许执行快照成员。 */
@@ -73,7 +77,7 @@ export class ScopedToolRegistry implements ToolRegistryPort {
     return this.options.parent.mcpManager;
   }
 
-  /** 只返回当前策略明确允许的工具定义；fork 保留父请求的完整工具池。 */
+  /** 只返回当前策略明确允许的工具定义；fork 保留父请求的完整工具池；最后附加子代理专属 MCP 工具。 */
   public async getTools(): Promise<unknown[]> {
     this.assertOpen();
     const definitions = await this.options.parent.getTools();
@@ -84,10 +88,44 @@ export class ScopedToolRegistry implements ToolRegistryPort {
           .filter((name): name is string => name !== undefined),
       );
     }
-    return definitions.filter(definition => {
+    const visible = definitions.filter(definition => {
       const name = readToolDefinitionName(definition);
       return name !== undefined && this.isVisible(name);
     });
+    // 子代理专属 MCP 工具为定义声明，直接附加（不受默认策略与定义级名单约束）；
+    // 以实际可见父工具名做完整冲突检查（动态 MCP 返回本地工具名时防重复 schema 与执行截获）。
+    if (this.options.agentMcpScope) {
+      try {
+        const visibleNames = new Set(
+          visible
+            .map(readToolDefinitionName)
+            .filter((name): name is string => name !== undefined),
+        );
+        const agentMcpTools = await this.options.agentMcpScope.getTools();
+        for (const tool of agentMcpTools) {
+          const name = readToolDefinitionName(tool);
+          if (name === undefined || !visibleNames.has(name)) {
+            visible.push(tool);
+            if (name !== undefined) {
+              visibleNames.add(name);
+            }
+            continue;
+          }
+          logger.error(`[ScopedToolRegistry] 子代理 MCP 工具与可见父工具重名，跳过 [${name}]`, {
+            component: 'scoped_tool_registry',
+            event: 'agent_mcp_tool_conflict_skipped',
+            tool: name,
+          });
+        }
+      } catch (error: unknown) {
+        logger.warn('[ScopedToolRegistry] 子代理 MCP 工具枚举失败', {
+          component: 'scoped_tool_registry',
+          event: 'agent_mcp_tools_enum_failed',
+          reason: String(error),
+        });
+      }
+    }
+    return visible;
   }
 
   /**
@@ -114,7 +152,10 @@ export class ScopedToolRegistry implements ToolRegistryPort {
     lifecycleHooks?: ToolExecutionLifecycleHooks,
   ): Promise<ToolExecutionOutcome<unknown>> {
     this.assertOpen();
-    if (!this.isAllowed(functionName)) {
+    // 子代理专属 MCP 工具为定义声明，绕过默认策略检查（枚举已直接附加），
+    // 经父网关外部分支执行（securityContext 注入作用域完成 descriptor 路由与授权）。
+    const isAgentMcpTool = this.options.agentMcpScope?.getToolDescriptor(functionName) !== undefined;
+    if (!isAgentMcpTool && !this.isAllowed(functionName)) {
       throw new Error(`作用域注册表拒绝工具调用: ${functionName}`);
     }
     const securityContext = {
@@ -123,6 +164,9 @@ export class ScopedToolRegistry implements ToolRegistryPort {
       approvalAllowed: this.options.parentApprovalPort !== undefined,
       auditSource: this.options.auditSource,
       ...(this.options.parentApprovalPort ? { approvalPort: this.options.parentApprovalPort } : {}),
+      ...(isAgentMcpTool && this.options.agentMcpScope
+        ? { agentMcpScope: this.options.agentMcpScope }
+        : {}),
     };
     const outcome = await this.options.parent.callTool(
       functionName,
