@@ -49,6 +49,16 @@ export interface SkillSettings {
   writeApproval?: boolean;
 }
 
+/** Version 1 settings 结构中后台记忆巩固配置段（对齐 Claude Code Auto Dream）。 */
+export interface MemoryConsolidationSettings {
+  /** 是否启用后台自动记忆巩固。默认 true。 */
+  enabled?: boolean;
+  /** 距上次巩固的最小小时数（时间门）。默认 24。 */
+  minHours?: number;
+  /** 自上次巩固后的最小会话快照数（会话门）。默认 5。 */
+  minSessions?: number;
+}
+
 /** Version 1 settings 结构中 Curator 生命周期管理配置段。 */
 export interface CuratorSettings {
   /** 是否启用 Curator 自动维护。默认 true。 */
@@ -84,6 +94,8 @@ export interface SettingsDocumentV1 {
   skills?: SkillSettings;
   /** Curator 生命周期管理配置段。 */
   curator?: CuratorSettings;
+  /** 后台记忆巩固配置段（Auto Dream 对齐）。 */
+  memoryConsolidation?: MemoryConsolidationSettings;
   /** 是否在会话启动时自动加载并投影长期记忆索引。 */
   autoMemoryEnabled?: boolean;
   /** 自定义长期记忆根；只有受信来源可以令其生效。 */
@@ -773,6 +785,44 @@ export class SettingsRepository {
       curatorOut.staleAfterDays = 30;
       curatorOut.archiveAfterDays = 90;
     }
+
+    // memoryConsolidation 段：session > local > project > user > 默认。
+    const userConsolidation = user.memoryConsolidation ?? {};
+    const projectConsolidation = project.memoryConsolidation ?? {};
+    const localConsolidation = local.memoryConsolidation ?? {};
+    const sessionConsolidation = session.memoryConsolidation ?? {};
+    result.memoryConsolidation = {
+      enabled: selectBooleanSetting(
+        [
+          sessionConsolidation.enabled,
+          localConsolidation.enabled,
+          projectConsolidation.enabled,
+          userConsolidation.enabled,
+        ],
+        true,
+        'memoryConsolidation.enabled',
+      ),
+      minHours: selectPositiveIntegerSetting(
+        [
+          sessionConsolidation.minHours,
+          localConsolidation.minHours,
+          projectConsolidation.minHours,
+          userConsolidation.minHours,
+        ],
+        24,
+        'memoryConsolidation.minHours',
+      ),
+      minSessions: selectPositiveIntegerSetting(
+        [
+          sessionConsolidation.minSessions,
+          localConsolidation.minSessions,
+          projectConsolidation.minSessions,
+          userConsolidation.minSessions,
+        ],
+        5,
+        'memoryConsolidation.minSessions',
+      ),
+    };
 
     // Auto Memory 开关可由普通 settings 收紧或开启；自定义目录只能来自受信 session/user。
     result.autoMemoryEnabled = session.autoMemoryEnabled

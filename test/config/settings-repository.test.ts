@@ -152,6 +152,11 @@ describe('SettingsRepository', () => {
             keep: 5,
           },
         },
+        memoryConsolidation: {
+          enabled: true,
+          minHours: 24,
+          minSessions: 5,
+        },
       });
     });
 
@@ -161,22 +166,26 @@ describe('SettingsRepository', () => {
           version: 1,
           skills: { backgroundReviewEnabled: true, creationNudgeInterval: 20 },
           curator: { intervalHours: 120, backup: { keep: 7 } },
+          memoryConsolidation: { minHours: 48 },
         },
         {
           version: 1,
           skills: { backgroundReviewEnabled: false, writeApproval: true },
           curator: { enabled: false, staleAfterDays: 25 },
+          memoryConsolidation: { enabled: false, minSessions: 8 },
         },
         {
           version: 1,
           skills: { creationNudgeInterval: 30 },
           curator: { minIdleHours: 4, archiveAfterDays: 80 },
+          memoryConsolidation: { minSessions: 12 },
         },
       );
 
       const effective = repo.readEffectiveConfig({
         skills: { writeApproval: false },
         curator: { consolidate: true, backup: { enabled: false } },
+        memoryConsolidation: { minHours: 96 },
       });
       expect(effective.skills).toEqual({
         backgroundReviewEnabled: false,
@@ -194,6 +203,11 @@ describe('SettingsRepository', () => {
           enabled: false,
           keep: 7,
         },
+      });
+      expect(effective.memoryConsolidation).toEqual({
+        enabled: false,
+        minHours: 96,
+        minSessions: 12,
       });
     });
 

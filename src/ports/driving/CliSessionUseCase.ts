@@ -344,6 +344,17 @@ export interface CliSessionUseCase extends ChatUseCase {
   setAutoMemoryEnabled?(enabled: boolean): Promise<void>;
 
   /**
+   * 手动触发一次后台记忆巩固（/memory-dream 命令入口）。
+   * 只绕过时间/会话门，仍原子获取同一互斥锁。
+   *
+   * @returns 执行结果或失败原因
+   */
+  runMemoryDream?(): Promise<
+    | { readonly ok: true; readonly improvedFiles: number }
+    | { readonly ok: false; readonly reason: string }
+  >;
+
+  /**
    * 显式按需读取并诊断索引引用的 topic 文件。
    *
    * @returns topic 元数据与诊断；不得由启动流程隐式调用

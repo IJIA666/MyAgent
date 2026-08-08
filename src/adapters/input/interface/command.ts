@@ -14,6 +14,7 @@ import {
   PermissionsCommand,
   SandboxCommand,
   MemoryCommand,
+  MemoryDreamCommand,
   CuratorCommand,
   SubtaskCommand,
   TasksCommand,
@@ -76,6 +77,7 @@ class CommandRegistry {
     this.register(new PermissionsCommand());
     this.register(new SandboxCommand());
     this.register(new MemoryCommand());
+    this.register(new MemoryDreamCommand());
     this.register(new CuratorCommand());
     this.register(new SubtaskCommand());
     this.register(new TasksCommand());

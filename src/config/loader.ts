@@ -11,7 +11,7 @@ import { homedir } from 'os';
 import { config as dotenvConfig } from 'dotenv';
 
 
-import { AppConfig, McpConfig, ConfigPermissionMode, DiagnosticDataConfig, DEFAULT_DIAGNOSTIC_DATA_CONFIG, DEFAULT_PERMISSION_MODE, ResolvedSkillConfig, ResolvedCuratorConfig } from './types.js';
+import { AppConfig, McpConfig, ConfigPermissionMode, DiagnosticDataConfig, DEFAULT_DIAGNOSTIC_DATA_CONFIG, DEFAULT_PERMISSION_MODE, ResolvedSkillConfig, ResolvedCuratorConfig, ResolvedMemoryConsolidationConfig } from './types.js';
 import { getModelConfig } from './models.js';
 import { getRuntimeEnv, interpolateEnvVars } from './env.js';
 import { logger, setDiagnosticSanitizerPatterns } from '../utils/logger.js';
@@ -407,6 +407,7 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
   const rawSkills = effectiveSettings.skills ?? {};
   const rawCurator = effectiveSettings.curator ?? {};
   const rawBackup = rawCurator.backup ?? {};
+  const rawConsolidation = effectiveSettings.memoryConsolidation ?? {};
   const skillsConfig: ResolvedSkillConfig = Object.freeze({
     backgroundReviewEnabled: typeof rawSkills.backgroundReviewEnabled === 'boolean'
       ? rawSkills.backgroundReviewEnabled : true,
@@ -416,6 +417,19 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
       ? rawSkills.creationNudgeInterval : 10,
     writeApproval: typeof rawSkills.writeApproval === 'boolean'
       ? rawSkills.writeApproval : false,
+  });
+  // 后台记忆巩固配置（Auto Dream 对齐）：纯 settings 驱动，防御性字段校验回退默认。
+  const memoryConsolidationConfig: ResolvedMemoryConsolidationConfig = Object.freeze({
+    enabled: typeof rawConsolidation.enabled === 'boolean'
+      ? rawConsolidation.enabled : true,
+    minHours: typeof rawConsolidation.minHours === 'number'
+      && Number.isInteger(rawConsolidation.minHours)
+      && rawConsolidation.minHours > 0
+      ? rawConsolidation.minHours : 24,
+    minSessions: typeof rawConsolidation.minSessions === 'number'
+      && Number.isInteger(rawConsolidation.minSessions)
+      && rawConsolidation.minSessions > 0
+      ? rawConsolidation.minSessions : 5,
   });
   const resolvedStaleDays = typeof rawCurator.staleAfterDays === 'number'
     && Number.isInteger(rawCurator.staleAfterDays)
@@ -473,6 +487,7 @@ export function loadConfig(env: Record<string, string | undefined> = getRuntimeE
     enablePlanToolStripping,
     skills: skillsConfig,
     curator: curatorConfig,
+    memoryConsolidation: memoryConsolidationConfig,
     runtimeLimits: {
       maxIterations,
       largeToolOutputLimit,

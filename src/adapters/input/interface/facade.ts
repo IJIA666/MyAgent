@@ -7,6 +7,7 @@ import { InputListener } from './io/input-listener.js';
 import {
   redrawHistory,
   renderCompletionBanner,
+  renderMemoryDreamUpdate,
   renderSectionTitle,
   renderSessionHeader,
   renderSkillReviewUpdate,
@@ -435,6 +436,11 @@ export class CliFacade {
           event.skill,
           event.pendingId,
         )}\n`);
+        break;
+
+      case 'memory_dream_update':
+        // 后台记忆巩固结果只作为状态行渲染：不改变渲染状态机，不阻塞输入。
+        process.stdout.write(`${renderMemoryDreamUpdate(event.improvedFiles)}\n`);
         break;
     }
   }

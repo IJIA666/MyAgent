@@ -170,6 +170,20 @@ export function renderSkillReviewUpdate(
 }
 
 /**
+ * 渲染后台记忆巩固（Auto Dream）完成状态行。
+ * 仅供宿主非阻塞展示，不改变渲染状态机、不阻塞输入。
+ *
+ * @param improvedFiles - 实际改进的记忆文件数量
+ * @returns 状态行文本
+ */
+export function renderMemoryDreamUpdate(improvedFiles: number): string {
+  if (improvedFiles > 0) {
+    return theme.dim(`[记忆巩固] 改进 ${improvedFiles} 个记忆文件`);
+  }
+  return theme.dim('[记忆巩固] 记忆已整洁，无文件修改');
+}
+
+/**
  * 将消息内容中内含的 XML 标签和定界符，解析并折叠转换为具有终端视觉效果的精美标签卡片微件。
  * @param content 原始的文本消息内容
  * @returns 过滤并折叠渲染后的文本

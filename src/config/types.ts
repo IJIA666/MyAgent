@@ -181,6 +181,8 @@ export interface AppConfig {
   skills: ResolvedSkillConfig;
   /** Curator 生命周期管理配置。 */
   curator: ResolvedCuratorConfig;
+  /** 后台记忆巩固（Auto Dream 对齐）配置。 */
+  memoryConsolidation: ResolvedMemoryConsolidationConfig;
   /** 统一的应用路径解析集合（在 workspace 确认后创建）。 */
   applicationPaths: ApplicationPaths;
   /** 统一 settings 文件仓储。 */
@@ -198,6 +200,19 @@ export interface ResolvedSkillConfig {
   readonly creationNudgeInterval: number;
   /** 是否开启写入暂存批准模式。false 时直接写入，true 时暂存为 pending。 */
   readonly writeApproval: boolean;
+}
+
+/**
+ * 已解析冻结的后台记忆巩固配置（对齐 Claude Code Auto Dream）。
+ * 所有字段均经过类型校验，具备安全默认值。
+ */
+export interface ResolvedMemoryConsolidationConfig {
+  /** 是否启用后台自动记忆巩固。默认 true。 */
+  readonly enabled: boolean;
+  /** 距上次巩固的最小小时数（时间门）。默认 24。 */
+  readonly minHours: number;
+  /** 自上次巩固后的最小会话快照数（会话门）。默认 5。 */
+  readonly minSessions: number;
 }
 
 /**

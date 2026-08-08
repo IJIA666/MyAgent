@@ -13,6 +13,7 @@ export { PermissionModeCommand } from './workmode.js';
 export { PermissionsCommand } from './permissions.js';
 export { SandboxCommand } from './sandbox.js';
 export { MemoryCommand } from './memory.js';
+export { MemoryDreamCommand } from './memory-dream.js';
 export { CuratorCommand } from './curator.js';
 export { SubtaskCommand } from './subtask.js';
 export { TasksCommand } from './tasks.js';

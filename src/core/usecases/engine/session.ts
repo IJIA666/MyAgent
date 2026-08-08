@@ -62,6 +62,7 @@ import type {
   SkillWriteApprovalController,
 } from '../brain/skill-pending-store.js';
 import { BackgroundSkillReviewService } from '../brain/background-skill-review.js';
+import { MemoryConsolidationService } from '../brain/memory-consolidation.js';
 import type { SkillCurator } from '../brain/skill-curator.js';
 import { createTrustedCallContext } from '../../domain/permissions/trusted-call-context.js';
 import { ContextRepository } from '../brain/ContextRepository.js';
@@ -145,6 +146,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   private readonly skillWriteApprovalController?: SkillWriteApprovalController;
   /** 当前会话拥有的隔离后台 Skill Review 服务。 */
   private readonly backgroundSkillReviewService?: BackgroundSkillReviewService;
+  /** 当前会话拥有的隔离后台记忆巩固服务（Auto Dream 对齐）。 */
+  private readonly memoryConsolidationService?: MemoryConsolidationService;
   /** 共享 Skill Curator 生命周期维护器。 */
   private readonly skillCurator?: SkillCurator;
   /** 主 Agent 使用的会话绑定子代理控制器。 */
@@ -459,6 +462,51 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       ));
     }
 
+    // 后台记忆巩固服务（Auto Dream 对齐）：仅要求子代理依赖齐备即装配。
+    // 动态开关由服务每次 checkAndRun 读取当前 /memory on|off 状态（不冻结启动配置），
+    // 因此启动时关闭、之后 /memory on 也能在当前会话启用巩固。
+    if (this.subagentRuntime) {
+      this.memoryConsolidationService = new MemoryConsolidationService({
+        toolRegistry: this.toolRegistry,
+        parentPermissionStateProvider: () => this.context.getPermissionSessionState(),
+        parentCallerProvider: () => createTrustedCallContext(
+          this.context.getSessionId(),
+          'interactive',
+        ),
+        subagentRuntime: this.subagentRuntime,
+        memoryDir: this.memoryDir,
+        sessionsDir: appConfig.applicationPaths.sessionsDir,
+        currentSessionIdProvider: () => this.context.getSessionId(),
+        autoMemoryEnabledProvider: () => this.context.getAutoMemoryEnabled() ?? false,
+        requestSnapshotProvider: () => this.context.getLatestModelRequestSnapshot(),
+        lastAssistantMessageProvider: () => {
+          const history = this.context.getHistory();
+          for (let index = history.length - 1; index >= 0; index--) {
+            if (history[index]?.role === 'assistant') {
+              return history[index];
+            }
+          }
+          return undefined;
+        },
+        configProvider: () => ({
+          enabled: appConfig.memoryConsolidation.enabled,
+          minHours: appConfig.memoryConsolidation.minHours,
+          minSessions: appConfig.memoryConsolidation.minSessions,
+        }),
+        notify: filesTouched => {
+          if (filesTouched.length === 0 || this.isClosed) {
+            return;
+          }
+          // 巩固修改文件后只作为展示事件交付宿主：不写模型历史、不触发自动唤醒。
+          this.emit('agent_event', {
+            type: 'memory_dream_update',
+            status: 'success',
+            improvedFiles: filesTouched.length,
+          });
+        },
+      });
+    }
+
     LifecycleManager.register('file-backup-manager', async () => {
       FileBackupManager.cleanup(appConfig.workspace);
     });
@@ -476,6 +524,10 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       pluginRegistry: this.pluginRegistry,
       maxIterations: this.maxIterations,
       memorySnapshotProvider: () => this.memorySnapshot,
+      // 每模型回合后触发记忆巩固门控检查（同步回调内 fire-and-forget）。
+      onRoundCommitted: () => {
+        this.memoryConsolidationService?.checkAndRun();
+      },
       // `--agent` 主线程工具名单：省略/`['*']` 不裁剪（含 Agent），显式名单只含名单工具。
       ...(agentDefinition?.tools || agentDefinition?.disallowedTools
         ? {
@@ -706,6 +758,29 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
   }
 
   /**
+   * 手动触发一次后台记忆巩固（/memory-dream）。
+   * 服务未装配（子代理依赖缺失或 Auto Memory 关闭）时返回明确原因。
+   *
+   * @returns 执行结果或失败原因
+   */
+  public async runMemoryDream(): Promise<
+    | { readonly ok: true; readonly improvedFiles: number }
+    | { readonly ok: false; readonly reason: string }
+  > {
+    if (!this.memoryConsolidationService) {
+      return { ok: false, reason: '记忆巩固服务未装配（子代理依赖缺失或 Auto Memory 关闭）' };
+    }
+    const result = await this.memoryConsolidationService.runManual();
+    if (!result.ok) {
+      return result;
+    }
+    return {
+      ok: true,
+      improvedFiles: result.result.filesTouched.length,
+    };
+  }
+
+  /**
    * 持久化用户级 Auto Memory 开关，并只在磁盘成功后更新当前会话。
    *
    * @param enabled - 是否启用启动索引投影
@@ -926,6 +1001,11 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
 
     // 先取消并有界等待后台 Review，确保共享工具运行时关闭后不再进入 Skill 写入。
     await this.backgroundSkillReviewService?.close(
+      this.context.appConfig?.runtimeLimits.modelTimeoutMs ?? 30_000,
+    );
+
+    // 同理取消并有界等待记忆巩固服务，确保父工具注册表关闭后不再有巩固任务借用父资源。
+    await this.memoryConsolidationService?.close(
       this.context.appConfig?.runtimeLimits.modelTimeoutMs ?? 30_000,
     );
 

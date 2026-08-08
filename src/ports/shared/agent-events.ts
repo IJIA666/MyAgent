@@ -49,6 +49,18 @@ export type AgentEvent =
       pendingId?: string;
     }
   | {
+      /**
+       * 后台记忆巩固（Auto Dream）的结果展示事件。
+       * 仅供宿主非阻塞渲染状态行，绝不作为消息写入模型历史或触发自动唤醒；
+       * 仅由真实成功的巩固文件变更派生。
+       */
+      type: 'memory_dream_update';
+      /** 真实巩固结果状态。 */
+      status: 'success';
+      /** 实际改进的记忆文件数量（规范化去重）。 */
+      improvedFiles: number;
+    }
+  | {
       /** 子代理任务生命周期状态行；不携带任务正文或原始输出。 */
       type: 'task_update';
       /** 任务 ID，同时也是 Agent ID。 */
