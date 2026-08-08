@@ -137,7 +137,7 @@ describe('AgentDefinitionLoader', () => {
       '---',
       'name: deferred',
       'description: 带未启用字段',
-      'memory: project',
+      'effort: high',
       'hooks: {}',
       '---',
       '正文',
@@ -150,6 +150,25 @@ describe('AgentDefinitionLoader', () => {
     expect(warn).toHaveBeenCalled();
     const deferredCalls = warn.mock.calls.filter(call => String(call[0]).includes('未启用'));
     expect(deferredCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('memory: project 解析生效且不记录未启用 warning', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    writeAgent('project', 'mem-enabled.md', [
+      '---',
+      'name: mem-enabled',
+      'description: 启用记忆的代理',
+      'memory: project',
+      '---',
+      '正文',
+    ].join('\n'));
+
+    const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
+    const definition = loader.load()[0];
+    expect(definition?.memory).toBe('project');
+    // memory 已启用：不得出现在"未启用字段"warning 中。
+    const deferredCalls = warn.mock.calls.filter(call => String(call[0]).includes('未启用'));
+    expect(deferredCalls).toHaveLength(0);
   });
 
   it('background: true 解析生效且不记录未启用 warning', () => {
@@ -296,5 +315,82 @@ describe('AgentDefinitionLoader', () => {
     ].join('\n'));
     const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
     expect(loader.load()).toBe(loader.load());
+  });
+
+  it('memory 三值合法解析，非法值拒绝定义', () => {
+    writeAgent('project', 'mem-user.md', [
+      '---',
+      'name: mem-user',
+      'description: 用户域记忆',
+      'memory: user',
+      '---',
+      '正文',
+    ].join('\n'));
+    writeAgent('project', 'mem-project.md', [
+      '---',
+      'name: mem-project',
+      'description: 项目域记忆',
+      'memory: project',
+      '---',
+      '正文',
+    ].join('\n'));
+    writeAgent('project', 'mem-local.md', [
+      '---',
+      'name: mem-local',
+      'description: 本机域记忆',
+      'memory: local',
+      '---',
+      '正文',
+    ].join('\n'));
+    writeAgent('project', 'mem-bad.md', [
+      '---',
+      'name: mem-bad',
+      'description: 非法记忆作用域',
+      'memory: team',
+      '---',
+      '正文',
+    ].join('\n'));
+    writeAgent('project', 'plain.md', [
+      '---',
+      'name: plain',
+      'description: 未声明记忆',
+      '---',
+      '正文',
+    ].join('\n'));
+
+    const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
+    const definitions = loader.load();
+    // 按文件名稳定排序（mem-local < mem-project < mem-user < plain）。
+    expect(definitions.map(definition => definition.type)).toEqual(['mem-local', 'mem-project', 'mem-user', 'plain']);
+    expect(definitions.find(definition => definition.type === 'mem-project')?.memory).toBe('project');
+    // 未声明 memory 的定义不携带该字段。
+    expect(definitions.find(definition => definition.type === 'plain')?.memory).toBeUndefined();
+  });
+
+  it('不安全 name（路径段/设备名）拒绝定义', () => {
+    writeAgent('project', 'escape.md', [
+      '---',
+      'name: ../shared',
+      'description: 逃逸定义',
+      '---',
+      '正文',
+    ].join('\n'));
+    writeAgent('project', 'device.md', [
+      '---',
+      'name: CON',
+      'description: 设备名定义',
+      '---',
+      '正文',
+    ].join('\n'));
+    writeAgent('project', 'ok.md', [
+      '---',
+      'name: ok',
+      'description: 合法定义',
+      '---',
+      '正文',
+    ].join('\n'));
+
+    const loader = new AgentDefinitionLoader(userAgentsDir, projectAgentsDir);
+    expect(loader.load().map(definition => definition.type)).toEqual(['ok']);
   });
 });

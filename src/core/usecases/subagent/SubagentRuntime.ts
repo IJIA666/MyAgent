@@ -40,7 +40,16 @@ import { JitRulesPlugin } from '../plugins/JitRulesPlugin.js';
 import { LoopPreventionPlugin } from '../plugins/LoopPreventionPlugin.js';
 import { TracerLogPlugin } from '../plugins/TracerLogPlugin.js';
 import { AgentLoop } from '../engine/agent-loop.js';
-import { createEmptyMemorySnapshot } from '../brain/memory-loader.js';
+import {
+  createEmptyMemorySnapshot,
+  loadMemorySnapshot,
+  type MemorySnapshot,
+} from '../brain/memory-loader.js';
+import {
+  buildAgentMemoryPrompt,
+  getAgentMemoryDir,
+  type AgentMemoryScope,
+} from './agent-memory.js';
 import { SubagentContextBuilder } from './SubagentContextBuilder.js';
 import { SubagentDefinitionRegistry } from './SubagentDefinitionRegistry.js';
 import { ChildPermissionResolver } from './ChildPermissionResolver.js';
@@ -52,6 +61,13 @@ import {
 } from './SubagentTranscriptStore.js';
 import { snapshotLlmConfig } from './llm-config-snapshot.js';
 import { logger } from '../../../utils/logger.js';
+
+/** 声明持久记忆的子代理必须保有（不被定义级 tools 名单过滤）的记忆维护工具（对齐官方 Read/Write/Edit 自动补齐）。 */
+const MEMORY_MAINTENANCE_TOOLS: ReadonlySet<string> = new Set([
+  'readFile',
+  'writeFile',
+  'editFile',
+]);
 
 /** 通用运行器的组合根依赖。 */
 export interface SubagentRuntimeOptions {
@@ -113,10 +129,16 @@ export interface SubagentRuntimeTaskOptions {
   readonly toolPolicyKey?: SubagentToolPolicyKey;
   /** 定义级工具名单谓词（由 tools/disallowedTools 编译）；只允许在默认策略放行基础上收窄。 */
   readonly definitionToolVisibility?: (name: string) => boolean;
+  /** 定义级显式剔除名单原始集合；记忆工具豁免不得覆盖其成员。 */
+  readonly definitionDisallowedTools?: ReadonlySet<string>;
   /** 定义级系统提示构造器（.md 正文）；fresh 模式下其输出追加到基础 system 之后。 */
   readonly definitionSystemPromptBuilder?: (context: SessionContext) => string;
   /** 定义级 omitClaudeMd：为 true 时 RuleManager 跳过 CLAUDE.md 规则加载与注入。 */
   readonly omitClaudeMd?: boolean;
+  /** 定义级持久记忆作用域（user/project/local），见 `subagent-memory`；省略时无记忆注入。 */
+  readonly memory?: AgentMemoryScope;
+  /** 提交点冻结的 Auto Memory 开关（`/memory on|off` 运行时值）；省略时回退运行器配置。 */
+  readonly autoMemoryEnabled?: boolean;
   /** 定义级 MCP 声明（引用 + 内联）；仅 fresh 子代理消费，exact-fork 不适用。 */
   readonly agentMcpDeclarations?: AgentMcpDeclaration;
   /** 使用的工具视图；省略时由公共运行器构造 fresh 作用域。 */
@@ -272,6 +294,8 @@ export class SubagentRuntime {
       prompt: request.prompt,
       requestSnapshot,
       toolPolicyKey: definition.toolPolicyKey,
+      // 定义级持久记忆作用域透传（execute 兼容路径与生产协调器提交路径保持一致）。
+      memory: definition.memory,
       llmConfig: requestSnapshot ? snapshotLlmConfig(this.options.llmConfigProvider()) : undefined,
       permissionSnapshot: parentSnapshot,
       caller: childCaller,
@@ -304,9 +328,46 @@ export class SubagentRuntime {
       });
     }
     const agentId = task.agentId ?? randomUUID();
-    const permissionState = this.permissionResolver.derive(task.permissionSnapshot);
-    const childContext = new SessionContext(`subagent-${agentId}`, undefined, permissionState);
+    let permissionState = this.permissionResolver.derive(task.permissionSnapshot);
     const childAppConfig = createChildAppConfig(this.options.appConfig, task.maxIterations);
+    // 子代理持久记忆（subagent-memory）：定义声明 memory 且 Auto Memory 开启时——
+    // 解析记忆目录、加载有界快照（失败降级为空记忆，不阻断启动），并把记忆目录
+    // 冻结进 per-task 权限状态（读/写/建免审批，任务结束随状态销毁）。
+    let agentMemoryDir: string | undefined;
+    let agentMemorySnapshot: MemorySnapshot | undefined;
+    const memoryScope = task.memory;
+    // 门控使用提交点冻结的开关值（排队任务不读取会话切换后的过期配置）；
+    // execute 兼容路径未冻结时回退运行器配置。
+    const autoMemoryEnabled = task.autoMemoryEnabled ?? childAppConfig.autoMemoryEnabled;
+    if (memoryScope && autoMemoryEnabled) {
+      try {
+        agentMemoryDir = getAgentMemoryDir(
+          task.agentType,
+          memoryScope,
+          childAppConfig.applicationPaths,
+        );
+        agentMemorySnapshot = loadMemorySnapshot(agentMemoryDir).snapshot;
+        permissionState = permissionState.withAgentMemoryRoots([agentMemoryDir]);
+      } catch (error: unknown) {
+        // 类型名不安全或目录解析失败：降级为无记忆（空快照 + 无权限特例），不阻断启动。
+        logger.warn('[SubagentRuntime] 子代理记忆初始化失败，降级为无记忆', {
+          component: 'subagent_runtime',
+          event: 'agent_memory_init_failed',
+          agentId,
+          agentType: task.agentType,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        agentMemoryDir = undefined;
+        agentMemorySnapshot = undefined;
+      }
+    }
+    // 子代理不继承主会话 Auto Memory（对齐官方）；声明 memory 时由下方注入专属记忆提示词。
+    const childContext = new SessionContext(
+      `subagent-${agentId}`,
+      undefined,
+      permissionState,
+      { includeMemoryRules: false },
+    );
     childContext.appConfig = childAppConfig;
 
     // 协调器传入的配置已经在提交时冻结；专用 Skill 任务才在运行入口读取当前 provider。
@@ -394,6 +455,10 @@ export class SubagentRuntime {
           toolPolicyKey: task.toolPolicyKey ?? 'freshForeground',
           fixedToolNames: task.fixedToolNames,
           definitionToolVisibility: task.definitionToolVisibility,
+          // 记忆维护工具豁免：声明持久记忆的子代理保有 readFile/writeFile/editFile
+          // （对齐官方自动补齐），定义级 tools 名单不得过滤；显式剔除名单仍生效。
+          agentMemoryTools: agentMemoryDir ? MEMORY_MAINTENANCE_TOOLS : undefined,
+          definitionDisallowedTools: task.definitionDisallowedTools,
           agentMcpScope,
           afterToolCall: task.hooks?.mutationHook,
         });
@@ -418,19 +483,31 @@ export class SubagentRuntime {
       compactionService,
       () => llmConfig,
     );
+    // 记忆提示词注入：声明 memory 时在定义正文之后追加专属记忆段
+    // （对齐官方 getSystemPrompt 拼接语义；fresh/exact-fork/恢复各路径统一经同一包装）。
+    // 先用 const 固化捕获值，保证闭包内类型窄化成立（let 捕获不窄化）。
+    const activeMemoryDir = agentMemoryDir;
+    const activeMemoryScope = memoryScope;
+    const memoryPromptBuilder = activeMemoryDir && activeMemoryScope
+      ? (context: SessionContext): string => {
+        const base = task.definitionSystemPromptBuilder?.(context) ?? '';
+        const memoryPrompt = buildAgentMemoryPrompt(activeMemoryScope, activeMemoryDir);
+        return base ? `${base}\n\n${memoryPrompt}` : memoryPrompt;
+      }
+      : task.definitionSystemPromptBuilder;
     // 恢复装载优先：重建 system（含当前定义正文）+ 回放 transcript 历史 + 新 user。
     const messages = task.resumeHistory
       ? this.contextBuilder.buildResume(
         childContext,
         task.resumeHistory,
         task.prompt,
-        task.definitionSystemPromptBuilder?.(childContext),
+        memoryPromptBuilder?.(childContext),
       )
       : task.contextPolicy === 'fresh'
         ? this.contextBuilder.buildFresh(
           childContext,
           task.prompt,
-          task.definitionSystemPromptBuilder?.(childContext),
+          memoryPromptBuilder?.(childContext),
         )
         : task.contextPolicy === 'exact-fork'
           ? buildExactForkHistory(
@@ -467,7 +544,7 @@ export class SubagentRuntime {
       pluginRegistry,
       interactionPort: task.interactionPort,
       maxIterations: task.maxIterations,
-      memorySnapshotProvider: () => createEmptyMemorySnapshot(''),
+      memorySnapshotProvider: () => agentMemorySnapshot ?? createEmptyMemorySnapshot(''),
       includeRuntimeReminder: false,
       preserveRequestContext: task.contextPolicy === 'exact-fork',
       fixedTools: task.contextPolicy === 'exact-fork' ? task.requestSnapshot?.tools : undefined,

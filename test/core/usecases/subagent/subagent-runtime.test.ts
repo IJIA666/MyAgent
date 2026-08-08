@@ -2,7 +2,7 @@
  * @fileoverview 使用可编排 Fake LLM 验证公共子代理运行器的隔离、工具策略、终态和取消。
  */
 
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
@@ -22,6 +22,7 @@ import type { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRe
 import type { ToolExecutionOutcome } from '../../../../src/adapters/tools/tool-types.js';
 import { SessionContext } from '../../../../src/core/domain/context.js';
 import { SubagentRuntime } from '../../../../src/core/usecases/subagent/SubagentRuntime.js';
+import { SubagentDefinitionRegistry } from '../../../../src/core/usecases/subagent/SubagentDefinitionRegistry.js';
 import { SubagentTranscriptStore } from '../../../../src/core/usecases/subagent/SubagentTranscriptStore.js';
 
 type FakeLlmMode = 'tool-then-complete' | 'repeat-tool' | 'complete' | 'empty' | 'fail' | 'wait';
@@ -204,6 +205,7 @@ function createRuntime(
   maxIterations = 3,
   toolFailure = false,
   taskAborter?: (sessionId: string) => Promise<void>,
+  definitionRegistry?: SubagentDefinitionRegistry,
 ) {
   const workspace = mkdtempSync(join(tmpdir(), 'subagent-runtime-workspace-'));
   const applicationPaths = createApplicationPaths(workspace, {
@@ -226,6 +228,7 @@ function createRuntime(
     llmClientFactory: factory,
     transcriptStore: new SubagentTranscriptStore(applicationPaths.subagentsDir),
     taskAborter,
+    definitionRegistry,
   });
   return { appConfig, applicationPaths, parent, parentTools, factory, runtime };
 }
@@ -432,6 +435,125 @@ describe('SubagentRuntime', () => {
 
     // finally 中清理异常被捕获记录，终态契约不受影响。
     expect(result.status).toBe('completed');
+  });
+
+  describe('子代理持久记忆注入', () => {
+    /** 注册一个声明 local 域记忆的自定义定义。 */
+    function registerMemoryAgent(registry: SubagentDefinitionRegistry): void {
+      registry.register({
+        type: 'mem-agent',
+        description: '带持久记忆的代理',
+        contextPolicy: 'fresh',
+        toolPolicyKey: 'freshForeground',
+        buildSystemPrompt: () => 'mem agent body',
+        memory: 'local',
+      });
+    }
+
+    /** 在 local 域记忆目录预写一条索引与主题。 */
+    function seedMemory(memoryDir: string): void {
+      mkdirSync(memoryDir, { recursive: true });
+      writeFileSync(
+        join(memoryDir, 'MEMORY.md'),
+        '- [经验](lesson.md) — 上次探索的结论\n',
+        'utf-8',
+      );
+      writeFileSync(
+        join(memoryDir, 'lesson.md'),
+        '---\nname: 经验\ndescription: 结论\ntype: project\n---\n正文',
+        'utf-8',
+      );
+    }
+
+    it('声明 memory 的任务注入记忆投影与提示词', async () => {
+      const registry = new SubagentDefinitionRegistry();
+      registerMemoryAgent(registry);
+      const fixture = createRuntime('complete', 3, false, undefined, registry);
+      seedMemory(join(fixture.applicationPaths.localAgentMemoryBase, 'mem-agent'));
+
+      const result = await fixture.runtime.execute({
+        description: 'memory injection task',
+        prompt: '测试记忆注入',
+        subagentType: 'mem-agent',
+        parentSession: fixture.parent,
+      });
+
+      expect(result.status).toBe('completed');
+      if (result.status !== 'completed') return;
+      const request = fixture.factory.clients[0].requests[0];
+      // 投影含记忆索引内容。
+      const projection = request.messages.find(message =>
+        typeof message.content === 'string' && message.content.includes('<memory-context>'));
+      expect(projection).toBeDefined();
+      expect(String(projection?.content)).toContain('- [经验](lesson.md) — 上次探索的结论');
+      // system 含专属记忆提示词（含 local scope note 与绝对目录）。
+      const system = request.messages.find(message => message.role === 'system');
+      expect(String(system?.content)).toContain('持久子代理记忆');
+      expect(String(system?.content)).toContain('local 作用域的记忆');
+      expect(String(system?.content)).toContain(
+        fixture.applicationPaths.localAgentMemoryBase,
+      );
+    });
+
+    it('空记忆目录注入空快照但提示词仍存在', async () => {
+      const registry = new SubagentDefinitionRegistry();
+      registerMemoryAgent(registry);
+      const fixture = createRuntime('complete', 3, false, undefined, registry);
+
+      const result = await fixture.runtime.execute({
+        description: 'empty memory task',
+        prompt: '空记忆目录',
+        subagentType: 'mem-agent',
+        parentSession: fixture.parent,
+      });
+
+      expect(result.status).toBe('completed');
+      if (result.status !== 'completed') return;
+      const request = fixture.factory.clients[0].requests[0];
+      const projection = request.messages.find(message =>
+        typeof message.content === 'string' && message.content.includes('<memory-context>'));
+      expect(projection).toBeDefined();
+      expect(String(projection?.content)).not.toContain('经验');
+      const system = request.messages.find(message => message.role === 'system');
+      expect(String(system?.content)).toContain('持久子代理记忆');
+    });
+
+    it('未声明 memory 时 system 不含记忆提示词', async () => {
+      const fixture = createRuntime('complete');
+      const result = await fixture.runtime.execute({
+        description: 'plain memory task',
+        prompt: '无记忆任务',
+        subagentType: 'general-purpose',
+        parentSession: fixture.parent,
+      });
+
+      expect(result.status).toBe('completed');
+      if (result.status !== 'completed') return;
+      const system = fixture.factory.clients[0].requests[0].messages
+        .find(message => message.role === 'system');
+      expect(String(system?.content)).not.toContain('持久子代理记忆');
+    });
+
+    it('autoMemoryEnabled=false 时声明 memory 也不注入记忆', async () => {
+      const registry = new SubagentDefinitionRegistry();
+      registerMemoryAgent(registry);
+      const fixture = createRuntime('complete', 3, false, undefined, registry);
+      seedMemory(join(fixture.applicationPaths.localAgentMemoryBase, 'mem-agent'));
+      fixture.appConfig.autoMemoryEnabled = false;
+
+      const result = await fixture.runtime.execute({
+        description: 'disabled memory task',
+        prompt: '记忆开关关闭',
+        subagentType: 'mem-agent',
+        parentSession: fixture.parent,
+      });
+
+      expect(result.status).toBe('completed');
+      if (result.status !== 'completed') return;
+      const system = fixture.factory.clients[0].requests[0].messages
+        .find(message => message.role === 'system');
+      expect(String(system?.content)).not.toContain('持久子代理记忆');
+    });
   });
 });
 

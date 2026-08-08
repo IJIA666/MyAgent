@@ -89,6 +89,17 @@ export const SYSTEM_RULES = [
   LONG_TERM_MEMORY_RULES,
 ];
 
+/**
+ * 按选项装配稳定层系统规则。
+ * 子代理不继承主会话 Auto Memory（对齐官方「不向子代理加载主会话 Auto Memory」），
+ * 因此 `includeMemoryRules: false` 时排除长期记忆规则；主代理默认完整包含。
+ */
+function buildSystemRules(includeMemoryRules: boolean): string[] {
+  return includeMemoryRules
+    ? SYSTEM_RULES
+    : [RULE_TOOL_RESULT_HANDLING];
+}
+
 /** 默认的通用智能体身份与协作方式。 */
 const BASE_SYSTEM_PROMPT_PREFIX = `你是 MyAgent，一个自主的通用智能助手。根据用户请求完成任务，并在需要时使用当前可用工具。清晰沟通，存在不确定性时明确说明；除非用户另有要求，重视实际帮助而非冗长表达。探索和调查应有针对性并保持高效。`;
 
@@ -107,6 +118,12 @@ export interface SystemPromptOptions {
    * 与官方"替换默认 prompt"不等价：MyAgent 基础人设含安全指令红线，保留组合。
    */
   agentSystemPrompt?: string;
+  /**
+   * 是否包含长期记忆规则（`LONG_TERM_MEMORY_RULES`），默认 true。
+   * 子代理会话传 false：不继承主会话 Auto Memory（对齐官方语义），
+   * 声明 memory 时由子代理运行时注入专属记忆提示词。
+   */
+  includeMemoryRules?: boolean;
 }
 
 /** 转义动态文本中的 XML 保留字符，避免破坏提示词标签结构。 */
@@ -150,8 +167,11 @@ export function buildSystemPrompt(
   const parts: string[] = [];
   const workingDirectory = options.workingDirectory ?? process.cwd();
 
-  // 1. stable（稳定人设层）
-  parts.push(`<!-- 1. stable (稳定人设层) -->\n${BASE_SYSTEM_PROMPT}`);
+  // 1. stable（稳定人设层）；子代理按 includeMemoryRules 裁剪长期记忆规则
+  const stableRules = buildSystemRules(options.includeMemoryRules !== false);
+  const stablePrompt = `${BASE_SYSTEM_PROMPT_PREFIX}\n` +
+    stableRules.map((rule, i) => `${i + 1}. ${rule}`).join('\n');
+  parts.push(`<!-- 1. stable (稳定人设层) -->\n${stablePrompt}`);
 
   // 1.5 agent（`--agent` 模式定义身份层，组合语义：基础人设之后、规则之前）
   if (options.agentSystemPrompt?.trim()) {

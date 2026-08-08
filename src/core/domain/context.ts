@@ -51,6 +51,10 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
   private _appConfig?: AppConfig;
   /** `--agent` 模式的定义正文附加位；每次 system 组装恒带上（RuleManager 重载不覆盖）。 */
   private agentSystemPrompt?: string;
+  /** 构造期系统提示词装配选项（如子代理排除主记忆规则）；updateSystemPrompt 重建时持续生效。 */
+  private readonly systemPromptOptions?: { includeMemoryRules?: boolean };
+  /** 运行时 Auto Memory 开关（`/memory on|off` 同步）；子代理提交点冻结用，未同步时为 undefined。 */
+  private autoMemoryEnabled?: boolean;
 
   // ── 子状态对象 ──
   private readonly conversationState: ConversationState;
@@ -126,6 +130,25 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
     return !this.conversationState.hasUnresolvedToolCalls();
   }
 
+  /**
+   * 获取当前会话 Auto Memory 开关（运行时状态）。
+   *
+   * @returns 当前开关；宿主未同步时为 undefined（调用方回退配置默认值）
+   */
+  public getAutoMemoryEnabled(): boolean | undefined {
+    return this.autoMemoryEnabled;
+  }
+
+  /**
+   * 同步当前会话 Auto Memory 开关（`/memory on|off` 持久化成功后调用）。
+   * 子代理提交点冻结该值，保证排队任务不读取过期配置。
+   *
+   * @param enabled - 当前会话开关
+   */
+  public setAutoMemoryEnabled(enabled: boolean): void {
+    this.autoMemoryEnabled = enabled;
+  }
+
   /** 当前活跃的人机中断交互记录（委托给 InteractionState） */
   public get pendingInteraction(): PendingInteraction | null {
     return this.interactionState.pendingInteraction;
@@ -139,11 +162,13 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
    * @param sessionId - 可选的会话标识，若不传则自动按当前时间戳生成
    * @param tenantId - 可选的租户标识，若不传则默认为 'default'
    * @param permissionState - 可选的宿主冻结权限派生状态，供隔离子会话注入独立副本
+   * @param options - 可选的系统提示词装配选项（如子代理排除主记忆规则）
    */
   constructor(
     sessionId?: string,
     tenantId?: string,
     permissionState?: PermissionSessionState,
+    options?: { includeMemoryRules?: boolean },
   ) {
     super();
     this.sessionId = sessionId || createSessionId();
@@ -151,9 +176,12 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
     this.permissionSessionState = permissionState ?? new PermissionSessionState({
       mode: getDefaultPermissionMode(),
     });
+    this.systemPromptOptions = options;
 
     // 实例化子状态对象
-    const systemPrompt = buildSystemPrompt();
+    const systemPrompt = buildSystemPrompt(undefined, undefined, undefined, {
+      includeMemoryRules: options?.includeMemoryRules,
+    });
     this.conversationState = new ConversationState(systemPrompt);
     this.interactionState = new InteractionState();
     this.approvalInteractionState = new ApprovalInteractionState();
@@ -187,6 +215,7 @@ export class SessionContext extends EventEmitter implements SessionEventPort {
     const systemPrompt = buildSystemPrompt(customGlobalRules, customLocalRules, skills, {
       language: this._appConfig?.language,
       agentSystemPrompt: this.agentSystemPrompt,
+      includeMemoryRules: this.systemPromptOptions?.includeMemoryRules,
     });
     this.conversationState.updateSystemPrompt(systemPrompt);
     this.conversationState.clearLastApiUsageBaseline();

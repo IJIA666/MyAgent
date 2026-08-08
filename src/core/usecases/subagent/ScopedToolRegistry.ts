@@ -43,6 +43,12 @@ export interface ScopedToolRegistryOptions {
   readonly toolVisibility?: (name: string, metadata: ToolMetadata | undefined) => boolean;
   /** 定义级工具名单谓词（tools/disallowedTools 编译）；只允许在默认策略放行基础上收窄（交集）。 */
   readonly definitionToolVisibility?: (name: string) => boolean;
+  /** 声明持久记忆的子代理的记忆维护工具豁免集（readFile/writeFile/editFile），
+   *  定义级 tools 名单不得将其过滤（对齐官方为启用记忆的子代理自动补齐 Read/Write/Edit）。
+   *  豁免语义为 `(tools ∪ 记忆必需工具) - disallowedTools`：显式剔除名单仍生效（只收窄不放开）。 */
+  readonly agentMemoryTools?: ReadonlySet<string>;
+  /** 定义级显式剔除名单（disallowedTools 原始集合）：记忆工具豁免不得覆盖其成员。 */
+  readonly definitionDisallowedTools?: ReadonlySet<string>;
   /** 子代理专属 MCP 作用域：其工具经父网关外部分支路由执行（securityContext 透传）。 */
   readonly agentMcpScope?: AgentMcpScope;
   /** 由协调器显式选择的工具作用域策略。 */
@@ -278,7 +284,17 @@ export class ScopedToolRegistry implements ToolRegistryPort {
     }
     // 定义级名单只允许在默认策略放行基础上收窄（交集），
     // 防止自定义 tools 名单重新暴露 Agent、交互工具等默认禁用工具。
-    return this.options.definitionToolVisibility ? this.options.definitionToolVisibility(name) : true;
+    const definitionAllowed = this.options.definitionToolVisibility
+      ? this.options.definitionToolVisibility(name)
+      : true;
+    if (definitionAllowed) {
+      return true;
+    }
+    // 记忆维护工具豁免：声明持久记忆的子代理必须保有 readFile/writeFile/editFile
+    // （对齐官方自动补齐）。豁免语义为 (tools ∪ 记忆必需工具) - disallowedTools：
+    // 显式剔除名单成员不得被豁免改回可见（只收窄不放开，保持既有契约）。
+    return this.options.agentMemoryTools?.has(name) === true
+      && this.options.definitionDisallowedTools?.has(name) !== true;
   }
 
   /** 拒绝关闭后的所有调用。 */

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SessionContext } from '../../../src/core/domain/context.js';
 import { TiktokenEstimator } from '../../../src/adapters/llm/TiktokenEstimator.js';
+import { LONG_TERM_MEMORY_RULES } from '../../../src/core/usecases/brain/prompts.js';
 import type { ChatMessage } from '../../../src/ports/driven/llm/LlmPort.js';
 
 describe('SessionContext Token & Hash Tests', () => {
@@ -31,6 +32,26 @@ describe('SessionContext Token & Hash Tests', () => {
     
     const newHash = context.getSystemPromptHash();
     expect(newHash).not.toBe(originalHash);
+  });
+
+  it('默认构造包含主记忆规则（主代理行为不变）', () => {
+    const history = context.getHistory();
+    expect(history[0].role).toBe('system');
+    expect(history[0].content).toContain(LONG_TERM_MEMORY_RULES.slice(0, 40));
+  });
+
+  it('includeMemoryRules=false 时 system 不含主记忆规则，且 updateSystemPrompt 重建后仍保持', () => {
+    const child = new SessionContext('child-session', undefined, undefined, {
+      includeMemoryRules: false,
+    });
+    const history = child.getHistory();
+    expect(history[0].content).not.toContain(LONG_TERM_MEMORY_RULES.slice(0, 40));
+
+    // RuleManager 等后续重建 system 时构造期选项持续生效。
+    child.updateSystemPrompt('自定义全局规则');
+    const rebuilt = child.getHistory()[0].content;
+    expect(rebuilt).toContain('自定义全局规则');
+    expect(rebuilt).not.toContain(LONG_TERM_MEMORY_RULES.slice(0, 40));
   });
 
   it('应该在无上次 Usage 锚点时，正确估算整个快照的各部分 Token 预算', () => {

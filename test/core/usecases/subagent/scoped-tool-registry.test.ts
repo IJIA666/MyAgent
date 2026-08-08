@@ -296,6 +296,58 @@ describe('ScopedToolRegistry', () => {
     expect(child.getTool('ask_user_question')).toBeUndefined();
   });
 
+  it('记忆工具豁免语义为 (tools ∪ 记忆必需工具) - disallowedTools：显式剔除名单仍生效', async () => {
+    const parentClose = vi.fn(async () => undefined);
+    const parentCall = vi.fn(async (): Promise<ToolExecutionOutcome<unknown>> => ({
+      value: { ok: true },
+      effect: {
+        kind: 'read',
+        executionStarted: true,
+        completed: true,
+        resources: [],
+        reason: 'declared_read_tool',
+      },
+    }));
+    const definitions = [
+      { type: 'function', function: { name: 'read_file', parameters: { type: 'object' } } },
+      { type: 'function', function: { name: 'write_file', parameters: { type: 'object' } } },
+      { type: 'function', function: { name: 'edit_file', parameters: { type: 'object' } } },
+    ];
+    const metadata = new Map([
+      ['read_file', createMetadata('read_file', true)],
+      ['write_file', createMetadata('write_file', true)],
+      ['edit_file', createMetadata('edit_file', true)],
+    ]);
+    const parent: ToolRegistryPort = {
+      getTools: vi.fn(async () => definitions),
+      getTool: vi.fn(name => metadata.get(name)),
+      callTool: parentCall,
+      close: parentClose,
+    };
+    // 定义声明 tools: [globSearch] + disallowedTools: [writeFile]；
+    // 记忆工具豁免应补回 readFile/editFile（tools 名单过滤掉），但 writeFile 因显式剔除仍不可见。
+    const toolVisibility = compileDefinitionToolVisibility(
+      ['glob_search'],
+      ['write_file'],
+    );
+    const child = new ScopedToolRegistry({
+      parent,
+      permissionState: new PermissionSessionState(),
+      sessionContext: new SessionContext('child-memory-scope'),
+      caller: createTrustedCallContext('child-caller', 'script', '1.0.0', 'subagent'),
+      auditSource: 'test-subagent',
+      definitionToolVisibility: toolVisibility,
+      agentMemoryTools: new Set(['read_file', 'write_file', 'edit_file']),
+      definitionDisallowedTools: new Set(['write_file']),
+    });
+
+    const visible = (await child.getTools()).map(readToolName);
+    // glob_search 在默认策略中不可见（未注册 metadata）→ 豁免也不可见；read/edit 豁免可见，write 被剔除。
+    expect(visible).toEqual(['read_file', 'edit_file']);
+    // 剔除名单成员即使被记忆豁免尝试补回，调用仍被拒绝（只收窄不放开）。
+    await expect(child.callTool('write_file', {})).rejects.toThrow('作用域注册表拒绝工具调用');
+  });
+
   it('子代理专属 MCP 工具附加进工具面且经安全上下文旁路执行', async () => {
     const scopeTools = [{
       type: 'function',

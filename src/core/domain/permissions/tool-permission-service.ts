@@ -21,6 +21,10 @@ import {
 } from './trusted-call-context.js';
 import { ExecutionPlan } from './execution-plan.js';
 import {
+  isPathInside,
+  isReservedMemoryWriteTarget,
+} from './agent-memory-root.js';
+import {
   ExecutionGrantService,
   type ExecutionGrant,
 } from './execution-grant-service.js';
@@ -106,6 +110,71 @@ export interface AuthorizedExecutionContext {
   readonly evidence?: ToolPermissionEvidence;
   /** 权限阶段生成并绑定到获批输入的工具专用分析结果。 */
   readonly analysis?: unknown;
+}
+
+// ── 子代理记忆根工具分类 ──
+
+/** 记忆根内允许直接放行的只读工具（覆盖 ReadFile/ListFiles 等读链路）。 */
+const AGENT_MEMORY_READ_TOOLS = new Set([
+  'readFile',
+  'readManyFiles',
+  'listFiles',
+]);
+
+/** 记忆根内允许直接放行的写/建工具。 */
+const AGENT_MEMORY_WRITE_TOOLS = new Set([
+  'writeFile',
+  'editFile',
+  'applyPatch',
+  'createDirectory',
+]);
+
+/** 记忆根特例操作类别；delete/move/execute 与未知工具返回 'none'（不提升）。 */
+type AgentMemoryOperationCategory = 'read' | 'write' | 'none';
+
+/** 按工具名判定记忆根特例操作类别。 */
+function agentMemoryOperationCategory(
+  toolName: string,
+): AgentMemoryOperationCategory {
+  if (AGENT_MEMORY_READ_TOOLS.has(toolName)) {
+    return 'read';
+  }
+  if (AGENT_MEMORY_WRITE_TOOLS.has(toolName)) {
+    return 'write';
+  }
+  return 'none';
+}
+
+/**
+ * 从资源证据中提取全部文件/目录类资源的物理路径（canonicalPath）。
+ * 适配器解析时已做物理规范化（getPhysicalRealPath），符号链接/junction 目标
+ * 不会以字面路径逃逸记忆根判定。
+ */
+function extractEvidencePhysicalPaths(request: PermissionRequest): string[] {
+  const paths: string[] = [];
+  for (const evidence of request.resourceEvidences) {
+    const canonicalPath = (evidence as { canonicalPath?: unknown }).canonicalPath;
+    if (typeof canonicalPath === 'string' && canonicalPath.length > 0) {
+      paths.push(canonicalPath);
+    }
+  }
+  return paths;
+}
+
+/**
+ * 匹配记忆根：全部物理路径必须位于同一冻结根内（任一资源越出即不命中）。
+ * 防止根内符号链接把免审批权限带到根外物理文件。
+ */
+function resolveAgentMemoryRoot(
+  paths: readonly string[],
+  roots: readonly string[],
+): string | undefined {
+  for (const root of roots) {
+    if (paths.every(path => isPathInside(root, path))) {
+      return root;
+    }
+  }
+  return undefined;
 }
 
 // ── ToolPermissionService ──
@@ -267,6 +336,12 @@ export class ToolPermissionService {
       };
     }
 
+    // 记忆根保留名确定性拒绝：先于显式规则（父会话 allow 规则不得绕过 memory.md 保护）。
+    const reservedDeny = this.evaluateAgentMemoryReservedDeny(request, state);
+    if (reservedDeny) {
+      return reservedDeny;
+    }
+
     // 显式规则优先
     const requestEvidence = createRequestEvidence(request);
     const ruleDecision = this.evaluateExplicitRules(
@@ -278,6 +353,20 @@ export class ToolPermissionService {
     if (ruleDecision) {
       return this.applyRequestMode(
         ruleDecision,
+        mode,
+        runtimeToolName,
+        isAuthorizedEditScope,
+        permissionIdentity,
+        toolResult,
+      );
+    }
+
+    // 子代理持久记忆根特例（per-task 冻结，显式规则之后、普通工具候选之前）：
+    // 根内 read/write/create 直接 allow（可被权限模式继续收窄，如 plan 只读）。
+    const agentMemoryDecision = this.evaluateAgentMemoryRoot(request, state);
+    if (agentMemoryDecision) {
+      return this.applyRequestMode(
+        agentMemoryDecision,
         mode,
         runtimeToolName,
         isAuthorizedEditScope,
@@ -319,6 +408,87 @@ export class ToolPermissionService {
       permissionIdentity,
       toolResult,
     );
+  }
+
+  /**
+   * 记忆根保留名确定性拒绝（先于显式规则，父会话 allow 规则不得绕过）。
+   * 按资源证据的物理 canonicalPath 判定：全部写/建资源位于同一冻结记忆根内、
+   * 且任一资源为 `memory.md` 保留名变体（原形 `MEMORY.md` 放行）时返回不可覆盖 deny。
+   *
+   * @param request - 适配器提供的权限请求
+   * @param state - 当前会话权限状态（含冻结记忆根）
+   * @returns 保留名命中时的 deny；未命中返回 undefined
+   */
+  private evaluateAgentMemoryReservedDeny(
+    request: PermissionRequest,
+    state: PermissionSessionState,
+  ): PermissionDecision | undefined {
+    const roots = state.getAgentMemoryRoots();
+    if (roots.length === 0) {
+      return undefined;
+    }
+    if (agentMemoryOperationCategory(request.runtimeToolName) !== 'write') {
+      return undefined;
+    }
+    const paths = extractEvidencePhysicalPaths(request);
+    if (paths.length === 0) {
+      return undefined;
+    }
+    const matchedRoot = resolveAgentMemoryRoot(paths, roots);
+    if (!matchedRoot) {
+      return undefined;
+    }
+    if (!paths.some(path => isReservedMemoryWriteTarget(path, matchedRoot))) {
+      return undefined;
+    }
+    return {
+      kind: 'deny',
+      decisionReason: '保留名 memory.md 与索引 MEMORY.md 冲突，禁止写入',
+      evidence: createRequestEvidence(request),
+      decisionSource: 'invariant',
+      matchedEvidenceIds: request.resourceEvidences.map(createResourceEvidenceId),
+      overridable: false,
+    };
+  }
+
+  /**
+   * 子代理持久记忆根 allow 判定（per-task 冻结于 PermissionSessionState）。
+   * 全部资源证据的物理 canonicalPath 位于同一冻结记忆根内时，read 类与 write/create
+   * 类工具直接 allow（decisionSource `agentMemoryRoot`）。delete/move/execute、未知
+   * 工具与未冻结根不提升。决策 overridable=true，允许 applyRequestMode 按权限模式
+   * 继续收窄（如 plan 模式只读拒绝写类操作）。
+   *
+   * @param request - 适配器提供的权限请求
+   * @param state - 当前会话权限状态（含冻结记忆根）
+   * @returns 命中记忆根时的 allow；未命中返回 undefined
+   */
+  private evaluateAgentMemoryRoot(
+    request: PermissionRequest,
+    state: PermissionSessionState,
+  ): PermissionDecision | undefined {
+    const roots = state.getAgentMemoryRoots();
+    if (roots.length === 0) {
+      return undefined;
+    }
+    const category = agentMemoryOperationCategory(request.runtimeToolName);
+    if (category === 'none') {
+      return undefined;
+    }
+    const paths = extractEvidencePhysicalPaths(request);
+    if (paths.length === 0) {
+      return undefined;
+    }
+    if (!resolveAgentMemoryRoot(paths, roots)) {
+      return undefined;
+    }
+    return {
+      kind: 'allow',
+      decisionReason: '子代理持久记忆根内维护操作',
+      evidence: createRequestEvidence(request),
+      decisionSource: 'agentMemoryRoot',
+      matchedEvidenceIds: request.resourceEvidences.map(createResourceEvidenceId),
+      overridable: true,
+    };
   }
 
   /**

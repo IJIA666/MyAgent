@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   EditFileTool,
+  ListFilesTool,
   ReadFileTool,
   WriteFileTool,
 } from '../../../../src/adapters/tools/impl/filesystem/file-system.js';
@@ -21,7 +22,14 @@ import { initWorkspace } from '../../../../src/adapters/tools/impl/base.js';
 import { PermissionRuleStore } from '../../../../src/core/domain/permissions/rule-store.js';
 import { ToolPermissionService } from '../../../../src/core/domain/permissions/tool-permission-service.js';
 import { PermissionSessionState } from '../../../../src/core/domain/permissions/permission-session-state.js';
-import { writeFileAdapter } from '../../../../src/adapters/tools/permissions/file-tool-authorization.js';
+import {
+  createDirectoryAdapter,
+  deletePathAdapter,
+  listFilesAdapter,
+  readFileAdapter,
+  readManyFilesAdapter,
+  writeFileAdapter,
+} from '../../../../src/adapters/tools/permissions/file-tool-authorization.js';
 import { createTrustedCallContext } from '../../../../src/core/domain/permissions/trusted-call-context.js';
 import { secureResolveReadPath } from '../../../../src/adapters/tools/impl/base.js';
 import { ToolRegistry } from '../../../../src/adapters/tools/toolRegistry.js';
@@ -272,5 +280,304 @@ describe('默认 Auto Memory 权限', () => {
     } finally {
       await registry.close();
     }
+  });
+});
+
+describe('子代理持久记忆根权限（per-task 冻结）', () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /** 创建独立记忆根。 */
+  function createMemoryDir(): string {
+    const root = mkdtempSync(join(tmpdir(), 'myagent-agent-mem-root-'));
+    roots.push(root);
+    return root;
+  }
+
+  it('冻结根内 read/write/createDirectory 直接 allow（decisionSource agentMemoryRoot）', async () => {
+    const memoryDir = createMemoryDir();
+    const state = new PermissionSessionState({ agentMemoryRoots: [memoryDir] });
+    const service = new ToolPermissionService({ ruleStore: state.getRuleStore() });
+    const caller = createTrustedCallContext('agent-mem-root', 'interactive');
+
+    const writeDecision = await service.checkRequest(
+      writeFileAdapter.buildPermissionRequest(
+        { targetPath: join(memoryDir, 'note.md'), content: 'x' },
+        { caller },
+      ),
+      state,
+      {
+        caller,
+        toolResult: new WriteFileTool().checkPermissions({ targetPath: join(memoryDir, 'note.md') }),
+      },
+    );
+    expect(writeDecision).toMatchObject({ kind: 'allow', decisionSource: 'agentMemoryRoot' });
+
+    const readDecision = await service.checkRequest(
+      readFileAdapter.buildPermissionRequest(
+        { targetPath: join(memoryDir, 'note.md') },
+        { caller },
+      ),
+      state,
+      {
+        caller,
+        toolResult: new ReadFileTool().checkPermissions({ targetPath: join(memoryDir, 'note.md') }),
+      },
+    );
+    expect(readDecision).toMatchObject({ kind: 'allow', decisionSource: 'agentMemoryRoot' });
+
+    const mkdirDecision = await service.checkRequest(
+      createDirectoryAdapter.buildPermissionRequest(
+        { directoryPath: join(memoryDir, 'sub') },
+        { caller },
+      ),
+      state,
+      {
+        caller,
+        toolResult: new CreateDirectoryTool().checkPermissions({ directoryPath: join(memoryDir, 'sub') }),
+      },
+    );
+    expect(mkdirDecision).toMatchObject({ kind: 'allow', decisionSource: 'agentMemoryRoot' });
+  });
+
+  it('保留名 memory.md deny，原形 MEMORY.md 放行', async () => {
+    const memoryDir = createMemoryDir();
+    const state = new PermissionSessionState({ agentMemoryRoots: [memoryDir] });
+    const service = new ToolPermissionService({ ruleStore: state.getRuleStore() });
+    const caller = createTrustedCallContext('agent-mem-reserved', 'interactive');
+
+    const reserved = await service.checkRequest(
+      writeFileAdapter.buildPermissionRequest(
+        { targetPath: join(memoryDir, 'memory.md'), content: 'x' },
+        { caller },
+      ),
+      state,
+      {
+        caller,
+        toolResult: new WriteFileTool().checkPermissions({ targetPath: join(memoryDir, 'memory.md') }),
+      },
+    );
+    expect(reserved).toMatchObject({ kind: 'deny', decisionSource: 'invariant' });
+
+    const index = await service.checkRequest(
+      writeFileAdapter.buildPermissionRequest(
+        { targetPath: join(memoryDir, 'MEMORY.md'), content: '- [t](t.md) — d\n' },
+        { caller },
+      ),
+      state,
+      {
+        caller,
+        toolResult: new WriteFileTool().checkPermissions({ targetPath: join(memoryDir, 'MEMORY.md') }),
+      },
+    );
+    expect(index).toMatchObject({ kind: 'allow', decisionSource: 'agentMemoryRoot' });
+  });
+
+  it('delete 不提升，根外目标零特例', async () => {
+    const memoryDir = createMemoryDir();
+    const state = new PermissionSessionState({ agentMemoryRoots: [memoryDir] });
+    const service = new ToolPermissionService({ ruleStore: state.getRuleStore() });
+    const caller = createTrustedCallContext('agent-mem-delete', 'interactive');
+
+    const deleteDecision = await service.checkRequest(
+      deletePathAdapter.buildPermissionRequest(
+        { targetPath: join(memoryDir, 'note.md') },
+        { caller },
+      ),
+      state,
+      {
+        caller,
+        toolResult: new DeletePathTool().checkPermissions({ targetPath: join(memoryDir, 'note.md') }),
+      },
+    );
+    expect(deleteDecision).not.toMatchObject({ decisionSource: 'agentMemoryRoot' });
+
+    const outside = await service.checkRequest(
+      writeFileAdapter.buildPermissionRequest(
+        { targetPath: join(memoryDir, '..', 'outside.md'), content: 'x' },
+        { caller },
+      ),
+      state,
+      {
+        caller,
+        toolResult: new WriteFileTool().checkPermissions({ targetPath: join(memoryDir, '..', 'outside.md') }),
+      },
+    );
+    expect(outside).not.toMatchObject({ decisionSource: 'agentMemoryRoot' });
+  });
+
+  it('per-task 隔离：A 的冻结根不授权 B，state 销毁后不残留', async () => {
+    const dirA = createMemoryDir();
+    const dirB = createMemoryDir();
+    const stateA = new PermissionSessionState({ agentMemoryRoots: [dirA] });
+    const stateB = new PermissionSessionState({ agentMemoryRoots: [dirB] });
+    const service = new ToolPermissionService({ ruleStore: stateA.getRuleStore() });
+    const callerA = createTrustedCallContext('agent-a', 'interactive');
+    const callerB = createTrustedCallContext('agent-b', 'interactive');
+
+    // B 的 state 未冻结 A 根：B 写 A 根不提升。
+    const bIntoA = await service.checkRequest(
+      writeFileAdapter.buildPermissionRequest(
+        { targetPath: join(dirA, 'note.md'), content: 'x' },
+        { caller: callerB },
+      ),
+      stateB,
+      {
+        caller: callerB,
+        toolResult: new WriteFileTool().checkPermissions({ targetPath: join(dirA, 'note.md') }),
+      },
+    );
+    expect(bIntoA).not.toMatchObject({ decisionSource: 'agentMemoryRoot' });
+
+    // A 自己的根正常提升。
+    const aIntoA = await service.checkRequest(
+      writeFileAdapter.buildPermissionRequest(
+        { targetPath: join(dirA, 'note.md'), content: 'x' },
+        { caller: callerA },
+      ),
+      stateA,
+      {
+        caller: callerA,
+        toolResult: new WriteFileTool().checkPermissions({ targetPath: join(dirA, 'note.md') }),
+      },
+    );
+    expect(aIntoA).toMatchObject({ decisionSource: 'agentMemoryRoot' });
+  });
+
+  it('plan 模式可继续收窄记忆根 allow（写类操作被拒绝）', async () => {
+    const memoryDir = createMemoryDir();
+    const state = new PermissionSessionState({
+      mode: 'plan',
+      agentMemoryRoots: [memoryDir],
+    });
+    const service = new ToolPermissionService({ ruleStore: state.getRuleStore() });
+    const caller = createTrustedCallContext('agent-mem-plan', 'interactive');
+
+    const writeDecision = await service.checkRequest(
+      writeFileAdapter.buildPermissionRequest(
+        { targetPath: join(memoryDir, 'note.md'), content: 'x' },
+        { caller },
+      ),
+      state,
+      {
+        caller,
+        toolResult: new WriteFileTool().checkPermissions({ targetPath: join(memoryDir, 'note.md') }),
+      },
+    );
+    // 记忆根 allow 可被模式收窄：plan 模式拒绝写类操作。
+    expect(writeDecision).toMatchObject({ kind: 'deny', decisionSource: 'mode' });
+
+    const readDecision = await service.checkRequest(
+      readFileAdapter.buildPermissionRequest(
+        { targetPath: join(memoryDir, 'note.md') },
+        { caller },
+      ),
+      state,
+      {
+        caller,
+        toolResult: new ReadFileTool().checkPermissions({ targetPath: join(memoryDir, 'note.md') }),
+      },
+    );
+    // plan 模式放行 FileRead 身份。
+    expect(readDecision).toMatchObject({ kind: 'allow' });
+  });
+
+  it('显式 allow 规则不得绕过记忆根保留名拒绝', async () => {
+    const memoryDir = createMemoryDir();
+    const rules = new PermissionRuleStore();
+    rules.addRule('userSettings', {
+      source: 'userSettings',
+      ruleBehavior: 'allow',
+      ruleValue: { toolName: 'writeFile' },
+    });
+    const state = new PermissionSessionState({
+      rules: rules.getAllRules(),
+      agentMemoryRoots: [memoryDir],
+    });
+    const service = new ToolPermissionService({ ruleStore: state.getRuleStore() });
+    const caller = createTrustedCallContext('agent-mem-rule', 'interactive');
+
+    const reserved = await service.checkRequest(
+      writeFileAdapter.buildPermissionRequest(
+        { targetPath: join(memoryDir, 'memory.md'), content: 'x' },
+        { caller },
+      ),
+      state,
+      {
+        caller,
+        toolResult: new WriteFileTool().checkPermissions({ targetPath: join(memoryDir, 'memory.md') }),
+      },
+    );
+    // 保留名为确定性文件安全约束：先于显式规则，writeFile allow 规则不得绕过。
+    expect(reserved).toMatchObject({ kind: 'deny', decisionSource: 'invariant' });
+  });
+
+  it('全部资源必须位于同一记忆根内（部分根外不提升）', async () => {
+    const memoryDir = createMemoryDir();
+    const state = new PermissionSessionState({ agentMemoryRoots: [memoryDir] });
+    const service = new ToolPermissionService({ ruleStore: state.getRuleStore() });
+    const caller = createTrustedCallContext('agent-mem-multi', 'interactive');
+
+    // readManyFiles 批量路径：一个在根内、一个在根外 → 全部资源判定不命中。
+    const request = readManyFilesAdapter.buildPermissionRequest(
+      { targetPaths: `${join(memoryDir, 'a.md')},${join(memoryDir, '..', 'outside.md')}` },
+      { caller },
+    );
+    const decision = await service.checkRequest(request, state, {
+      caller,
+      toolResult: {
+        kind: 'ask',
+        message: '批量读取',
+        evidence: {
+          operationCategory: 'file-read',
+          sideEffect: 'read',
+          riskReason: '批量读取',
+          resources: request.resourceEvidences,
+        },
+      },
+    });
+    expect(decision).not.toMatchObject({ decisionSource: 'agentMemoryRoot' });
+
+    // 全部在根内 → 提升。
+    const inside = readManyFilesAdapter.buildPermissionRequest(
+      { targetPaths: `${join(memoryDir, 'a.md')},${join(memoryDir, 'b.md')}` },
+      { caller },
+    );
+    const insideDecision = await service.checkRequest(inside, state, {
+      caller,
+      toolResult: {
+        kind: 'ask',
+        message: '批量读取',
+        evidence: {
+          operationCategory: 'file-read',
+          sideEffect: 'read',
+          riskReason: '批量读取',
+          resources: inside.resourceEvidences,
+        },
+      },
+    });
+    expect(insideDecision).toMatchObject({ kind: 'allow', decisionSource: 'agentMemoryRoot' });
+  });
+
+  it('listFiles 经正式适配器进入记忆根提升', async () => {
+    const memoryDir = createMemoryDir();
+    const state = new PermissionSessionState({ agentMemoryRoots: [memoryDir] });
+    const service = new ToolPermissionService({ ruleStore: state.getRuleStore() });
+    const caller = createTrustedCallContext('agent-mem-list', 'interactive');
+
+    const request = listFilesAdapter.buildPermissionRequest(
+      { directoryPath: join(memoryDir) },
+      { caller },
+    );
+    const decision = await service.checkRequest(request, state, {
+      caller,
+      toolResult: new ListFilesTool().checkPermissions({ targetPath: join(memoryDir) }),
+    });
+    expect(decision).toMatchObject({ kind: 'allow', decisionSource: 'agentMemoryRoot' });
   });
 });

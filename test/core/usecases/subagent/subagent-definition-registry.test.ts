@@ -83,4 +83,30 @@ describe('SubagentDefinitionRegistry', () => {
     expect(registry.resolve('Explore')?.systemPrompt).toBeUndefined();
     expect(registry.resolve('Explore')?.permissionMode).toBe('plan');
   });
+
+  it('loader → 注册表映射保留 memory 字段（真实 .md 定义链路）', async () => {
+    const loader = {
+      load: () => [
+        {
+          type: 'mem-reviewer',
+          description: '带记忆的评审',
+          sourceDir: 'project' as const,
+          fileName: 'mem-reviewer.md',
+          systemPrompt: '你是评审员',
+          memory: 'project' as const,
+        },
+        {
+          type: 'plain-reviewer',
+          description: '无记忆的评审',
+          sourceDir: 'project' as const,
+          fileName: 'plain-reviewer.md',
+          systemPrompt: '你是评审员',
+        },
+      ],
+    };
+    const registry = new SubagentDefinitionRegistry(false, loader as unknown as AgentDefinitionLoader);
+
+    expect(registry.resolve('mem-reviewer')?.memory).toBe('project');
+    expect(registry.resolve('plain-reviewer')?.memory).toBeUndefined();
+  });
 });

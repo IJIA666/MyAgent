@@ -37,6 +37,8 @@ const FILE_PATH_KEYS = ['targetPath', 'directoryPath', 'sourcePath', 'destinatio
 
 /**
  * 从工具参数中提取路径。
+ * `targetPaths`（readManyFiles 批量读取）为逗号分隔或 JSON 数组字符串，
+ * 与工具执行阶段采用相同的解析语义，避免权限证据遗漏某个目标。
  *
  * @param args - 工具输入参数
  * @returns 提取到的路径数组
@@ -48,6 +50,21 @@ function extractPaths(args: Readonly<Record<string, unknown>>): string[] {
     if (typeof value === 'string' && value.length > 0) {
       paths.push(value);
     }
+  }
+  const targetPaths = args.targetPaths;
+  if (typeof targetPaths === 'string' && targetPaths.trim().length > 0) {
+    const trimmed = targetPaths.trim();
+    let list: string[];
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        list = JSON.parse(trimmed) as string[];
+      } catch {
+        list = trimmed.split(',').map(path => path.trim()).filter(Boolean);
+      }
+    } else {
+      list = trimmed.split(',').map(path => path.trim()).filter(Boolean);
+    }
+    paths.push(...list);
   }
   return paths;
 }
@@ -236,5 +253,17 @@ export const movePathAdapter = createFileToolAuthorizationAdapter({
 export const copyPathAdapter = createFileToolAuthorizationAdapter({
   runtimeToolName: 'copyPath',
   permissionIdentity: 'FileCopy',
+  isOrdinaryEdit: false,
+});
+
+export const listFilesAdapter = createFileToolAuthorizationAdapter({
+  runtimeToolName: 'listFiles',
+  permissionIdentity: 'FileRead',
+  isOrdinaryEdit: false,
+});
+
+export const readManyFilesAdapter = createFileToolAuthorizationAdapter({
+  runtimeToolName: 'readManyFiles',
+  permissionIdentity: 'FileRead',
   isOrdinaryEdit: false,
 });

@@ -3,8 +3,8 @@
  * 对齐官方 `loadAgentsDir.ts` 的 frontmatter 解析语义：类型名取自必填 `name`、
  * `.md` 正文即系统提示、`tools/disallowedTools` 支持逗号分隔字符串或数组。
  * 按 MyAgent 形态适配：仅支持 user/project 两层目录，plugin 层留接口不实现；
- * 本阶段未启用字段（effort/color/skills/background/memory/mcpServers/hooks/isolation）
- * 解析但忽略并记录 warning，非法定义拒绝单文件且不影响其他文件。
+ * 本阶段未启用字段（effort/color/skills/hooks/isolation）解析但忽略并记录 warning，
+ * 非法定义拒绝单文件且不影响其他文件。
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -13,13 +13,16 @@ import { BUILTIN_MODELS } from '../../../config/models.js';
 import type { McpServerEntry } from '../../../config/types.js';
 import type { PermissionMode } from '../../domain/permissions/permission-types.js';
 import { logger } from '../../../utils/logger.js';
+import {
+  isSafeAgentTypeName,
+  type AgentMemoryScope,
+} from './agent-memory.js';
 
 /** 本阶段解析但忽略的未启用字段（后续阶段启用，见 roadmap）。 */
 const DEFERRED_FIELDS = [
   'effort',
   'color',
   'skills',
-  'memory',
   'hooks',
   'isolation',
 ] as const;
@@ -58,6 +61,8 @@ export interface AgentFileDefinition {
   readonly initialPrompt?: string;
   /** 定义级强制后台：声明 true 时模型调用该类型一律后台执行。 */
   readonly background?: boolean;
+  /** 定义级持久记忆作用域（user/project/local），见 `subagent-memory`。 */
+  readonly memory?: AgentMemoryScope;
   /** `.md` 正文，作为子代理系统提示的自定义部分。 */
   readonly systemPrompt: string;
 }
@@ -168,6 +173,17 @@ function parseAgentFile(
     });
     return null;
   }
+  // 安全名称校验：类型名将用于子代理记忆目录段，非法名（路径分隔符/路径段/Windows
+  // 保留设备名）会导致记忆目录逃逸基座，fail-closed 拒绝定义。
+  if (!isSafeAgentTypeName(type)) {
+    logger.warn('[AgentDefinitionLoader] name 含不安全字符，拒绝注册', {
+      component: 'agent_definition_loader',
+      event: 'agent_unsafe_name',
+      file: filePath,
+      agentType: type,
+    });
+    return null;
+  }
   const description = typeof data.description === 'string' ? data.description.trim() : '';
   if (!description) {
     logger.warn('[AgentDefinitionLoader] 缺少必填 description，拒绝注册', {
@@ -257,6 +273,28 @@ function parseAgentFile(
     }
   }
 
+  // 定义级持久记忆作用域：仅接受 user/project/local 三值；其他值 fail-closed 拒绝
+  // （不静默忽略，对齐 background 处理风格，防止作用域歧义）。
+  let memory: AgentMemoryScope | undefined;
+  if (data.memory !== undefined) {
+    if (
+      data.memory === 'user'
+      || data.memory === 'project'
+      || data.memory === 'local'
+    ) {
+      memory = data.memory;
+    } else {
+      logger.warn('[AgentDefinitionLoader] memory 仅支持 user/project/local，拒绝注册', {
+        component: 'agent_definition_loader',
+        event: 'agent_invalid_memory',
+        file: filePath,
+        agentType: type,
+        memory: String(data.memory),
+      });
+      return null;
+    }
+  }
+
   return Object.freeze({
     type,
     description,
@@ -271,6 +309,7 @@ function parseAgentFile(
     ...(mcpServers && mcpServers.length > 0 ? { mcpServers } : {}),
     ...(initialPrompt ? { initialPrompt } : {}),
     ...(background ? { background: true as const } : {}),
+    ...(memory ? { memory } : {}),
     systemPrompt: content.trim(),
   });
 }

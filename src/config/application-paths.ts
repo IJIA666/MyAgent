@@ -97,6 +97,14 @@ export interface ApplicationPaths {
    */
   readonly memoryDir: string;
 
+  // ── 子代理持久记忆基路径（作用域见 subagent-memory） ──
+  /** 子代理 user 域记忆基路径：`<userConfigDir>/agent-memory/`，跨项目共享。 */
+  readonly userAgentMemoryBase: string;
+  /** 子代理 project 域记忆基路径：`<projectConfigDir>/agent-memory/`，随版本控制共享的可提交配置数据。 */
+  readonly projectAgentMemoryBase: string;
+  /** 子代理 local 域记忆基路径：`<project-data>/agent-memory-local/`，本机、项目隔离、不进入版本控制。 */
+  readonly localAgentMemoryBase: string;
+
   /** 日志目录：`<project-data>/logs/`。 */
   readonly logsDir: string;
   /** 运行日志文件：`<logsDir>/run.log`。 */
@@ -175,6 +183,8 @@ export function createApplicationPaths(
     projectRulesDir: resolve(projectConfigDir, 'rules'),
     projectSkillsDir: resolve(projectConfigDir, 'skills'),
     projectAgentsDir: resolve(projectConfigDir, 'agents'),
+    projectAgentMemoryBase: resolve(projectConfigDir, 'agent-memory'),
+    localAgentMemoryBase: resolve(projectDataDir, 'agent-memory-local'),
 
     // 用户配置
     userConfigDir,
@@ -182,6 +192,7 @@ export function createApplicationPaths(
     userRulesDir: resolve(userConfigDir, 'rules'),
     userSkillsDir: resolve(userConfigDir, 'skills'),
     userAgentsDir: resolve(userConfigDir, 'agents'),
+    userAgentMemoryBase: resolve(userConfigDir, 'agent-memory'),
 
     // Skill 生命周期元数据
     skillUsagePath: resolve(userConfigDir, 'skills', '.usage.json'),

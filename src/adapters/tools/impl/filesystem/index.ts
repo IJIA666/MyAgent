@@ -20,6 +20,8 @@ import {
   deletePathAdapter,
   movePathAdapter,
   copyPathAdapter,
+  listFilesAdapter,
+  readManyFilesAdapter,
 } from '../../permissions/file-tool-authorization.js';
 
 const readFileTool: NativeTool = new ReadFileTool();
@@ -32,6 +34,7 @@ const editFileTool: NativeTool = new EditFileTool();
 editFileTool.authorizationAdapter = editFileAdapter;
 
 const listFilesTool: NativeTool = new ListFilesTool();
+listFilesTool.authorizationAdapter = listFilesAdapter;
 
 const createDirectoryTool: NativeTool = new CreateDirectoryTool();
 createDirectoryTool.authorizationAdapter = createDirectoryAdapter;
@@ -46,6 +49,7 @@ const copyPathTool: NativeTool = new CopyPathTool();
 copyPathTool.authorizationAdapter = copyPathAdapter;
 
 const readManyFilesTool: NativeTool = new ReadManyFilesTool();
+readManyFilesTool.authorizationAdapter = readManyFilesAdapter;
 
 const applyPatchTool: NativeTool = new ApplyPatchTool();
 applyPatchTool.authorizationAdapter = applyPatchAdapter;

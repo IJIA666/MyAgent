@@ -232,10 +232,18 @@ export class SubagentCoordinator implements SubagentExecutionPort {
             ? 'freshBackground'
             : definition.toolPolicyKey,
           definitionToolVisibility: compileDefinitionToolVisibility(definition.tools, definition.disallowedTools),
+          // 显式剔除名单原始集合透传：记忆工具豁免不得覆盖其成员。
+          definitionDisallowedTools: definition.disallowedTools
+            ? new Set(definition.disallowedTools)
+            : undefined,
           definitionSystemPromptBuilder: definition.contextPolicy === 'fresh'
             ? definition.buildSystemPrompt
             : undefined,
           omitClaudeMd: definition.omitClaudeMd,
+          // 定义级持久记忆作用域在提交点冻结透传（恢复会话注入与首次启动一致）。
+          memory: definition.memory,
+          // Auto Memory 开关在提交点冻结（`/memory on|off` 运行时值），排队任务不读过期配置。
+          autoMemoryEnabled: parent.getAutoMemoryEnabled?.(),
           agentMcpDeclarations: definition.contextPolicy === 'fresh' && definition.mcpServers
             ? normalizeMcpDeclarations(definition.mcpServers)
             : undefined,
@@ -659,12 +667,20 @@ export class SubagentCoordinator implements SubagentExecutionPort {
               : definition.toolPolicyKey,
             // 定义级工具池在提交点编译为可见性谓词，运行器构造作用域时与默认策略取交集。
             definitionToolVisibility: compileDefinitionToolVisibility(definition.tools, definition.disallowedTools),
+            // 显式剔除名单原始集合透传：记忆工具豁免不得覆盖其成员。
+            definitionDisallowedTools: definition.disallowedTools
+              ? new Set(definition.disallowedTools)
+              : undefined,
             // 自定义正文在运行器创建子上下文后组装进 system（exact-fork 冻结父 system 不适用）。
             definitionSystemPromptBuilder: definition.contextPolicy === 'fresh'
               ? definition.buildSystemPrompt
               : undefined,
             // omitClaudeMd 透传运行器，控制 RuleManager 是否加载 CLAUDE.md 规则。
             omitClaudeMd: definition.omitClaudeMd,
+            // 定义级持久记忆作用域在提交点冻结透传（运行器据此注入快照/提示词/权限/工具补齐）。
+            memory: definition.memory,
+            // Auto Memory 开关在提交点冻结（`/memory on|off` 运行时值），排队任务不读过期配置。
+            autoMemoryEnabled: request.parentSession.getAutoMemoryEnabled?.(),
             // 定义级 MCP 声明在提交点归一化透传（仅 fresh 消费；exact-fork 冻结父快照不适用）。
             agentMcpDeclarations: definition.contextPolicy === 'fresh' && definition.mcpServers
               ? normalizeMcpDeclarations(definition.mcpServers)

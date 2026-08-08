@@ -67,7 +67,7 @@
 | `--agent` 会话模式 | main.tsx:1000、REPL.tsx（主线程装配） | 子代理定义成为主会话；system prompt/model/tools 裁剪；permissionMode/hooks/mcpServers/maxTurns 不生效；Agent 工具不扣留 | ✅ 2b |
 | hooks 映射 | runAgent.ts:531-575（SubagentStart/Stop） | **移出 2b**：MyAgent 无命令型 hooks 基础设施；子代理结束通知已由 task_update/task-notification 覆盖。命令型 hooks（HooksSchema + 命令执行，主会话共用）**独立立项**，事件面随立项一并做 | ⏸ 短期不做（2026-08-07 用户决策） |
 | @-mention 用户引导 | utils/messages.ts（提醒转换） | 不绕过 Agent 工具，转成高优先级提醒 | 🔄 进行中（本 change） |
-| 子代理记忆 | loadAgentsDir.ts memory 字段 | user/project/local 三域（与 MyAgent 长期记忆体系融合评估，结论：机制独立，不融合） | 🔄 进行中（本 change） |
+| 子代理记忆 | loadAgentsDir.ts memory 字段 | user/project/local 三域（与 MyAgent 长期记忆体系融合评估，结论：机制独立，不融合） | ✅ 2c（subagent-memory） |
 
 **验收（2a）**：写一个 `.md` 文件就能获得一个新子代理类型；Explore/Plan 行为对齐（只读、不加载规则）。✅
 **验收（2b）**：子代理定义可声明专属 MCP（引用共享/内联隔离）；`myagent --agent <type>` 以定义启动主会话。
@@ -188,3 +188,4 @@ Agent Team / swarm（mailbox、task list、权限桥、in-process runner）与 c
 | 2026-08-07 | @-mention 用户引导与子代理记忆激活为进行中 | 两项独立小 change；子代理记忆沿用既有结论：机制独立，不与 MyAgent 长期记忆体系融合 |
 | 2026-08-08 | @-mention（subagent-at-mention）完成归档：全门禁通过（1272 单测 + 133 契约） | 提及正则对齐官方 extractAgentMentions；提醒注入置于用户消息前、不参与 initialPrompt 合并；未注册类型零注入 |
 | 2026-08-08 | memory-flat-layout 完成归档：主记忆布局平铺化（对齐 Claude Code 默认/常见平铺形态，去除 topics/ 子目录，保留更严格单层契约）；全门禁通过（1279 单测 + 135 契约） | 两轮 GPT 评审修正：memory.md 保留名三层防护（提示词/加载器 fail-closed/权限层记忆根内 deny，共享判定 isReservedMemoryWriteTarget）；旧 topics/ 索引 BREAKING（无存量故零迁移成本）；子代理记忆 change 的前置 |
+| 2026-08-08 | 子代理记忆（subagent-memory）完成归档：定义级 memory 三域（user/project/local）+ 有界快照注入 + 记忆提示词 + per-task 记忆根权限；全门禁通过（1308 单测 + 135 契约） | 两轮 GPT 评审修正：① 子代理 system 不再继承主记忆规则（none/agent-memory 模式，修正 context.ts 无条件注入）；② 权限 per-task 冻结于 PermissionSessionState（否决进程级激活集合，并发隔离）；③ 记忆根判定改物理 canonicalPath 全资源校验（防符号链接逃逸）；④ 工具补齐语义 (tools ∪ 记忆必需) - disallowedTools；⑤ 保留名 deny 前置显式规则；⑥ listFiles/readManyFiles 建正式适配器；⑦ autoMemoryEnabled 提交点冻结；⑧ 设备名任意扩展 + 尾随点空格；⑨ spec 限定 fresh/恢复不继承主记忆规则（exact-fork 保留父 system） |

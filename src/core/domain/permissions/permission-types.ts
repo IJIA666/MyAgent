@@ -177,7 +177,8 @@ export type PermissionDecisionSource =
   | 'projectRule'
   | 'builtInBaseline'
   | 'mode'
-  | 'userApproval';
+  | 'userApproval'
+  | 'agentMemoryRoot';
 
 /**
  * 最终权限决定的来源信息。

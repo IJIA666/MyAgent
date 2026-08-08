@@ -6,6 +6,7 @@ import type {
   SubagentToolPolicyKey,
 } from '../../../ports/driving/SubagentExecutionPort.js';
 import type { AgentDefinitionLoader } from './AgentDefinitionLoader.js';
+import type { AgentMemoryScope } from './agent-memory.js';
 import { logger } from '../../../utils/logger.js';
 
 /** 兼容现有运行器导入路径的上下文策略类型重导出。 */
@@ -97,6 +98,8 @@ export interface SubagentDefinition {
   readonly initialPrompt?: string;
   /** 定义级强制后台：声明 true 时模型调用该类型一律后台执行（OR 语义，模型传 false 不覆盖）。 */
   readonly background?: boolean;
+  /** 定义级持久记忆作用域（user/project/local），见 `subagent-memory`。 */
+  readonly memory?: AgentMemoryScope;
   /** `.md` 正文形式的系统提示（自定义定义专用；内置定义用 buildSystemPrompt）。 */
   readonly systemPrompt?: string;
 }
@@ -195,6 +198,8 @@ export class SubagentDefinitionRegistry {
         ...(definition.mcpServers ? { mcpServers: definition.mcpServers } : {}),
         ...(definition.initialPrompt ? { initialPrompt: definition.initialPrompt } : {}),
         ...(definition.background ? { background: true as const } : {}),
+        // 持久记忆作用域必须在 loader → 注册表映射处复制，否则真实 .md 定义运行时 memory 恒为 undefined。
+        ...(definition.memory ? { memory: definition.memory } : {}),
         systemPrompt: definition.systemPrompt,
       });
     }

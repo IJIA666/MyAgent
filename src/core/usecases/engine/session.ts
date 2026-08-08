@@ -247,6 +247,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
 
     // 初始化长期记忆目录与空快照（真实加载延迟到 open() 执行）
     this.autoMemoryEnabled = appConfig.autoMemoryEnabled;
+    // 同步运行时开关到会话上下文：子代理提交点冻结该值，避免读取过期配置。
+    this.context.setAutoMemoryEnabled(appConfig.autoMemoryEnabled);
     this.memoryDir = appConfig.autoMemoryDirectory ?? appConfig.applicationPaths.memoryDir;
     this.autoMemoryRootKind = appConfig.autoMemoryDirectory ? 'custom' : 'default';
     this.settingsRepository = appConfig.settingsRepository;
@@ -720,6 +722,8 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
       this.memoryDir,
     );
     this.autoMemoryEnabled = enabled;
+    // 运行时开关同步到会话上下文（子代理提交点冻结）。
+    this.context.setAutoMemoryEnabled(enabled);
     this.refreshMemorySnapshot();
   }
 

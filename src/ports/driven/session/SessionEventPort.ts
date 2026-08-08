@@ -48,6 +48,14 @@ export interface SessionEventPort {
   getPermissionSessionState?(): PermissionSessionState;
 
   /**
+   * 获取当前会话 Auto Memory 开关（运行时状态，`/memory on|off` 可切换）。
+   * 子代理提交点据此冻结开关值，避免排队任务读取过期配置；省略时调用方回退配置默认值。
+   *
+   * @returns 当前会话开关；未同步时为 undefined
+   */
+  getAutoMemoryEnabled?(): boolean | undefined;
+
+  /**
    * 获取父会话最近一次最终组装的模型请求快照。
    * 未完成过模型请求时返回 undefined。
    */

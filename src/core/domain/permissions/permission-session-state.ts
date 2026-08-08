@@ -35,6 +35,8 @@ export interface PermissionSessionSnapshot {
   readonly rules: readonly PermissionRule[];
   /** 当前会话可访问的额外目录。 */
   readonly additionalDirectories: readonly string[];
+  /** 子代理持久记忆根（per-task 冻结，见 `subagent-memory`）；空数组表示无记忆特例。 */
+  readonly agentMemoryRoots: readonly string[];
   /** 每次成功提交单调递增的版本。 */
   readonly stateVersion: number;
   /** 会话内的模式迁移记录。 */
@@ -49,6 +51,8 @@ export interface PermissionSessionStateOptions {
   readonly rules?: readonly PermissionRule[];
   /** 初始额外目录。 */
   readonly additionalDirectories?: readonly string[];
+  /** 初始子代理持久记忆根（per-task 冻结）。 */
+  readonly agentMemoryRoots?: readonly string[];
 }
 
 /**
@@ -60,18 +64,21 @@ export class PermissionSessionState {
   private prePlanMode: PermissionMode | null = null;
   private readonly ruleStore = new PermissionRuleStore();
   private additionalDirectories: string[];
+  /** 子代理持久记忆根（per-task 冻结，快照随会话销毁）；普通会话为空数组。 */
+  private agentMemoryRoots: string[];
   private stateVersion = 0;
   private modeTransitions: PermissionModeTransition[] = [];
 
   /**
    * 创建会话权限状态。
    *
-   * @param options - 初始模式、规则与额外目录
+   * @param options - 初始模式、规则、额外目录与子代理记忆根
    */
   constructor(options: PermissionSessionStateOptions = {}) {
     this.mode = options.mode ?? 'default';
     this.ruleStore.replaceSnapshot(options.rules ?? []);
     this.additionalDirectories = normalizeDirectories(options.additionalDirectories ?? []);
+    this.agentMemoryRoots = normalizeMemoryRoots(options.agentMemoryRoots ?? []);
   }
 
   /**
@@ -88,6 +95,7 @@ export class PermissionSessionState {
       mode: snapshot.mode,
       rules: snapshot.rules,
       additionalDirectories: snapshot.additionalDirectories,
+      agentMemoryRoots: snapshot.agentMemoryRoots,
     });
     state.prePlanMode = snapshot.prePlanMode;
     state.stateVersion = snapshot.stateVersion;
@@ -145,6 +153,28 @@ export class PermissionSessionState {
   }
 
   /**
+   * 获取子代理持久记忆根快照（per-task 冻结）。
+   *
+   * @returns 规范绝对目录数组
+   */
+  public getAgentMemoryRoots(): readonly string[] {
+    return Object.freeze([...this.agentMemoryRoots]);
+  }
+
+  /**
+   * 返回携带子代理记忆根的新状态（保留全部既有会话语义，per-task 冻结）。
+   * 原状态不受影响；用于子代理任务派生后注入其记忆目录。
+   *
+   * @param roots - 记忆根绝对路径数组（规范化去重）
+   * @returns 携带记忆根的独立新状态
+   */
+  public withAgentMemoryRoots(roots: readonly string[]): PermissionSessionState {
+    const state = PermissionSessionState.fromSnapshot(this.snapshot());
+    state.agentMemoryRoots = normalizeMemoryRoots(roots);
+    return state;
+  }
+
+  /**
    * 创建不共享可变引用的状态快照。
    *
    * @returns 深冻结快照
@@ -157,6 +187,7 @@ export class PermissionSessionState {
       prePlanMode: this.prePlanMode,
       rules: Object.freeze(rules),
       additionalDirectories: Object.freeze([...this.additionalDirectories]),
+      agentMemoryRoots: Object.freeze([...this.agentMemoryRoots]),
       stateVersion: this.stateVersion,
       modeTransitions: Object.freeze(transitions),
     });
@@ -273,6 +304,19 @@ function normalizeDirectories(directories: readonly string[]): string[] {
       throw new Error('额外授权目录不能为空');
     }
     const canonical = getPhysicalDirectoryPath(directory);
+    unique.set(directoryKey(canonical), canonical);
+  }
+  return [...unique.values()];
+}
+
+/** 规范化、去重子代理记忆根（与额外目录同物理身份规则，空输入合法）。 */
+function normalizeMemoryRoots(roots: readonly string[]): string[] {
+  const unique = new Map<string, string>();
+  for (const root of roots) {
+    if (root.trim().length === 0) {
+      continue;
+    }
+    const canonical = getPhysicalDirectoryPath(root);
     unique.set(directoryKey(canonical), canonical);
   }
   return [...unique.values()];
