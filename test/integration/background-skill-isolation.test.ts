@@ -42,6 +42,7 @@ import { SkillCurator } from '../../src/core/usecases/brain/skill-curator.js';
 import { ToolRegistry } from '../../src/adapters/tools/toolRegistry.js';
 import { SessionManager } from '../../src/core/usecases/engine/session.js';
 import { SubagentExecutionController } from '../../src/core/usecases/subagent/SubagentExecutionController.js';
+import { SubagentRuntime } from '../../src/core/usecases/subagent/SubagentRuntime.js';
 import { createMockAppConfig } from '../helpers/mock-factory.js';
 
 let tempRoot: string | undefined;
@@ -112,6 +113,7 @@ describe('后台 Skill Review 隔离', () => {
     const driver = {
       getModelName: () => 'mock-model',
       switchModel: () => {},
+      abort: vi.fn(),
       streamChat: vi.fn().mockImplementation(async function* (
         messages: ChatMessage[],
         tools: Array<Record<string, unknown>>,
@@ -147,18 +149,25 @@ describe('后台 Skill Review 隔离', () => {
       close: vi.fn().mockResolvedValue(undefined),
     };
     const permissionState = new PermissionSessionState();
+    // 注入公共子代理运行器：复用文件内已有的 DelegatingLlmClientFactory 包装 mock driver，
+    // 复盘经统一执行内核运行（与生产装配一致）。
+    const contextAdapter = {
+      assemble: (history: ChatMessage[]) => structuredClone(history),
+    } as unknown as import('../../src/ports/driven/session/ContextAdapter.js').ContextAdapter;
+    const subagentRuntime = new SubagentRuntime({
+      appConfig,
+      toolRegistry: parentRegistry as unknown as ToolRegistryPort,
+      estimator: createEstimator(),
+      contextAdapter,
+      llmConfigProvider: () => appConfig.llm as LlmConfig,
+      llmClientFactory: new DelegatingLlmClientFactory(driver),
+      skillLibrary,
+    });
     const service = new BackgroundSkillReviewService({
       toolRegistry: parentRegistry as unknown as ToolRegistryPort,
-      driver,
-      llmConfigProvider: () => appConfig.llm as LlmConfig,
-      estimator: createEstimator(),
-      contextAdapter: {
-        assemble: history => structuredClone(history),
-      },
-      appConfig,
-      skillLibrary,
       parentPermissionStateProvider: () => permissionState,
       parentCallerProvider: () => createTrustedCallContext(parentContext.getSessionId()),
+      subagentRuntime,
     });
 
     await service.runReview({
@@ -238,6 +247,7 @@ describe('后台 Skill Review 隔离', () => {
     const driver = {
       getModelName: () => 'mock-model',
       switchModel: () => {},
+      abort: vi.fn(),
       streamChat: vi.fn().mockImplementation(async function* () {
         modelCalls++;
         if (modelCalls === 1) {
@@ -273,18 +283,24 @@ describe('后台 Skill Review 隔离', () => {
     const historyBefore = structuredClone(parentContext.getHistory());
 
     const notify = vi.fn();
+    // 注入公共子代理运行器：与上一用例一致，经统一执行内核运行复盘。
+    const contextAdapter = {
+      assemble: (history: ChatMessage[]) => structuredClone(history),
+    } as unknown as import('../../src/ports/driven/session/ContextAdapter.js').ContextAdapter;
+    const subagentRuntime = new SubagentRuntime({
+      appConfig,
+      toolRegistry: registry,
+      estimator: createEstimator(),
+      contextAdapter,
+      llmConfigProvider: () => appConfig.llm as LlmConfig,
+      llmClientFactory: new DelegatingLlmClientFactory(driver),
+      skillLibrary: library,
+    });
     const service = new BackgroundSkillReviewService({
       toolRegistry: registry,
-      driver,
-      llmConfigProvider: () => appConfig.llm as LlmConfig,
-      estimator: createEstimator(),
-      contextAdapter: {
-        assemble: (history: ChatMessage[]) => structuredClone(history),
-      },
-      appConfig,
-      skillLibrary: library,
       parentPermissionStateProvider: () => parentContext.getPermissionSessionState(),
       parentCallerProvider: () => createTrustedCallContext(parentContext.getSessionId()),
+      subagentRuntime,
       notify,
     });
 
@@ -468,6 +484,8 @@ describe('后台 Skill Review 隔离', () => {
       expect(parentSession.getSystemPromptHash()).toBeDefined();
 
       // 新会话读取最新元数据，可发现后台创建的 Skill。
+      // 本用例不调用复盘，注入拒绝接受的 mock scheduler 避免创建 Review 服务
+      //（子代理依赖未注入时服务装配会抛错，此处无复盘需求故直接分流）。
       const freshSession = new SessionManager(
         appConfig.llm,
         driver,
@@ -479,6 +497,7 @@ describe('后台 Skill Review 隔离', () => {
         library,
         pendingStore,
         approvalController,
+        { schedule: () => ({ accepted: false, taskId: null }) },
       );
       try {
         expect(freshSession.getAvailableSkills()

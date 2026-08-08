@@ -1,34 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import type { AppConfig, LlmConfig } from '../../../config/index.js';
-import type { ChatMessage, LlmPort } from '../../../ports/driven/llm/LlmPort.js';
-import type { TokenEstimatorPort } from '../../../ports/driven/llm/TokenEstimatorPort.js';
-import type { ContextAdapter } from '../../../ports/driven/session/ContextAdapter.js';
+import type { ChatMessage } from '../../../ports/driven/llm/LlmPort.js';
 import type { ToolRegistryPort } from '../../../ports/driven/tools/ToolRegistryPort.js';
 import { logger } from '../../../utils/logger.js';
-import { SessionContext } from '../../domain/context.js';
-import { AgentTracer } from '../../domain/tracer.js';
 import type { PermissionSessionState } from '../../domain/permissions/permission-session-state.js';
 import type { TrustedCallContext } from '../../domain/permissions/trusted-call-context.js';
-import { AgentLoop } from '../engine/agent-loop.js';
-import { ToolDispatcher } from '../engine/ToolDispatcher.js';
-import { PluginRegistry } from '../plugins/plugin-registry.js';
 import type {
   BackgroundSkillReviewAcceptance,
   BackgroundSkillReviewRequest,
   BackgroundSkillReviewScheduler,
 } from '../plugins/SkillLearningPlugin.js';
-import { CompactionService } from './CompactionService.js';
-import { ContextBudgetCoordinator } from './ContextBudgetCoordinator.js';
-import { ContextBudgetPlanner } from './ContextBudgetPlanner.js';
-import { ContextHistoryPruner } from './ContextHistoryPruner.js';
-import { ContextRepository } from './ContextRepository.js';
-import { RuleManager } from './RuleManager.js';
 import {
   BackgroundSkillAgent,
   type BackgroundSkillMutationResult,
 } from './background-skill-agent.js';
-import { createEmptyMemorySnapshot } from './memory-loader.js';
-import type { SkillLibrary } from './skill-library.js';
 import type { SubagentRuntime } from '../subagent/SubagentRuntime.js';
 import {
   SKILL_CURATOR_CALLER_ID_PREFIX,
@@ -77,26 +61,14 @@ export interface BackgroundSkillReviewRunResult {
 export interface BackgroundSkillReviewServiceOptions {
   /** 共享父 ToolRegistry。 */
   readonly toolRegistry: ToolRegistryPort;
-  /** 共享 LLM 驱动。 */
-  readonly driver: LlmPort;
-  /** 当前 LLM 配置提供器。 */
-  readonly llmConfigProvider: () => LlmConfig;
-  /** Token 估算端口。 */
-  readonly estimator: TokenEstimatorPort;
-  /** 上下文组装适配器。 */
-  readonly contextAdapter: ContextAdapter;
-  /** 冻结应用配置。 */
-  readonly appConfig: AppConfig;
-  /** 共享 SkillLibrary。 */
-  readonly skillLibrary: SkillLibrary;
   /** 父权限状态提供器。 */
   readonly parentPermissionStateProvider: () => PermissionSessionState;
   /** 父 caller 提供器。 */
   readonly parentCallerProvider: () => TrustedCallContext;
   /** 真实 Skill 变更后的非阻塞通知。 */
   readonly notify?: (result: BackgroundSkillMutationResult) => void;
-  /** 生产运行时注入的公共子代理隔离内核。 */
-  readonly subagentRuntime?: SubagentRuntime;
+  /** 公共子代理隔离内核（必填）：Review/Curator 统一经其 runTask 执行。 */
+  readonly subagentRuntime: SubagentRuntime;
 }
 
 /** 隔离 Skill Agent 的通用单次任务。 */
@@ -138,7 +110,8 @@ export interface IsolatedSkillTaskRunner {
 /**
  * 隔离的后台 Skill Review 服务。
  * schedule 只排队；单执行者 drain 循环保证任一时刻最多运行一个隔离复盘 Agent，
- * 每个任务创建独立上下文、仓储、RuleManager、PluginRegistry 和 AgentLoop。
+ * 每个任务统一经公共子代理运行器（SubagentRuntime.runTask）执行，由运行器内部
+ * 创建独立上下文、仓储、RuleManager、PluginRegistry 和 AgentLoop。
  */
 export class BackgroundSkillReviewService implements BackgroundSkillReviewScheduler, IsolatedSkillTaskRunner {
   /** 待处理请求 FIFO（入队时已复制不可变快照）。 */
@@ -310,124 +283,27 @@ export class BackgroundSkillReviewService implements BackgroundSkillReviewSchedu
       },
     });
 
-    // 生产组合根使用公共运行器；保留下方旧装配仅供未注入运行器的窄测试替身使用。
-    if (this.options.subagentRuntime) {
-      const runtimeResult = await this.options.subagentRuntime.runTask({
-        agentType: task.callerIdPrefix,
-        contextPolicy: 'history-replay',
-        prompt: task.input,
-        conversationHistory: task.conversationHistory,
-        permissionSnapshot: restrictedTools.getPermissionSnapshot(),
-        caller: restrictedTools.getCaller(),
-        signal,
-        toolRegistry: restrictedTools,
-        toolRegistryIsScoped: true,
-        maxIterations: task.maxIterations,
-        persistTranscript: false,
-      });
-      return Object.freeze({
-        cancelled: runtimeResult.status === 'cancelled' || signal.aborted,
-        mutations: Object.freeze([...mutations]),
-        eventCount: runtimeResult.eventCount,
-      });
-    }
-    // 未注入公共运行器时保留旧装配，仅供兼容性测试替身使用。
-    const backgroundContext = new SessionContext(`skill-review-${isolatedTaskId}`);
-    backgroundContext.appConfig = this.options.appConfig;
-    backgroundContext.setPermissionMode(parentPermissionState.getMode());
-    const paths = this.options.appConfig.applicationPaths;
-    const ruleManager = new RuleManager(
-      backgroundContext,
-      paths.userRulesDir,
-      paths.projectRulesDir,
-      paths.userSkillsDir,
-      paths.projectSkillsDir,
-      { enableWatcher: false },
-      this.options.skillLibrary,
-    );
-    const contextRepo = new ContextRepository(
-      backgroundContext,
-      paths.sessionsDir,
-      true,
-    );
-    const toolDispatcher = new ToolDispatcher(
-      backgroundContext,
-      restrictedTools,
-      paths.toolOutputsDir,
-      this.options.appConfig.workspace,
-    );
-    const compactionService = new CompactionService(
-      backgroundContext,
-      this.options.driver,
-      contextRepo,
-      this.options.estimator,
-    );
-    const historyPruner = new ContextHistoryPruner(this.options.estimator);
-    const budgetPlanner = new ContextBudgetPlanner(this.options.estimator, historyPruner);
-    const budgetCoordinator = new ContextBudgetCoordinator(
-      backgroundContext,
-      budgetPlanner,
-      compactionService,
-      this.options.llmConfigProvider,
-    );
-    // 后台 Registry 必须为空，特别是不注册 SkillLearningPlugin，避免递归复盘。
-    const pluginRegistry = new PluginRegistry();
-    // Review 任务携带主会话对话快照：保留隔离上下文自身的首条 system（RuleManager
-    // 构造时已覆写为后台规则版本），防御性过滤传入历史中的 system，逐字段深复制
-    // user/assistant/tool 消息后一次装入，再追加本次隔离任务的 user 指令。
-    if (task.conversationHistory !== undefined) {
-      const ownSystem = backgroundContext.getHistory()[0] ?? null;
-      const replayedHistory = ownSystem === null
-        ? []
-        : [ownSystem].concat(
-          task.conversationHistory
-            .filter(message => message.role !== 'system')
-            .map(cloneChatMessage),
-        );
-      backgroundContext.updateHistory(replayedHistory);
-    }
-    backgroundContext.addMessage({ role: 'user', content: task.input });
-    const tracer = new AgentTracer(
-      paths.tracesDir,
-      paths.auditsDir,
-      backgroundContext.getSessionId(),
-      this.options.appConfig.diagnostics,
-    );
-    const loop = new AgentLoop({
+    // 统一经公共子代理运行器执行：runTask 内部负责上下文创建、AgentLoop 装配与
+    // 终态清理（toolRegistryIsScoped=true 且传入 registry 时由其关闭 restrictedTools），
+    // 此处不再重复 close；SkillLearningPlugin 不会被注册，杜绝递归复盘。
+    const runtimeResult = await this.options.subagentRuntime.runTask({
+      agentType: task.callerIdPrefix,
+      contextPolicy: 'history-replay',
+      prompt: task.input,
+      conversationHistory: task.conversationHistory,
+      permissionSnapshot: restrictedTools.getPermissionSnapshot(),
+      caller: restrictedTools.getCaller(),
+      signal,
       toolRegistry: restrictedTools,
-      context: backgroundContext,
-      driver: this.options.driver,
-      contextAdapter: this.options.contextAdapter,
-      ruleManager,
-      contextRepo,
-      toolDispatcher,
-      contextBudgetCoordinator: budgetCoordinator,
-      pluginRegistry,
+      toolRegistryIsScoped: true,
       maxIterations: task.maxIterations,
-      memorySnapshotProvider: () => createEmptyMemorySnapshot(''),
-      includeRuntimeReminder: false,
+      persistTranscript: false,
     });
-
-    let eventCount = 0;
-    try {
-      for await (const event of loop.chat(
-        undefined,
-        tracer,
-        this.options.llmConfigProvider(),
-        { signal },
-      )) {
-        void event;
-        eventCount++;
-      }
-      return Object.freeze({
-        cancelled: signal.aborted,
-        mutations: Object.freeze([...mutations]),
-        eventCount,
-      });
-    } finally {
-      ruleManager.close();
-      await restrictedTools.close();
-    }
+    return Object.freeze({
+      cancelled: runtimeResult.status === 'cancelled' || signal.aborted,
+      mutations: Object.freeze([...mutations]),
+      eventCount: runtimeResult.eventCount,
+    });
   }
 
   /**
@@ -516,36 +392,6 @@ function getToolDefinitionName(value: unknown): string | undefined {
   return isRecord(value.function) && typeof value.function.name === 'string'
     ? value.function.name
     : undefined;
-}
-
-/**
- * 按 ChatMessage 的公开字段逐字段复制消息，解除与主会话的引用耦合。
- * 快照消息由插件侧已逐字段克隆，此处再次防御性复制，
- * 保持 system 剥离后的 user/assistant/tool 消息及其工具关联字段完整。
- */
-function cloneChatMessage(message: Readonly<ChatMessage>): ChatMessage {
-  return Object.freeze({
-    role: message.role,
-    content: message.content,
-    ...(message.name !== undefined ? { name: message.name } : {}),
-    ...(message.tool_call_id !== undefined ? { tool_call_id: message.tool_call_id } : {}),
-    ...(message.originalPath !== undefined ? { originalPath: message.originalPath } : {}),
-    ...(message.isTruncated !== undefined ? { isTruncated: message.isTruncated } : {}),
-    ...(message.isError !== undefined ? { isError: message.isError } : {}),
-    ...(message.reasoning_content !== undefined
-      ? { reasoning_content: message.reasoning_content }
-      : {}),
-    ...(message.tool_calls !== undefined ? {
-      tool_calls: message.tool_calls.map(call => Object.freeze({
-        id: call.id,
-        type: call.type,
-        function: Object.freeze({
-          name: call.function.name,
-          arguments: call.function.arguments,
-        }),
-      })),
-    } : {}),
-  });
 }
 
 /** 判断未知值是否为普通对象。 */

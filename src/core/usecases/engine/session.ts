@@ -266,6 +266,14 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     // 同一实例共享给运行器与协调器，保证类型解析、工具池与字段消费基于同一快照。
     this.subagentDefinitionRegistry = subagentDefinitionRegistry;
 
+    // 前置装配检查：后台复盘服务要求 subagentRuntime 必填。若未注入外部 scheduler
+    // 且提供 skillLibrary（即本次构造将创建 Review 服务），而子代理依赖缺失，
+    // 必须在此抛错——RuleManager 构造会向 SkillLibrary 订阅监听，抛错若晚于它，
+    // 构造失败的 SessionManager 无法 close() 退订，监听引用将永久遗留。
+    if (!backgroundSkillReviewScheduler && skillLibrary && !(subagentExecutionController && subagentLlmClientFactory)) {
+      throw new Error('缺少子代理运行器（subagentRuntime），无法创建 BackgroundSkillReviewService');
+    }
+
     // 子代理运行器在组合根完成工具注册后创建，Agent 工具只持有此前已注入的控制器。
     this.subagentRuntime = subagentExecutionController && subagentLlmClientFactory
       ? new SubagentRuntime({
@@ -401,20 +409,20 @@ export class SessionManager extends EventEmitter implements CliSessionUseCase {
     this.pluginRegistry.register(new TracerLogPlugin(() => this.tracer));
     this.pluginRegistry.register(new LoopPreventionPlugin(appConfig));
     if (!backgroundSkillReviewScheduler && skillLibrary) {
+      // 运行器必填性已由上方前置检查保证（构造在 RuleManager 订阅前抛错）；
+      // 此处仅做类型收窄，理论上不可达，不作为静默回退分支。
+      const subagentRuntime = this.subagentRuntime;
+      if (!subagentRuntime) {
+        throw new Error('缺少子代理运行器（subagentRuntime），无法创建 BackgroundSkillReviewService');
+      }
       this.backgroundSkillReviewService = new BackgroundSkillReviewService({
         toolRegistry: this.toolRegistry,
-        driver: this.driver,
-        llmConfigProvider: () => this.llmConfig,
-        estimator,
-        contextAdapter: this.contextAdapter,
-        appConfig,
-        skillLibrary,
         parentPermissionStateProvider: () => this.context.getPermissionSessionState(),
         parentCallerProvider: () => createTrustedCallContext(
           this.context.getSessionId(),
           'interactive',
         ),
-        subagentRuntime: this.subagentRuntime,
+        subagentRuntime,
         notify: mutation => {
           if (this.isClosed) {
             // 会话关闭后抵达的复盘结果只记录诊断，不重新激活会话。

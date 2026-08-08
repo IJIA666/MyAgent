@@ -194,12 +194,6 @@ function createService(
   });
   const service = new BackgroundSkillReviewService({
     toolRegistry: registry as unknown as ToolRegistryPort,
-    driver,
-    llmConfigProvider: () => environment.appConfig.llm as LlmConfig,
-    estimator: createEstimator(),
-    contextAdapter,
-    appConfig: environment.appConfig,
-    skillLibrary: environment.skillLibrary,
     parentPermissionStateProvider: () => permissionState,
     parentCallerProvider: () => createTrustedCallContext('parent-session'),
     subagentRuntime,

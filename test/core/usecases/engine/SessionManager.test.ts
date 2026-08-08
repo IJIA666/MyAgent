@@ -9,7 +9,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionManager } from '../../../../src/core/usecases/engine/session.js';
 import { LlmConfig } from '../../../../src/config/index.js';
-import { LlmPort, ChatMessage } from '../../../../src/ports/driven/llm/LlmPort.js';
+import {
+  LlmPort,
+  ChatMessage,
+  LlmPortOptions,
+  SummaryGenerationOptions,
+} from '../../../../src/ports/driven/llm/LlmPort.js';
+import { LlmClientFactoryPort } from '../../../../src/ports/driven/llm/LlmClientFactoryPort.js';
 import { TokenEstimatorPort } from '../../../../src/ports/driven/llm/TokenEstimatorPort.js';
 import { ToolRegistryPort } from '../../../../src/ports/driven/tools/ToolRegistryPort.js';
 import { ContextAdapter } from '../../../../src/ports/driven/session/ContextAdapter.js';
@@ -18,6 +24,7 @@ import { HookEventName } from '../../../../src/core/usecases/plugins/plugin-type
 import { createMockAppConfig } from '../../../helpers/mock-factory.js';
 import { createApplicationPaths } from '../../../../src/config/application-paths.js';
 import { SubagentDefinitionRegistry } from '../../../../src/core/usecases/subagent/SubagentDefinitionRegistry.js';
+import { SubagentExecutionController } from '../../../../src/core/usecases/subagent/SubagentExecutionController.js';
 import { ToolRegistry } from '../../../../src/adapters/tools/toolRegistry.js';
 import { SkillLibrary } from '../../../../src/core/usecases/brain/skill-library.js';
 import { SkillUsageStore } from '../../../../src/core/usecases/brain/skill-usage-store.js';
@@ -1161,6 +1168,8 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     const contextAdapter = {
       assemble: (baseHistory: ChatMessage[]) => baseHistory,
     } as unknown as ContextAdapter;
+    // 本用例只验证 pending 审批流，不调用复盘；注入拒绝接受的 mock scheduler
+    // 避免创建 Review 服务（服务要求 subagentRuntime 必填，此处无复盘需求故分流）。
     const session = new SessionManager(
       { model: 'mock-model' } as unknown as LlmConfig,
       driver,
@@ -1172,6 +1181,7 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       library,
       pendingStore,
       approvalController,
+      { schedule: () => ({ accepted: false, taskId: null }) },
     );
 
     try {
@@ -1206,6 +1216,69 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
         .toBe(false);
     } finally {
       await session.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('缺少子代理运行器时装配 Review 服务前抛错，且不向 SkillLibrary 订阅监听', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'session-review-no-runtime-'));
+    const paths = createApplicationPaths(tempDir, {
+      appDataRoot: join(tempDir, 'app-data'),
+    });
+    const appConfig = createMockAppConfig({
+      workspace: tempDir,
+      applicationPaths: paths,
+      skills: {
+        backgroundReviewEnabled: true,
+        creationNudgeInterval: 10,
+        writeApproval: false,
+      },
+    });
+    const usageStore = new SkillUsageStore(paths.skillUsagePath);
+    const library = new SkillLibrary(
+      paths.userSkillsDir,
+      paths.projectSkillsDir,
+      paths.skillArchiveDir,
+      usageStore,
+      { enableWatcher: false },
+    );
+    // 监听订阅计数：前置装配检查若在 RuleManager 构造前抛错，subscribe 不得被调用。
+    const subscribeSpy = vi.spyOn(library, 'subscribe');
+    const pendingStore = new SkillPendingStore(paths.skillPendingDir, library);
+    const approvalController = new SkillWriteApprovalController(false);
+    const registry = new ToolRegistry(undefined, {
+      skillLibrary: library,
+      skillPendingStore: pendingStore,
+      skillWriteApprovalController: approvalController,
+    });
+    const driver = {
+      getModelName: () => 'MockModel',
+      switchModel: vi.fn(),
+      abort: vi.fn(),
+      streamChat: async function* () { },
+    } as unknown as LlmPort;
+    const contextAdapter = {
+      assemble: (baseHistory: ChatMessage[]) => baseHistory,
+    } as unknown as ContextAdapter;
+
+    try {
+      // 传 skillLibrary 且不传 scheduler、不传子代理执行依赖 → 构造必须抛装配错误。
+      expect(() => new SessionManager(
+        appConfig.llm,
+        driver,
+        createMockEstimator(),
+        registry,
+        contextAdapter,
+        appConfig,
+        undefined,
+        library,
+        pendingStore,
+        approvalController,
+      )).toThrow('缺少子代理运行器（subagentRuntime）');
+      // 抛错必须发生在 RuleManager 向 SkillLibrary 注册监听之前（fail-fast 无泄漏）。
+      expect(subscribeSpy).not.toHaveBeenCalled();
+    } finally {
+      await library.close();
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
@@ -1284,8 +1357,10 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     const contextAdapter = {
       assemble: (baseHistory: ChatMessage[]) => baseHistory,
     } as unknown as ContextAdapter;
+    // 注入子代理执行依赖：后台复盘经 SessionManager 自动装配的公共运行器执行
+    //（复盘服务要求 subagentRuntime 必填，缺依赖构造将抛装配错误）。
     const session = new SessionManager(
-      { model: 'mock-model' } as unknown as LlmConfig,
+      appConfig.llm,
       driver,
       createMockEstimator(),
       registry,
@@ -1295,6 +1370,10 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       library,
       pendingStore,
       approvalController,
+      undefined,
+      undefined,
+      new SubagentExecutionController(),
+      new DelegatingLlmClientFactory(driver),
     );
 
     try {
@@ -1450,8 +1529,9 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     const contextAdapter = {
       assemble: (baseHistory: ChatMessage[]) => baseHistory,
     } as unknown as ContextAdapter;
+    // 注入子代理执行依赖：与上一用例一致，后台复盘经公共运行器执行。
     const session = new SessionManager(
-      { model: 'mock-model' } as unknown as LlmConfig,
+      appConfig.llm,
       driver,
       createMockEstimator(),
       registry,
@@ -1461,6 +1541,10 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
       library,
       pendingStore,
       approvalController,
+      undefined,
+      undefined,
+      new SubagentExecutionController(),
+      new DelegatingLlmClientFactory(driver),
     );
 
     try {
@@ -1672,3 +1756,39 @@ describe('SessionManager & AgentLoop 核心迭代单元测试', () => {
     expect(userContents).toEqual(['@agent-not-exist 继续']);
   });
 });
+
+/**
+ * 为 SessionManager 自动装配的公共子代理运行器创建独立客户端对象，
+ * 保留测试主驱动脚本的调用观测（与集成/单测中的同名工厂同构）。
+ */
+class DelegatingLlmClientFactory implements LlmClientFactoryPort {
+  /** 已创建的子客户端。 */
+  public readonly clients: LlmPort[] = [];
+
+  /**
+   * @param source - 测试用主模型脚本
+   */
+  constructor(private readonly source: LlmPort) {}
+
+  /**
+   * @param _config - 公共运行器的配置快照
+   * @returns 与父驱动对象身份不同的客户端
+   */
+  public create(_config: LlmConfig): LlmPort {
+    const client: LlmPort = {
+      getModelName: () => this.source.getModelName(),
+      switchModel: (config, options) => this.source.switchModel(config, options),
+      abort: () => this.source.abort(),
+      streamChat: (messages, tools, options?: LlmPortOptions) => (
+        this.source.streamChat(messages, tools, options)
+      ),
+      chat: async (messages, options?: LlmPortOptions) => this.source.chat(messages, options),
+      generateSummaryAsync: async (
+        messages,
+        options?: SummaryGenerationOptions,
+      ) => this.source.generateSummaryAsync(messages, options),
+    };
+    this.clients.push(client);
+    return client;
+  }
+}
